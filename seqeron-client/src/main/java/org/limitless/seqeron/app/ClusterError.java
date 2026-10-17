@@ -19,10 +19,10 @@ public enum ClusterError {
      */
     RECOVERY_STALLED,
     /**
-     * No {@code ClusterHeartbeat} for the deadline: this process has stopped seeing its node's tap. Fences as
+     * No {@code ClusterHeartbeat} for the deadline: this process has stopped seeing its node's queue. Fences as
      * {@link #RECOVERY_STALLED} does.
      */
-    TAP_STALLED,
+    QUEUE_STALLED,
     /**
      * This instance's snapshot of a round differs from its source's sequenced one: its state is not the log's (A-7).
      */

@@ -3,7 +3,7 @@ using Org.Limitless.Seqeron.Sbe.Frame;
 namespace Org.Limitless.Seqeron.Protocol;
 
 /// <summary>
-/// The frame layer's constants: the tap's identity, the cluster clock, and the size limits of spec §12. The C#
+/// The frame layer's constants: the queue's identity, the cluster clock, and the size limits of spec §12. The C#
 /// mirror of the spec, as <c>FrameLayer.java</c> and <c>SequencedFrame.hpp</c> are; a change is a wire change
 /// (<b>V-3</b>) and lands in all three. Never read from a transport: <b>S-3</b> forbids checking a node's own
 /// MTU, which would fork <c>globalSeqNo</c>.
@@ -12,7 +12,7 @@ public static class FrameLayer
 {
     /// <summary>
     /// Largest payload any frame may carry (<b>T-2</b>): an 8960-byte IPC MTU, one jumbo frame, less the 76 bytes
-    /// of Aeron data header and sequenced envelope, so a tap whose MTU is that large never fragments.
+    /// of Aeron data header and sequenced envelope, so a queue whose MTU is that large never fragments.
     /// </summary>
     public const int MaxPayloadLength = 8884;
 
@@ -27,17 +27,17 @@ public static class FrameLayer
     public const int MaxIngressLength = MinIngressLength + MaxPayloadLength;
 
     /// <summary>
-    /// The tap: the node-local IPC stream every node republishes each sequenced frame on, in
+    /// The queue: the node-local IPC stream every node republishes each sequenced frame on, in
     /// <c>globalSeqNo</c> order, and records into its own archive. Co-located apps follow it live.
     /// </summary>
-    public const string FeederChannel = "aeron:ipc?alias=seqeron-tap";
+    public const string QueueChannel = "aeron:ipc?alias=seqeron-queue";
 
-    /// <summary>Stream id of the tap.</summary>
-    public const int FeederStreamId = 205;
+    /// <summary>Stream id of the queue.</summary>
+    public const int QueueStreamId = 205;
 
     /// <summary>
     /// Period of the cluster clock: every node emits a <c>ClusterHeartbeat</c> carrying the consensus timestamp,
-    /// so consumers have a clock that advances while producers are silent. A consumer's tap watchdog must span
+    /// so consumers have a clock that advances while producers are silent. A consumer's queue watchdog must span
     /// whole periods.
     /// </summary>
     public const long ClusterHeartbeatIntervalMs = 1000;

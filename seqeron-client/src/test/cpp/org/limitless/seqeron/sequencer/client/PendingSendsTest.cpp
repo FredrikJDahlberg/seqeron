@@ -1,4 +1,4 @@
-// Unit tests for counting a producer's own frames back off its tap. Frames are real ingress frames; each payload
+// Unit tests for counting a producer's own frames back off its queue. Frames are real ingress frames; each payload
 // is one int, so a test names a frame by its number. Case for case with PendingSendsTest.java.
 
 #include <array>
@@ -79,13 +79,13 @@ class PendingSendsTest : public testing::Test
         m_pending.track(m_frame.data(), length(encoder.encodedLength()), session, term);
     }
 
-    // Application frame n arriving on the tap from session.
-    void tap(const std::int64_t session, const std::int32_t n)
+    // Application frame n arriving on the queue from session.
+    void arrive(const std::int64_t session, const std::int32_t n)
     {
-        tap(session, false, PAYLOAD_ID, n);
+        arrive(session, false, PAYLOAD_ID, n);
     }
 
-    void tap(const std::int64_t session, const bool system, const std::uint16_t id, const std::int32_t n)
+    void arrive(const std::int64_t session, const bool system, const std::uint16_t id, const std::int32_t n)
     {
         protocol::SequencedEvent event{};
         event.sourceSessionId = session;
@@ -118,8 +118,8 @@ TEST_F(PendingSendsTest, EveryFrameSeenLeavesNothingPending)
     send(OWN, 1, 1);
     send(OWN, 1, 2);
     EXPECT_EQ(2u, m_pending.size());
-    tap(OWN, 1);
-    tap(OWN, 2);
+    arrive(OWN, 1);
+    arrive(OWN, 2);
     EXPECT_EQ(0u, m_pending.size());
     EXPECT_EQ(0u, m_pending.missing());
     EXPECT_FALSE(m_pending.isFaulted());
@@ -128,7 +128,7 @@ TEST_F(PendingSendsTest, EveryFrameSeenLeavesNothingPending)
 TEST_F(PendingSendsTest, LeaderChangeAfterEveryFrameLosesNothing)
 {
     send(OWN, 1, 1);
-    tap(OWN, 1);
+    arrive(OWN, 1);
     m_pending.onLeadershipChanged(2);
     EXPECT_EQ(0u, m_pending.missing());
     EXPECT_EQ(0u, m_pending.size());
@@ -139,7 +139,7 @@ TEST_F(PendingSendsTest, FramesNotSeenBeforeALaterTermAreMissing)
     send(OWN, 1, 1);
     send(OWN, 1, 2);
     send(OWN, 1, 3);
-    tap(OWN, 1);
+    arrive(OWN, 1);
     EXPECT_EQ(0u, m_pending.missing()) << "still pending until a later term closes the count";
     m_pending.onLeadershipChanged(2);
     EXPECT_EQ(2u, m_pending.missing());
@@ -148,17 +148,17 @@ TEST_F(PendingSendsTest, FramesNotSeenBeforeALaterTermAreMissing)
 
 TEST_F(PendingSendsTest, OwnTermsLeadershipChangedDoesNotCountIt)
 {
-    // A tap still replaying history reaches term 1's opening frame after frames stamped 1 went out.
+    // A queue still replaying history reaches term 1's opening frame after frames stamped 1 went out.
     send(OWN, 1, 1);
     m_pending.onLeadershipChanged(1);
     EXPECT_EQ(0u, m_pending.missing());
-    tap(OWN, 1);
+    arrive(OWN, 1);
     EXPECT_EQ(0u, m_pending.size());
 }
 
 TEST_F(PendingSendsTest, StaleTermFrameIsMissingAtOnce)
 {
-    // The tap showed the new term before egress brought the NewLeader, so the leader dropped this frame.
+    // The queue showed the new term before egress brought the NewLeader, so the leader dropped this frame.
     m_pending.onLeadershipChanged(2);
     send(OWN, 1, 1);
     EXPECT_EQ(1u, m_pending.missing());
@@ -171,8 +171,8 @@ TEST_F(PendingSendsTest, ReplacedSessionsLostFramesStayMissing)
     m_pending.onLeadershipChanged(2);
     send(OWN + 1, 2, 3);
     send(OWN + 1, 2, 4);
-    tap(OWN + 1, 3);
-    tap(OWN + 1, 4);
+    arrive(OWN + 1, 3);
+    arrive(OWN + 1, 4);
     EXPECT_EQ(2u, m_pending.missing());
     EXPECT_EQ(2u, m_pending.size());
     EXPECT_FALSE(m_pending.isFaulted());
@@ -181,25 +181,25 @@ TEST_F(PendingSendsTest, ReplacedSessionsLostFramesStayMissing)
 TEST_F(PendingSendsTest, SiblingFramesAreIgnored)
 {
     send(OWN, 1, 1);
-    tap(SIBLING, 1);
-    tap(SIBLING, 7);
+    arrive(SIBLING, 1);
+    arrive(SIBLING, 7);
     EXPECT_EQ(1u, m_pending.size());
     EXPECT_FALSE(m_pending.isFaulted());
 }
 
 TEST_F(PendingSendsTest, OwnFrameDifferingFromOldestCopyLatchesFault)
 {
-    // The sequencer rejected frame 1 (S-7), so frame 2 is the next own frame on the tap.
+    // The sequencer rejected frame 1 (S-7), so frame 2 is the next own frame on the queue.
     send(OWN, 1, 1);
     send(OWN, 1, 2);
-    tap(OWN, 2);
+    arrive(OWN, 2);
     EXPECT_TRUE(m_pending.isFaulted());
 }
 
 TEST_F(PendingSendsTest, OwnSystemFrameComesBack)
 {
     sendSystem(OWN, 1, protocol::CONNECTION_CLOSED, 1);
-    tap(OWN, true, protocol::CONNECTION_CLOSED, 1);
+    arrive(OWN, true, protocol::CONNECTION_CLOSED, 1);
     EXPECT_EQ(0u, m_pending.size());
     EXPECT_FALSE(m_pending.isFaulted());
 }
@@ -207,7 +207,7 @@ TEST_F(PendingSendsTest, OwnSystemFrameComesBack)
 TEST_F(PendingSendsTest, ApplicationFrameNeverMatchesSystemOne)
 {
     sendSystem(OWN, 1, protocol::CONNECTION_CLOSED, 1);
-    tap(OWN, false, protocol::CONNECTION_CLOSED, 1);
+    arrive(OWN, false, protocol::CONNECTION_CLOSED, 1);
     EXPECT_TRUE(m_pending.isFaulted());
 }
 
@@ -229,7 +229,7 @@ TEST_F(PendingSendsTest, NewLeaderHoldsUntilOlderFramesAreSeen)
     send(OWN, 1, 1);
     m_pending.onNewLeader(2);
     EXPECT_TRUE(m_pending.isHolding());
-    tap(OWN, 1);
+    arrive(OWN, 1);
     EXPECT_FALSE(m_pending.isHolding());
 }
 
@@ -240,7 +240,7 @@ TEST_F(PendingSendsTest, NewTermWithNothingPendingHoldsNothing)
     EXPECT_FALSE(m_pending.isHolding());
 }
 
-TEST_F(PendingSendsTest, TapsLeadershipChangedHoldsBeforeNewLeader)
+TEST_F(PendingSendsTest, QueuesLeadershipChangedHoldsBeforeNewLeader)
 {
     FakeSender sender{ .term = 1 };
     send(OWN, 1, 1);
@@ -256,15 +256,15 @@ TEST_F(PendingSendsTest, MissingFramesAreResentOldestFirst)
     send(OWN, 1, 1);
     send(OWN, 1, 2);
     send(OWN, 1, 3);
-    tap(OWN, 1);
+    arrive(OWN, 1);
     m_pending.onNewLeader(2);
     m_pending.onLeadershipChanged(2);
     EXPECT_EQ(2u, m_pending.resendMissing(sender));
     EXPECT_EQ((std::vector<std::int32_t>{ 2, 3 }), sender.sent);
     EXPECT_EQ(0u, m_pending.missing());
     EXPECT_FALSE(m_pending.isHolding());
-    tap(OWN, 2);
-    tap(OWN, 3);
+    arrive(OWN, 2);
+    arrive(OWN, 3);
     EXPECT_EQ(0u, m_pending.size());
     EXPECT_FALSE(m_pending.isFaulted());
 }
@@ -285,9 +285,9 @@ TEST_F(PendingSendsTest, ResendCutShortKeepsHolding)
     EXPECT_EQ(2u, m_pending.resendMissing(sender));
     EXPECT_EQ((std::vector<std::int32_t>{ 1, 2, 3 }), sender.sent);
     EXPECT_FALSE(m_pending.isHolding());
-    tap(OWN, 1);
-    tap(OWN, 2);
-    tap(OWN, 3);
+    arrive(OWN, 1);
+    arrive(OWN, 2);
+    arrive(OWN, 3);
     EXPECT_EQ(0u, m_pending.size());
     EXPECT_FALSE(m_pending.isFaulted());
 }
@@ -299,9 +299,9 @@ TEST_F(PendingSendsTest, ResentFrameMatchesOnTheNewSession)
     m_pending.onNewLeader(2);
     m_pending.onLeadershipChanged(2);
     m_pending.resendMissing(sender);
-    tap(OWN, 1);
+    arrive(OWN, 1);
     EXPECT_EQ(1u, m_pending.size());
-    tap(OWN + 1, 1);
+    arrive(OWN + 1, 1);
     EXPECT_EQ(0u, m_pending.size());
 }
 
@@ -319,7 +319,7 @@ TEST_F(PendingSendsTest, ResentFrameLostAgainIsResentAgain)
     sender.term = 3;
     EXPECT_EQ(1u, m_pending.resendMissing(sender));
     EXPECT_EQ((std::vector<std::int32_t>{ 1, 1 }), sender.sent);
-    tap(OWN, 1);
+    arrive(OWN, 1);
     EXPECT_EQ(0u, m_pending.size());
 }
 
@@ -336,7 +336,7 @@ TEST_F(PendingSendsTest, FullRingResendsInPlace)
     EXPECT_EQ((std::vector<std::int32_t>{ 0, 1, 2, 3 }), sender.sent);
     for (std::int32_t n = 0; n < static_cast<std::int32_t>(CAPACITY); ++n)
     {
-        tap(OWN, n);
+        arrive(OWN, n);
     }
     EXPECT_EQ(0u, m_pending.size());
     EXPECT_FALSE(m_pending.isFaulted());
@@ -351,9 +351,9 @@ TEST_F(PendingSendsTest, DiscardedSessionsFramesMatchNothing)
     EXPECT_EQ(2u, m_pending.discardUnconfirmed());
     EXPECT_EQ(0u, m_pending.size());
     EXPECT_FALSE(m_pending.isHolding());
-    tap(OWN, 1);
+    arrive(OWN, 1);
     send(OWN + 1, 2, 3);
-    tap(OWN + 1, 3);
+    arrive(OWN + 1, 3);
     EXPECT_EQ(0u, m_pending.size());
     EXPECT_FALSE(m_pending.isFaulted());
 }

@@ -19,7 +19,7 @@
 #include "org/limitless/seqeron/util/Logger.hpp"
 
 // Reading the sequenced stream back out of an Aeron Archive: finding the recording, connecting to the
-// archive that holds it, and replaying it. Not the live path — consumers follow the tap
+// archive that holds it, and replaying it. Not the live path — consumers follow the queue
 // through ReplayerStreamReceiver; this serves bounded scans. Frame decoding alone is SequencedFrame.hpp.
 
 namespace org::limitless::seqeron::sequencer::client {
@@ -86,7 +86,7 @@ inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, cons
  * @param archive              a connected archive client to search
  * @param[out] recordingId    recording id of the cluster stream found on the archive
  * @param[out] catchUpPosition recording position to replay/catch up to
- * @return false if the archive holds no FEEDER_STREAM_ID recording at all (leaving both
+ * @return false if the archive holds no QUEUE_STREAM_ID recording at all (leaving both
  *         out-parameters untouched).
  */
 inline bool findClusterStreamRecording(const std::shared_ptr<aeron::archive::client::AeronArchive>& archive,
@@ -95,7 +95,7 @@ inline bool findClusterStreamRecording(const std::shared_ptr<aeron::archive::cli
     std::int64_t activeId = -1;
     std::int64_t stoppedId = -1;
     std::int64_t stoppedPosition = std::numeric_limits<std::int64_t>::min();
-    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", protocol::FEEDER_STREAM_ID,
+    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", protocol::QUEUE_STREAM_ID,
                                   [&](aeron::archive::client::RecordingDescriptor& recording) {
                                       if (recording.m_stopPosition == aeron::archive::client::NULL_POSITION)
                                       {
@@ -152,8 +152,8 @@ inline std::string pollArchiveSession(const std::shared_ptr<aeron::archive::clie
 
 /**
  * Connects to each candidate archive endpoint in turn until one both connects
- * and holds a recording of the sequenced stream (matched by FEEDER_STREAM_ID
- * alone). Every member records its own node-local tap, so any reachable
+ * and holds a recording of the sequenced stream (matched by QUEUE_STREAM_ID
+ * alone). Every member records its own node-local queue, so any reachable
  * member's archive holds a full copy; trying more than one endpoint is just
  * defense in depth against an individual member being down or still starting up
  * (its recording not yet active). This connects to a remote archive over UDP
@@ -201,7 +201,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
         {
             util::Logger::info(util::component::ClusterStreamClient,
                                "%s Connected to %s but it has no cluster stream recording"
-                               " (its member has not started recording its tap) — trying next endpoint",
+                               " (its member has not started recording its queue) — trying next endpoint",
                                logPrefix, endpoint.c_str());
             lastError = "connected but no cluster stream recording found on " + endpoint;
             continue;
@@ -223,7 +223,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
  * deliberately deployed sharing a single SequencerServer member's own
  * Aeron directory (see ClusterStreamSender::connectColocated's doc comment for the ingress
  * half of that deployment). Unlike connectToArchiveWithClusterStream, there is exactly one
- * candidate archive here, and — because every member records its own node-local tap — every
+ * candidate archive here, and — because every member records its own node-local queue — every
  * member's archive holds a full copy of the sequenced stream regardless of current leadership,
  * so a missing recording here is a real error, not just "wrong member to ask".
  *

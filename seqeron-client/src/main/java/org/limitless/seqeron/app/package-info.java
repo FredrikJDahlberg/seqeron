@@ -3,7 +3,7 @@
  *
  * <p>Take {@link org.limitless.seqeron.app.Gateway} (one instance of an elected active/standby pair) or
  * {@link org.limitless.seqeron.app.Application} (one replica per node, publishing only while its
- * own node leads). Either one assembles the duty cycle — the cluster session, the tap, confirmed ingress,
+ * own node leads). Either one assembles the duty cycle — the cluster session, the queue, confirmed ingress,
  * the fences, the election — so a consumer writes its edge and its payloads and nothing of the frame layer
  * or of seqeron's system vocabulary appears in its code. A listener sees
  * {@link org.limitless.seqeron.app.Payload} and {@link org.limitless.seqeron.app.ClusterError}; a publish returns

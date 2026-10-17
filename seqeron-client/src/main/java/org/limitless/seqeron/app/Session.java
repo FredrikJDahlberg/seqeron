@@ -19,7 +19,7 @@ import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * What every seqeron client does the same way: the cluster session it submits on, the co-located tap it
+ * What every seqeron client does the same way: the cluster session it submits on, the co-located queue it
  * follows, confirmed ingress across a failover, and the fences that say when it may no longer act — wired
  * together into one {@link #doWork()} whose ordering is not the caller's to get right.
  *
@@ -27,19 +27,19 @@ import org.limitless.seqeron.util.Logger;
  * so a co-located application's façade can sit on the same core.
  */
 final class Session implements AutoCloseable {
-    /** The deployment policy every producer had been copying: the tap may be silent for 20 heartbeat periods. */
-    static final long DEFAULT_TAP_STALL_TIMEOUT_MS = 20 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS;
+    /** The deployment policy every producer had been copying: the queue may be silent for 20 heartbeat periods. */
+    static final long DEFAULT_QUEUE_STALL_TIMEOUT_MS = 20 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS;
 
-    /** Longer than the tap's, since a re-walk is slower than the live stream it is catching up to. */
-    static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = 3 * DEFAULT_TAP_STALL_TIMEOUT_MS;
+    /** Longer than the queue's, since a re-walk is slower than the live stream it is catching up to. */
+    static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = 3 * DEFAULT_QUEUE_STALL_TIMEOUT_MS;
 
-    /** Frames in flight between a publish and the tap; far above what one round trip holds. */
+    /** Frames in flight between a publish and the queue; far above what one round trip holds. */
     static final int DEFAULT_PENDING_CAPACITY = 1024;
 
     /** How often an attempt to replace a lost session begins while the façade allows it. */
     static final long RECONNECT_INTERVAL_MS = 1_000;
 
-    /** What the façade above does with what comes off the tap, and with a fence. */
+    /** What the façade above does with what comes off the queue, and with a fence. */
     interface Dispatch {
         /** A system frame this core does not consume itself. {@code LeadershipChanged} never arrives here. */
         void onSystem(SequencedEvent event);
@@ -74,11 +74,11 @@ final class Session implements AutoCloseable {
     private final ClusterStreamSender sender = new ClusterStreamSender();
     private final ReplayerStreamReceiver receiver;
     private final RecoveryStallFence recoveryStall;
-    private final TapStallFence tapStall;
+    private final QueueStallFence queueStall;
     private final Payload payload = new Payload();
 
     private final long recoveryStallTimeoutMs;
-    private final long tapStallTimeoutMs;
+    private final long queueStallTimeoutMs;
 
     /** The stall an instance that does not act has been alarmed for, or null. */
     private ClusterError stallAlarm;
@@ -96,15 +96,15 @@ final class Session implements AutoCloseable {
     /** The term of the last {@code LeadershipChanged} applied; -1 before the first. */
     private long leadershipTermId = -1;
 
-    Session(final int clientId, final int pendingCapacity, final long tapStallTimeoutMs,
+    Session(final int clientId, final int pendingCapacity, final long queueStallTimeoutMs,
             final long recoveryStallTimeoutMs, final Dispatch dispatch) {
         this.dispatch = dispatch;
-        this.tapStallTimeoutMs = tapStallTimeoutMs;
+        this.queueStallTimeoutMs = queueStallTimeoutMs;
         this.recoveryStallTimeoutMs = recoveryStallTimeoutMs;
         this.pending = new PendingSends(pendingCapacity);
         this.publisher = new IngressPublisher(pending);
         this.recoveryStall = new RecoveryStallFence(recoveryStallTimeoutMs);
-        this.tapStall = new TapStallFence(tapStallTimeoutMs);
+        this.queueStall = new QueueStallFence(queueStallTimeoutMs);
         this.receiver = new ReplayerStreamReceiver(clientId, this::onSequenced, this::onLeadershipChanged, null);
         sender.setIngressHold(pending);
     }
@@ -114,7 +114,7 @@ final class Session implements AutoCloseable {
         receiver.restoreFrom(store, handler);
     }
 
-    /** Opens the cluster session over UDP and starts following this node's tap. */
+    /** Opens the cluster session over UDP and starts following this node's queue. */
     void start(final Aeron aeron, final int memberId, final String egressChannel, final String ingressEndpoints) {
         sender.connect(aeron, egressChannel, ingressEndpoints, new SessionListener());
         receiver.start(aeron, memberId);
@@ -132,7 +132,7 @@ final class Session implements AutoCloseable {
     }
 
     /**
-     * One duty cycle, in the order the parts require: the tap first, so a fence is judged on what this cycle
+     * One duty cycle, in the order the parts require: the queue first, so a fence is judged on what this cycle
      * saw; the resend last, so nothing new goes out ahead of it.
      * @return units of work done
      */
@@ -220,7 +220,7 @@ final class Session implements AutoCloseable {
         }
         final long nowMs = Clocks.monotonicMs();
         recoveryStall.onCaughtUp();
-        tapStall.onCaughtUp(nowMs);
+        queueStall.onCaughtUp(nowMs);
         dispatch.onCaughtUp(receiver.lastGlobalSeqNo());
     }
 
@@ -254,9 +254,9 @@ final class Session implements AutoCloseable {
                             receiver.lastGlobalSeqNo() + ")");
                 return;
             }
-        } else if (tapStall.isStalled(nowMs)) {
-            stalled(ClusterError.TAP_STALLED, Logger.CoreEventCode.TapStalled,
-                    "no ClusterHeartbeat for >" + tapStallTimeoutMs + "ms");
+        } else if (queueStall.isStalled(nowMs)) {
+            stalled(ClusterError.QUEUE_STALLED, Logger.CoreEventCode.QueueStalled,
+                    "no ClusterHeartbeat for >" + queueStallTimeoutMs + "ms");
             return;
         }
         if (stallAlarm != null) {
@@ -265,7 +265,7 @@ final class Session implements AutoCloseable {
         }
     }
 
-    /** Fences an instance that acts; one that does not raises an alarm once and keeps following the tap. */
+    /** Fences an instance that acts; one that does not raises an alarm once and keeps following the queue. */
     private void stalled(final ClusterError stall, final Logger.CoreEventCode code, final String detail) {
         if (dispatch.isActing()) {
             fence(stall, detail);
@@ -289,7 +289,7 @@ final class Session implements AutoCloseable {
 
     /**
      * Opens a session in place of the lost one, an attempt at most once a second and each advanced a step per cycle,
-     * until one opens or the tap could have gone silent for as long: past that the cluster is not coming back for
+     * until one opens or the queue could have gone silent for as long: past that the cluster is not coming back for
      * this process, and the session's loss is a fence. An attempt under way then is let finish, since one whose
      * request an election swallowed spends its whole timeout.
      */
@@ -299,9 +299,9 @@ final class Session implements AutoCloseable {
             sessionLostSinceMs = nowMs;
             nextReconnectMs = nowMs;
         }
-        if (nowMs - sessionLostSinceMs > tapStallTimeoutMs && !sender.isReconnecting()) {
+        if (nowMs - sessionLostSinceMs > queueStallTimeoutMs && !sender.isReconnecting()) {
             fence(ClusterError.CLUSTER_SESSION_LOST,
-                  why + "; no session replaced it within " + tapStallTimeoutMs + "ms");
+                  why + "; no session replaced it within " + queueStallTimeoutMs + "ms");
             return;
         }
         if (!sender.isReconnecting()) {
@@ -318,7 +318,7 @@ final class Session implements AutoCloseable {
         discardUnconfirmed("the session they went out on was lost (" + why + ")");
     }
 
-    /** Forgets every frame not yet seen on the tap, for a façade that knows none of them will be sequenced. */
+    /** Forgets every frame not yet seen on the queue, for a façade that knows none of them will be sequenced. */
     void discardUnconfirmed(final String why) {
         final int dropped = pending.discardUnconfirmed();
         if (dropped > 0) {
@@ -351,7 +351,7 @@ final class Session implements AutoCloseable {
         pending.onSequenced(event);
         if (event.isSystem()) {
             if (event.systemEventType() == SystemFrame.CLUSTER_HEARTBEAT) {
-                tapStall.onClusterHeartbeat(Clocks.monotonicMs());
+                queueStall.onClusterHeartbeat(Clocks.monotonicMs());
                 dispatch.onClusterHeartbeat(event.clusterTimestampNs(), event.receiveTimeNs());
             }
             dispatch.onSystem(event);
@@ -366,7 +366,7 @@ final class Session implements AutoCloseable {
         @Override
         public void onMessage(final long clusterSessionId, final long timestamp, final DirectBuffer buffer,
                               final int offset, final int length, final Header header) {
-            // Nothing is addressed to a producer on egress: everything it publishes comes back on the tap.
+            // Nothing is addressed to a producer on egress: everything it publishes comes back on the queue.
         }
 
         @Override

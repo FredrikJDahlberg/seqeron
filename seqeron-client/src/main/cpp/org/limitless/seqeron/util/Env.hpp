@@ -63,7 +63,7 @@ inline std::string joinPath(const std::string& dir, const std::string& name)
 }
 
 /**
- * Resolves the co-located cluster member's Aeron directory, which an app shares to reach that node's tap,
+ * Resolves the co-located cluster member's Aeron directory, which an app shares to reach that node's queue,
  * Replayer and (while it leads) IPC ingress. The default is the member's own, under /dev/shm where the host has
  * one, else under TMPDIR; the Java twin is PortLayout.aeronDir.
  *

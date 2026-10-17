@@ -32,15 +32,15 @@ namespace Org.Limitless.Seqeron.App;
 /// </summary>
 public sealed class Gateway : IDisposable
 {
-    /// <summary>How long the tap may be silent before this instance is fenced — 20 heartbeat periods. The deployment
+    /// <summary>How long the queue may be silent before this instance is fenced — 20 heartbeat periods. The deployment
     /// policy every gateway had been copying.</summary>
-    public const long DefaultTapStallTimeoutMs = Session.DefaultTapStallTimeoutMs;
+    public const long DefaultQueueStallTimeoutMs = Session.DefaultQueueStallTimeoutMs;
 
-    /// <summary>How long recovery may dispatch nothing, once caught up before; longer than the tap's, as a re-walk is
+    /// <summary>How long recovery may dispatch nothing, once caught up before; longer than the queue's, as a re-walk is
     /// slower.</summary>
     public const long DefaultRecoveryStallTimeoutMs = Session.DefaultRecoveryStallTimeoutMs;
 
-    /// <summary>Frames in flight between a publish and the tap; far above what one round trip holds.</summary>
+    /// <summary>Frames in flight between a publish and the queue; far above what one round trip holds.</summary>
     public const int DefaultPendingCapacity = Session.DefaultPendingCapacity;
 
     /// <summary>A frame that belongs to the gateway rather than to one of its connections, and what
@@ -120,7 +120,7 @@ public sealed class Gateway : IDisposable
         _lifecycle = new GatewayLifecycle(options.GatewayName, new LifecycleActions(this));
         SnapshotStore store = options.SnapshotListener == null ? null : new SnapshotStore(options.SnapshotDirectory);
         _snapshots = new SnapshotTaker(options.SnapshotListener, store, KeepAlive);
-        _session = new Session(options.ClientId, options.PendingCapacity, options.TapStallTimeoutMs,
+        _session = new Session(options.ClientId, options.PendingCapacity, options.QueueStallTimeoutMs,
                                options.RecoveryStallTimeoutMs, new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _lifecycle.GatewaySourceId);
         if (store != null)
@@ -129,7 +129,7 @@ public sealed class Gateway : IDisposable
         }
     }
 
-    /// <summary>Opens the cluster session and starts following this node's tap; the gate stays shut until
+    /// <summary>Opens the cluster session and starts following this node's queue; the gate stays shut until
     /// designated.</summary>
     public void Start(Aeron aeron)
     {
@@ -146,7 +146,7 @@ public sealed class Gateway : IDisposable
         }
     }
 
-    /// <summary>One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle,
+    /// <summary>One duty-cycle iteration: the cluster session and the queue, then whatever the connection lifecycle,
     /// the election and a snapshot round still owe. Nothing once fenced, so a designation dispatched in the cycle that
     /// fenced opens no gate.</summary>
     /// <returns>units of work done, for the caller's idle strategy</returns>
@@ -282,7 +282,7 @@ public sealed class Gateway : IDisposable
 
     public long LastGlobalSeqNo => _session.LastGlobalSeqNo;
 
-    /// <summary>Closes the cluster session and the tap. The Aeron client is the caller's and is left open.</summary>
+    /// <summary>Closes the cluster session and the queue. The Aeron client is the caller's and is left open.</summary>
     public void Dispose()
     {
         _session.Dispose();
@@ -437,7 +437,7 @@ public sealed class Gateway : IDisposable
         }
     }
 
-    // What comes off the tap, split into what the election reads and what the consumer does.
+    // What comes off the queue, split into what the election reads and what the consumer does.
     private sealed class SessionDispatch : Session.IDispatch
     {
         private readonly Gateway _gateway;
@@ -556,7 +556,7 @@ public sealed class Gateway : IDisposable
         }
 
         // Not once this activation's GatewayStarted went out: closing the session it bound promotes the sibling, and
-        // no frame on the tap says whether that promotion is still to come, so a replacement could act on a stale
+        // no frame on the queue says whether that promotion is still to come, so a replacement could act on a stale
         // view. One designated after its session was lost bound nothing, and announces on the new one.
         public bool MayReconnect()
         {

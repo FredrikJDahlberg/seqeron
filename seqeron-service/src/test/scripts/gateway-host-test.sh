@@ -3,9 +3,9 @@
 # read through.
 #
 # A three-node cluster, plus a gateway host: node 3, its own Aeron directory and archive, running
-# ReplayerServer with replayer.archiveEndpoints. Its relay reads the leader's tap recording over UDP and
-# republishes it onto the host's own tap. A ClusterProbe confirm producer on node 3 submits over UDP ingress
-# and checks its own frames on that tap; mid-stream the leader is killed, which is both a leader failover
+# ReplayerServer with replayer.archiveEndpoints. Its relay reads the leader's queue recording over UDP and
+# republishes it onto the host's own queue. A ClusterProbe confirm producer on node 3 submits over UDP ingress
+# and checks its own frames on that queue; mid-stream the leader is killed, which is both a leader failover
 # and the relay's source going away. The gateway host is then restarted, which relays the log again from
 # globalSeqNo 1 into a second local recording, and a fresh ClusterProbe follow on node 3 cold-starts through
 # the host's Replayer from that recording alone.
@@ -91,7 +91,7 @@ java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$NODE" -Dreplayer.baseDir="$BASE_DIR
      org.limitless.seqeron.replayer.server.ReplayerServer > "$RESTART_LOG" 2>&1 &
 HOST_PID=$!
 wait_for_log "$RESTART_LOG" "ready —" 30 || echo "restarted gateway host not serving"
-echo "gateway host restarted: $(grep -o 'tap recording [0-9]* live' "$RESTART_LOG")"
+echo "gateway host restarted: $(grep -o 'queue recording [0-9]* live' "$RESTART_LOG")"
 
 FRESH_LOG="$LOG_DIR/fresh-follower.log"
 java "${JAVA_OPTS[@]}" -Dprobe.memberId="$NODE" -Dprobe.clientId=9 -cp "$JAR" \
@@ -105,7 +105,7 @@ echo "--- relay ---"
 grep -E "following member archive|left member archive|FATAL" "$HOST_LOG" || echo "(nothing)"
 echo "producer on node $NODE       : $(grep -h 'confirm:' "$LOG_DIR/confirm.log" | tail -1)"
 echo "relay moved to another member : $SWITCHED"
-echo "restarted host's recording    : $(grep -o 'tap recording [0-9]* live' "$RESTART_LOG")"
+echo "restarted host's recording    : $(grep -o 'queue recording [0-9]* live' "$RESTART_LOG")"
 echo "fresh follower caught up      : $CAUGHT"
 
 kill "$FRESH_PID" "$HOST_PID" "${SEQ_PIDS[@]}" 2>/dev/null; wait 2>/dev/null

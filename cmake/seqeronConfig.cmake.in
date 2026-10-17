@@ -25,7 +25,7 @@ set_property(TARGET seqeron::seqeron_core PROPERTY
 
 # The four Aeron targets the headers need: Aeron.h and the C client behind it (aeronc.h), then
 # client/archive/AeronArchive.h and the C archive client behind that, which ClusterStreamClient.hpp
-# uses to read the tap's recording back.
+# uses to read the queue's recording back.
 set_property(TARGET seqeron::seqeron_core APPEND PROPERTY INTERFACE_LINK_LIBRARIES
     aeron::aeron_client_wrapper
     aeron::aeron

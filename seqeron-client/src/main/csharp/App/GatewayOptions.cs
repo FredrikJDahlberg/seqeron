@@ -25,7 +25,7 @@ public sealed class GatewayOptions
     /// <summary>This replica's client id, its counters' label; unique among the co-located apps on its node.</summary>
     public int ClientId { get; init; }
 
-    /// <summary>The node whose tap this instance follows.</summary>
+    /// <summary>The node whose queue this instance follows.</summary>
     public int MemberId { get; init; }
 
     /// <summary>This client's own egress endpoint; two media drivers on one host cannot both bind a port.</summary>
@@ -38,7 +38,7 @@ public sealed class GatewayOptions
 
     public int PendingCapacity { get; init; } = Gateway.DefaultPendingCapacity;
 
-    public long TapStallTimeoutMs { get; init; } = Gateway.DefaultTapStallTimeoutMs;
+    public long QueueStallTimeoutMs { get; init; } = Gateway.DefaultQueueStallTimeoutMs;
 
     public long RecoveryStallTimeoutMs { get; init; } = Gateway.DefaultRecoveryStallTimeoutMs;
 }

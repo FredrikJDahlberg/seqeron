@@ -12,7 +12,7 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// <summary>
 /// <see cref="ReplayerRecovery"/> against a MODEL of the counterparty it talks to, rather than against scripted
 /// stimuli: <see cref="ReplayerRecoveryTest"/> names one situation per case and asserts the decision taken in it,
-/// but it can only reach the interleavings someone thought to write. Here the node's archive, its tap and its
+/// but it can only reach the interleavings someone thought to write. Here the node's archive, its queue and its
 /// Replayer are simulated, a seeded generator drives faults through them, and the two properties recovery exists to
 /// provide are asserted over whatever comes out.
 /// <para><b>Safety</b>: every dispatched frame is the next globalSeqNo, always, checked on every dispatch so a
@@ -91,7 +91,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
     }
 
     /// <summary>
-    /// One seeded run: the node's archive, its tap and its Replayer, driving one <see cref="ReplayerRecovery"/>. It
+    /// One seeded run: the node's archive, its queue and its Replayer, driving one <see cref="ReplayerRecovery"/>. It
     /// implements the actions itself: the client's every outbound act is a request arriving at this Replayer, so
     /// recording them and serving them are the same object.
     /// </summary>
@@ -124,8 +124,8 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         private long _replayCursor;
         private long _replayEndSeqNo = -1;
 
-        // Last globalSeqNo the tap actually delivered: what a redelivery re-offers.
-        private long _lastTapped;
+        // Last globalSeqNo the queue actually delivered: what a redelivery re-offers.
+        private long _lastLive;
 
         private long _clockMs = ClockMs;
         private bool _chaos = true;
@@ -147,7 +147,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         public void Execute()
         {
             // History before the client starts. A cold start over an EMPTY archive that then drops the very first
-            // tap frame is the one designed abort (the first frame observed must be globalSeqNo 1) and not a
+            // queue frame is the one designed abort (the first frame observed must be globalSeqNo 1) and not a
             // recovery failure, so the model does not construct it.
             if (_restoring)
             {
@@ -171,12 +171,12 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 ChaosStep();
             }
 
-            // Quiescence: faults off, but the tap keeps running. A hole the chaos phase left open is only ever
-            // discovered by the NEXT tap frame, so convergence has to be given one.
+            // Quiescence: faults off, but the queue keeps running. A hole the chaos phase left open is only ever
+            // discovered by the NEXT queue frame, so convergence has to be given one.
             _chaos = false;
             for (int i = 0; i < 3; ++i)
             {
-                DeliverTap(Publish());
+                DeliverQueue(Publish());
             }
             for (int step = 0; step < QuiesceSteps && !Converged(); ++step)
             {
@@ -263,10 +263,10 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 case 2:
                 case 3:
                     long globalSeqNo = Publish();
-                    // A tap drop is the fault the whole resume path exists for, so it is the common one.
+                    // A queue drop is the fault the whole resume path exists for, so it is the common one.
                     if (!Chance(20))
                     {
-                        DeliverTap(globalSeqNo);
+                        DeliverQueue(globalSeqNo);
                     }
                     break;
                 case 4:
@@ -302,26 +302,26 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                     _client.DoTimers(false);
                     break;
                 default:
-                    // The same tap frame offered twice. Both de-dupes have to hold: the contiguity one when it sits
+                    // The same queue frame offered twice. Both de-dupes have to hold: the contiguity one when it sits
                     // at or below the baseline, and the retained FIFO's when it is ahead of a hole.
-                    if (_lastTapped > 0)
+                    if (_lastLive > 0)
                     {
-                        Deliver(_lastTapped, false);
+                        Deliver(_lastLive, false);
                     }
                     break;
             }
         }
 
-        // ── the tap ────────────────────────────────────────────────────────────────────────────────────
+        // ── the queue ────────────────────────────────────────────────────────────────────────────────────
 
         private long Publish()
         {
             return ++_tip;
         }
 
-        private void DeliverTap(long globalSeqNo)
+        private void DeliverQueue(long globalSeqNo)
         {
-            _lastTapped = globalSeqNo;
+            _lastLive = globalSeqNo;
             Deliver(globalSeqNo, false);
         }
 
@@ -366,7 +366,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             ServeReplay(requestId, fromPosition / Stride + 1, _tip);
         }
 
-        // Bound at the tip the recording holds NOW: frames published later are the tap's problem, not this
+        // Bound at the tip the recording holds NOW: frames published later are the queue's problem, not this
         // replay's, which is exactly how a bounded replay of an active recording behaves.
         private void ServeReplay(long requestId, long fromSeqNo, long toSeqNo)
         {

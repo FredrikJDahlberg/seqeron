@@ -12,8 +12,8 @@ hosts that run applications but no member.
 
 | process | runs | does |
 | --- | --- | --- |
-| `SequencerServer` | once per member | the member: Aeron Cluster's consensus module, the sequencer, an embedded media driver, the archive that records the tap, and the Replayer |
-| `ReplayerServer` | once per gateway host | the Replayer alone, with its own media driver and archive, relaying a member's tap onto the host's own |
+| `SequencerServer` | once per member | the member: Aeron Cluster's consensus module, the sequencer, an embedded media driver, the archive that records the queue, and the Replayer |
+| `ReplayerServer` | once per gateway host | the Replayer alone, with its own media driver and archive, relaying a member's queue onto the host's own |
 | an application | beside a member or on a gateway host | the client tier, attached to that host's media driver |
 | `clusterctl` | on demand, on a member | starts and stops the cluster, designates gateways, loads the topology, requests snapshot rounds |
 | `MetricsExporter` | once per member, optionally | serves the member's counters to Prometheus ([`ops.md`](ops.md)) |
@@ -22,13 +22,13 @@ Inside the member, `Sequencer` is the replicated state machine: it stamps each i
 next `globalSeqNo` and the Raft consensus timestamp, and synthesizes the frames the cluster owns
 (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`, `SnapshotStarted`). It has no Aeron dependency
 and is unit-tested directly. `SequencerService` is its Aeron adapter and holds no replicated state of its
-own. Every member publishes every sequenced frame on a node-local tap (`aeron:ipc`, stream 205), which its
+own. Every member publishes every sequenced frame on a node-local queue (`aeron:ipc`, stream 205), which its
 archive records.
 
 The Replayer serves that recording to the clients on its host, for a cold start, a gap or the check of a
 snapshot's cut, and is the only component that reads the archive. Its decisions are pure classes
-(`Replayer`, `ReplaySlotAllocator`); `AeronReplayer` is the only part that touches Aeron. On a gateway host the relay (`TapRelay`, `AeronTapRelay`) copies a member's
-tap over UDP and moves to the next member when that one is lost
+(`Replayer`, `ReplaySlotAllocator`); `AeronReplayer` is the only part that touches Aeron. On a gateway host the relay (`QueueRelay`, `AeronQueueRelay`) copies a member's
+queue over UDP and moves to the next member when that one is lost
 ([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)).
 
 The client tier runs in the application's own process: Java, the header-only C++ library, or the C#
@@ -37,8 +37,8 @@ package ([`client-api.md`](client-api.md)). There is no C++ or C# server; the cl
 Three more processes serve the end-to-end harnesses ([`building.md`](building.md)):
 
 - **`ClusterProbe`** (in the service jar) drives a cluster without an application: `submit` floods
-  `ProbeMarker` payloads at ingress, `ping` round-trips one through consensus and back off the tap, and
-  `follow` replays history then follows the tap live.
+  `ProbeMarker` payloads at ingress, `ping` round-trips one through consensus and back off the queue, and
+  `follow` replays history then follows the queue live.
 - **`TestGateway`** and **`TestApplication`** (in `seqeron-service/src/test/java`, and so in no jar) are a
   gateway pair and a co-located application that speak no application protocol but hold the same fences
   and snapshot logic as real ones, so the harnesses exercise them under faults.
@@ -66,7 +66,7 @@ a developer wants:
 ```bash
 ./seqeron-service/src/main/scripts/start-cluster.sh
 # [cluster.sh] SequencerServer is running
-# [ReplayerService/0] ready — tap recording 0 live and verified from globalSeqNo 1; serving replay
+# [ReplayerService/0] ready — queue recording 0 live and verified from globalSeqNo 1; serving replay
 # [ClusterProbe/0] Caught up — following live
 ```
 
@@ -122,7 +122,7 @@ files, nowhere else.
   belongs to the process that binds it, and this repository names none of them. [`ops.md`](ops.md),
   "Ports", lists every port seqeron binds.
 
-The sequenced stream itself has no port: the tap is `aeron:ipc` on each member's own driver.
+The sequenced stream itself has no port: the queue is `aeron:ipc` on each member's own driver.
 
 ## System properties
 
@@ -156,7 +156,7 @@ restart. A member whose driver closed, as it does on an orderly fatal exit, rest
 restarts once its driver's heartbeat is older than `aeron.driver.timeout` (10 s), the wait its archive and cluster
 mark files already impose.
 
-A leader failover is not a break in the tap. The tap publication is created once and never re-created on
+A leader failover is not a break in the queue. The queue publication is created once and never re-created on
 a leadership change, since `aeron:ipc` has no port to collide on, so a member's recording is one
 continuous run across every leader tenure. [`fault-tolerance.md`](fault-tolerance.md) covers each failure
 and its recovery.
@@ -175,7 +175,7 @@ Prometheus and Grafana provisioning). `./gradlew operatorDistZip` archives it as
 | script | purpose |
 |--------|---------|
 | `start-cluster.sh` | start a single-member cluster and a `ClusterProbe follow` consumer in the background; Ctrl-C stops both. `SEQERON_NO_CONSUMERS=1` leaves out the consumer, for a caller that runs its own |
-| `start-gateway-host.sh` | make a host that runs no member able to run clients: `ReplayerServer` in gateway-host mode, relaying a member's tap onto the host's own. `SEQERON_NODE_ID` (3), `SEQERON_ARCHIVE_ENDPOINTS` (the three localhost members), `SEQERON_HOST` (`localhost`) |
+| `start-gateway-host.sh` | make a host that runs no member able to run clients: `ReplayerServer` in gateway-host mode, relaying a member's queue onto the host's own. `SEQERON_NODE_ID` (3), `SEQERON_ARCHIVE_ENDPOINTS` (the three localhost members), `SEQERON_HOST` (`localhost`) |
 | `stop-cluster.sh` | stop everything the start scripts launched, and any `SEQERON_EXTRA_PROCESSES="label\|pattern;…"` a caller adds |
 | `clusterctl.sh <command>` | the cluster's life cycle — see [Operating it](#operating-it) |
 | `sbe-log-printer.sh <archive-dir>` | print a recording as JSON ([`log-printer.md`](log-printer.md)) |

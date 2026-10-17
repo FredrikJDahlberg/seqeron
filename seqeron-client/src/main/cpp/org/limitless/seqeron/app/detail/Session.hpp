@@ -10,8 +10,8 @@
 #include "org/limitless/seqeron/app/ClusterError.hpp"
 #include "org/limitless/seqeron/app/Defaults.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
+#include "org/limitless/seqeron/app/detail/QueueStallFence.hpp"
 #include "org/limitless/seqeron/app/detail/RecoveryStallFence.hpp"
-#include "org/limitless/seqeron/app/detail/TapStallFence.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/replayer/client/ReplayerStreamReceiver.hpp"
@@ -22,7 +22,7 @@
 namespace org::limitless::seqeron::app::detail {
 
 /**
- * What every seqeron client does the same way: the cluster session it submits on, the co-located tap it
+ * What every seqeron client does the same way: the cluster session it submits on, the co-located queue it
  * follows, confirmed ingress across a failover, and the fences that say when it may no longer act — wired
  * together into one doWork() whose ordering is not the caller's to get right.
  *
@@ -43,14 +43,14 @@ template<typename Dispatch>
 class Session
 {
   public:
-    Session(const std::int32_t clientId, const std::size_t pendingCapacity, const std::int64_t tapStallTimeoutMs,
+    Session(const std::int32_t clientId, const std::size_t pendingCapacity, const std::int64_t queueStallTimeoutMs,
             const std::int64_t recoveryStallTimeoutMs, Dispatch& dispatch) :
       m_dispatch{ dispatch },
       m_pending{ pendingCapacity },
       m_recoveryStall{ recoveryStallTimeoutMs },
-      m_tapStall{ tapStallTimeoutMs },
+      m_queueStall{ queueStallTimeoutMs },
       m_recoveryStallTimeoutMs{ recoveryStallTimeoutMs },
-      m_tapStallTimeoutMs{ tapStallTimeoutMs },
+      m_queueStallTimeoutMs{ queueStallTimeoutMs },
       m_receiver{ clientId,
                   [this](const protocol::SequencedEvent& event) { onSequenced(event); },
                   {},
@@ -66,7 +66,7 @@ class Session
     Session& operator=(const Session&) = delete;
 
     /**
-     * Restores the newest snapshot in a store before following the tap; call before starting.
+     * Restores the newest snapshot in a store before following the queue; call before starting.
      *
      * @param store   this instance's own snapshots; must outlive this object
      * @param handler takes the snapshot's records; must outlive this object
@@ -76,7 +76,7 @@ class Session
         m_receiver.restoreFrom(store, handler);
     }
 
-    // Opens the cluster session over UDP and starts following this node's tap.
+    // Opens the cluster session over UDP and starts following this node's queue.
     void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId, const std::string& egressChannel,
                const std::string& ingressEndpoints)
     {
@@ -94,7 +94,7 @@ class Session
         m_receiver.start(std::move(aeron), memberId);
     }
 
-    // One duty cycle, in the order the parts require: the tap first, so a fence is judged on what this cycle
+    // One duty cycle, in the order the parts require: the queue first, so a fence is judged on what this cycle
     // saw; the resend last, so nothing new goes out ahead of it. Returns units of work done.
     int doWork()
     {
@@ -112,7 +112,7 @@ class Session
             m_receiver.close();
             return work;
         }
-        // Nothing is addressed to a producer on egress: everything it publishes comes back on the tap. Unlike
+        // Nothing is addressed to a producer on egress: everything it publishes comes back on the queue. Unlike
         // the Java twin this counts no work, since the C++ pollEgress reports no fragment count.
         m_sender.pollEgress([](const std::uint8_t*, std::int32_t) {});
         m_sender.keepAlive();
@@ -218,7 +218,7 @@ class Session
     }
 
     /**
-     * Forgets every frame not yet seen on the tap, for a façade that knows none of them will be sequenced.
+     * Forgets every frame not yet seen on the queue, for a façade that knows none of them will be sequenced.
      *
      * @param why what the log line says
      */
@@ -271,7 +271,7 @@ class Session
             return;
         }
         m_recoveryStall.onCaughtUp();
-        m_tapStall.onCaughtUp(monotonicMs());
+        m_queueStall.onCaughtUp(monotonicMs());
         m_dispatch.onCaughtUp(m_receiver.lastGlobalSeqNo());
     }
 
@@ -314,10 +314,10 @@ class Session
                 return;
             }
         }
-        else if (m_tapStall.isStalled(nowMs))
+        else if (m_queueStall.isStalled(nowMs))
         {
-            stalled(ClusterError::TapStalled, util::eventCode::TapStalled,
-                    "no ClusterHeartbeat for >" + std::to_string(m_tapStallTimeoutMs) + "ms");
+            stalled(ClusterError::QueueStalled, util::eventCode::QueueStalled,
+                    "no ClusterHeartbeat for >" + std::to_string(m_queueStallTimeoutMs) + "ms");
             return;
         }
         if (m_stallAlarm)
@@ -327,7 +327,7 @@ class Session
         }
     }
 
-    // Fences an instance that acts; one that does not raises an alarm once and keeps following the tap.
+    // Fences an instance that acts; one that does not raises an alarm once and keeps following the queue.
     void stalled(const ClusterError stall, const util::EventCode& code, const std::string& detail)
     {
         if (m_dispatch.isActing())
@@ -344,7 +344,7 @@ class Session
     }
 
     // Opens a session in place of the lost one, an attempt at most once a second and each advanced a step per
-    // cycle, until one opens or the tap could have gone silent for as long: past that the cluster is not coming
+    // cycle, until one opens or the queue could have gone silent for as long: past that the cluster is not coming
     // back for this process, and the session's loss is a fence. An attempt under way then is let finish, since one
     // whose request an election swallowed spends its whole timeout.
     void replaceSession(const char* why)
@@ -355,10 +355,10 @@ class Session
             m_sessionLostSinceMs = nowMs;
             m_nextReconnectMs = nowMs;
         }
-        if (nowMs - m_sessionLostSinceMs > m_tapStallTimeoutMs && !m_sender.isReconnecting())
+        if (nowMs - m_sessionLostSinceMs > m_queueStallTimeoutMs && !m_sender.isReconnecting())
         {
-            fence(ClusterError::ClusterSessionLost,
-                  std::string{ why } + "; no session replaced it within " + std::to_string(m_tapStallTimeoutMs) + "ms");
+            fence(ClusterError::ClusterSessionLost, std::string{ why } + "; no session replaced it within " +
+                                                        std::to_string(m_queueStallTimeoutMs) + "ms");
             return;
         }
         if (!m_sender.isReconnecting())
@@ -392,7 +392,7 @@ class Session
         {
             if (event.systemEventType == protocol::CLUSTER_HEARTBEAT)
             {
-                m_tapStall.onClusterHeartbeat(monotonicMs());
+                m_queueStall.onClusterHeartbeat(monotonicMs());
                 m_dispatch.onClusterHeartbeat(event.clusterTimestampNs, event.receiveTimeNs);
             }
             m_dispatch.onSystem(event);
@@ -405,9 +405,9 @@ class Session
     sequencer::client::PendingSends m_pending;
     sequencer::client::ClusterStreamSender m_sender;
     RecoveryStallFence m_recoveryStall;
-    TapStallFence m_tapStall;
+    QueueStallFence m_queueStall;
     std::int64_t m_recoveryStallTimeoutMs;
-    std::int64_t m_tapStallTimeoutMs;
+    std::int64_t m_queueStallTimeoutMs;
     replayer::client::ReplayerStreamReceiver m_receiver;
 
     bool m_caughtUp = false;

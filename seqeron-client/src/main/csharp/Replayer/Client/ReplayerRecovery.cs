@@ -14,11 +14,11 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// The state machine of <c>ReplayerStreamReceiver</c>. A cold start walks the node's active recording from its
 /// start, which holds the whole log; catch-up is detected by position (<c>Replaying.catchUpPosition</c>); a gap by
 /// globalSeqNo, repaired by resuming the active recording at the last dispatched frame.
-/// <para>The replay-to-live seam is closed by the tap itself: the untethered tap is polled every duty cycle, so
+/// <para>The replay-to-live seam is closed by the queue itself: the untethered queue is polled every duty cycle, so
 /// frames beyond the current hole are retained and drained once contiguous. While <see cref="IsRecovering"/> a
-/// non-contiguous tap frame is expected rather than a new gap, and it may not set the globalSeqNo baseline before
+/// non-contiguous queue frame is expected rather than a new gap, and it may not set the globalSeqNo baseline before
 /// the walk has: a cold start would otherwise adopt a mid-stream baseline.</para>
-/// <para><see cref="IsCaughtUp"/> is cleared on a live-tap gap and re-established once contiguous: consumers gate
+/// <para><see cref="IsCaughtUp"/> is cleared on a live-queue gap and re-established once contiguous: consumers gate
 /// real decisions on it. Single-threaded: every method runs on the one duty-cycle thread.</para>
 /// <para>Given a snapshot store (<see cref="RestoreFrom"/>), a cold start first restores the newest snapshot it holds
 /// (doc/snapshot.md §7): it replays the recording from the snapshot's cut, and if the frame there is the round's
@@ -94,7 +94,7 @@ internal sealed class ReplayerRecovery
     private bool _caughtUp;
     private int _currentLeaderMemberId = -1;
 
-    // Live tap frames from beyond the current hole, retained in arrival order.
+    // Live queue frames from beyond the current hole, retained in arrival order.
     private readonly Queue<RetainBlock> _retained = new Queue<RetainBlock>();
     private readonly Stack<RetainBlock> _retainPool = new Stack<RetainBlock>();
     private RetainBlock _retainTail;
@@ -181,11 +181,11 @@ internal sealed class ReplayerRecovery
     /// <param name="buffer">holding the frame</param>
     /// <param name="offset">of its first byte</param>
     /// <param name="length">of the frame</param>
-    /// <param name="framePosition">where this frame starts in the recording: the tap, a replay image and the
+    /// <param name="framePosition">where this frame starts in the recording: the queue, a replay image and the
     /// recording itself all count positions in the same space</param>
-    /// <param name="receiveNs">when the frame arrived, so a consumer's delivery-latency stats measure the tap rather
+    /// <param name="receiveNs">when the frame arrived, so a consumer's delivery-latency stats measure the queue rather
     /// than the drain of the retained FIFO</param>
-    /// <param name="fromReplay">whether the frame arrived on a replay image rather than the live tap</param>
+    /// <param name="fromReplay">whether the frame arrived on a replay image rather than the live queue</param>
     /// <exception cref="InvalidOperationException">if the first frame observed is not globalSeqNo 1</exception>
     public void OnFrame(IDirectBuffer buffer, int offset, int length, long framePosition, long receiveNs,
                         bool fromReplay)
@@ -224,10 +224,11 @@ internal sealed class ReplayerRecovery
             {
                 if (!fromReplay && !IsRecovering)
                 {
-                    Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                               Logger.CoreEventCode.TapGap, _actions.MemberId,
-                               "tap gap: expected globalSeqNo={0} got {1} — resuming the recording at globalSeqNo={2}",
-                               _lastGlobalSeqNo + 1, globalSeqNo, _lastGlobalSeqNo);
+                    Logger.Log(
+                        Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                        Logger.CoreEventCode.QueueGap, _actions.MemberId,
+                        "queue gap: expected globalSeqNo={0} got {1} — resuming the recording at globalSeqNo={2}",
+                        _lastGlobalSeqNo + 1, globalSeqNo, _lastGlobalSeqNo);
                     // No longer following live: consumers gate real decisions on IsCaughtUp, and it must not hold
                     // again until the stream goes contiguous.
                     _caughtUp = false;
@@ -241,7 +242,7 @@ internal sealed class ReplayerRecovery
                 {
                     _replayGapLogged = true;
                     Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                               Logger.CoreEventCode.TapGap, _actions.MemberId,
+                               Logger.CoreEventCode.QueueGap, _actions.MemberId,
                                "gap in REPLAYED history: expected globalSeqNo={0} got {1} — this node's recording " +
                                    "does not cover the hole; recovery cannot converge until it does",
                                _lastGlobalSeqNo + 1, globalSeqNo);
@@ -352,7 +353,7 @@ internal sealed class ReplayerRecovery
             OnReplayReachedBound();
             return;
         }
-        Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.TapGap,
+        Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.QueueGap,
                    _actions.MemberId,
                    "replay image closed at position {0}, short of catchUpPosition {1} — the replay was stopped " +
                        "under us; re-requesting it",
@@ -414,7 +415,7 @@ internal sealed class ReplayerRecovery
         return true;
     }
 
-    /// <summary>Whether this client is following the live tail; revoked on a tap gap, re-established at the
+    /// <summary>Whether this client is following the live tail; revoked on a queue gap, re-established at the
     /// seam.</summary>
     public bool IsCaughtUp => _caughtUp;
 
@@ -430,8 +431,8 @@ internal sealed class ReplayerRecovery
     public bool IsAwaitingReplay => _awaitingReplay;
 
     /// <summary>
-    /// Mid-replay (cold-start walk or gap resume) or awaiting the Replayer's answer: a non-contiguous live-tap frame is
-    /// expected while this holds (the tap runs ahead of the replay), so <see cref="OnFrame"/> drops it without
+    /// Mid-replay (cold-start walk or gap resume) or awaiting the Replayer's answer: a non-contiguous live-queue frame
+    /// is expected while this holds (the queue runs ahead of the replay), so <see cref="OnFrame"/> drops it without
     /// treating it as a new gap.
     /// </summary>
     public bool IsRecovering => _replaySessionId >= 0 || _awaitingReplay || _restoring;
@@ -667,7 +668,7 @@ internal sealed class ReplayerRecovery
                      $"globalSeqNo={_lastGlobalSeqNo}");
                 return;
             }
-            _replaySessionId = -1; // the recording holds nothing yet: follow the live tap
+            _replaySessionId = -1; // the recording holds nothing yet: follow the live queue
             if (ReachedTip())
             {
                 NotifyCaughtUp();
@@ -688,7 +689,7 @@ internal sealed class ReplayerRecovery
         _awaitingReplay = false;
         _replaySessionId = -1;
         _actions.CloseReplay();
-        Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.TapGap, _actions.MemberId,
+        Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.QueueGap, _actions.MemberId,
                      "FATAL: {0} — this node's recording does not match the positions this client holds", reason);
     }
 
@@ -696,7 +697,7 @@ internal sealed class ReplayerRecovery
     /// <see cref="DoTimers"/>.</summary>
     private void OnReplayStalled()
     {
-        Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.TapGap,
+        Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.QueueGap,
                    _actions.MemberId,
                    "replay session {0} made no progress for {1}ms at position {2} of catchUpPosition {3} — " +
                        "re-requesting it",
@@ -752,7 +753,7 @@ internal sealed class ReplayerRecovery
     }
 
     /// <summary>
-    /// Keeps a live tap frame from beyond the current hole; one not kept is gone. Bounded and lossy past the bound
+    /// Keeps a live queue frame from beyond the current hole; one not kept is gone. Bounded and lossy past the bound
     /// (overflow falls back to a resume). A plain FIFO: one image delivers globalSeqNo in order, so only an exact
     /// redelivery needs checking.
     /// </summary>
@@ -768,7 +769,7 @@ internal sealed class ReplayerRecovery
             {
                 _retainOverflowLogged = true;
                 Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                           Logger.CoreEventCode.TapGap, _actions.MemberId,
+                           Logger.CoreEventCode.QueueGap, _actions.MemberId,
                            "retained-frame buffer full at globalSeqNo={0} ({1} frames, {2} bytes) — dropping " +
                                "ahead-of-hole frames; recovery resumes at the last dispatched frame",
                            globalSeqNo, _retainFrameCount, _retainBytes);
@@ -777,7 +778,7 @@ internal sealed class ReplayerRecovery
         }
         if (_retainFrameCount > 0 && globalSeqNo <= _retainTailGlobalSeqNo)
         {
-            return; // already retained (the tap redelivered it): keep the first copy
+            return; // already retained (the queue redelivered it): keep the first copy
         }
         if (_retained.Count == 0 || _retainTail.Used + recordSize > RetainBlock.Size)
         {
@@ -840,7 +841,7 @@ internal sealed class ReplayerRecovery
     /// <summary>
     /// The replay side says we are at the tip. Whether we are is the retained FIFO's call: a retained frame may sit
     /// behind a hole the replay never reached, or an overflow dropped frames. Either way this resumes at the last
-    /// dispatched frame now rather than waiting for a later tap frame to rediscover the hole.
+    /// dispatched frame now rather than waiting for a later queue frame to rediscover the hole.
     /// </summary>
     /// <returns>true only once nothing is left waiting and no overflow is latched</returns>
     private bool ReachedTip()

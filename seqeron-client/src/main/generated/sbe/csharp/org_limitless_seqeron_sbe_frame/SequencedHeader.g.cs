@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// Application frame header on the tap: the ingress header, plus globalSeqNo and timestamp
+    /// Application frame header on the queue: the ingress header, plus globalSeqNo and timestamp
     /// </summary>
     public sealed partial class SequencedHeader
     {

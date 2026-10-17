@@ -1,10 +1,10 @@
-// Unit tests for the tap-silence verdict a producer applies once caught up. No Aeron runtime: the catch-up
+// Unit tests for the queue-silence verdict a producer applies once caught up. No Aeron runtime: the catch-up
 // transition and the ClusterHeartbeat arrivals are exactly the two signals app::Session feeds in off
-// ReplayerStreamReceiver. Case for case with TapStallFenceTest.java.
+// ReplayerStreamReceiver. Case for case with QueueStallFenceTest.java.
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/app/detail/TapStallFence.hpp"
+#include "org/limitless/seqeron/app/detail/QueueStallFence.hpp"
 
 namespace org::limitless::seqeron::app::detail {
 namespace {
@@ -18,9 +18,9 @@ constexpr std::int64_t seconds(const std::int64_t s)
     return T0 + s * 1000;
 }
 
-TEST(TapStallFence, ReplayNeverTrips)
+TEST(QueueStallFence, ReplayNeverTrips)
 {
-    TapStallFence fence{ DEADLINE_MS };
+    QueueStallFence fence{ DEADLINE_MS };
 
     for (std::int64_t s = 0; s < 3600; s += 30)
     {
@@ -28,9 +28,9 @@ TEST(TapStallFence, ReplayNeverTrips)
     }
 }
 
-TEST(TapStallFence, HeartbeatsHoldItOpen)
+TEST(QueueStallFence, HeartbeatsHoldItOpen)
 {
-    TapStallFence fence{ DEADLINE_MS };
+    QueueStallFence fence{ DEADLINE_MS };
     fence.onCaughtUp(seconds(0));
 
     for (std::int64_t s = 1; s < 600; s++)
@@ -40,9 +40,9 @@ TEST(TapStallFence, HeartbeatsHoldItOpen)
     }
 }
 
-TEST(TapStallFence, SilenceTrips)
+TEST(QueueStallFence, SilenceTrips)
 {
-    TapStallFence fence{ DEADLINE_MS };
+    QueueStallFence fence{ DEADLINE_MS };
     fence.onCaughtUp(seconds(0));
     fence.onClusterHeartbeat(seconds(5));
 
@@ -50,9 +50,9 @@ TEST(TapStallFence, SilenceTrips)
     EXPECT_TRUE(fence.isStalled(seconds(25))) << "the deadline measured from the last heartbeat";
 }
 
-TEST(TapStallFence, CatchUpReAnchors)
+TEST(QueueStallFence, CatchUpReAnchors)
 {
-    TapStallFence fence{ DEADLINE_MS };
+    QueueStallFence fence{ DEADLINE_MS };
     fence.onCaughtUp(seconds(0));
 
     EXPECT_TRUE(fence.isStalled(seconds(30))) << "silent through the deadline";

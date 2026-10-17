@@ -10,13 +10,13 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The gateway-host relay's decisions: what it republishes, where a replay of a member's recording starts,
- * and when it leaves a member or stops. {@link TapRelay} holds no Aeron runtime and no clock, so each case
+ * and when it leaves a member or stops. {@link QueueRelay} holds no Aeron runtime and no clock, so each case
  * drives it with the frames and times a member's replay would produce.
  *
- * <p>The property every case protects is the local tap's: each {@code globalSeqNo} exactly once, in order,
+ * <p>The property every case protects is the local queue's: each {@code globalSeqNo} exactly once, in order,
  * across any number of member changes. A duplicate or a hole there is served to every client on the host.
  */
-class TapRelayTest {
+class QueueRelayTest {
     private static final long START = 0;
 
     /** Where frame {@code n} ends in every member's recording, when the layouts agree. */
@@ -24,12 +24,12 @@ class TapRelayTest {
         return globalSeqNo * 64;
     }
 
-    private final TapRelay relay = new TapRelay(3);
+    private final QueueRelay relay = new QueueRelay(3);
 
     /** Plays frames {@code from..to} through, publishing each one the relay asks for. */
     private void publish(final long from, final long to, final long nowMs) {
         for (long n = from; n <= to; n++) {
-            assertEquals(TapRelay.Verdict.PUBLISH, relay.onFrame(n, nowMs), "frame " + n);
+            assertEquals(QueueRelay.Verdict.PUBLISH, relay.onFrame(n, nowMs), "frame " + n);
             relay.onPublished(n, end(n));
         }
     }
@@ -47,9 +47,9 @@ class TapRelayTest {
     void skipsWhatIsPublished() {
         relay.replayFrom(START, end(100), 0);
         publish(1, 5, 0);
-        assertEquals(TapRelay.Verdict.SKIP, relay.onFrame(4, 0));
-        assertEquals(TapRelay.Verdict.SKIP, relay.onFrame(5, 0));
-        assertEquals(TapRelay.Verdict.PUBLISH, relay.onFrame(6, 0));
+        assertEquals(QueueRelay.Verdict.SKIP, relay.onFrame(4, 0));
+        assertEquals(QueueRelay.Verdict.SKIP, relay.onFrame(5, 0));
+        assertEquals(QueueRelay.Verdict.PUBLISH, relay.onFrame(6, 0));
     }
 
     @Test
@@ -61,7 +61,7 @@ class TapRelayTest {
 
         assertEquals(1, relay.sourceIndex());
         assertEquals(end(10), relay.replayFrom(START, end(200), 0));
-        assertEquals(TapRelay.Verdict.PUBLISH, relay.onFrame(11, 0));
+        assertEquals(QueueRelay.Verdict.PUBLISH, relay.onFrame(11, 0));
     }
 
     @Test
@@ -71,7 +71,7 @@ class TapRelayTest {
         publish(1, 10, 0);
         relay.onSourceLost(0);
 
-        assertEquals(TapRelay.NOT_SUITABLE, relay.replayFrom(START, end(9), 0));
+        assertEquals(QueueRelay.NOT_SUITABLE, relay.replayFrom(START, end(9), 0));
     }
 
     @Test
@@ -96,12 +96,12 @@ class TapRelayTest {
         relay.onSourceLost(0);
         relay.replayFrom(START, end(200), 0);
 
-        assertEquals(TapRelay.Verdict.REPLAY_FROM_START, relay.onFrame(12, 0));
+        assertEquals(QueueRelay.Verdict.REPLAY_FROM_START, relay.onFrame(12, 0));
         assertEquals(START, relay.replayFrom(START, end(200), 0));
         for (long n = 1; n <= 10; n++) {
-            assertEquals(TapRelay.Verdict.SKIP, relay.onFrame(n, 0), "frame " + n);
+            assertEquals(QueueRelay.Verdict.SKIP, relay.onFrame(n, 0), "frame " + n);
         }
-        assertEquals(TapRelay.Verdict.PUBLISH, relay.onFrame(11, 0));
+        assertEquals(QueueRelay.Verdict.PUBLISH, relay.onFrame(11, 0));
     }
 
     @Test
@@ -112,7 +112,7 @@ class TapRelayTest {
         relay.onSourceLost(0);
         relay.replayFrom(START, end(200), 0);
 
-        assertEquals(TapRelay.Verdict.REPLAY_FROM_START, relay.onUnreadable());
+        assertEquals(QueueRelay.Verdict.REPLAY_FROM_START, relay.onUnreadable());
         assertEquals(START, relay.replayFrom(START, end(200), 0));
     }
 
@@ -122,19 +122,19 @@ class TapRelayTest {
         relay.replayFrom(START, end(100), 0);
         publish(1, 3, 0);
 
-        assertEquals(TapRelay.Verdict.DROP_SOURCE, relay.onFrame(5, 0));
+        assertEquals(QueueRelay.Verdict.DROP_SOURCE, relay.onFrame(5, 0));
     }
 
     @Test
     @DisplayName("a member that sends nothing for the source timeout is stalled; any frame keeps it alive")
     void aSilentMemberStalls() {
         relay.replayFrom(START, end(100), 1_000);
-        assertFalse(relay.isSourceStalled(1_000 + TapRelay.SOURCE_TIMEOUT_MS - 1));
-        assertTrue(relay.isSourceStalled(1_000 + TapRelay.SOURCE_TIMEOUT_MS));
+        assertFalse(relay.isSourceStalled(1_000 + QueueRelay.SOURCE_TIMEOUT_MS - 1));
+        assertTrue(relay.isSourceStalled(1_000 + QueueRelay.SOURCE_TIMEOUT_MS));
 
         publish(1, 1, 5_000);
         relay.onFrame(1, 7_000); // a skipped frame proves the member alive as well as a published one
-        assertFalse(relay.isSourceStalled(7_000 + TapRelay.SOURCE_TIMEOUT_MS - 1));
+        assertFalse(relay.isSourceStalled(7_000 + QueueRelay.SOURCE_TIMEOUT_MS - 1));
     }
 
     @Test
@@ -149,8 +149,8 @@ class TapRelayTest {
 
         relay.onSourceLost(0);
         assertEquals(0, relay.sourceIndex());
-        assertFalse(relay.mayAttempt(TapRelay.RETRY_INTERVAL_MS - 1), "every member failed in a row");
-        assertTrue(relay.mayAttempt(TapRelay.RETRY_INTERVAL_MS));
+        assertFalse(relay.mayAttempt(QueueRelay.RETRY_INTERVAL_MS - 1), "every member failed in a row");
+        assertTrue(relay.mayAttempt(QueueRelay.RETRY_INTERVAL_MS));
     }
 
     @Test
@@ -169,12 +169,12 @@ class TapRelayTest {
     @DisplayName("back-pressure is fatal only once the local recording stops advancing for the stall limit")
     void backPressureIsFatalOnlyWithoutRecordingProgress() {
         relay.replayFrom(START, end(100), 0);
-        assertEquals(TapRelay.Verdict.PUBLISH, relay.onFrame(1, 0));
+        assertEquals(QueueRelay.Verdict.PUBLISH, relay.onFrame(1, 0));
 
         assertFalse(relay.onBackPressured(0, 100));
         assertFalse(relay.onBackPressured(900, 200), "the recording advanced, so the clock restarts");
-        assertFalse(relay.onBackPressured(900 + TapRelay.RECORDING_STALL_FATAL_MS - 1, 200));
-        assertTrue(relay.onBackPressured(900 + TapRelay.RECORDING_STALL_FATAL_MS, 200));
+        assertFalse(relay.onBackPressured(900 + QueueRelay.RECORDING_STALL_FATAL_MS - 1, 200));
+        assertTrue(relay.onBackPressured(900 + QueueRelay.RECORDING_STALL_FATAL_MS, 200));
     }
 
     @Test
@@ -183,16 +183,16 @@ class TapRelayTest {
         relay.replayFrom(START, end(100), 0);
         relay.onFrame(1, 0);
         relay.onBackPressured(0, 100);
-        relay.onBackPressured(TapRelay.SOURCE_TIMEOUT_MS, 100);
-        assertFalse(relay.isSourceStalled(TapRelay.SOURCE_TIMEOUT_MS), "the local tap is what is slow");
+        relay.onBackPressured(QueueRelay.SOURCE_TIMEOUT_MS, 100);
+        assertFalse(relay.isSourceStalled(QueueRelay.SOURCE_TIMEOUT_MS), "the local queue is what is slow");
 
         relay.onPublished(1, end(1));
-        assertFalse(relay.onBackPressured(10 * TapRelay.RECORDING_STALL_FATAL_MS, 100), "a new episode");
+        assertFalse(relay.onBackPressured(10 * QueueRelay.RECORDING_STALL_FATAL_MS, 100), "a new episode");
     }
 
     @Test
     @DisplayName("a relay needs at least one member archive")
     void needsAMember() {
-        assertThrows(IllegalArgumentException.class, () -> new TapRelay(0));
+        assertThrows(IllegalArgumentException.class, () -> new QueueRelay(0));
     }
 }

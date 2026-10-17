@@ -31,7 +31,7 @@ Features
   exactly one per message with no gaps or reuse, and the Raft consensus timestamp in nanoseconds. A 1 Hz
   `ClusterHeartbeat` gives every consumer the same clock, which keeps advancing while producers are silent.
 - **Replication.** The order is decided by Raft consensus: a message is sequenced once a majority of members
-  hold it. Every member then republishes the sequenced stream onto a node-local tap that its own Aeron
+  hold it. Every member then republishes the sequenced stream onto a node-local queue that its own Aeron
   Archive records, so each member holds a complete, identical copy of history without copying it from a peer.
 - **Fault tolerance.** The cluster survives the loss of a minority of its members, and a new leader resumes at
   the next `globalSeqNo`. Producers confirm their messages on the stream and resend what a failover lost, so

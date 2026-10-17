@@ -24,7 +24,7 @@
                  description="TestGateway standby"/>
     </gateways>
 
-    <!-- No <applications>: ClusterProbe follow is a tap consumer, not a producer. No <protocols>: the
+    <!-- No <applications>: ClusterProbe follow is a queue consumer, not a producer. No <protocols>: the
          probe's payloadId 5 is private in the §6.1 sense — one publisher, one consumer, both the probe. -->
 
     <snapshots interval="2"/>

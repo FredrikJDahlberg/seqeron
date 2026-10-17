@@ -6,17 +6,17 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * The two things {@link SequencerService} does from a cluster callback that can back-pressure — put a frame
- * on the tap, and re-arm the cluster clock — under that callback's rule: never return with the work undone,
+ * on the queue, and re-arm the cluster clock — under that callback's rule: never return with the work undone,
  * and never throw (a throw skips the message). Both spin, bounded by the node terminating once the wait
  * provably will not clear; one class, so the fatal decision is latched across them.
  *
  * <p>Free of Aeron types: the transport is behind {@link Actions}. Single-threaded: the cluster-callback thread.
  */
-public final class TapPublisher {
-    /** Everything {@link TapPublisher} cannot do itself; {@link SequencerService} implements it against Aeron. */
+public final class QueuePublisher {
+    /** Everything {@link QueuePublisher} cannot do itself; {@link SequencerService} implements it against Aeron. */
     public interface Actions {
         /**
-         * Offers the frame at offset 0 of {@code buffer} onto the tap.
+         * Offers the frame at offset 0 of {@code buffer} onto the queue.
          * @return the raw Aeron offer result — negative is a failure, classified by {@link #isUnrecoverable}
          */
         long offerFrame(DirectBuffer buffer, int length);
@@ -33,20 +33,20 @@ public final class TapPublisher {
         /** Monotonic clock. Every deadline here measures elapsed real time, not cluster time. */
         long nanoTime();
 
-        /** Whether the co-located archive is still recording the tap. */
+        /** Whether the co-located archive is still recording the queue. */
         boolean recordingActive();
 
-        /** How far the archive has recorded the tap; only meaningful while {@link #recordingActive}. */
+        /** How far the archive has recorded the queue; only meaningful while {@link #recordingActive}. */
         long recordedPosition();
 
         /** Which recording that is, for the operator's log line. */
         long recordingId();
 
-        /** The {@code seqeron.sequencer.tapBackPressureAlerts} counter. */
-        void tapBackPressureAlert();
+        /** The {@code seqeron.sequencer.queueBackPressureAlerts} counter. */
+        void queueBackPressureAlert();
 
-        /** The {@code seqeron.sequencer.tapStalled} gauge. */
-        void tapStalled(boolean stalled);
+        /** The {@code seqeron.sequencer.queueStalled} gauge. */
+        void queueStalled(boolean stalled);
 
         /** Brings the node down gracefully. Must not block: it signals a shutdown and returns. */
         void signalFatal();
@@ -79,12 +79,12 @@ public final class TapPublisher {
      * terminates. An archive that is slow but still advancing is never timed out. 5x the stall gauge, on
      * the order of the cluster's 1s {@code sessionTimeoutNs}; re-tune against production storage.
      */
-    static final long TAP_STALL_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
+    static final long QUEUE_STALL_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
     /**
      * How long the consensus module may refuse the cluster-clock timer before {@link #scheduleHeartbeat}
      * gives up on this node; a second without one accepted is wedged, not busy. Matches
-     * {@link #TAP_STALL_FATAL_TIMEOUT_NS}.
+     * {@link #QUEUE_STALL_FATAL_TIMEOUT_NS}.
      */
     static final long HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
@@ -97,18 +97,18 @@ public final class TapPublisher {
 
     private boolean fatalSignalled;
 
-    public TapPublisher(final Actions actions) {
+    public QueuePublisher(final Actions actions) {
         this.actions = actions;
     }
 
     /**
-     * Publishes a frame onto the tap. Spins on back-pressure, since a dropped
+     * Publishes a frame onto the queue. Spins on back-pressure, since a dropped
      * frame is an unrecoverable gap, but terminates the node once the recording is provably not draining.
      * The only exits are a landed offer and process death.
      *
-     * <p>{@code offer}, not {@code tryClaim}: a claim saves one copy, only below the tap's MTU, of a frame the
+     * <p>{@code offer}, not {@code tryClaim}: a claim saves one copy, only below the queue's MTU, of a frame the
      * cluster has already logged, replicated and archived, and an aborted claim pads this node's recording
-     * alone, moving its positions off the other members' that {@code TapRelay} resumes at.
+     * alone, moving its positions off the other members' that {@code QueueRelay} resumes at.
      * @param buffer holding the frame from offset 0
      * @param length of the frame
      */
@@ -118,7 +118,7 @@ public final class TapPublisher {
         long result;
         while ((result = actions.offerFrame(buffer, length)) < 0) {
             if (actions.isUnrecoverable(result)) {
-                fatalTapFailure("tap publication failed: " + result, true);
+                fatalQueueFailure("queue publication failed: " + result, true);
             }
             if (++spins >= SPINS_PER_CLOCK_CHECK) {
                 spins = 0;
@@ -137,9 +137,9 @@ public final class TapPublisher {
         stallRecordedPosition = 0;
         stalled = false;
         if (wasStalled && !fatalSignalled) {
-            actions.tapStalled(false);
+            actions.queueStalled(false);
             Logger.info(Logger.CoreComponent.Sequencer, actions.memberId(),
-                        "RECOVERED: tap back-pressure cleared at globalSeqNo=%d", actions.globalSeqNo());
+                        "RECOVERED: queue back-pressure cleared at globalSeqNo=%d", actions.globalSeqNo());
         }
     }
 
@@ -172,14 +172,14 @@ public final class TapPublisher {
     }
 
     /**
-     * Liveness check on the tap recording, run on the 1 Hz clock: a recording that stops back-pressures
+     * Liveness check on the queue recording, run on the 1 Hz clock: a recording that stops back-pressures
      * nothing (the untethered app subscribers keep the publication connected), so {@link #emit}'s bound
      * would never see it.
      */
     public void checkRecordingAlive() {
         if (!fatalSignalled && !actions.recordingActive()) {
-            fatalTapFailure("the local archive stopped recording the tap (recording " + actions.recordingId() + ")",
-                            false);
+            fatalQueueFailure("the local archive stopped recording the queue (recording " + actions.recordingId() + ")",
+                              false);
         }
     }
 
@@ -198,12 +198,12 @@ public final class TapPublisher {
         if (fatalSignalled) {
             return;
         }
-        Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.TapBackpressure, actions.memberId(),
-                     "ALERT: tap back-pressure at globalSeqNo=%d", actions.globalSeqNo());
-        actions.tapBackPressureAlert();
+        Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.QueueBackpressure, actions.memberId(),
+                     "ALERT: queue back-pressure at globalSeqNo=%d", actions.globalSeqNo());
+        actions.queueBackPressureAlert();
         if (!actions.recordingActive()) {
-            fatalTapFailure("the local archive stopped recording the tap (recording " + actions.recordingId() + ")",
-                            true);
+            fatalQueueFailure("the local archive stopped recording the queue (recording " + actions.recordingId() + ")",
+                              true);
             return;
         }
         final long recordedPosition = actions.recordedPosition();
@@ -214,31 +214,31 @@ public final class TapPublisher {
             return;
         }
         final long stalledNs = nowNs - stallSinceNs;
-        if (stalledNs >= TAP_STALL_FATAL_TIMEOUT_NS) {
-            fatalTapFailure("the tap recording made no progress for " +
-                                TimeUnit.NANOSECONDS.toMillis(TAP_STALL_FATAL_TIMEOUT_NS) +
-                                "ms of continuous back-pressure",
-                            true);
+        if (stalledNs >= QUEUE_STALL_FATAL_TIMEOUT_NS) {
+            fatalQueueFailure("the queue recording made no progress for " +
+                                  TimeUnit.NANOSECONDS.toMillis(QUEUE_STALL_FATAL_TIMEOUT_NS) +
+                                  "ms of continuous back-pressure",
+                              true);
         } else if (stalledNs >= SUSTAINED_BACKPRESSURE_THRESHOLD_NS && !stalled) {
             stalled = true;
-            actions.tapStalled(true);
+            actions.queueStalled(true);
             Logger.error(
-                Logger.CoreComponent.Sequencer, Logger.CoreEventCode.TapBackpressure, actions.memberId(),
-                "STALLED: tap back-pressure sustained beyond %dms with no recording progress at globalSeqNo=%d",
+                Logger.CoreComponent.Sequencer, Logger.CoreEventCode.QueueBackpressure, actions.memberId(),
+                "STALLED: queue back-pressure sustained beyond %dms with no recording progress at globalSeqNo=%d",
                 TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), actions.globalSeqNo());
         }
     }
 
     /**
-     * Terminates the node over its tap recording, latching the stall gauge so it does not clear on the way out.
+     * Terminates the node over its queue recording, latching the stall gauge so it does not clear on the way out.
      * @param reason what failed, for the operator
      * @param inSpin whether this thread is inside a spin it cannot leave; see {@link #fatalFailure}
      */
-    private void fatalTapFailure(final String reason, final boolean inSpin) {
+    private void fatalQueueFailure(final String reason, final boolean inSpin) {
         if (!fatalSignalled) {
-            actions.tapStalled(true);
+            actions.queueStalled(true);
         }
-        fatalFailure(Logger.CoreEventCode.TapRecordingFailure,
+        fatalFailure(Logger.CoreEventCode.QueueRecordingFailure,
                      reason + ", so it can no longer record the history it is responsible for", inSpin);
     }
 

@@ -3,14 +3,14 @@
 #
 # Forces a leader failover (two leader tenures), then cold-starts a fresh ClusterProbe follower
 # co-located with the surviving new leader and verifies it catches up on full history. Since every node records
-# its own node-local tap continuously — the tap publication is never re-created on a leadership change
+# its own node-local queue continuously — the queue publication is never re-created on a leadership change
 # — the new leader's node holds ONE continuous recording spanning both tenures (pre- and post-failover),
-# so the cold-start walk catches up from that single recording. This validates that the tap recording on
+# so the cold-start walk catches up from that single recording. This validates that the queue recording on
 # a node that was a follower during tenure 1 still contains tenure-1 history after it becomes leader.
 #
 # It also proves failover loss recovery end to end: two ClusterProbe confirm producers, co-located with a
 # member that survives, stream ProbeMarkers across the kill. The one sending through PendingSends must see
-# every frame on its tap exactly once, in order. The control sends untracked; its loss count is what the kill
+# every frame on its queue exactly once, in order. The control sends untracked; its loss count is what the kill
 # had in flight, and is reported rather than asserted, since a kill can land between two frames.
 #
 # PASS iff the fresh client prints "following live", its ReplayerService served it >= 1 replay, and
@@ -88,7 +88,7 @@ until [[ -n "$NEWLEADER" ]]; do
   ((W>120)) && { echo "no new leader emerged"; break; }
 done
 echo "tenure-2 leader = member $NEWLEADER"
-sleep 3  # let the new leader settle (its tap recording is continuous across the failover)
+sleep 3  # let the new leader settle (its queue recording is continuous across the failover)
 
 FRESH_LOG="$LOG_DIR/fresh-follower.log"
 java "${JAVA_OPTS[@]}" -Dprobe.memberId="$NEWLEADER" -Dprobe.clientId=9 -cp "$JAR" \

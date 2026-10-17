@@ -4,7 +4,7 @@
 // A gateway is the producer kind the cluster elects: the topology names both instances, the cluster
 // designates one, and only that one serves. What is left here is the edge. A real gateway opens a socket in
 // onActivated; this one takes a single simulated client connection instead, and pings the cluster on it
-// once a second, reading each ping back off its own tap.
+// once a second, reading each ping back off its own queue.
 //
 // Start a node, load the pair, then run one instance or both (in the seqeron repo):
 //   seqeron-service/src/main/scripts/start-cluster.sh
@@ -83,7 +83,7 @@ struct Edge
         pingSentNs = 0;
     }
 
-    // Every application payload on this node's tap, in globalSeqNo order, history and live alike.
+    // Every application payload on this node's queue, in globalSeqNo order, history and live alike.
     void onSequenced(const app::Payload& payload)
     {
         std::int64_t sentNs = 0;
@@ -114,7 +114,7 @@ struct Edge
 
     void onCaughtUp(const std::int64_t globalSeqNo)
     {
-        std::printf("# caught up at %lld — following the tap live\n", static_cast<long long>(globalSeqNo));
+        std::printf("# caught up at %lld — following the queue live\n", static_cast<long long>(globalSeqNo));
     }
 
     void onClusterHeartbeat(std::int64_t, std::int64_t)

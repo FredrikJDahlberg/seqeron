@@ -8,7 +8,7 @@ using Xunit;
 namespace Org.Limitless.Seqeron.Sequencer.Client;
 
 /// <summary>
-/// Unit tests for counting a producer's own frames back off its tap. Frames are real ingress frames; each payload is
+/// Unit tests for counting a producer's own frames back off its queue. Frames are real ingress frames; each payload is
 /// one int, so a test names a frame by its number. Case for case with <c>PendingSendsTest.java</c> and
 /// <c>PendingSendsTest.cpp</c>.
 /// </summary>
@@ -59,14 +59,14 @@ public class PendingSendsTest
         _body = new UnsafeBuffer(_bodyBytes);
     }
 
-    [Fact(DisplayName = "every frame seen on its own tap leaves nothing pending")]
+    [Fact(DisplayName = "every frame seen on its own queue leaves nothing pending")]
     public void EveryFrameSeenLeavesNothingPending()
     {
         Send(Own, 1, 1);
         Send(Own, 1, 2);
         Assert.Equal(2, _pending.Count);
-        Tap(Own, 1);
-        Tap(Own, 2);
+        Arrive(Own, 1);
+        Arrive(Own, 2);
         Assert.Equal(0, _pending.Count);
         Assert.Equal(0, _pending.Missing());
         Assert.False(_pending.IsFaulted);
@@ -76,7 +76,7 @@ public class PendingSendsTest
     public void LeaderChangeAfterEveryFrameLosesNothing()
     {
         Send(Own, 1, 1);
-        Tap(Own, 1);
+        Arrive(Own, 1);
         _pending.OnLeadershipChanged(2);
         Assert.Equal(0, _pending.Missing());
         Assert.Equal(0, _pending.Count);
@@ -88,7 +88,7 @@ public class PendingSendsTest
         Send(Own, 1, 1);
         Send(Own, 1, 2);
         Send(Own, 1, 3);
-        Tap(Own, 1);
+        Arrive(Own, 1);
         Assert.Equal(0, _pending.Missing()); // still pending until a later term closes the count
         _pending.OnLeadershipChanged(2);
         Assert.Equal(2, _pending.Missing());
@@ -98,18 +98,18 @@ public class PendingSendsTest
     [Fact(DisplayName = "the LeadershipChanged that opens a frame's own term does not count it missing")]
     public void OwnTermsLeadershipChangedDoesNotCountIt()
     {
-        // A tap still replaying history reaches term 1's opening frame after frames stamped 1 went out.
+        // A queue still replaying history reaches term 1's opening frame after frames stamped 1 went out.
         Send(Own, 1, 1);
         _pending.OnLeadershipChanged(1);
         Assert.Equal(0, _pending.Missing());
-        Tap(Own, 1);
+        Arrive(Own, 1);
         Assert.Equal(0, _pending.Count);
     }
 
-    [Fact(DisplayName = "a frame stamped with a term the tap has already closed is missing at once")]
+    [Fact(DisplayName = "a frame stamped with a term the queue has already closed is missing at once")]
     public void StaleTermFrameIsMissingAtOnce()
     {
-        // The tap showed the new term before egress brought the NewLeader, so the leader dropped this frame.
+        // The queue showed the new term before egress brought the NewLeader, so the leader dropped this frame.
         _pending.OnLeadershipChanged(2);
         Send(Own, 1, 1);
         Assert.Equal(1, _pending.Missing());
@@ -123,8 +123,8 @@ public class PendingSendsTest
         _pending.OnLeadershipChanged(2);
         Send(Own + 1, 2, 3);
         Send(Own + 1, 2, 4);
-        Tap(Own + 1, 3);
-        Tap(Own + 1, 4);
+        Arrive(Own + 1, 3);
+        Arrive(Own + 1, 4);
         Assert.Equal(2, _pending.Missing());
         Assert.Equal(2, _pending.Count);
         Assert.False(_pending.IsFaulted);
@@ -134,8 +134,8 @@ public class PendingSendsTest
     public void SiblingFramesAreIgnored()
     {
         Send(Own, 1, 1);
-        Tap(Sibling, 1);
-        Tap(Sibling, 7);
+        Arrive(Sibling, 1);
+        Arrive(Sibling, 7);
         Assert.Equal(1, _pending.Count);
         Assert.False(_pending.IsFaulted);
     }
@@ -143,10 +143,10 @@ public class PendingSendsTest
     [Fact(DisplayName = "an own frame that differs from the oldest pending copy latches the fault")]
     public void OwnFrameDifferingFromOldestCopyLatchesFault()
     {
-        // The sequencer rejected frame 1 (S-7), so frame 2 is the next own frame on the tap.
+        // The sequencer rejected frame 1 (S-7), so frame 2 is the next own frame on the queue.
         Send(Own, 1, 1);
         Send(Own, 1, 2);
-        Tap(Own, 2);
+        Arrive(Own, 2);
         Assert.True(_pending.IsFaulted);
     }
 
@@ -154,7 +154,7 @@ public class PendingSendsTest
     public void OwnSystemFrameComesBack()
     {
         SendSystem(Own, 1, SystemFrame.ConnectionClosed, 1);
-        Tap(Own, true, SystemFrame.ConnectionClosed, 1);
+        Arrive(Own, true, SystemFrame.ConnectionClosed, 1);
         Assert.Equal(0, _pending.Count);
         Assert.False(_pending.IsFaulted);
     }
@@ -163,7 +163,7 @@ public class PendingSendsTest
     public void ApplicationFrameNeverMatchesSystemOne()
     {
         SendSystem(Own, 1, SystemFrame.ConnectionClosed, 1);
-        Tap(Own, false, SystemFrame.ConnectionClosed, 1);
+        Arrive(Own, false, SystemFrame.ConnectionClosed, 1);
         Assert.True(_pending.IsFaulted);
     }
 
@@ -187,7 +187,7 @@ public class PendingSendsTest
         Send(Own, 1, 1);
         _pending.OnNewLeader(2);
         Assert.True(_pending.IsHolding);
-        Tap(Own, 1);
+        Arrive(Own, 1);
         Assert.False(_pending.IsHolding);
     }
 
@@ -200,8 +200,8 @@ public class PendingSendsTest
     }
 
     [Fact(DisplayName =
-              "the tap's LeadershipChanged holds before the NewLeader comes, and nothing is resent until it does")]
-    public void TapsLeadershipChangedHoldsBeforeNewLeader()
+              "the queue's LeadershipChanged holds before the NewLeader comes, and nothing is resent until it does")]
+    public void QueuesLeadershipChangedHoldsBeforeNewLeader()
     {
         var sender = new FakeSender(1);
         Send(Own, 1, 1);
@@ -218,15 +218,15 @@ public class PendingSendsTest
         Send(Own, 1, 1);
         Send(Own, 1, 2);
         Send(Own, 1, 3);
-        Tap(Own, 1);
+        Arrive(Own, 1);
         _pending.OnNewLeader(2);
         _pending.OnLeadershipChanged(2);
         Assert.Equal(2, _pending.ResendMissing(sender));
         Assert.Equal(new List<int> { 2, 3 }, sender.Sent);
         Assert.Equal(0, _pending.Missing());
         Assert.False(_pending.IsHolding);
-        Tap(Own, 2);
-        Tap(Own, 3);
+        Arrive(Own, 2);
+        Arrive(Own, 3);
         Assert.Equal(0, _pending.Count);
         Assert.False(_pending.IsFaulted);
     }
@@ -248,9 +248,9 @@ public class PendingSendsTest
         Assert.Equal(2, _pending.ResendMissing(sender));
         Assert.Equal(new List<int> { 1, 2, 3 }, sender.Sent);
         Assert.False(_pending.IsHolding);
-        Tap(Own, 1);
-        Tap(Own, 2);
-        Tap(Own, 3);
+        Arrive(Own, 1);
+        Arrive(Own, 2);
+        Arrive(Own, 3);
         Assert.Equal(0, _pending.Count);
         Assert.False(_pending.IsFaulted);
     }
@@ -263,9 +263,9 @@ public class PendingSendsTest
         _pending.OnNewLeader(2);
         _pending.OnLeadershipChanged(2);
         _pending.ResendMissing(sender);
-        Tap(Own, 1);
+        Arrive(Own, 1);
         Assert.Equal(1, _pending.Count);
-        Tap(Own + 1, 1);
+        Arrive(Own + 1, 1);
         Assert.Equal(0, _pending.Count);
     }
 
@@ -284,7 +284,7 @@ public class PendingSendsTest
         sender.Term = 3;
         Assert.Equal(1, _pending.ResendMissing(sender));
         Assert.Equal(new List<int> { 1, 1 }, sender.Sent);
-        Tap(Own, 1);
+        Arrive(Own, 1);
         Assert.Equal(0, _pending.Count);
     }
 
@@ -302,7 +302,7 @@ public class PendingSendsTest
         Assert.Equal(new List<int> { 0, 1, 2, 3 }, sender.Sent);
         for (int n = 0; n < Capacity; n++)
         {
-            Tap(Own, n);
+            Arrive(Own, n);
         }
         Assert.Equal(0, _pending.Count);
         Assert.False(_pending.IsFaulted);
@@ -318,9 +318,9 @@ public class PendingSendsTest
         Assert.Equal(2, _pending.DiscardUnconfirmed());
         Assert.Equal(0, _pending.Count);
         Assert.False(_pending.IsHolding);
-        Tap(Own, 1);
+        Arrive(Own, 1);
         Send(Own + 1, 2, 3);
-        Tap(Own + 1, 3);
+        Arrive(Own + 1, 3);
         Assert.Equal(0, _pending.Count);
         Assert.False(_pending.IsFaulted);
     }
@@ -339,13 +339,13 @@ public class PendingSendsTest
         _pending.Track(_frame, _envelope.Wrap(_frame, 1, 2, session, eventType, _body, sizeof(int)), session, term);
     }
 
-    // Application frame n arriving on the tap from session.
-    private void Tap(long session, int n)
+    // Application frame n arriving on the queue from session.
+    private void Arrive(long session, int n)
     {
-        Tap(session, false, PayloadId, n);
+        Arrive(session, false, PayloadId, n);
     }
 
-    private void Tap(long session, bool system, int id, int n)
+    private void Arrive(long session, bool system, int id, int n)
     {
         _body.PutInt(0, n);
         _pending.OnSequenced(SequencedEvents.Of(session, system, id, _bodyBytes));

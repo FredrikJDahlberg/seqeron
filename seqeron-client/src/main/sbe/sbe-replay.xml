@@ -46,7 +46,7 @@
     <!-- ReplayerService -> App: "Attach to replaySessionId on the replay stream." -->
     <sbe:message name="Replaying" id="7"
                  description="The replayer started a replay. The client attaches to replaySessionId on stream 201,
-                              follows it until catchUpPosition, then switches to the live tap, de-duplicating
+                              follows it until catchUpPosition, then switches to the live queue, de-duplicating
                               on globalSeqNo">
         <field name="clientId"        id="20010" type="int64"/>
         <field name="requestId"       id="20015" type="int64"
@@ -57,7 +57,7 @@
                             client is at the tip; for a position, that position is no good here, which the client
                             treats as fatal (R-2)"/>
         <field name="catchUpPosition" id="20013" type="int64"
-               description="Position at which the replay ends and the client switches to the live tap. The
+               description="Position at which the replay ends and the client switches to the live queue. The
                             client detects completion by reaching it, not by image close: a bounded replay
                             of an active recording does not close its image at the bound"/>
     </sbe:message>

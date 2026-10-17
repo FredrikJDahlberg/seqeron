@@ -3,7 +3,7 @@
 #
 # Thin launcher for org.limitless.seqeron.tools.ClusterCtl (see clusterctl.md). Node-local:
 # run co-located on a SequencerServer host — it shares that node's Aeron directory (to reach the
-# co-located tap over aeron:ipc) and its clusterDir (for io.aeron.cluster.ClusterTool).
+# co-located queue over aeron:ipc) and its clusterDir (for io.aeron.cluster.ClusterTool).
 #
 #   clusterctl.sh start             # record a "system started" marker (requires an elected leader)
 #   clusterctl.sh shutdown          # orderly stop; safe on every node, no-op on followers

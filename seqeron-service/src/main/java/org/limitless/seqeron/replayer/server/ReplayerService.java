@@ -25,7 +25,7 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * Per-node archive <b>replay server</b> for co-located app replicas. Not on the live path: apps read the
- * tap directly, untethered, and heal a gap through the replay protocol this serves.
+ * queue directly, untethered, and heal a gap through the replay protocol this serves.
  */
 public final class ReplayerService {
     static final int MAX_CONCURRENT_REPLAYS = 4;
@@ -49,13 +49,13 @@ public final class ReplayerService {
     /** Brings the whole process down; wired by {@link ReplayerServer}. See {@link #fatalDutyCycleFailure}. */
     private final Runnable fatalHandler;
 
-    // The SequencerService's tap recording is visible on the local archive.
+    // The SequencerService's queue recording is visible on the local archive.
     private boolean ready = false;
 
     /** The recording served while it was reported alongside a stale active one, else NULL_VALUE. */
     private long staleReportedFor = NULL_VALUE;
 
-    /** The active tap recording, kept while it is still recording; a node starts a new one only on restart. */
+    /** The active queue recording, kept while it is still recording; a node starts a new one only on restart. */
     private Replayer.RecordingSpan activeRecording;
 
     // When the Replayer's own next archive call may be made, after one threw.
@@ -143,7 +143,7 @@ public final class ReplayerService {
 
     /**
      * Blocks running the duty cycle until {@code running} goes false. Serves the replay protocol from
-     * the local archive; the live feed is the tap the apps read directly, not this process.
+     * the local archive; the live feed is the queue the apps read directly, not this process.
      * @param running true while running
      */
     public void run(final AtomicBoolean running) {
@@ -196,7 +196,7 @@ public final class ReplayerService {
     }
 
     /**
-     * Waits for the tap recording to be visible on the local archive. It alone is served: every node start
+     * Waits for the queue recording to be visible on the local archive. It alone is served: every node start
      * replays the log from globalSeqNo 1 into a new one, and a client checks that its first frame is 1.
      * @return work count
      */
@@ -209,10 +209,10 @@ public final class ReplayerService {
             ready = true;
             readyCounter.set(1);
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                        "ready — tap recording %d live; serving replay", active.recordingId());
+                        "ready — queue recording %d live; serving replay", active.recordingId());
             return 1;
         } catch (final RuntimeException ex) {
-            onOwnArchiveCallFailed("listing the tap recordings", ex);
+            onOwnArchiveCallFailed("listing the queue recordings", ex);
             return 0;
         }
     }
@@ -256,7 +256,7 @@ public final class ReplayerService {
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                         "client %d pending: no free replay slot (active=%d/%d%s, pending=%d)", clientId,
                         replaySlots.activeCount(), limit,
-                        limit < MAX_CONCURRENT_REPLAYS ? " while the tap recording is behind" : "",
+                        limit < MAX_CONCURRENT_REPLAYS ? " while the queue recording is behind" : "",
                         replaySlots.pendingCount());
             return;
         }
@@ -290,7 +290,7 @@ public final class ReplayerService {
     /** Whether the local archive still answers at all — what separates a bad request from an outage. */
     private boolean archiveAnswers() {
         try {
-            replayer.listTapRecordings();
+            replayer.listQueueRecordings();
             return true;
         } catch (final RuntimeException ex) {
             return false;
@@ -313,7 +313,7 @@ public final class ReplayerService {
 
     /**
      * Serves one replay of the active recording: from its start for {@link ReplayProtocol#FROM_START}, else
-     * resumed at {@code fromPosition}. Bounded at the recording's tip now; the tap carries the rest.
+     * resumed at {@code fromPosition}. Bounded at the recording's tip now; the queue carries the rest.
      * @param clientId client identity
      * @param requestId the request being answered, echoed in every reply
      * @param fromPosition start position, or {@link ReplayProtocol#FROM_START}
@@ -347,7 +347,7 @@ public final class ReplayerService {
             if (fromPosition == ReplayProtocol.FROM_START) {
                 sendReplaying(clientId, requestId, ReplayProtocol.NO_REPLAY_NEEDED, tip);
             } else {
-                sendPending(clientId, requestId); // the recording trails the tap the client resumed from
+                sendPending(clientId, requestId); // the recording trails the queue the client resumed from
             }
             return;
         }
@@ -362,7 +362,7 @@ public final class ReplayerService {
     }
 
     /**
-     * How many replays may run at once: one while the active recording trails the tap by more than a quarter of
+     * How many replays may run at once: one while the active recording trails the queue by more than a quarter of
      * the window it may trail by, since a replay competes with the recorder for the disk and the recorder holds the
      * sequencer back.
      */
@@ -372,7 +372,7 @@ public final class ReplayerService {
         }
         try {
             final Replayer.RecordingSpan active = findActiveRecording();
-            final Replayer.TapBacklog backlog = active == null ? null : replayer.tapBacklog(active);
+            final Replayer.QueueBacklog backlog = active == null ? null : replayer.queueBacklog(active);
             return backlog != null && backlog.bytes() > backlog.window() / 4 ? 1 : MAX_CONCURRENT_REPLAYS;
         } catch (final RuntimeException ex) {
             return MAX_CONCURRENT_REPLAYS; // serving the replay meets the same archive and reports it
@@ -466,7 +466,7 @@ public final class ReplayerService {
 
     /**
      * Offers one control reply, dropping it at {@link #MAX_CONTROL_OFFER_SPINS} rather than spinning without
-     * bound. Safe, unlike on the tap: the app resends on a timer, so a drop costs one resend interval.
+     * bound. Safe, unlike on the queue: the app resends on a timer, so a drop costs one resend interval.
      * @param length encoded length
      */
     private void offerControl(final int length) {
@@ -518,7 +518,7 @@ public final class ReplayerService {
         lastArchiveErrorMs = nowMs;
         if (newEpisode) {
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                        "the local archive refused %s (%s); live delivery unaffected (apps read the tap directly) "
+                        "the local archive refused %s (%s); live delivery unaffected (apps read the queue directly) "
                             + "— see seqeron.replayer.archiveErrorsCount",
                         message, exception.getMessage());
         }
@@ -531,7 +531,7 @@ public final class ReplayerService {
     }
 
     /**
-     * The newest active tap recording on the local archive, or null. More than one active is an unclean
+     * The newest active queue recording on the local archive, or null. More than one active is an unclean
      * shutdown's leftover, reported once per episode; the newest holds the older one's content. Listed again only
      * once the one found has stopped recording, so a request costs no listing.
      */
@@ -542,7 +542,7 @@ public final class ReplayerService {
         activeRecording = null;
         Replayer.RecordingSpan found = null;
         int activeCount = 0;
-        for (final Replayer.RecordingSpan span : replayer.listTapRecordings()) {
+        for (final Replayer.RecordingSpan span : replayer.listQueueRecordings()) {
             if (span.active()) {
                 ++activeCount;
                 if (found == null || span.recordingId() > found.recordingId()) {
@@ -552,7 +552,7 @@ public final class ReplayerService {
         }
         if (activeCount > 1 && found.recordingId() != staleReportedFor) {
             Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.StaleActiveRecording, memberId,
-                         "%d tap recordings report as still recording — an unclean shutdown left an older one "
+                         "%d queue recordings report as still recording — an unclean shutdown left an older one "
                              + "unstopped; serving the newest",
                          activeCount);
         }

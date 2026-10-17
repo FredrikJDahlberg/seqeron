@@ -63,7 +63,7 @@ class ReplayerRecoveryTest {
     /** Bigger than one {@code RetainBlock}, which is what makes {@code retainFrame} refuse outright. */
     private static final int OVERSIZED_FRAME_LENGTH = 32 * 1024;
 
-    /** The largest frame the tap carries (§12): a full payload behind the 44-byte sequenced envelope. */
+    /** The largest frame the queue carries (§12): a full payload behind the 44-byte sequenced envelope. */
     private static final int LARGEST_FRAME_LENGTH = 44 + FrameLayer.MAX_PAYLOAD_LENGTH;
 
     /** The snapshot's cut; frame n starts at n * 1024, as everywhere here. */
@@ -162,7 +162,7 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("a first frame at globalSeqNo 1 is the baseline and puts the client live")
     void firstFrameAtOneIsAccepted() {
-        deliverTap(1);
+        deliverQueue(1);
 
         assertEquals(List.of(1L), dispatched);
         assertTrue(receiver.isCaughtUp());
@@ -176,18 +176,18 @@ class ReplayerRecoveryTest {
         assertThrows(IllegalStateException.class, () -> deliverReplay(7));
     }
 
-    // Once the tap is dispatched mid-walk, a cold start races a live tap already carrying mid-stream
-    // globalSeqNos against a replay that has not delivered 1 yet. That tap frame is neither a valid
+    // Once the queue is dispatched mid-walk, a cold start races a live queue already carrying mid-stream
+    // globalSeqNos against a replay that has not delivered 1 yet. That queue frame is neither a valid
     // baseline nor a fault — only the walk may establish the baseline.
     @Test
-    @DisplayName("the live tap may not establish the baseline while the cold-start walk is in flight")
-    void liveTapMayNotEstablishTheBaselineMidWalk() {
+    @DisplayName("the live queue may not establish the baseline while the cold-start walk is in flight")
+    void liveQueueMayNotEstablishTheBaselineMidWalk() {
         answerReplaying(7, 500);
         assertTrue(receiver.isRecovering());
 
-        deliverTap(15); // the live tip, far ahead of a replay that has not started delivering
+        deliverQueue(15); // the live tip, far ahead of a replay that has not started delivering
 
-        assertTrue(dispatched.isEmpty(), "must not adopt the live tap's mid-stream baseline");
+        assertTrue(dispatched.isEmpty(), "must not adopt the live queue's mid-stream baseline");
         assertFalse(receiver.isCaughtUp());
 
         deliverReplay(1); // the walk supplies the real baseline
@@ -200,12 +200,12 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("a mid-stream gap withholds the out-of-order frame and requests a replay")
     void midStreamGapWithholdsTheOutOfOrderFrame() {
-        deliverTap(1);
-        deliverTap(2);
+        deliverQueue(1);
+        deliverQueue(2);
         assertEquals(2, dispatched.size());
         assertFalse(receiver.isAwaitingReplay());
 
-        deliverTap(5); // skips 3, 4
+        deliverQueue(5); // skips 3, 4
 
         assertEquals(2, dispatched.size(), "the out-of-order frame itself must not be dispatched");
         assertTrue(receiver.isAwaitingReplay(), "a gap must re-request a replay");
@@ -213,30 +213,30 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("a tap gap reports a structured diagnostic event")
-    void tapGapReportsAStructuredDiagnosticEvent() {
+    @DisplayName("a queue gap reports a structured diagnostic event")
+    void queueGapReportsAStructuredDiagnosticEvent() {
         captureLogs();
 
-        deliverTap(1);
-        deliverTap(2);
-        deliverTap(5); // skips 3, 4
+        deliverQueue(1);
+        deliverQueue(2);
+        deliverQueue(5); // skips 3, 4
 
         assertEquals(1, logged.size(), "exactly the one gap detected above, nothing from setup");
         final Logger.LoggerEvent event = logged.get(0);
         assertEquals(Logger.CoreComponent.ReplayerStreamReceiver, event.component());
         assertEquals(Logger.Severity.Warn, event.severity());
-        assertEquals(Logger.CoreEventCode.TapGap, event.code());
-        assertEquals("tap gap: expected globalSeqNo=3 got 5 — resuming the recording at globalSeqNo=2",
+        assertEquals(Logger.CoreEventCode.QueueGap, event.code());
+        assertEquals("queue gap: expected globalSeqNo=3 got 5 — resuming the recording at globalSeqNo=2",
                      event.message());
     }
 
     @Test
-    @DisplayName("a live tap frame ahead of an in-flight walk is retained, not treated as a gap")
-    void tapFrameMidWalkIsRetainedNotAGap() {
+    @DisplayName("a live queue frame ahead of an in-flight walk is retained, not treated as a gap")
+    void queueFrameMidWalkIsRetainedNotAGap() {
         attachReplay(11, 4096);
         final long requestIdBefore = receiver.requestId();
 
-        deliverTap(9); // the tap runs ahead of the replay
+        deliverQueue(9); // the queue runs ahead of the replay
 
         assertTrue(dispatched.isEmpty(), "no baseline yet — only the walk may establish one");
         assertEquals(1, receiver.retainedFrameCount());
@@ -244,28 +244,28 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("a tap gap while the walk is still in flight does not supersede it")
-    void tapGapMidWalkDoesNotSupersedeTheWalk() {
+    @DisplayName("a queue gap while the walk is still in flight does not supersede it")
+    void queueGapMidWalkDoesNotSupersedeTheWalk() {
         attachReplay(11, 4096);
-        deliverReplay(1); // baseline established, by the walk rather than by the tap
+        deliverReplay(1); // baseline established, by the walk rather than by the queue
         final long requestIdBefore = receiver.requestId();
 
-        deliverTap(5); // 2..4 are not lost — they are frames this walk has not reached yet
+        deliverQueue(5); // 2..4 are not lost — they are frames this walk has not reached yet
 
         assertEquals(requestIdBefore, receiver.requestId(), "an in-flight walk must run to completion");
-        assertEquals(FROM_START, receiver.requestFromPosition(), "a mid-walk tap gap is expected, not a new gap");
+        assertEquals(FROM_START, receiver.requestFromPosition(), "a mid-walk queue gap is expected, not a new gap");
         assertEquals(1, receiver.retainedFrameCount());
     }
 
     // The same rule one state later: not merely awaiting an answer but riding an assigned session.
-    // Superseding the walk on each tap frame would restart it from the start forever under any sustained
+    // Superseding the walk on each queue frame would restart it from the start forever under any sustained
     // publish rate.
     @Test
-    @DisplayName("a tap frame arriving during an assigned replay session does not supersede it")
-    void tapFrameAheadOfAnAssignedReplayDoesNotSupersedeIt() {
+    @DisplayName("a queue frame arriving during an assigned replay session does not supersede it")
+    void queueFrameAheadOfAnAssignedReplayDoesNotSupersedeIt() {
         captureLogs();
-        deliverTap(1);
-        deliverTap(5); // the genuine steady-state gap
+        deliverQueue(1);
+        deliverQueue(5); // the genuine steady-state gap
         assertTrue(receiver.isAwaitingReplay());
         assertEquals(1, logged.size());
 
@@ -274,7 +274,7 @@ class ReplayerRecoveryTest {
         assertFalse(receiver.isAwaitingReplay());
         assertTrue(receiver.isRecovering());
 
-        deliverTap(12); // the tap running ahead, not a hole this walk will not cover
+        deliverQueue(12); // the queue running ahead, not a hole this walk will not cover
 
         assertEquals(99, receiver.replaySessionId(), "the in-flight walk must run to completion");
         assertFalse(receiver.isAwaitingReplay());
@@ -283,12 +283,12 @@ class ReplayerRecoveryTest {
         assertEquals(1, logged.size(), "and it is not reported as a second gap");
     }
 
-    // The replay->live seam: the tap is dispatched throughout a walk, so the frame at gseq == last + 1
-    // lands the instant the replay reaches it. Discarding tap frames while recovering ends every walk one
+    // The replay->live seam: the queue is dispatched throughout a walk, so the frame at gseq == last + 1
+    // lands the instant the replay reaches it. Discarding queue frames while recovering ends every walk one
     // guaranteed gap short of live.
     @Test
-    @DisplayName("the tap frame at the seam is dispatched while the walk is still in flight")
-    void liveTapFrameAtTheSeamIsDispatchedMidWalk() {
+    @DisplayName("the queue frame at the seam is dispatched while the walk is still in flight")
+    void liveQueueFrameAtTheSeamIsDispatchedMidWalk() {
         answerReplaying(7, 500);
         deliverReplay(1);
         deliverReplay(2);
@@ -296,21 +296,21 @@ class ReplayerRecoveryTest {
         assertFalse(receiver.isCaughtUp(), "still riding replayed history");
         assertTrue(receiver.isRecovering());
 
-        deliverTap(3); // the seam: first tap frame contiguous with what the replay delivered
+        deliverQueue(3); // the seam: first queue frame contiguous with what the replay delivered
 
         assertEquals(3, dispatched.size(), "the seam frame must be dispatched, not discarded as mid-walk noise");
-        assertTrue(receiver.isCaughtUp(), "a contiguous frame off the live tap means we are following live");
+        assertTrue(receiver.isCaughtUp(), "a contiguous frame off the live queue means we are following live");
     }
 
     @Test
-    @DisplayName("a steady-state tap gap clears caught-up and resumes at the last dispatched frame")
+    @DisplayName("a steady-state queue gap clears caught-up and resumes at the last dispatched frame")
     void steadyStateGapResumesAtLastFrame() {
         goLive();
-        deliverTapAt(1, 1024);
-        deliverTapAt(2, 2048);
+        deliverQueueAt(1, 1024);
+        deliverQueueAt(2, 2048);
         assertTrue(receiver.isCaughtUp());
 
-        deliverTapAt(5, 8192); // 3 and 4 dropped
+        deliverQueueAt(5, 8192); // 3 and 4 dropped
 
         assertFalse(receiver.isCaughtUp(), "consumers gate real decisions on this — it must not stay latched");
         assertTrue(receiver.isAwaitingReplay());
@@ -320,15 +320,15 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("replayed frames already seen off the live tap are de-duped")
+    @DisplayName("replayed frames already seen off the live queue are de-duped")
     void duplicateAndStaleReplayFramesAreDropped() {
-        deliverTap(1);
-        deliverTap(2);
+        deliverQueue(1);
+        deliverQueue(2);
         assertEquals(2, dispatched.size());
 
         deliverReplay(1);
         deliverReplay(2);
-        assertEquals(2, dispatched.size(), "replayed frames already delivered off the live tap must be de-duped");
+        assertEquals(2, dispatched.size(), "replayed frames already delivered off the live queue must be de-duped");
 
         deliverReplay(3);
         assertEquals(3, dispatched.size());
@@ -496,8 +496,8 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("ReplayPending holds at the gap without assigning a session")
     void replayPendingHoldsAtTheGapWithoutAssigningASession() {
-        deliverTap(1);
-        deliverTap(5); // gap -> awaiting a replay
+        deliverQueue(1);
+        deliverQueue(5); // gap -> awaiting a replay
         assertTrue(receiver.isAwaitingReplay());
 
         deliverPending(receiver.requestId());
@@ -512,8 +512,8 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("a request the Replayer never answered is re-sent once the interval elapses")
     void stuckAwaitingReplayResendsAfterTheIntervalElapses() {
-        deliverTap(1);
-        deliverTap(5); // gap -> arms the resend timer
+        deliverQueue(1);
+        deliverQueue(5); // gap -> arms the resend timer
         assertTrue(receiver.isAwaitingReplay());
         final int sends = actions.requestsSent;
 
@@ -537,8 +537,8 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("a request that never went out is not re-sent once per poll")
     void anUnsentRequestIsNotReSentOncePerPoll() {
-        deliverTap(1);
-        deliverTap(5); // gap -> a request that never goes out, there being no publication here
+        deliverQueue(1);
+        deliverQueue(5); // gap -> a request that never goes out, there being no publication here
         final long before = receiver.requestId();
 
         for (int i = 0; i < 50; i++) {
@@ -552,7 +552,7 @@ class ReplayerRecoveryTest {
 
     // ── isRecovering() and isCaughtUp() ───────────────────────────────────────────────────────────
 
-    // isRecovering() is what separates "the tap is ahead of my replay" from "there is a hole": narrowing
+    // isRecovering() is what separates "the queue is ahead of my replay" from "there is a hole": narrowing
     // it means a walk supersedes itself on its own in-flight frames, widening it means a real gap goes
     // unreported. This walks every transition it must track.
     @Test
@@ -560,8 +560,8 @@ class ReplayerRecoveryTest {
     void recoveringFlagTracksWalkAndAwaitingReplayState() {
         assertFalse(receiver.isRecovering(), "nothing in flight yet");
 
-        deliverTap(1);
-        deliverTap(5); // skips 2..4 -> gap, re-requests a replay
+        deliverQueue(1);
+        deliverQueue(5); // skips 2..4 -> gap, re-requests a replay
         assertTrue(receiver.isRecovering(), "awaiting the Replayer's answer is already mid-recovery");
 
         answerReplaying(7, 500);
@@ -575,7 +575,7 @@ class ReplayerRecoveryTest {
         assertFalse(receiver.isRecovering(), "a resume ends at its bound");
 
         // A resume whose bound leaves a retained frame stranded behind a hole resumes again.
-        deliverTap(9); // another gap -> another resume, anchored on frame 5
+        deliverQueue(9); // another gap -> another resume, anchored on frame 5
         answerReplaying(8, 500);
         deliverReplay(5);
         deliverReplay(6);
@@ -591,18 +591,18 @@ class ReplayerRecoveryTest {
         assertFalse(receiver.isRecovering(), "that resume ends at its bound too");
     }
 
-    // isCaughtUp() is a state, not a latch: consumers gate real decisions on it, and a gateway's tap-stall
+    // isCaughtUp() is a state, not a latch: consumers gate real decisions on it, and a gateway's queue-stall
     // watchdog measures silence in DISPATCHED frames. A re-walk dispatches nothing until the replay passes
     // the hole, so leaving it latched makes a gateway diagnose its own recovery as a stalled sequencer.
     @Test
-    @DisplayName("a tap gap revokes caught-up until the stream goes contiguous again")
-    void tapGapRevokesCaughtUpUntilTheStreamGoesContiguousAgain() {
-        deliverTap(1);
-        deliverTap(2);
+    @DisplayName("a queue gap revokes caught-up until the stream goes contiguous again")
+    void queueGapRevokesCaughtUpUntilTheStreamGoesContiguousAgain() {
+        deliverQueue(1);
+        deliverQueue(2);
         assertTrue(receiver.isCaughtUp());
         assertEquals(1, caughtUpAt.size());
 
-        deliverTap(5); // skips 3, 4 -> gap (and 5 is retained, not dropped)
+        deliverQueue(5); // skips 3, 4 -> gap (and 5 is retained, not dropped)
         assertFalse(receiver.isCaughtUp(), "a hole means we are demonstrably not following live");
 
         deliverReplay(2); // a resume opens on the frame it anchored at — already delivered, deduped
@@ -610,7 +610,7 @@ class ReplayerRecoveryTest {
         assertFalse(receiver.isCaughtUp(), "4 is still missing — the hole is not closed yet");
         assertEquals(1, caughtUpAt.size());
 
-        deliverReplay(4); // closes the hole; the retained tap frame 5 then hands straight over
+        deliverReplay(4); // closes the hole; the retained queue frame 5 then hands straight over
 
         assertTrue(receiver.isCaughtUp(), "the retained frame closes the seam with no further round trip");
         assertEquals(2, caughtUpAt.size(), "consumers must be able to re-arm on re-convergence");
@@ -619,11 +619,11 @@ class ReplayerRecoveryTest {
     // ── the retained-ahead FIFO ───────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("retained tap frames hand straight over when the replay reaches them")
+    @DisplayName("retained queue frames hand straight over when the replay reaches them")
     void retainedFramesCloseTheSeam() {
         attachReplay(11, 4096);
-        deliverTap(3);
-        deliverTap(4);
+        deliverQueue(3);
+        deliverQueue(4);
 
         deliverReplay(1);
         deliverReplay(2);
@@ -635,10 +635,10 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("frames beyond the hole are retained and delivered exactly once when it closes")
     void framesBeyondTheHoleAreRetainedAndDeliveredOnceItCloses() {
-        deliverTap(1);
-        deliverTap(4); // gap -> retained
-        deliverTap(5); // still ahead of the hole -> retained
-        deliverTap(6);
+        deliverQueue(1);
+        deliverQueue(4); // gap -> retained
+        deliverQueue(5); // still ahead of the hole -> retained
+        deliverQueue(6);
         assertEquals(List.of(1L), dispatched, "nothing past the hole may be dispatched early");
 
         deliverReplay(1); // a resume opens on the frame it anchored at — already delivered, deduped
@@ -654,8 +654,8 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("a frame of the largest payload ahead of the hole is retained, not an overflow")
     void largestFrameAheadOfTheHoleIsRetained() {
-        deliverTap(1);
-        deliverTapPadded(3, LARGEST_FRAME_LENGTH); // gap -> retained
+        deliverQueue(1);
+        deliverQueuePadded(3, LARGEST_FRAME_LENGTH); // gap -> retained
         assertEquals(1, receiver.retainedFrameCount());
 
         deliverReplay(1); // a resume opens on the frame it anchored at — already delivered, deduped
@@ -665,18 +665,18 @@ class ReplayerRecoveryTest {
         assertTrue(receiver.isCaughtUp(), "an overflow would have forced a re-walk");
     }
 
-    // The ranges legitimately overlap, since a re-walk restarts from the start while the tap keeps
+    // The ranges legitimately overlap, since a re-walk restarts from the start while the queue keeps
     // arriving.
     @Test
     @DisplayName("retained frames the replay has meanwhile covered are not redelivered")
     void retainedFramesAlreadyCoveredByTheReplayAreNotRedelivered() {
-        deliverTap(1);
-        deliverTap(3); // gap -> retained
-        deliverTap(4); // retained
+        deliverQueue(1);
+        deliverQueue(3); // gap -> retained
+        deliverQueue(4); // retained
 
         deliverReplay(1); // a resume opens on the frame it anchored at — already delivered, deduped
         deliverReplay(2);
-        deliverReplay(3); // the replay covers a frame the tap already retained
+        deliverReplay(3); // the replay covers a frame the queue already retained
         deliverReplay(4);
 
         assertEquals(List.of(1L, 2L, 3L, 4L), dispatched, "each globalSeqNo dispatched exactly once");
@@ -697,7 +697,7 @@ class ReplayerRecoveryTest {
         assertEquals(1, dispatched.size(), "the frame past the hole must not be dispatched");
         assertEquals(1, logged.size());
         assertEquals(Logger.Severity.Warn, logged.get(0).severity());
-        assertEquals(Logger.CoreEventCode.TapGap, logged.get(0).code());
+        assertEquals(Logger.CoreEventCode.QueueGap, logged.get(0).code());
 
         deliverReplay(8);
         assertEquals(1, logged.size(), "report the episode, not every frame of a walk retrying the same recording");
@@ -710,14 +710,14 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("dropped tap frames are reported once per episode")
-    void droppedTapFramesAreReportedOncePerEpisode() {
-        deliverTap(1);
-        deliverTap(3); // gap -> resume anchored on frame 1; 3 is retained
+    @DisplayName("dropped queue frames are reported once per episode")
+    void droppedQueueFramesAreReportedOncePerEpisode() {
+        deliverQueue(1);
+        deliverQueue(3); // gap -> resume anchored on frame 1; 3 is retained
 
         captureLogs(); // installed after the setup gap, so it captures only the overflow lines
-        deliverTapTooBigToRetain(4);
-        deliverTapTooBigToRetain(5);
+        deliverQueueTooBigToRetain(4);
+        deliverQueueTooBigToRetain(5);
         assertEquals(1, overflowReports(), "one episode is one line, not one per dropped frame");
 
         // The resume is what covers the dropped frames, so the episode ends when it is requested.
@@ -727,7 +727,7 @@ class ReplayerRecoveryTest {
         completeReplay();
         assertEquals(3072, receiver.requestFromPosition(), "at the retained frame 3, drained behind 2");
 
-        deliverTapTooBigToRetain(9);
+        deliverQueueTooBigToRetain(9);
 
         assertEquals(2, overflowReports(), "a later overflow is a distinct episode and names itself");
     }
@@ -740,9 +740,9 @@ class ReplayerRecoveryTest {
     @DisplayName("a resume replay that opens at the wrong frame is fatal")
     void resumeAnchorMismatchIsFatal() {
         goLive();
-        deliverTapAt(1, 1024);
-        deliverTapAt(2, 2048);
-        deliverTapAt(5, 8192); // gap → resume anchored on globalSeqNo 2
+        deliverQueueAt(1, 1024);
+        deliverQueueAt(2, 2048);
+        deliverQueueAt(5, 8192); // gap → resume anchored on globalSeqNo 2
         attachReplay(12, 16384);
 
         deliverReplay(4); // not the anchor
@@ -758,8 +758,8 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("a resume whose image closes short of its bound re-arms the anchor check")
     void replayImageClosingShortOfTheBoundOnAResumeReArmsTheAnchorCheck() {
-        deliverTap(1);
-        deliverTap(5); // gap -> resume anchored on frame 1
+        deliverQueue(1);
+        deliverQueue(5); // gap -> resume anchored on frame 1
         answerReplaying(7, 500);
         deliverReplay(1); // opens on the anchored frame -> anchor consumed, frame deduped
         assertEquals(1, dispatched.size());
@@ -780,8 +780,8 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("a resume that stalls re-arms the anchor check")
     void replayStallOnAResumeReArmsTheAnchorCheck() {
-        deliverTap(1);
-        deliverTap(5); // gap -> resume anchored on frame 1
+        deliverQueue(1);
+        deliverQueue(5); // gap -> resume anchored on frame 1
         answerReplaying(7, 500);
         deliverReplay(1);
         assertEquals(1, dispatched.size());
@@ -803,10 +803,10 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("NO_REPLAY_NEEDED for a resume is fatal")
     void noReplayNeededForAResumeIsFatal() {
-        deliverTap(1);
-        deliverTap(2);
+        deliverQueue(1);
+        deliverQueue(2);
         assertTrue(receiver.isCaughtUp());
-        deliverTap(6); // gap -> resume
+        deliverQueue(6); // gap -> resume
         assertNotEquals(FROM_START, receiver.requestFromPosition());
 
         answerReplaying(NO_REPLAY_NEEDED, 0);
@@ -821,9 +821,9 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("a resume reaching its bound catches up and requests nothing more")
     void resumeReachingItsBoundCatchesUpAndRequestsNothingMore() {
-        deliverTap(1);
+        deliverQueue(1);
         assertEquals(1, caughtUpAt.size());
-        deliverTap(5); // gap -> resume
+        deliverQueue(5); // gap -> resume
         assertFalse(receiver.isCaughtUp());
         answerReplaying(7, 500);
 
@@ -841,13 +841,13 @@ class ReplayerRecoveryTest {
 
     // A resume can reach its bound while a retained-ahead frame still sits behind a hole the replay never
     // covered. Declaring caught up on the bound alone is silently wrong: consumers gate real decisions on
-    // it and nothing would rediscover the hole until some later, unrelated tap frame exposed it.
+    // it and nothing would rediscover the hole until some later, unrelated queue frame exposed it.
     @Test
     @DisplayName("a resume reaching its bound with a retained hole still open resumes again")
     void resumeReachingItsBoundWithARetainedHoleStillOpenResumesAgain() {
-        deliverTap(1);
+        deliverQueue(1);
         assertEquals(1, caughtUpAt.size());
-        deliverTap(5); // gap -> resume anchored on frame 1; 5 is retained ahead of the hole
+        deliverQueue(5); // gap -> resume anchored on frame 1; 5 is retained ahead of the hole
         answerReplaying(7, 500);
 
         deliverReplay(1); // opens on the anchored frame -> anchor consumed, frame deduped
@@ -862,16 +862,16 @@ class ReplayerRecoveryTest {
         assertEquals(-1, receiver.replaySessionId());
     }
 
-    // The overflow half of the same guard. When the FIFO had to DROP tap frames the frontier is short by
-    // frames that are gone from the tap for good, and every retained frame draining cleanly says nothing
+    // The overflow half of the same guard. When the FIFO had to DROP queue frames the frontier is short by
+    // frames that are gone from the queue for good, and every retained frame draining cleanly says nothing
     // about them.
     @Test
-    @DisplayName("a resume reaching its bound after dropped tap frames resumes again")
-    void resumeReachingItsBoundAfterDroppedTapFramesResumesAgain() {
-        deliverTap(1);
+    @DisplayName("a resume reaching its bound after dropped queue frames resumes again")
+    void resumeReachingItsBoundAfterDroppedQueueFramesResumesAgain() {
+        deliverQueue(1);
         assertEquals(1, caughtUpAt.size());
-        deliverTap(3);                // gap -> resume anchored on frame 1; 3 is retained
-        deliverTapTooBigToRetain(4);  // ahead of the hole too, but dropped rather than retained
+        deliverQueue(3); // gap -> resume anchored on frame 1; 3 is retained
+        deliverQueueTooBigToRetain(4); // ahead of the hole too, but dropped rather than retained
         answerReplaying(7, 500);
 
         deliverReplay(1); // opens on the anchored frame -> anchor consumed, frame deduped
@@ -881,7 +881,8 @@ class ReplayerRecoveryTest {
 
         assertFalse(receiver.isCaughtUp(), "frame 4 was dropped — the drained frontier is not the real one");
         assertEquals(1, caughtUpAt.size(), "no false re-convergence notification");
-        assertEquals(3072, receiver.requestFromPosition(), "resumes now rather than leaving the hole for a later tap gap");
+        assertEquals(3072, receiver.requestFromPosition(),
+                     "resumes now rather than leaving the hole for a later queue gap");
         assertTrue(receiver.isAwaitingReplay());
     }
 
@@ -892,7 +893,7 @@ class ReplayerRecoveryTest {
     @DisplayName("frames still retained when a walk reaches its bound force a resume rather than caught-up")
     void retainedResidualForcesAResume() {
         attachReplay(11, 4096);
-        deliverTap(5); // a hole below it that this walk never reached
+        deliverQueue(5); // a hole below it that this walk never reached
         deliverReplay(1);
         assertEquals(1, receiver.retainedFrameCount());
 
@@ -909,7 +910,7 @@ class ReplayerRecoveryTest {
     void aWalkWithEveryRetainedFrameDrainedCatchesUp() {
         answerReplaying(7, 500);
         deliverReplay(1);
-        deliverTap(3);    // ahead of the hole at 2 -> retained
+        deliverQueue(3); // ahead of the hole at 2 -> retained
         deliverReplay(2); // closes it, so 3 drains straight over
 
         completeReplay();
@@ -922,16 +923,16 @@ class ReplayerRecoveryTest {
     // Clearing the overflow on drain forgets the drop and catches up over the hole; never clearing it
     // leaves a client that can never declare itself caught up again.
     @Test
-    @DisplayName("a walk reaching its bound after dropped tap frames resumes, then catches up")
-    void aWalkAfterDroppedTapFramesResumesThenCatchesUp() {
+    @DisplayName("a walk reaching its bound after dropped queue frames resumes, then catches up")
+    void aWalkAfterDroppedQueueFramesResumesThenCatchesUp() {
         answerReplaying(7, 500);
         deliverReplay(1);
         deliverReplay(2);
-        deliverTapTooBigToRetain(4); // the tap runs ahead of the walk, and this one is dropped
+        deliverQueueTooBigToRetain(4); // the queue runs ahead of the walk, and this one is dropped
 
         completeReplay();
 
-        assertFalse(receiver.isCaughtUp(), "the walk reached its bound, but a tap frame above it was dropped");
+        assertFalse(receiver.isCaughtUp(), "the walk reached its bound, but a queue frame above it was dropped");
         assertEquals(0, caughtUpAt.size(), "no false convergence notification — this opens the accept gate");
         assertEquals(2048, receiver.requestFromPosition(), "resumes rather than trusting the bound");
 
@@ -988,27 +989,27 @@ class ReplayerRecoveryTest {
     void aGapAfterAHealthyRunStartsItsOwnEpisode() {
         captureLogs();
         assertFalse(checkProgressAt(CLOCK_MS)); // an episode anchored during cold start
-        deliverTap(1);                          // ... which then converges
+        deliverQueue(1); // ... which then converges
         assertTrue(receiver.isCaughtUp());
 
-        deliverTap(5); // much later, a tap gap: not caught up again
+        deliverQueue(5); // much later, a queue gap: not caught up again
         assertFalse(receiver.isCaughtUp());
 
         // Inheriting the cold-start clock would report this the instant the gap opened, before the re-walk
         // it triggers had any chance to converge.
         assertFalse(checkProgressAt(PAST_DEADLINE_MS));
-        assertEquals(1, logged.size(), "the tap-gap warn only — no convergence report");
-        assertEquals(Logger.CoreEventCode.TapGap, logged.get(0).code());
+        assertEquals(1, logged.size(), "the queue-gap warn only — no convergence report");
+        assertEquals(Logger.CoreEventCode.QueueGap, logged.get(0).code());
     }
 
     @Test
     @DisplayName("a caught-up client that simply goes quiet is not reported")
     void aCaughtUpClientThatGoesQuietIsNotReported() {
         captureLogs();
-        deliverTap(1);
+        deliverQueue(1);
         assertTrue(receiver.isCaughtUp());
 
-        // A tap that goes silent is a gateway's tap-stall watchdog's business, and it is not a convergence
+        // A queue that goes silent is a gateway's queue-stall watchdog's business, and it is not a convergence
         // failure at all — diagnosing it as one puts a second, wrong explanation on the same event.
         assertFalse(checkProgressAt(CLOCK_MS));
         assertFalse(checkProgressAt(PAST_DEADLINE_MS));
@@ -1018,8 +1019,8 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("the report names the state that tells the causes apart")
     void theReportNamesTheStateThatTellsTheCausesApart() {
-        deliverTap(1);
-        deliverTap(5); // gap -> awaiting a replay
+        deliverQueue(1);
+        deliverQueue(5); // gap -> awaiting a replay
 
         captureLogs(); // installed after the gap, so it captures only the report below
         assertFalse(checkProgressAt(CLOCK_MS));
@@ -1095,7 +1096,7 @@ class ReplayerRecoveryTest {
     // ── restoring a snapshot ──────────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("a restoring cold start replays from its newest snapshot's cut first, holding the live tap")
+    @DisplayName("a restoring cold start replays from its newest snapshot's cut first, holding the live queue")
     void restoringColdStartReplaysItsSnapshotsCutFirst() {
         RestoreFrames.write(store, 1, CUT - 5, (CUT - 5) * 1024, 1, SNAPSHOT_HEADER, SNAPSHOT_RECORD);
         writeSnapshot(2);
@@ -1107,7 +1108,7 @@ class ReplayerRecoveryTest {
         assertFalse(receiver.isRestoring(), "no record before the cut is seen");
         assertTrue(receiver.isRecovering());
 
-        deliverTap(40); // mid-stream, and no baseline: held, not fatal
+        deliverQueue(40); // mid-stream, and no baseline: held, not fatal
         assertTrue(dispatched.isEmpty());
     }
 
@@ -1181,7 +1182,7 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("a restore reads a bounded number of records per duty cycle, holding the tap until its last")
+    @DisplayName("a restore reads a bounded number of records per duty cycle, holding the queue until its last")
     void restoreIsPacedAcrossDutyCycles() {
         final byte[][] records = new byte[ReplayerRecovery.MAX_RESTORE_RECORDS_PER_CYCLE + 1][];
         records[0] = SNAPSHOT_HEADER;
@@ -1195,7 +1196,7 @@ class ReplayerRecoveryTest {
         receiver.doTimers(false);
         assertTrue(receiver.isRestoring());
         assertEquals(ReplayerRecovery.MAX_RESTORE_RECORDS_PER_CYCLE, restored.size());
-        deliverTap(40);
+        deliverQueue(40);
         assertTrue(dispatched.isEmpty());
 
         receiver.doTimers(false);
@@ -1255,7 +1256,7 @@ class ReplayerRecoveryTest {
         assertTrue(receiver.restoreFailure().contains("formatVersion 9"));
         assertFalse(receiver.isRecovering());
         assertEquals(0, actions.requestsSent);
-        deliverTap(40); // no baseline, and no longer an error either
+        deliverQueue(40); // no baseline, and no longer an error either
         assertTrue(dispatched.isEmpty());
 
         setUp();
@@ -1330,7 +1331,7 @@ class ReplayerRecoveryTest {
         Logger.install(logged::add);
     }
 
-    /** Retained-buffer overflows only: every gap/re-walk warn shares TapGap, so only the text separates them. */
+    /** Retained-buffer overflows only: every gap/re-walk warn shares QueueGap, so only the text separates them. */
     private long overflowReports() {
         return logged.stream().filter(event -> event.message().contains("retained-frame buffer full")).count();
     }
@@ -1388,25 +1389,25 @@ class ReplayerRecoveryTest {
         receiver.onFrame(heartbeatFrame(globalSeqNo), 0, heartbeatLength(), globalSeqNo * 1024, RECEIVE_NS, true);
     }
 
-    private void deliverTap(final long globalSeqNo) {
-        deliverTapAt(globalSeqNo, globalSeqNo * 1024);
+    private void deliverQueue(final long globalSeqNo) {
+        deliverQueueAt(globalSeqNo, globalSeqNo * 1024);
     }
 
-    private void deliverTapAt(final long globalSeqNo, final long position) {
+    private void deliverQueueAt(final long globalSeqNo, final long position) {
         receiver.onFrame(heartbeatFrame(globalSeqNo), 0, heartbeatLength(), position, RECEIVE_NS, false);
     }
 
     /**
-     * A live tap frame too big for the retained-ahead FIFO to hold: a heartbeat zero-padded past one
+     * A live queue frame too big for the retained-ahead FIFO to hold: a heartbeat zero-padded past one
      * RetainBlock, which retainFrame refuses outright. The cheapest of its three overflow triggers to
      * drive — the other two need 65536 frames or 16 MiB.
      */
-    private void deliverTapTooBigToRetain(final long globalSeqNo) {
-        deliverTapPadded(globalSeqNo, OVERSIZED_FRAME_LENGTH);
+    private void deliverQueueTooBigToRetain(final long globalSeqNo) {
+        deliverQueuePadded(globalSeqNo, OVERSIZED_FRAME_LENGTH);
     }
 
-    /** A live tap frame of {@code length} bytes: a heartbeat, decoded from the front, zero-padded to it. */
-    private void deliverTapPadded(final long globalSeqNo, final int length) {
+    /** A live queue frame of {@code length} bytes: a heartbeat, decoded from the front, zero-padded to it. */
+    private void deliverQueuePadded(final long globalSeqNo, final int length) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[length]);
         buffer.putBytes(0, heartbeatFrame(globalSeqNo), 0, heartbeatLength());
         receiver.onFrame(buffer, 0, length, globalSeqNo * 1024, RECEIVE_NS, false);

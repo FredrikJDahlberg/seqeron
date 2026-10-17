@@ -12,7 +12,7 @@ public interface IApplicationListener
     /// </summary>
     void OnLeadershipChanged(bool leading);
 
-    /// <summary>One application payload off this node's tap, in <c>globalSeqNo</c> order.</summary>
+    /// <summary>One application payload off this node's queue, in <c>globalSeqNo</c> order.</summary>
     void OnSequenced(Payload payload);
 
     /// <summary>Every transition to caught-up, the first included.</summary>

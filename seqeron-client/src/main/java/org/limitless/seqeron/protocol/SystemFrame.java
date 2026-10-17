@@ -47,7 +47,7 @@ public final class SystemFrame {
     /**
      * The {@code systemEventType} table (§7). A submitted event's value is its payload codec's template id; the
      * four synthesized events have templates of their own and stamp these at offset 16 so that field
-     * discriminates every frame on the tap.
+     * discriminates every frame on the queue.
      */
     public static final int CONNECTION_OPENED = ConnectionOpenedEncoder.TEMPLATE_ID;
 

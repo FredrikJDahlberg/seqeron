@@ -42,7 +42,7 @@ public class ReplayerRecoveryTest : IDisposable
     // Bigger than one RetainBlock, which is what makes RetainFrame refuse outright.
     private const int OversizedFrameLength = 32 * 1024;
 
-    // The largest frame the tap carries (§12): a full payload behind the 44-byte sequenced envelope.
+    // The largest frame the queue carries (§12): a full payload behind the 44-byte sequenced envelope.
     private const int LargestFrameLength = 44 + FrameLayer.MaxPayloadLength;
 
     // The snapshot's cut; frame n starts at n * 1024, as everywhere here.
@@ -165,7 +165,7 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "a first frame at globalSeqNo 1 is the baseline and puts the client live")]
     public void FirstFrameAtOneIsAccepted()
     {
-        DeliverTap(1);
+        DeliverQueue(1);
 
         Assert.Equal(new List<long> { 1 }, _dispatched);
         Assert.True(_receiver.IsCaughtUp);
@@ -179,18 +179,18 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Throws<InvalidOperationException>(() => DeliverReplay(7));
     }
 
-    // Once the tap is dispatched mid-walk, a cold start races a live tap already carrying mid-stream globalSeqNos
-    // against a replay that has not delivered 1 yet. That tap frame is neither a valid baseline nor a fault: only
+    // Once the queue is dispatched mid-walk, a cold start races a live queue already carrying mid-stream globalSeqNos
+    // against a replay that has not delivered 1 yet. That queue frame is neither a valid baseline nor a fault: only
     // the walk may establish the baseline.
-    [Fact(DisplayName = "the live tap may not establish the baseline while the cold-start walk is in flight")]
-    public void LiveTapMayNotEstablishTheBaselineMidWalk()
+    [Fact(DisplayName = "the live queue may not establish the baseline while the cold-start walk is in flight")]
+    public void LiveQueueMayNotEstablishTheBaselineMidWalk()
     {
         AnswerReplaying(7, 500);
         Assert.True(_receiver.IsRecovering);
 
-        DeliverTap(15); // the live tip, far ahead of a replay that has not started delivering
+        DeliverQueue(15); // the live tip, far ahead of a replay that has not started delivering
 
-        Assert.True(_dispatched.Count == 0, "must not adopt the live tap's mid-stream baseline");
+        Assert.True(_dispatched.Count == 0, "must not adopt the live queue's mid-stream baseline");
         Assert.False(_receiver.IsCaughtUp);
 
         DeliverReplay(1); // the walk supplies the real baseline
@@ -203,70 +203,70 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "a mid-stream gap withholds the out-of-order frame and requests a replay")]
     public void MidStreamGapWithholdsTheOutOfOrderFrame()
     {
-        DeliverTap(1);
-        DeliverTap(2);
+        DeliverQueue(1);
+        DeliverQueue(2);
         Assert.Equal(2, _dispatched.Count);
         Assert.False(_receiver.IsAwaitingReplay);
 
-        DeliverTap(5); // skips 3, 4
+        DeliverQueue(5); // skips 3, 4
 
         Assert.True(_dispatched.Count == 2, "the out-of-order frame itself must not be dispatched");
         Assert.True(_receiver.IsAwaitingReplay, "a gap must re-request a replay");
         Assert.True(_receiver.ReplaySessionId == -1, "no session yet, only a request, until the Replayer answers");
     }
 
-    [Fact(DisplayName = "a tap gap reports a structured diagnostic event")]
-    public void TapGapReportsAStructuredDiagnosticEvent()
+    [Fact(DisplayName = "a queue gap reports a structured diagnostic event")]
+    public void QueueGapReportsAStructuredDiagnosticEvent()
     {
         CaptureLogs();
 
-        DeliverTap(1);
-        DeliverTap(2);
-        DeliverTap(5); // skips 3, 4
+        DeliverQueue(1);
+        DeliverQueue(2);
+        DeliverQueue(5); // skips 3, 4
 
         Logger.LoggerEvent loggerEvent = Assert.Single(_logged); // the one gap above, nothing from setup
         Assert.Equal(Logger.CoreComponent.ReplayerStreamReceiver, loggerEvent.Component);
         Assert.Equal(Logger.Severity.Warn, loggerEvent.Severity);
-        Assert.Equal(Logger.CoreEventCode.TapGap, loggerEvent.Code);
-        Assert.Equal("tap gap: expected globalSeqNo=3 got 5 — resuming the recording at globalSeqNo=2",
+        Assert.Equal(Logger.CoreEventCode.QueueGap, loggerEvent.Code);
+        Assert.Equal("queue gap: expected globalSeqNo=3 got 5 — resuming the recording at globalSeqNo=2",
                      loggerEvent.Message);
     }
 
-    [Fact(DisplayName = "a live tap frame ahead of an in-flight walk is retained, not treated as a gap")]
-    public void TapFrameMidWalkIsRetainedNotAGap()
+    [Fact(DisplayName = "a live queue frame ahead of an in-flight walk is retained, not treated as a gap")]
+    public void QueueFrameMidWalkIsRetainedNotAGap()
     {
         AttachReplay(11, 4096);
         long requestIdBefore = _receiver.RequestId;
 
-        DeliverTap(9); // the tap runs ahead of the replay
+        DeliverQueue(9); // the queue runs ahead of the replay
 
         Assert.True(_dispatched.Count == 0, "no baseline yet: only the walk may establish one");
         Assert.Equal(1, _receiver.RetainedFrameCount);
         Assert.True(requestIdBefore == _receiver.RequestId, "an in-flight walk must not be superseded");
     }
 
-    [Fact(DisplayName = "a tap gap while the walk is still in flight does not supersede it")]
-    public void TapGapMidWalkDoesNotSupersedeTheWalk()
+    [Fact(DisplayName = "a queue gap while the walk is still in flight does not supersede it")]
+    public void QueueGapMidWalkDoesNotSupersedeTheWalk()
     {
         AttachReplay(11, 4096);
-        DeliverReplay(1); // baseline established, by the walk rather than by the tap
+        DeliverReplay(1); // baseline established, by the walk rather than by the queue
         long requestIdBefore = _receiver.RequestId;
 
-        DeliverTap(5); // 2..4 are not lost: they are frames this walk has not reached yet
+        DeliverQueue(5); // 2..4 are not lost: they are frames this walk has not reached yet
 
         Assert.True(requestIdBefore == _receiver.RequestId, "an in-flight walk must run to completion");
-        Assert.True(_receiver.RequestFromPosition == FromStart, "a mid-walk tap gap is expected, not a new gap");
+        Assert.True(_receiver.RequestFromPosition == FromStart, "a mid-walk queue gap is expected, not a new gap");
         Assert.Equal(1, _receiver.RetainedFrameCount);
     }
 
     // The same rule one state later: not merely awaiting an answer but riding an assigned session. Superseding the
-    // walk on each tap frame would restart it from the start forever under any sustained publish rate.
-    [Fact(DisplayName = "a tap frame arriving during an assigned replay session does not supersede it")]
-    public void TapFrameAheadOfAnAssignedReplayDoesNotSupersedeIt()
+    // walk on each queue frame would restart it from the start forever under any sustained publish rate.
+    [Fact(DisplayName = "a queue frame arriving during an assigned replay session does not supersede it")]
+    public void QueueFrameAheadOfAnAssignedReplayDoesNotSupersedeIt()
     {
         CaptureLogs();
-        DeliverTap(1);
-        DeliverTap(5); // the genuine steady-state gap
+        DeliverQueue(1);
+        DeliverQueue(5); // the genuine steady-state gap
         Assert.True(_receiver.IsAwaitingReplay);
         Assert.Single(_logged);
 
@@ -275,7 +275,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.False(_receiver.IsAwaitingReplay);
         Assert.True(_receiver.IsRecovering);
 
-        DeliverTap(12); // the tap running ahead, not a hole this walk will not cover
+        DeliverQueue(12); // the queue running ahead, not a hole this walk will not cover
 
         Assert.True(_receiver.ReplaySessionId == 99, "the in-flight walk must run to completion");
         Assert.False(_receiver.IsAwaitingReplay);
@@ -284,11 +284,11 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_logged.Count == 1, "and it is not reported as a second gap");
     }
 
-    // The replay->live seam: the tap is dispatched throughout a walk, so the frame at gseq == last + 1 lands the
-    // instant the replay reaches it. Discarding tap frames while recovering ends every walk one guaranteed gap short
+    // The replay->live seam: the queue is dispatched throughout a walk, so the frame at gseq == last + 1 lands the
+    // instant the replay reaches it. Discarding queue frames while recovering ends every walk one guaranteed gap short
     // of live.
-    [Fact(DisplayName = "the tap frame at the seam is dispatched while the walk is still in flight")]
-    public void LiveTapFrameAtTheSeamIsDispatchedMidWalk()
+    [Fact(DisplayName = "the queue frame at the seam is dispatched while the walk is still in flight")]
+    public void LiveQueueFrameAtTheSeamIsDispatchedMidWalk()
     {
         AnswerReplaying(7, 500);
         DeliverReplay(1);
@@ -297,21 +297,21 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.False(_receiver.IsCaughtUp, "still riding replayed history");
         Assert.True(_receiver.IsRecovering);
 
-        DeliverTap(3); // the seam: first tap frame contiguous with what the replay delivered
+        DeliverQueue(3); // the seam: first queue frame contiguous with what the replay delivered
 
         Assert.True(_dispatched.Count == 3, "the seam frame must be dispatched, not discarded as mid-walk noise");
-        Assert.True(_receiver.IsCaughtUp, "a contiguous frame off the live tap means we are following live");
+        Assert.True(_receiver.IsCaughtUp, "a contiguous frame off the live queue means we are following live");
     }
 
-    [Fact(DisplayName = "a steady-state tap gap clears caught-up and resumes at the last dispatched frame")]
+    [Fact(DisplayName = "a steady-state queue gap clears caught-up and resumes at the last dispatched frame")]
     public void SteadyStateGapResumesAtLastFrame()
     {
         GoLive();
-        DeliverTapAt(1, 1024);
-        DeliverTapAt(2, 2048);
+        DeliverQueueAt(1, 1024);
+        DeliverQueueAt(2, 2048);
         Assert.True(_receiver.IsCaughtUp);
 
-        DeliverTapAt(5, 8192); // 3 and 4 dropped
+        DeliverQueueAt(5, 8192); // 3 and 4 dropped
 
         Assert.False(_receiver.IsCaughtUp, "consumers gate real decisions on this: it must not stay latched");
         Assert.True(_receiver.IsAwaitingReplay);
@@ -321,16 +321,16 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.RetainedFrameCount == 1, "the ahead-of-hole frame is kept, not dropped");
     }
 
-    [Fact(DisplayName = "replayed frames already seen off the live tap are de-duped")]
+    [Fact(DisplayName = "replayed frames already seen off the live queue are de-duped")]
     public void DuplicateAndStaleReplayFramesAreDropped()
     {
-        DeliverTap(1);
-        DeliverTap(2);
+        DeliverQueue(1);
+        DeliverQueue(2);
         Assert.Equal(2, _dispatched.Count);
 
         DeliverReplay(1);
         DeliverReplay(2);
-        Assert.True(_dispatched.Count == 2, "replayed frames already delivered off the live tap must be de-duped");
+        Assert.True(_dispatched.Count == 2, "replayed frames already delivered off the live queue must be de-duped");
 
         DeliverReplay(3);
         Assert.Equal(3, _dispatched.Count);
@@ -497,8 +497,8 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "ReplayPending holds at the gap without assigning a session")]
     public void ReplayPendingHoldsAtTheGapWithoutAssigningASession()
     {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> awaiting a replay
+        DeliverQueue(1);
+        DeliverQueue(5); // gap -> awaiting a replay
         Assert.True(_receiver.IsAwaitingReplay);
 
         DeliverPending(_receiver.RequestId);
@@ -513,8 +513,8 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "a request the Replayer never answered is re-sent once the interval elapses")]
     public void StuckAwaitingReplayResendsAfterTheIntervalElapses()
     {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> arms the resend timer
+        DeliverQueue(1);
+        DeliverQueue(5); // gap -> arms the resend timer
         Assert.True(_receiver.IsAwaitingReplay);
         int sends = _actions.RequestsSent;
 
@@ -538,8 +538,8 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "a request that never went out is not re-sent once per poll")]
     public void AnUnsentRequestIsNotReSentOncePerPoll()
     {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> a request that never goes out, there being no publication here
+        DeliverQueue(1);
+        DeliverQueue(5); // gap -> a request that never goes out, there being no publication here
         long before = _receiver.RequestId;
 
         for (int i = 0; i < 50; i++)
@@ -554,7 +554,7 @@ public class ReplayerRecoveryTest : IDisposable
 
     // ── IsRecovering and IsCaughtUp ───────────────────────────────────────────────────────────────
 
-    // IsRecovering is what separates "the tap is ahead of my replay" from "there is a hole": narrowing it means a
+    // IsRecovering is what separates "the queue is ahead of my replay" from "there is a hole": narrowing it means a
     // walk supersedes itself on its own in-flight frames, widening it means a real gap goes unreported. This walks
     // every transition it must track.
     [Fact(DisplayName = "the recovering flag tracks the walk and awaiting-replay states")]
@@ -562,8 +562,8 @@ public class ReplayerRecoveryTest : IDisposable
     {
         Assert.False(_receiver.IsRecovering, "nothing in flight yet");
 
-        DeliverTap(1);
-        DeliverTap(5); // skips 2..4 -> gap, re-requests a replay
+        DeliverQueue(1);
+        DeliverQueue(5); // skips 2..4 -> gap, re-requests a replay
         Assert.True(_receiver.IsRecovering, "awaiting the Replayer's answer is already mid-recovery");
 
         AnswerReplaying(7, 500);
@@ -577,7 +577,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.False(_receiver.IsRecovering, "a resume ends at its bound");
 
         // A resume whose bound leaves a retained frame stranded behind a hole resumes again.
-        DeliverTap(9); // another gap -> another resume, anchored on frame 5
+        DeliverQueue(9); // another gap -> another resume, anchored on frame 5
         AnswerReplaying(8, 500);
         DeliverReplay(5);
         DeliverReplay(6);
@@ -593,18 +593,18 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.False(_receiver.IsRecovering, "that resume ends at its bound too");
     }
 
-    // IsCaughtUp is a state, not a latch: consumers gate real decisions on it, and a gateway's tap-stall watchdog
+    // IsCaughtUp is a state, not a latch: consumers gate real decisions on it, and a gateway's queue-stall watchdog
     // measures silence in DISPATCHED frames. A re-walk dispatches nothing until the replay passes the hole, so
     // leaving it latched makes a gateway diagnose its own recovery as a stalled sequencer.
-    [Fact(DisplayName = "a tap gap revokes caught-up until the stream goes contiguous again")]
-    public void TapGapRevokesCaughtUpUntilTheStreamGoesContiguousAgain()
+    [Fact(DisplayName = "a queue gap revokes caught-up until the stream goes contiguous again")]
+    public void QueueGapRevokesCaughtUpUntilTheStreamGoesContiguousAgain()
     {
-        DeliverTap(1);
-        DeliverTap(2);
+        DeliverQueue(1);
+        DeliverQueue(2);
         Assert.True(_receiver.IsCaughtUp);
         Assert.Single(_caughtUpAt);
 
-        DeliverTap(5); // skips 3, 4 -> gap (and 5 is retained, not dropped)
+        DeliverQueue(5); // skips 3, 4 -> gap (and 5 is retained, not dropped)
         Assert.False(_receiver.IsCaughtUp, "a hole means we are demonstrably not following live");
 
         DeliverReplay(2); // a resume opens on the frame it anchored at: already delivered, deduped
@@ -612,7 +612,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.False(_receiver.IsCaughtUp, "4 is still missing: the hole is not closed yet");
         Assert.Single(_caughtUpAt);
 
-        DeliverReplay(4); // closes the hole; the retained tap frame 5 then hands straight over
+        DeliverReplay(4); // closes the hole; the retained queue frame 5 then hands straight over
 
         Assert.True(_receiver.IsCaughtUp, "the retained frame closes the seam with no further round trip");
         Assert.True(_caughtUpAt.Count == 2, "consumers must be able to re-arm on re-convergence");
@@ -620,12 +620,12 @@ public class ReplayerRecoveryTest : IDisposable
 
     // ── the retained-ahead FIFO ───────────────────────────────────────────────────────────────────
 
-    [Fact(DisplayName = "retained tap frames hand straight over when the replay reaches them")]
+    [Fact(DisplayName = "retained queue frames hand straight over when the replay reaches them")]
     public void RetainedFramesCloseTheSeam()
     {
         AttachReplay(11, 4096);
-        DeliverTap(3);
-        DeliverTap(4);
+        DeliverQueue(3);
+        DeliverQueue(4);
 
         DeliverReplay(1);
         DeliverReplay(2);
@@ -637,10 +637,10 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "frames beyond the hole are retained and delivered exactly once when it closes")]
     public void FramesBeyondTheHoleAreRetainedAndDeliveredOnceItCloses()
     {
-        DeliverTap(1);
-        DeliverTap(4); // gap -> retained
-        DeliverTap(5); // still ahead of the hole -> retained
-        DeliverTap(6);
+        DeliverQueue(1);
+        DeliverQueue(4); // gap -> retained
+        DeliverQueue(5); // still ahead of the hole -> retained
+        DeliverQueue(6);
         Assert.Equal(new List<long> { 1 }, _dispatched); // nothing past the hole may be dispatched early
 
         DeliverReplay(1); // a resume opens on the frame it anchored at: already delivered, deduped
@@ -656,8 +656,8 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "a frame of the largest payload ahead of the hole is retained, not an overflow")]
     public void LargestFrameAheadOfTheHoleIsRetained()
     {
-        DeliverTap(1);
-        DeliverTapPadded(3, LargestFrameLength); // gap -> retained
+        DeliverQueue(1);
+        DeliverQueuePadded(3, LargestFrameLength); // gap -> retained
         Assert.Equal(1, _receiver.RetainedFrameCount);
 
         DeliverReplay(1); // a resume opens on the frame it anchored at: already delivered, deduped
@@ -667,17 +667,17 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.IsCaughtUp, "an overflow would have forced a re-walk");
     }
 
-    // The ranges legitimately overlap, since a re-walk restarts from the start while the tap keeps arriving.
+    // The ranges legitimately overlap, since a re-walk restarts from the start while the queue keeps arriving.
     [Fact(DisplayName = "retained frames the replay has meanwhile covered are not redelivered")]
     public void RetainedFramesAlreadyCoveredByTheReplayAreNotRedelivered()
     {
-        DeliverTap(1);
-        DeliverTap(3); // gap -> retained
-        DeliverTap(4); // retained
+        DeliverQueue(1);
+        DeliverQueue(3); // gap -> retained
+        DeliverQueue(4); // retained
 
         DeliverReplay(1); // a resume opens on the frame it anchored at: already delivered, deduped
         DeliverReplay(2);
-        DeliverReplay(3); // the replay covers a frame the tap already retained
+        DeliverReplay(3); // the replay covers a frame the queue already retained
         DeliverReplay(4);
 
         Assert.Equal(new List<long> { 1, 2, 3, 4 }, _dispatched); // each globalSeqNo dispatched exactly once
@@ -698,7 +698,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_dispatched.Count == 1, "the frame past the hole must not be dispatched");
         Assert.Single(_logged);
         Assert.Equal(Logger.Severity.Warn, _logged[0].Severity);
-        Assert.Equal(Logger.CoreEventCode.TapGap, _logged[0].Code);
+        Assert.Equal(Logger.CoreEventCode.QueueGap, _logged[0].Code);
 
         DeliverReplay(8);
         Assert.True(_logged.Count == 1, "report the episode, not every frame of a walk retrying the same recording");
@@ -710,15 +710,15 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_logged.Count == 2, "the latch clears once history goes contiguous again");
     }
 
-    [Fact(DisplayName = "dropped tap frames are reported once per episode")]
-    public void DroppedTapFramesAreReportedOncePerEpisode()
+    [Fact(DisplayName = "dropped queue frames are reported once per episode")]
+    public void DroppedQueueFramesAreReportedOncePerEpisode()
     {
-        DeliverTap(1);
-        DeliverTap(3); // gap -> resume anchored on frame 1; 3 is retained
+        DeliverQueue(1);
+        DeliverQueue(3); // gap -> resume anchored on frame 1; 3 is retained
 
         CaptureLogs(); // installed after the setup gap, so it captures only the overflow lines
-        DeliverTapTooBigToRetain(4);
-        DeliverTapTooBigToRetain(5);
+        DeliverQueueTooBigToRetain(4);
+        DeliverQueueTooBigToRetain(5);
         Assert.True(OverflowReports() == 1, "one episode is one line, not one per dropped frame");
 
         // The resume is what covers the dropped frames, so the episode ends when it is requested.
@@ -728,7 +728,7 @@ public class ReplayerRecoveryTest : IDisposable
         CompleteReplay();
         Assert.True(_receiver.RequestFromPosition == 3072, "at the retained frame 3, drained behind 2");
 
-        DeliverTapTooBigToRetain(9);
+        DeliverQueueTooBigToRetain(9);
 
         Assert.True(OverflowReports() == 2, "a later overflow is a distinct episode and names itself");
     }
@@ -741,9 +741,9 @@ public class ReplayerRecoveryTest : IDisposable
     public void ResumeAnchorMismatchIsFatal()
     {
         GoLive();
-        DeliverTapAt(1, 1024);
-        DeliverTapAt(2, 2048);
-        DeliverTapAt(5, 8192); // gap -> resume anchored on globalSeqNo 2
+        DeliverQueueAt(1, 1024);
+        DeliverQueueAt(2, 2048);
+        DeliverQueueAt(5, 8192); // gap -> resume anchored on globalSeqNo 2
         AttachReplay(12, 16384);
 
         DeliverReplay(4); // not the anchor
@@ -759,8 +759,8 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "a resume whose image closes short of its bound re-arms the anchor check")]
     public void ReplayImageClosingShortOfTheBoundOnAResumeReArmsTheAnchorCheck()
     {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> resume anchored on frame 1
+        DeliverQueue(1);
+        DeliverQueue(5); // gap -> resume anchored on frame 1
         AnswerReplaying(7, 500);
         DeliverReplay(1); // opens on the anchored frame -> anchor consumed, frame deduped
         Assert.Single(_dispatched);
@@ -781,8 +781,8 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "a resume that stalls re-arms the anchor check")]
     public void ReplayStallOnAResumeReArmsTheAnchorCheck()
     {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> resume anchored on frame 1
+        DeliverQueue(1);
+        DeliverQueue(5); // gap -> resume anchored on frame 1
         AnswerReplaying(7, 500);
         DeliverReplay(1);
         Assert.Single(_dispatched);
@@ -804,10 +804,10 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "NoReplayNeeded for a resume is fatal")]
     public void NoReplayNeededForAResumeIsFatal()
     {
-        DeliverTap(1);
-        DeliverTap(2);
+        DeliverQueue(1);
+        DeliverQueue(2);
         Assert.True(_receiver.IsCaughtUp);
-        DeliverTap(6); // gap -> resume
+        DeliverQueue(6); // gap -> resume
         Assert.NotEqual(FromStart, _receiver.RequestFromPosition);
 
         AnswerReplaying(NoReplayNeeded, 0);
@@ -822,9 +822,9 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "a resume reaching its bound catches up and requests nothing more")]
     public void ResumeReachingItsBoundCatchesUpAndRequestsNothingMore()
     {
-        DeliverTap(1);
+        DeliverQueue(1);
         Assert.Single(_caughtUpAt);
-        DeliverTap(5); // gap -> resume
+        DeliverQueue(5); // gap -> resume
         Assert.False(_receiver.IsCaughtUp);
         AnswerReplaying(7, 500);
 
@@ -842,13 +842,13 @@ public class ReplayerRecoveryTest : IDisposable
 
     // A resume can reach its bound while a retained-ahead frame still sits behind a hole the replay never covered.
     // Declaring caught up on the bound alone is silently wrong: consumers gate real decisions on it and nothing would
-    // rediscover the hole until some later, unrelated tap frame exposed it.
+    // rediscover the hole until some later, unrelated queue frame exposed it.
     [Fact(DisplayName = "a resume reaching its bound with a retained hole still open resumes again")]
     public void ResumeReachingItsBoundWithARetainedHoleStillOpenResumesAgain()
     {
-        DeliverTap(1);
+        DeliverQueue(1);
         Assert.Single(_caughtUpAt);
-        DeliverTap(5); // gap -> resume anchored on frame 1; 5 is retained ahead of the hole
+        DeliverQueue(5); // gap -> resume anchored on frame 1; 5 is retained ahead of the hole
         AnswerReplaying(7, 500);
 
         DeliverReplay(1); // opens on the anchored frame -> anchor consumed, frame deduped
@@ -863,15 +863,15 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(-1, _receiver.ReplaySessionId);
     }
 
-    // The overflow half of the same guard. When the FIFO had to DROP tap frames the frontier is short by frames that
-    // are gone from the tap for good, and every retained frame draining cleanly says nothing about them.
-    [Fact(DisplayName = "a resume reaching its bound after dropped tap frames resumes again")]
-    public void ResumeReachingItsBoundAfterDroppedTapFramesResumesAgain()
+    // The overflow half of the same guard. When the FIFO had to DROP queue frames the frontier is short by frames that
+    // are gone from the queue for good, and every retained frame draining cleanly says nothing about them.
+    [Fact(DisplayName = "a resume reaching its bound after dropped queue frames resumes again")]
+    public void ResumeReachingItsBoundAfterDroppedQueueFramesResumesAgain()
     {
-        DeliverTap(1);
+        DeliverQueue(1);
         Assert.Single(_caughtUpAt);
-        DeliverTap(3);               // gap -> resume anchored on frame 1; 3 is retained
-        DeliverTapTooBigToRetain(4); // ahead of the hole too, but dropped rather than retained
+        DeliverQueue(3);               // gap -> resume anchored on frame 1; 3 is retained
+        DeliverQueueTooBigToRetain(4); // ahead of the hole too, but dropped rather than retained
         AnswerReplaying(7, 500);
 
         DeliverReplay(1); // opens on the anchored frame -> anchor consumed, frame deduped
@@ -882,7 +882,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.False(_receiver.IsCaughtUp, "frame 4 was dropped: the drained frontier is not the real one");
         Assert.True(_caughtUpAt.Count == 1, "no false re-convergence notification");
         Assert.True(_receiver.RequestFromPosition == 3072,
-                    "resumes now rather than leaving the hole for a later tap gap");
+                    "resumes now rather than leaving the hole for a later queue gap");
         Assert.True(_receiver.IsAwaitingReplay);
     }
 
@@ -893,7 +893,7 @@ public class ReplayerRecoveryTest : IDisposable
     public void RetainedResidualForcesAResume()
     {
         AttachReplay(11, 4096);
-        DeliverTap(5); // a hole below it that this walk never reached
+        DeliverQueue(5); // a hole below it that this walk never reached
         DeliverReplay(1);
         Assert.Equal(1, _receiver.RetainedFrameCount);
 
@@ -910,7 +910,7 @@ public class ReplayerRecoveryTest : IDisposable
     {
         AnswerReplaying(7, 500);
         DeliverReplay(1);
-        DeliverTap(3);    // ahead of the hole at 2 -> retained
+        DeliverQueue(3);  // ahead of the hole at 2 -> retained
         DeliverReplay(2); // closes it, so 3 drains straight over
 
         CompleteReplay();
@@ -922,17 +922,17 @@ public class ReplayerRecoveryTest : IDisposable
     // The same guard driven through to convergence: the resume must both happen AND be able to finish. Clearing the
     // overflow on drain forgets the drop and catches up over the hole; never clearing it leaves a client that can
     // never declare itself caught up again.
-    [Fact(DisplayName = "a walk reaching its bound after dropped tap frames resumes, then catches up")]
-    public void AWalkAfterDroppedTapFramesResumesThenCatchesUp()
+    [Fact(DisplayName = "a walk reaching its bound after dropped queue frames resumes, then catches up")]
+    public void AWalkAfterDroppedQueueFramesResumesThenCatchesUp()
     {
         AnswerReplaying(7, 500);
         DeliverReplay(1);
         DeliverReplay(2);
-        DeliverTapTooBigToRetain(4); // the tap runs ahead of the walk, and this one is dropped
+        DeliverQueueTooBigToRetain(4); // the queue runs ahead of the walk, and this one is dropped
 
         CompleteReplay();
 
-        Assert.False(_receiver.IsCaughtUp, "the walk reached its bound, but a tap frame above it was dropped");
+        Assert.False(_receiver.IsCaughtUp, "the walk reached its bound, but a queue frame above it was dropped");
         Assert.True(_caughtUpAt.Count == 0, "no false convergence notification: this opens the accept gate");
         Assert.True(_receiver.RequestFromPosition == 2048, "resumes rather than trusting the bound");
 
@@ -990,27 +990,27 @@ public class ReplayerRecoveryTest : IDisposable
     {
         CaptureLogs();
         Assert.False(CheckProgressAt(ClockMs)); // an episode anchored during cold start
-        DeliverTap(1);                          // ... which then converges
+        DeliverQueue(1);                        // ... which then converges
         Assert.True(_receiver.IsCaughtUp);
 
-        DeliverTap(5); // much later, a tap gap: not caught up again
+        DeliverQueue(5); // much later, a queue gap: not caught up again
         Assert.False(_receiver.IsCaughtUp);
 
         // Inheriting the cold-start clock would report this the instant the gap opened, before the re-walk it
         // triggers had any chance to converge.
         Assert.False(CheckProgressAt(PastDeadlineMs));
-        Assert.True(_logged.Count == 1, "the tap-gap warn only: no convergence report");
-        Assert.Equal(Logger.CoreEventCode.TapGap, _logged[0].Code);
+        Assert.True(_logged.Count == 1, "the queue-gap warn only: no convergence report");
+        Assert.Equal(Logger.CoreEventCode.QueueGap, _logged[0].Code);
     }
 
     [Fact(DisplayName = "a caught-up client that simply goes quiet is not reported")]
     public void ACaughtUpClientThatGoesQuietIsNotReported()
     {
         CaptureLogs();
-        DeliverTap(1);
+        DeliverQueue(1);
         Assert.True(_receiver.IsCaughtUp);
 
-        // A tap that goes silent is a gateway's tap-stall watchdog's business, and it is not a convergence failure
+        // A queue that goes silent is a gateway's queue-stall watchdog's business, and it is not a convergence failure
         // at all: diagnosing it as one puts a second, wrong explanation on the same event.
         Assert.False(CheckProgressAt(ClockMs));
         Assert.False(CheckProgressAt(PastDeadlineMs));
@@ -1020,8 +1020,8 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "the report names the state that tells the causes apart")]
     public void TheReportNamesTheStateThatTellsTheCausesApart()
     {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> awaiting a replay
+        DeliverQueue(1);
+        DeliverQueue(5); // gap -> awaiting a replay
 
         CaptureLogs(); // installed after the gap, so it captures only the report below
         Assert.False(CheckProgressAt(ClockMs));
@@ -1094,7 +1094,7 @@ public class ReplayerRecoveryTest : IDisposable
 
     // ── restoring a snapshot ──────────────────────────────────────────────────────────────────────
 
-    [Fact(DisplayName = "a restoring cold start replays from its newest snapshot's cut first, holding the live tap")]
+    [Fact(DisplayName = "a restoring cold start replays from its newest snapshot's cut first, holding the live queue")]
     public void RestoringColdStartReplaysItsSnapshotsCutFirst()
     {
         RestoreFrames.Write(_store, 1, Cut - 5, (Cut - 5) * 1024, 1, SnapshotHeaderRecord, SnapshotRecord);
@@ -1107,7 +1107,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.False(_receiver.IsRestoring, "no record before the cut is seen");
         Assert.True(_receiver.IsRecovering);
 
-        DeliverTap(40); // mid-stream, and no baseline: held, not fatal
+        DeliverQueue(40); // mid-stream, and no baseline: held, not fatal
         Assert.Empty(_dispatched);
     }
 
@@ -1181,7 +1181,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.IsRestoring);
     }
 
-    [Fact(DisplayName = "a restore reads a bounded number of records per duty cycle, holding the tap until its last")]
+    [Fact(DisplayName = "a restore reads a bounded number of records per duty cycle, holding the queue until its last")]
     public void RestoreIsPacedAcrossDutyCycles()
     {
         var records = new byte[ReplayerRecovery.MaxRestoreRecordsPerCycle + 1][];
@@ -1197,7 +1197,7 @@ public class ReplayerRecoveryTest : IDisposable
         _receiver.DoTimers(false);
         Assert.True(_receiver.IsRestoring);
         Assert.Equal(ReplayerRecovery.MaxRestoreRecordsPerCycle, _restored.Count);
-        DeliverTap(40);
+        DeliverQueue(40);
         Assert.Empty(_dispatched);
 
         _receiver.DoTimers(false);
@@ -1258,7 +1258,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Contains("formatVersion 9", _receiver.RestoreFailure);
         Assert.False(_receiver.IsRecovering);
         Assert.Equal(0, _actions.RequestsSent);
-        DeliverTap(40); // no baseline, and no longer an error either
+        DeliverQueue(40); // no baseline, and no longer an error either
         Assert.Empty(_dispatched);
 
         SetUp();
@@ -1329,7 +1329,7 @@ public class ReplayerRecoveryTest : IDisposable
         Logger.Install(new CallbackLoggerSink(_logged.Add));
     }
 
-    // Retained-buffer overflows only: every gap/re-walk warn shares TapGap, so only the text separates them.
+    // Retained-buffer overflows only: every gap/re-walk warn shares QueueGap, so only the text separates them.
     private int OverflowReports()
     {
         return _logged.Count(e => e.Message.Contains("retained-frame buffer full"));
@@ -1396,28 +1396,28 @@ public class ReplayerRecoveryTest : IDisposable
         _receiver.OnFrame(_wire, 0, frame.Length, globalSeqNo * 1024, ReceiveNs, true);
     }
 
-    private void DeliverTap(long globalSeqNo)
+    private void DeliverQueue(long globalSeqNo)
     {
-        DeliverTapAt(globalSeqNo, globalSeqNo * 1024);
+        DeliverQueueAt(globalSeqNo, globalSeqNo * 1024);
     }
 
-    private void DeliverTapAt(long globalSeqNo, long position)
+    private void DeliverQueueAt(long globalSeqNo, long position)
     {
         byte[] frame = Frames.ClusterHeartbeat(globalSeqNo);
         _wire.Wrap(frame);
         _receiver.OnFrame(_wire, 0, frame.Length, position, ReceiveNs, false);
     }
 
-    // A live tap frame too big for the retained-ahead FIFO to hold: a heartbeat zero-padded past one RetainBlock,
+    // A live queue frame too big for the retained-ahead FIFO to hold: a heartbeat zero-padded past one RetainBlock,
     // which RetainFrame refuses outright. The cheapest of its three overflow triggers to drive; the other two need
     // 65536 frames or 16 MiB.
-    private void DeliverTapTooBigToRetain(long globalSeqNo)
+    private void DeliverQueueTooBigToRetain(long globalSeqNo)
     {
-        DeliverTapPadded(globalSeqNo, OversizedFrameLength);
+        DeliverQueuePadded(globalSeqNo, OversizedFrameLength);
     }
 
-    // A live tap frame of `length` bytes: a heartbeat, decoded from the front, zero-padded to it.
-    private void DeliverTapPadded(long globalSeqNo, int length)
+    // A live queue frame of `length` bytes: a heartbeat, decoded from the front, zero-padded to it.
+    private void DeliverQueuePadded(long globalSeqNo, int length)
     {
         var frame = new byte[length];
         Frames.ClusterHeartbeat(globalSeqNo).CopyTo(frame, 0);

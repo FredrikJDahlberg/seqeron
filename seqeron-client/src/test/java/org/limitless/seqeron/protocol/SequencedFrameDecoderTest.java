@@ -31,7 +31,7 @@ import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder;
  * advances the subscriber position anyway, so a throw here loses the frame silently.
  *
  * <p>The C++ twin is {@code SequencedFrameTest.cpp} over {@code unwrapFrame}, case for case in the same
- * order, so a divergence shows up as a missing case rather than as a decode failure on a live tap. The
+ * order, so a divergence shows up as a missing case rather than as a decode failure on a live queue. The
  * one case with no twin is the offset one: {@code unwrapFrame} takes a pointer, so its caller offsets.
  */
 class SequencedFrameDecoderTest {

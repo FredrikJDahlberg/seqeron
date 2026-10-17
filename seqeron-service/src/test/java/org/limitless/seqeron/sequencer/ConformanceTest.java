@@ -171,14 +171,13 @@ class ConformanceTest {
                          SequencedDecoder.payloadHeaderLength(), "sequenced fixed overhead, both families");
 
         // A ClusterHeartbeat is a template of its own: no length prefix and no payload at all.
-        assertEquals(42, tapSynthesized(1, ClusterHeartbeatDecoder.TEMPLATE_ID,
-                                        SystemFrame.CLUSTER_HEARTBEAT).length,
+        assertEquals(42, queueSynthesized(1, ClusterHeartbeatDecoder.TEMPLATE_ID, SystemFrame.CLUSTER_HEARTBEAT).length,
                      "8 + 34, the cheapest frame in the system");
-        assertEquals(50, tapSynthesized(1, SnapshotStartedDecoder.TEMPLATE_ID, SystemFrame.SNAPSHOT_STARTED).length,
+        assertEquals(50, queueSynthesized(1, SnapshotStartedDecoder.TEMPLATE_ID, SystemFrame.SNAPSHOT_STARTED).length,
                      "8 + 34 + the round");
 
         assertEquals(44 + FrameLayer.MAX_PAYLOAD_LENGTH,
-                     tapPayloadFrame(1, PAYLOAD_ID, syntheticPayload(FrameLayer.MAX_PAYLOAD_LENGTH)).length,
+                     queuePayloadFrame(1, PAYLOAD_ID, syntheticPayload(FrameLayer.MAX_PAYLOAD_LENGTH)).length,
                      "§12's ceiling as a frame on the wire");
     }
 
@@ -241,7 +240,7 @@ class ConformanceTest {
         assertEquals(42, frames.lastLength(), "no payload at all — the cheapest frame in the system (§4.2)");
         assertEquals(SystemFrame.CLUSTER_HEARTBEAT, wrapSequenced().systemEventType(),
                      "systemEventType is populated on a synthesized frame too, so offset 16 discriminates "
-                     + "every frame on the tap");
+                         + "every frame on the queue");
         assertEquals(-1, wrapSequenced().sourceId(), "-1 marks the synthesized class (F-4)");
 
         sequencer.leadershipChanged(7, 2, TIMESTAMP);
@@ -489,7 +488,7 @@ class ConformanceTest {
         // legal (§5) and must still reach the consumer, or P-3's continuity read sees a gap that is not
         // there.
         for (final int payloadLength : new int[] { 0, 1, FrameLayer.MAX_PAYLOAD_LENGTH }) {
-            final byte[] frame = tapPayloadFrame(11, PAYLOAD_ID, syntheticPayload(payloadLength));
+            final byte[] frame = queuePayloadFrame(11, PAYLOAD_ID, syntheticPayload(payloadLength));
             final SequencedFrameDecoder view = new SequencedFrameDecoder();
             assertTrue(view.wrap(new org.agrona.concurrent.UnsafeBuffer(frame), 0, frame.length),
                        "a payload of " + payloadLength + " bytes does not decode");
@@ -507,18 +506,18 @@ class ConformanceTest {
     void selectiveConsumption() {
         // A contiguous run over all six sequenced messages: an application payload under a payloadId
         // nothing allocates, a submitted system event no consumer here handles, and the four synthesized.
-        final List<byte[]> tap = new ArrayList<>();
-        tap.add(tapPayloadFrame(1, 4095, syntheticPayload(8)));
-        tap.add(tapSystemFrame(2, SystemFrame.PAYLOAD_ID_REGISTERED, payloadIdRegisteredBody()));
-        tap.add(tapSynthesized(3, ClusterHeartbeatDecoder.TEMPLATE_ID, SystemFrame.CLUSTER_HEARTBEAT));
-        tap.add(tapSynthesized(4, LeadershipChangedDecoder.TEMPLATE_ID, SystemFrame.LEADERSHIP_CHANGED));
-        tap.add(tapSynthesized(5, GatewayActiveDecoder.TEMPLATE_ID, SystemFrame.GATEWAY_ACTIVE));
-        tap.add(tapSynthesized(6, SnapshotStartedDecoder.TEMPLATE_ID, SystemFrame.SNAPSHOT_STARTED));
+        final List<byte[]> queue = new ArrayList<>();
+        queue.add(queuePayloadFrame(1, 4095, syntheticPayload(8)));
+        queue.add(queueSystemFrame(2, SystemFrame.PAYLOAD_ID_REGISTERED, payloadIdRegisteredBody()));
+        queue.add(queueSynthesized(3, ClusterHeartbeatDecoder.TEMPLATE_ID, SystemFrame.CLUSTER_HEARTBEAT));
+        queue.add(queueSynthesized(4, LeadershipChangedDecoder.TEMPLATE_ID, SystemFrame.LEADERSHIP_CHANGED));
+        queue.add(queueSynthesized(5, GatewayActiveDecoder.TEMPLATE_ID, SystemFrame.GATEWAY_ACTIVE));
+        queue.add(queueSynthesized(6, SnapshotStartedDecoder.TEMPLATE_ID, SystemFrame.SNAPSHOT_STARTED));
 
         // A consumer that recognises none of them still reads every one, and tracks continuity across all
         // six: the read is branch-free because globalSeqNo sits at 18 on every sequenced message (F-3).
         long expected = 1;
-        for (final byte[] frame : tap) {
+        for (final byte[] frame : queue) {
             final SequencedFrameDecoder view = new SequencedFrameDecoder();
             assertTrue(view.wrap(new org.agrona.concurrent.UnsafeBuffer(frame), 0, frame.length),
                        "globalSeqNo " + expected + " is not readable, so P-3 would lose it");
@@ -527,7 +526,7 @@ class ConformanceTest {
         }
 
         // And an empty payload is a frame like any other: it names no message, but it holds a globalSeqNo.
-        final byte[] empty = tapPayloadFrame(7, 4095, new byte[0]);
+        final byte[] empty = queuePayloadFrame(7, 4095, new byte[0]);
         final SequencedFrameDecoder view = new SequencedFrameDecoder();
         assertTrue(view.wrap(new org.agrona.concurrent.UnsafeBuffer(empty), 0, empty.length));
         assertEquals(7, view.globalSeqNo());
@@ -535,7 +534,7 @@ class ConformanceTest {
     }
 
     /** One synthesized message, built directly so its globalSeqNo is the fixture's rather than a sequencer's. */
-    private static byte[] tapSynthesized(final long globalSeqNo, final int templateId, final int systemEventType) {
+    private static byte[] queueSynthesized(final long globalSeqNo, final int templateId, final int systemEventType) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(64);
         if (templateId == ClusterHeartbeatDecoder.TEMPLATE_ID) {
             final org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder encoder =
@@ -766,8 +765,8 @@ class ConformanceTest {
         return lastIngressLength;
     }
 
-    /** A tap-side {@code Sequenced} frame, built directly rather than through the sequencer. */
-    private static byte[] tapPayloadFrame(final long globalSeqNo, final int payloadId, final byte[] payload) {
+    /** A queue-side {@code Sequenced} frame, built directly rather than through the sequencer. */
+    private static byte[] queuePayloadFrame(final long globalSeqNo, final int payloadId, final byte[] payload) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(payload.length + 64);
         final org.limitless.seqeron.sbe.frame.SequencedEncoder encoder =
             new org.limitless.seqeron.sbe.frame.SequencedEncoder();
@@ -779,7 +778,7 @@ class ConformanceTest {
     }
 
     /** The same for the submitted system family. */
-    private static byte[] tapSystemFrame(final long globalSeqNo, final int systemEventType, final byte[] body) {
+    private static byte[] queueSystemFrame(final long globalSeqNo, final int systemEventType, final byte[] body) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(body.length + 64);
         final org.limitless.seqeron.sbe.frame.SequencedSystemEncoder encoder =
             new org.limitless.seqeron.sbe.frame.SequencedSystemEncoder();

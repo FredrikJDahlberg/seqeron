@@ -6,7 +6,7 @@ using Frame = Org.Limitless.Seqeron.Sbe.Frame;
 namespace Org.Limitless.Seqeron.Replayer.Client;
 
 /// <summary>
-/// Builds a <see cref="SequencedEvent"/> for the tests of what consumes one. An event is a view over a real tap
+/// Builds a <see cref="SequencedEvent"/> for the tests of what consumes one. An event is a view over a real queue
 /// frame, so this encodes one rather than setting fields: the same bytes the sequencer would emit, read back
 /// through the same decoder.
 /// </summary>

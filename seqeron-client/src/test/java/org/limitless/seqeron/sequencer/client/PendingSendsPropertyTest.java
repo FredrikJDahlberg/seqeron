@@ -24,7 +24,7 @@ import org.limitless.seqeron.helpers.SplitMix64;
  * its own term and drops the rest, commits a prefix, and loses everything uncommitted at an election. After
  * one, the old leader either still takes ingress and drops it, or is gone and a send spins until egress brings
  * the {@code NewLeader} — giving the send up if the hold is on, as {@code ClusterStreamSender} does. The
- * sender may reconnect on a new session then. The tap lags, a sibling shares the producer's {@code sourceId},
+ * sender may reconnect on a new session then. The queue lags, a sibling shares the producer's {@code sourceId},
  * and term ids skip, as after a failed ballot.
  *
  * <p>Checked once the faults stop and everything has drained: the log holds every frame the producer sent
@@ -39,7 +39,7 @@ class PendingSendsPropertyTest {
     private static final long LEADERSHIP_CHANGED = -1;
     private static final int PAYLOAD_ID = 6;
 
-    /** One tap entry: frame {@code value} from {@code session}, or a term's LeadershipChanged. */
+    /** One queue entry: frame {@code value} from {@code session}, or a term's LeadershipChanged. */
     private record Entry(long session, long value) { }
 
     private final PendingSends pending = new PendingSends(CAPACITY);
@@ -49,8 +49,8 @@ class PendingSendsPropertyTest {
     private final ModelSender sender = new ModelSender();
     /** Accepted by the current leader, not yet committed. */
     private final ArrayDeque<Entry> uncommitted = new ArrayDeque<>();
-    /** Committed, not yet delivered to the producer's tap. */
-    private final ArrayDeque<Entry> tap = new ArrayDeque<>();
+    /** Committed, not yet delivered to the producer's queue. */
+    private final ArrayDeque<Entry> queue = new ArrayDeque<>();
     /** The producer's frames in log order. */
     private final List<Long> log = new ArrayList<>();
     private SplitMix64 rng;
@@ -99,7 +99,7 @@ class PendingSendsPropertyTest {
             } else if (action < 50) {
                 commit(rng.roll(4));
             } else if (action < 55) {
-                tap.add(new Entry(SIBLING, rng.roll(8)));
+                queue.add(new Entry(SIBLING, rng.roll(8)));
             } else if (action < 80) {
                 deliver(rng.roll(4));
             } else if (action < 85) {
@@ -107,7 +107,7 @@ class PendingSendsPropertyTest {
             } else if (action < 87) {
                 uncommitted.clear();
                 clusterTerm += 1 + rng.roll(2);
-                tap.add(new Entry(LEADERSHIP_CHANGED, clusterTerm));
+                queue.add(new Entry(LEADERSHIP_CHANGED, clusterTerm));
                 oldLeaderTakesIngress = rng.roll(2) == 0;
             } else if (senderTerm != clusterTerm) {
                 newLeader();
@@ -152,13 +152,13 @@ class PendingSendsPropertyTest {
         for (int k = count; k > 0 && !uncommitted.isEmpty(); k--) {
             final Entry entry = uncommitted.poll();
             log.add(entry.value());
-            tap.add(entry);
+            queue.add(entry);
         }
     }
 
     private void deliver(final int count) {
-        for (int k = count; k > 0 && !tap.isEmpty(); k--) {
-            final Entry entry = tap.poll();
+        for (int k = count; k > 0 && !queue.isEmpty(); k--) {
+            final Entry entry = queue.poll();
             if (entry.session() == LEADERSHIP_CHANGED) {
                 pending.onLeadershipChanged(entry.value());
                 continue;

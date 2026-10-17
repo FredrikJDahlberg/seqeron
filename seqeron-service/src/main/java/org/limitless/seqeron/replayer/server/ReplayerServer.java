@@ -26,8 +26,8 @@ import org.limitless.seqeron.util.Logger;
  * serves replays from it regardless of leadership.
  *
  * <p><b>On a gateway host</b>, one that runs no member, {@link #main} runs it on its own media driver and
- * archive, and an {@link AeronTapRelay} copies a member's tap onto a local one over UDP, moving to the next
- * member when that one is lost. Clients on the host use the local tap and this Replayer exactly as they would
+ * archive, and an {@link AeronQueueRelay} copies a member's queue onto a local one over UDP, moving to the next
+ * member when that one is lost. Clients on the host use the local queue and this Replayer exactly as they would
  * on a member; they submit over UDP ingress.
  *
  * <p>System properties of {@link #main}:
@@ -75,7 +75,7 @@ public final class ReplayerServer {
     private final int memberId;
     private final Aeron aeron;
     private final AeronArchive archive;
-    private final AeronTapRelay relay;
+    private final AeronQueueRelay relay;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final Thread replayerThread;
     private final Thread relayThread;
@@ -149,7 +149,7 @@ public final class ReplayerServer {
         final IdleStrategy idleStrategy = idleStrategies.get();
         relay = archiveEndpoints == null
             ? null
-            : new AeronTapRelay(aeron, archive, archiveEndpoints, host, memberId, idleStrategies.get(), fatalHandler);
+            : new AeronQueueRelay(aeron, archive, archiveEndpoints, host, memberId, idleStrategies.get(), fatalHandler);
         relayThread = relay == null ? null : new Thread(() -> relay.run(running), "relay-" + memberId);
         final ReplayerService replayer = new ReplayerService(aeron, archive, memberId, idleStrategy, fatalHandler);
         replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);

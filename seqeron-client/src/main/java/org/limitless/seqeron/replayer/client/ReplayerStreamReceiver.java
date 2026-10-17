@@ -21,17 +21,17 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * App-replica side of the per-node {@code ReplayerService} — the Java twin of
- * {@code replayer/client/ReplayerStreamReceiver.hpp}. Reads the co-located tap live and asks the Replayer
+ * {@code replayer/client/ReplayerStreamReceiver.hpp}. Reads the co-located queue live and asks the Replayer
  * for history and gaps. The Aeron adapter only: every decision lives in {@link ReplayerRecovery}.
  *
  * <p>Single-threaded: every method runs on the one duty-cycle thread.
  */
 public final class ReplayerStreamReceiver implements AutoCloseable {
-    /** The tap as a consumer addresses it: untethered, so a slow app is dropped and heals via replay. */
-    public static final String FEEDER_CONSUMER_CHANNEL = FrameLayer.FEEDER_CHANNEL + "|tether=false";
+    /** The queue as a consumer addresses it: untethered, so a slow app is dropped and heals via replay. */
+    public static final String QUEUE_CONSUMER_CHANNEL = FrameLayer.QUEUE_CHANNEL + "|tether=false";
 
     /**
-     * Untethered like the tap: the Replayer answers every app from one thread, so an app that stops polling
+     * Untethered like the queue: the Replayer answers every app from one thread, so an app that stops polling
      * must not back-pressure the others' replies. A dropped reply costs one resend interval.
      */
     private static final String CONTROL_CHANNEL = ReplayProtocol.IPC_CHANNEL + "|tether=false";
@@ -44,13 +44,13 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     private final int clientId;
     private final Actions actions = new Actions();
     private final ReplayerRecovery recovery;
-    private final BooleanSupplier tapFaults;
+    private final BooleanSupplier queueFaults;
 
     private final MessageHeaderEncoder requestHeader = new MessageHeaderEncoder();
     private final ReplayRequestEncoder replayRequest = new ReplayRequestEncoder();
     private final UnsafeBuffer requestBuffer = new UnsafeBuffer(new byte[REQUEST_BUFFER_LENGTH]);
 
-    private final FragmentHandler tapHandler;
+    private final FragmentHandler queueHandler;
     private final FragmentHandler replayHandler;
     private final FragmentHandler controlFragmentHandler;
 
@@ -59,7 +59,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     /** The id the Replayer addresses this receiver's replies to, drawn from the driver at start; -1 before. */
     private long replyId = -1;
-    private Subscription tapSubscription;
+    private Subscription queueSubscription;
     private Subscription replaySubscription;
     private Subscription controlSubscription;
     private Publication requestPublication;
@@ -67,7 +67,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     private Counter recoveryStalledCounter;
 
     /**
-     * A receiver that injects no tap faults.
+     * A receiver that injects no queue faults.
      *
      * @param clientId            this replica's id on the node, its counters' {@code client} label; replicas
      *                            sharing one share their counters' series
@@ -82,16 +82,16 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     }
 
     /**
-     * As above, dropping a live tap frame whenever {@code tapFaults} answers true. Test harnesses only.
-     * @param tapFaults polled once per live tap frame, on the poll thread; null drops nothing
+     * As above, dropping a live queue frame whenever {@code queueFaults} answers true. Test harnesses only.
+     * @param queueFaults polled once per live queue frame, on the poll thread; null drops nothing
      */
     public ReplayerStreamReceiver(final int clientId, final SequencedHandler onSequenced,
                                   final LeadershipHandler onLeadershipChanged, final CaughtUpHandler onCaughtUp,
-                                  final BooleanSupplier tapFaults) {
+                                  final BooleanSupplier queueFaults) {
         this.clientId = clientId;
-        this.tapFaults = tapFaults;
+        this.queueFaults = queueFaults;
         this.recovery = new ReplayerRecovery(actions, onSequenced, onLeadershipChanged, onCaughtUp);
-        this.tapHandler = new FragmentAssembler(this::onTapFragment);
+        this.queueHandler = new FragmentAssembler(this::onQueueFragment);
         this.replayHandler = new FragmentAssembler(this::onReplayFragment);
         this.controlFragmentHandler =
             new FragmentAssembler((buffer, offset, length, hdr) -> recovery.onControl(buffer, offset, length));
@@ -107,7 +107,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     }
 
     /**
-     * Subscribes the tap and control streams, opens the request publication and the convergence counter,
+     * Subscribes the queue and control streams, opens the request publication and the convergence counter,
      * and requests the cold-start replay from the recording's start, or the snapshot to restore first.
      * @param aeron    client sharing the co-located node's media driver
      * @param memberId this app's node, to label the counter
@@ -121,7 +121,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         recoveryStalledCounter = SeqeronCounters.addAppCounter(
             aeron, SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + memberId + " client=" + clientId, memberId, clientId);
-        tapSubscription = aeron.addSubscription(FEEDER_CONSUMER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
+        queueSubscription = aeron.addSubscription(QUEUE_CONSUMER_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
         controlSubscription = aeron.addSubscription(CONTROL_CHANNEL, ReplayProtocol.CONTROL_STREAM_ID);
         requestPublication = aeron.addPublication(ReplayProtocol.IPC_CHANNEL, ReplayProtocol.REQUEST_STREAM_ID);
         recovery.start();
@@ -129,7 +129,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     /**
      * One duty-cycle iteration: drain control, ride an attached replay image, and always drain and dispatch
-     * the tap — {@link ReplayerRecovery}'s contiguity check, not the poll routing, decides what a tap frame is
+     * the queue — {@link ReplayerRecovery}'s contiguity check, not the poll routing, decides what a queue frame is
      * worth mid-walk.
      * @return fragments consumed
      * @throws IllegalStateException once this node's recording does not hold what recovery asked of it
@@ -163,15 +163,15 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                 }
             }
         }
-        if (tapSubscription != null) {
-            work += tapSubscription.poll(tapHandler, FRAGMENT_LIMIT);
+        if (queueSubscription != null) {
+            work += queueSubscription.poll(queueHandler, FRAGMENT_LIMIT);
         }
 
         recovery.checkRecoveryProgress();
         return work;
     }
 
-    /** Whether this client is following the live tail; revoked on a tap gap, re-established at the seam. */
+    /** Whether this client is following the live tail; revoked on a queue gap, re-established at the seam. */
     public boolean isCaughtUp() {
         return recovery.isCaughtUp();
     }
@@ -201,9 +201,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     public void close() {
         actions.closeReplay();
         recovery.close();
-        if (tapSubscription != null) {
-            tapSubscription.close();
-            tapSubscription = null;
+        if (queueSubscription != null) {
+            queueSubscription.close();
+            queueSubscription = null;
         }
         if (controlSubscription != null) {
             controlSubscription.close();
@@ -224,9 +224,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
      * - frameLength}: {@code position()} is the next frame's, aligned to 32 bytes, and a replay position must
      * sit on a frame boundary.
      */
-    private void onTapFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
-                               final io.aeron.logbuffer.Header header) {
-        if (tapFaults != null && tapFaults.getAsBoolean()) {
+    private void onQueueFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
+                                 final io.aeron.logbuffer.Header header) {
+        if (queueFaults != null && queueFaults.getAsBoolean()) {
             return;
         }
         recovery.onFrame(buffer, offset, length, frameStartPosition(header), nowNs(), false);

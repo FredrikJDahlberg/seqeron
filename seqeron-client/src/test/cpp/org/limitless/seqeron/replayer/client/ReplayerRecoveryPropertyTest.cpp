@@ -3,7 +3,7 @@
 //
 // ReplayerRecoveryTest.cpp names one situation per case and asserts the decision taken in it, which is what
 // pins the protocol down, but it can only reach the interleavings someone thought to write. Here the node's
-// archive, its tap and its Replayer are simulated, a seeded generator drives faults through them, and the
+// archive, its queue and its Replayer are simulated, a seeded generator drives faults through them, and the
 // two properties recovery exists to provide are asserted over whatever comes out.
 //
 // Safety   — every dispatched frame is the next globalSeqNo, always. No gap, no duplicate, no reordering,
@@ -14,8 +14,8 @@
 //            without this one the suite would pass on a client that gave up.
 //
 // The e2e harnesses reach these paths too, but a chaos run produces single-digit gap episodes in minutes,
-// all of one kind — one dropped frame on a live tap. A run here is a few hundred, mixing drops with lost
-// requests, held requests, truncated images, stalled replays and tap redeliveries, in under a second.
+// all of one kind — one dropped frame on a live queue. A run here is a few hundred, mixing drops with lost
+// requests, held requests, truncated images, stalled replays and queue redeliveries, in under a second.
 //
 // Restore   — a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut on,
 //            under the same faults, and its restored state plus the frames after the cut equals the state a full
@@ -134,7 +134,7 @@ std::vector<std::uint8_t> encodeReplayPending(const std::int64_t requestId)
     return buf;
 }
 
-// One seeded run: the node's archive, its tap and its Replayer, driving one ReplayerRecovery.
+// One seeded run: the node's archive, its queue and its Replayer, driving one ReplayerRecovery.
 //
 // Implements ReplayerRecoveryActions itself — the client's every outbound act is a request arriving at this
 // Replayer, so recording them and serving them are the same object.
@@ -152,7 +152,7 @@ struct Simulation final
     void execute()
     {
         // History before the client starts. A cold start over an EMPTY archive that then drops the very
-        // first tap frame is the one designed abort — the first frame observed must be globalSeqNo 1 — and
+        // first queue frame is the one designed abort — the first frame observed must be globalSeqNo 1 — and
         // not a recovery failure, so the model does not construct it.
         if (restoring)
         {
@@ -175,12 +175,12 @@ struct Simulation final
             chaosStep();
         }
 
-        // Quiescence: faults off, but the tap keeps running. A hole the chaos phase left open is only ever
-        // discovered by the NEXT tap frame, so convergence has to be given one.
+        // Quiescence: faults off, but the queue keeps running. A hole the chaos phase left open is only ever
+        // discovered by the NEXT queue frame, so convergence has to be given one.
         chaos = false;
         for (int i = 0; i < 3; ++i)
         {
-            deliverTap(publish());
+            deliverQueue(publish());
         }
         for (int step = 0; step < QUIESCE_STEPS && !broken && !converged(); ++step)
         {
@@ -281,10 +281,10 @@ struct Simulation final
             case 2:
             case 3: {
                 const std::int64_t globalSeqNo = publish();
-                // A tap drop is the fault the whole resume path exists for, so it is the common one.
+                // A queue drop is the fault the whole resume path exists for, so it is the common one.
                 if (!chance(20))
                 {
-                    deliverTap(globalSeqNo);
+                    deliverQueue(globalSeqNo);
                 }
                 break;
             }
@@ -321,26 +321,26 @@ struct Simulation final
                 recovery.doTimers(/*requestPublicationPending=*/false);
                 break;
             default:
-                // The same tap frame offered twice. Both de-dupes have to hold: the contiguity one when it
+                // The same queue frame offered twice. Both de-dupes have to hold: the contiguity one when it
                 // sits at or below the baseline, and the retained FIFO's when it is ahead of a hole.
-                if (lastTapped > 0)
+                if (lastLive > 0)
                 {
-                    deliver(lastTapped, /*fromReplay=*/false);
+                    deliver(lastLive, /*fromReplay=*/false);
                 }
                 break;
         }
     }
 
-    // ── the tap ───────────────────────────────────────────────────────────────────────────────────────
+    // ── the queue ───────────────────────────────────────────────────────────────────────────────────────
 
     std::int64_t publish()
     {
         return ++tip;
     }
 
-    void deliverTap(const std::int64_t globalSeqNo)
+    void deliverQueue(const std::int64_t globalSeqNo)
     {
-        lastTapped = globalSeqNo;
+        lastLive = globalSeqNo;
         deliver(globalSeqNo, /*fromReplay=*/false);
     }
 
@@ -375,7 +375,7 @@ struct Simulation final
         serveReplay(requestId, fromPosition / STRIDE + 1, tip);
     }
 
-    // Bound at the tip the recording holds NOW — frames published later are the tap's problem, not this
+    // Bound at the tip the recording holds NOW — frames published later are the queue's problem, not this
     // replay's, which is exactly how a bounded replay of an active recording behaves.
     void serveReplay(const std::int64_t requestId, const std::int64_t fromSeqNo, const std::int64_t toSeqNo)
     {
@@ -528,7 +528,7 @@ struct Simulation final
     std::int64_t replayCursor = 0;
     std::int64_t replayEndSeqNo = -1;
 
-    std::int64_t lastTapped = 0; // last globalSeqNo the tap delivered — what a redelivery re-offers
+    std::int64_t lastLive = 0; // last globalSeqNo the queue delivered — what a redelivery re-offers
     std::int64_t clockMs = CLOCK_MS;
     bool chaos = true;
     bool broken = false;

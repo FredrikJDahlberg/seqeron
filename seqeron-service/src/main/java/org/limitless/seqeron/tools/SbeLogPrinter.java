@@ -46,7 +46,7 @@ import uk.co.real_logic.sbe.otf.OtfMessageDecoder;
  * so a product jar alongside contributes its own payload schemas and this jar alone names none. Each frame
  * is decoded against the schema its header names; naming one narrows the dump, or an IR file can be given.
  *
- * <p>Every valid recording is dumped by default, and a node restart mints a new tap recording, so the
+ * <p>Every valid recording is dumped by default, and a node restart mints a new queue recording, so the
  * output repeats history; pass a stream id to select. See {@link #scanAndDumpLog()}.
  */
 public class SbeLogPrinter {

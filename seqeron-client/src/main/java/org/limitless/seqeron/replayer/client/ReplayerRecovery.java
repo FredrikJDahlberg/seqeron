@@ -20,12 +20,12 @@ import org.limitless.seqeron.util.Logger;
  * start, which holds the whole log; catch-up is detected by position ({@code Replaying.catchUpPosition}); a gap
  * by globalSeqNo, repaired by resuming the active recording at the last dispatched frame.
  *
- * <p>The replay-to-live seam is closed by the tap itself: the untethered tap is polled every duty cycle, so
+ * <p>The replay-to-live seam is closed by the queue itself: the untethered queue is polled every duty cycle, so
  * frames beyond the current hole are retained and drained once contiguous. While {@link #isRecovering()} a
- * non-contiguous tap frame is expected rather than a new gap, and it may not set the globalSeqNo baseline
+ * non-contiguous queue frame is expected rather than a new gap, and it may not set the globalSeqNo baseline
  * before the walk has — a cold start would otherwise adopt a mid-stream baseline.
  *
- * <p>{@link #isCaughtUp()} is cleared on a live-tap gap and re-established once contiguous: consumers gate
+ * <p>{@link #isCaughtUp()} is cleared on a live-queue gap and re-established once contiguous: consumers gate
  * real decisions on it. Single-threaded: every method runs on the one duty-cycle thread.
  *
  * <p>Given a snapshot store ({@link #restoreFrom}), a cold start first restores the newest snapshot it holds
@@ -112,7 +112,7 @@ final class ReplayerRecovery {
     private boolean caughtUp;
     private int currentLeaderMemberId = -1;
 
-    // Live tap frames from beyond the current hole, retained in arrival order.
+    // Live queue frames from beyond the current hole, retained in arrival order.
     private final Deque<RetainBlock> retained = new ArrayDeque<>();
     private final List<RetainBlock> retainPool = new ArrayList<>();
     private int retainReadOffset;
@@ -191,11 +191,11 @@ final class ReplayerRecovery {
 
     /**
      * Decodes one sequenced frame and applies the contiguity rules.
-     * @param framePosition where this frame starts in the recording — the tap, a replay image and the
+     * @param framePosition where this frame starts in the recording — the queue, a replay image and the
      *                      recording itself all count positions in the same space
-     * @param receiveNs     when the frame arrived, so a consumer's delivery-latency stats measure the tap
+     * @param receiveNs     when the frame arrived, so a consumer's delivery-latency stats measure the queue
      *                      rather than the drain of the retained FIFO
-     * @param fromReplay    whether the frame arrived on a replay image rather than the live tap
+     * @param fromReplay    whether the frame arrived on a replay image rather than the live queue
      */
     public void onFrame(final DirectBuffer buffer, final int offset, final int length, final long framePosition,
                         final long receiveNs, final boolean fromReplay) {
@@ -226,8 +226,8 @@ final class ReplayerRecovery {
             if (globalSeqNo > lastGlobalSeqNo + 1) {
                 if (!fromReplay && !isRecovering()) {
                     Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                               Logger.CoreEventCode.TapGap, actions.memberId(),
-                               "tap gap: expected globalSeqNo=%d got %d — resuming the recording at "
+                               Logger.CoreEventCode.QueueGap, actions.memberId(),
+                               "queue gap: expected globalSeqNo=%d got %d — resuming the recording at "
                                    + "globalSeqNo=%d",
                                lastGlobalSeqNo + 1, globalSeqNo, lastGlobalSeqNo);
                     // No longer following live: consumers gate real decisions on isCaughtUp(), and it must
@@ -240,7 +240,7 @@ final class ReplayerRecovery {
                 } else if (!replayGapLogged) {
                     replayGapLogged = true;
                     Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                               Logger.CoreEventCode.TapGap, actions.memberId(),
+                               Logger.CoreEventCode.QueueGap, actions.memberId(),
                                "gap in REPLAYED history: expected globalSeqNo=%d got %d — this node's recording "
                                    + "does not cover the hole; recovery cannot converge until it does",
                                lastGlobalSeqNo + 1, globalSeqNo);
@@ -325,7 +325,7 @@ final class ReplayerRecovery {
             onReplayReachedBound();
             return;
         }
-        Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.TapGap,
+        Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.QueueGap,
                    actions.memberId(),
                    "replay image closed at position %d, short of catchUpPosition %d — the replay was stopped "
                        + "under us; re-requesting it",
@@ -382,7 +382,7 @@ final class ReplayerRecovery {
         return true;
     }
 
-    /** Whether this client is following the live tail; revoked on a tap gap, re-established at the seam. */
+    /** Whether this client is following the live tail; revoked on a queue gap, re-established at the seam. */
     public boolean isCaughtUp() {
         return caughtUp;
     }
@@ -409,8 +409,8 @@ final class ReplayerRecovery {
     }
 
     /**
-     * Mid-replay (cold-start walk or gap resume) or awaiting the Replayer's answer: a non-contiguous live-tap
-     * frame is expected while this holds (the tap runs ahead of the replay), so {@link #onFrame} drops it
+     * Mid-replay (cold-start walk or gap resume) or awaiting the Replayer's answer: a non-contiguous live-queue
+     * frame is expected while this holds (the queue runs ahead of the replay), so {@link #onFrame} drops it
      * without treating it as a new gap.
      */
     public boolean isRecovering() {
@@ -633,7 +633,7 @@ final class ReplayerRecovery {
                      + lastGlobalSeqNo);
                 return;
             }
-            replaySessionId = -1; // the recording holds nothing yet — follow the live tap
+            replaySessionId = -1; // the recording holds nothing yet — follow the live queue
             if (reachedTip()) {
                 notifyCaughtUp();
             }
@@ -652,13 +652,13 @@ final class ReplayerRecovery {
         awaitingReplay = false;
         replaySessionId = -1;
         actions.closeReplay();
-        Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.TapGap, actions.memberId(),
+        Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.QueueGap, actions.memberId(),
                      "FATAL: %s — this node's recording does not match the positions this client holds", reason);
     }
 
     /** An attached (or expected) replay stopped delivering — see the watchdog in {@link #doTimers}. */
     private void onReplayStalled() {
-        Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.TapGap,
+        Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.QueueGap,
                    actions.memberId(),
                    "replay session %d made no progress for %dms at position %d of catchUpPosition %d — "
                        + "re-requesting it",
@@ -707,7 +707,7 @@ final class ReplayerRecovery {
     }
 
     /**
-     * Keeps a live tap frame from beyond the current hole; one not kept is gone. Bounded and lossy past the
+     * Keeps a live queue frame from beyond the current hole; one not kept is gone. Bounded and lossy past the
      * bound (overflow falls back to a resume). A plain FIFO: one image delivers globalSeqNo in order, so
      * only an exact redelivery needs checking.
      */
@@ -720,8 +720,7 @@ final class ReplayerRecovery {
             if (!retainOverflowLogged) {
                 retainOverflowLogged = true;
                 Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                           Logger.CoreEventCode.TapGap,
-                           actions.memberId(),
+                           Logger.CoreEventCode.QueueGap, actions.memberId(),
                            "retained-frame buffer full at globalSeqNo=%d (%d frames, %d bytes) — dropping "
                                + "ahead-of-hole frames; recovery resumes at the last dispatched frame",
                            globalSeqNo, retainFrameCount, retainBytes);
@@ -729,7 +728,7 @@ final class ReplayerRecovery {
             return;
         }
         if (retainFrameCount > 0 && globalSeqNo <= retainTailGlobalSeqNo) {
-            return; // already retained (the tap redelivered it) — keep the first copy
+            return; // already retained (the queue redelivered it) — keep the first copy
         }
         if (retained.isEmpty() || retained.peekLast().used + recordSize > RetainBlock.SIZE) {
             retained.addLast(acquireBlock());
@@ -781,7 +780,7 @@ final class ReplayerRecovery {
     /**
      * The replay side says we are at the tip. Whether we are is the retained FIFO's call: a retained frame
      * may sit behind a hole the replay never reached, or an overflow dropped frames. Either way this resumes
-     * at the last dispatched frame now rather than waiting for a later tap frame to rediscover the hole.
+     * at the last dispatched frame now rather than waiting for a later queue frame to rediscover the hole.
      * @return true only once nothing is left waiting and no overflow is latched
      */
     private boolean reachedTip() {

@@ -19,9 +19,9 @@ public enum ClusterError
     /// designated gateway instance or the leader's replica fences, any other logs it.</summary>
     RecoveryStalled,
 
-    /// <summary>No <c>ClusterHeartbeat</c> for the deadline: this process has stopped seeing its node's tap. Fences
+    /// <summary>No <c>ClusterHeartbeat</c> for the deadline: this process has stopped seeing its node's queue. Fences
     /// as <see cref="RecoveryStalled"/> does.</summary>
-    TapStalled,
+    QueueStalled,
 
     /// <summary>This instance's snapshot of a round differs from its source's sequenced one: its state is not the
     /// log's (A-7).</summary>

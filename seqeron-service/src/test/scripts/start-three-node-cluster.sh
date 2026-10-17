@@ -5,7 +5,7 @@
 # The cluster tier alone, in every mode. This script is core's, and it launches core's processes only:
 #
 #   1. SequencerServer  x3  (Java, Raft members 0/1/2, all on localhost, each with its Replayer: serves
-#                            archive replay to co-located apps over aeron:ipc; apps read the tap directly
+#                            archive replay to co-located apps over aeron:ipc; apps read the queue directly
 #                            for live)
 #   2. ClusterProbe follow x3 (Java, one per-node consumer replica — the edge-neutral probe, so READY
 #                            still means "every node is following the live tail")
@@ -99,8 +99,8 @@ done
 echo "[start-three-node-cluster.sh] All 3 cluster members are running"
 
 # A consumer replica on every node. Each attaches to its own member's media driver (seqeron-seq-aeron-<m>):
-# the member's Replayer serves replay of that node's tap recording over aeron:ipc, and the replica reads
-# the tap directly for live, so whichever member is elected leader has one already
+# the member's Replayer serves replay of that node's queue recording over aeron:ipc, and the replica reads
+# the queue directly for live, so whichever member is elected leader has one already
 # following the live tail. Member 0's replica also records post-consensus delivery latency and prints
 # p50/p99/p99.9 on shutdown. Waiting for "serving replay" avoids a needless extra cold-start replay.
 APP_PIDS=()

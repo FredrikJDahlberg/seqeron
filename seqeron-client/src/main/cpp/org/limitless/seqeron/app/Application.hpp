@@ -47,7 +47,7 @@ concept ApplicationListener =
  * One replica of a co-located application — the kind of producer nothing elects. One runs per node, the
  * topology's `<applications>` section names it, and LeadershipChanged already picks the replica that submits:
  * this one publishes only while its own node leads. What that takes is behind it — the cluster session over
- * the node's own aeron:ipc, the tap it follows, the leader gate, confirmed ingress across a failover, and
+ * the node's own aeron:ipc, the queue it follows, the leader gate, confirmed ingress across a failover, and
  * the fences that say it may no longer act.
  *
  * Off the cluster (Config::offCluster), on a gateway host, it is the one instance rather than one of three:
@@ -85,7 +85,7 @@ class Application
         std::int32_t sourceId = -1;
         // This replica's client id, its counters' label; unique among the co-located apps on its node.
         std::int32_t clientId = 0;
-        // The node this replica runs on: whose tap it follows, and whose leadership opens its gate.
+        // The node this replica runs on: whose queue it follows, and whose leadership opens its gate.
         std::int32_t memberId = 0;
         // Whether this node is a gateway host, running no member, rather than a member: the gate then opens
         // whoever leads, and ingress is UDP alone. Run one instance, as nothing elects between two.
@@ -95,7 +95,7 @@ class Application
         // The members to reach when this node is not leading, "memberId=host:port,...".
         std::string ingressEndpoints = protocol::ingressEndpointsCsv();
         std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
-        std::int64_t tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
+        std::int64_t queueStallTimeoutMs = DEFAULT_QUEUE_STALL_TIMEOUT_MS;
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
         std::int64_t ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
         // What serializes this application's state for snapshot rounds and restores it on start; without one it
@@ -121,7 +121,7 @@ class Application
       m_store{ snapshotStore(m_config) },
       m_snapshots{ m_config.snapshotListener, m_store.get(), [this] { m_session.keepAlive(); } },
       m_dispatch{ *this },
-      m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
+      m_session{ m_config.clientId, m_config.pendingCapacity, m_config.queueStallTimeoutMs,
                  m_config.recoveryStallTimeoutMs, m_dispatch },
       m_snapshotFrames{ m_session, [this] { return m_config.sourceId; } }
     {
@@ -137,7 +137,7 @@ class Application
     Application& operator=(const Application&) = delete;
 
     /**
-     * Opens the cluster session on this node and starts following its tap; the gate stays shut until caught
+     * Opens the cluster session on this node and starts following its queue; the gate stays shut until caught
      * up.
      *
      * @param aeron the client, on this node's Aeron directory
@@ -164,7 +164,7 @@ class Application
         }
     }
 
-    // One duty-cycle iteration: the cluster session and the tap, then the gate over what they left. Nothing once
+    // One duty-cycle iteration: the cluster session and the queue, then the gate over what they left. Nothing once
     // fenced. Returns units of work done, for the caller's idle strategy.
     int doWork()
     {
@@ -289,7 +289,7 @@ class Application
         return m_session.lastGlobalSeqNo();
     }
 
-    // Closes the cluster session and the tap. The Aeron client is the caller's and is left open.
+    // Closes the cluster session and the queue. The Aeron client is the caller's and is left open.
     void close()
     {
         m_session.close();
@@ -334,7 +334,7 @@ class Application
         return m_session.publishPayload(frameSourceId, connectionId, payloadId, payload, payloadLength);
     }
 
-    // What comes off the tap, and the one frame the gate is driven by.
+    // What comes off the queue, and the one frame the gate is driven by.
     class SessionDispatch
     {
       public:

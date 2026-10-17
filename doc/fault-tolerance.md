@@ -32,11 +32,11 @@ procedure: a failed component restarts and replays.
 ### 1.1 Every node records a complete copy
 
 `SequencerService` runs on every member, leader and follower alike, and republishes every sequenced frame on
-the member's tap (`aeron:ipc`, stream 205), which the member's Aeron Archive records. Every member applies
-the same committed log in the same order, so the taps are byte-identical (spec **F-2**). There is no
+the member's queue (`aeron:ipc`, stream 205), which the member's Aeron Archive records. Every member applies
+the same committed log in the same order, so the queues are byte-identical (spec **F-2**). There is no
 cross-member replication of recordings and no leader-only archive.
 
-The tap publication and its recording are created once, in `onStart`, and survive leadership changes,
+The queue publication and its recording are created once, in `onStart`, and survive leadership changes,
 since `aeron:ipc` has no port to conflict on. A member's recording is therefore one continuous run across
 every leader tenure it has seen.
 
@@ -67,13 +67,13 @@ as is everything offered to its publication before the producer learns of the ne
 
 ### 1.3 A node that cannot record terminates itself
 
-A dropped frame would leave a permanent gap in a member's recording, so `TapPublisher.emit` retries the tap
+A dropped frame would leave a permanent gap in a member's recording, so `QueuePublisher.emit` retries the queue
 offer until it succeeds. Only the local archive can back-pressure that offer for long: the recording is the
-tap's one tethered subscriber, and client subscriptions are untethered. A client that stops polling holds
+queue's one tethered subscriber, and client subscriptions are untethered. A client that stops polling holds
 the window only until its driver drops it, within about 0.2 s ([`ops.md`](ops.md), "Untethered
 subscribers"), well inside the 1 s below.
 
-The retry is bounded. `TapPublisher` watches the archive's recording position and tells three cases apart:
+The retry is bounded. `QueuePublisher` watches the archive's recording position and tells three cases apart:
 
 | archive state | response |
 | --- | --- |
@@ -82,11 +82,11 @@ The retry is bounded. `TapPublisher` watches the archive's recording position an
 | recording gone | fatal at once |
 
 A stopped recording back-pressures nothing, since the untethered client subscriptions keep the publication
-connected, so the 1 Hz heartbeat also calls `TapPublisher.checkRecordingAlive`. If the consensus module
+connected, so the 1 Hz heartbeat also calls `QueuePublisher.checkRecordingAlive`. If the consensus module
 refuses the heartbeat timer for 1 s without a break, that is fatal too; otherwise the cluster clock would
 stop with no visible signal.
 
-A fatal condition logs `FATAL: … terminating this node`, sets `seqeron_sequencer_tap_stalled`, and exits
+A fatal condition logs `FATAL: … terminating this node`, sets `seqeron_sequencer_queue_stalled`, and exits
 with code 70 (`NodeDriver.EXIT_FATAL`); [`ops.md`](ops.md) has the operator's procedure. It does not throw:
 a cluster callback that throws has already had its log position advanced, and `AgentRunner` keeps the agent
 running, so the frame would be silently dropped (spec §9.4).
@@ -102,15 +102,15 @@ is refused until their liveness timeout (about 10 s) has passed.
 The remaining members hold identical recordings and keep quorum, and an election moves leadership if the
 failed member led. In a three-member cluster a second failure loses quorum. A restarted member replays the
 full log and rebuilds its recording. Start-up has the same bound — the recording must be live within 5 s
-(`TAP_RECORDING_START_TIMEOUT_MS`) — so a member that exits 70 again at once still has broken storage.
+(`QUEUE_RECORDING_START_TIMEOUT_MS`) — so a member that exits 70 again at once still has broken storage.
 
 ### 1.4 Shutdown and restart
 
 `clusterctl shutdown` runs on the leader. It publishes a `ClusterStopped` marker, waits (best effort) for it
-on the tap, then calls `ClusterTool.abort`. `SequencerServer` connects
+on the queue, then calls `ClusterTool.abort`. `SequencerServer` connects
 `ConsensusModule.Context.terminationHook` to a shutdown barrier, so each member closes its archive and
 flushes the recording before exiting. `clusterctl start` publishes `ClusterStarted` and waits for it on the
-tap, confirming that a leader is elected and ingress is accepted. [`clusterctl.md`](clusterctl.md) has both
+queue, confirming that a leader is elected and ingress is accepted. [`clusterctl.md`](clusterctl.md) has both
 procedures.
 
 ## 2. Gateways
@@ -131,36 +131,36 @@ sequencer promote the standby (§2.2) whatever the application does next; it usu
 | `ClusterError` | condition |
 | --- | --- |
 | `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived within the sender's timeout, on an instance that had announced its activation on it; or, on any other, no new session replaced it within 20 s and the attempt then under way failed |
-| `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s (20 heartbeat intervals) while caught up, on a designated instance or the leader's replica |
-| `RECOVERY_STALLED` | recovery has delivered nothing for 60 s (3 × the tap-stall timeout) on an instance that has been caught up before, on a designated instance or the leader's replica |
-| `INGRESS_CONFIRM_FAULTED` | an own frame on the tap differs from the oldest pending one (spec §16 A-4) |
+| `QUEUE_STALLED` | no `ClusterHeartbeat` on the co-located queue for 20 s (20 heartbeat intervals) while caught up, on a designated instance or the leader's replica |
+| `RECOVERY_STALLED` | recovery has delivered nothing for 60 s (3 × the queue-stall timeout) on an instance that has been caught up before, on a designated instance or the leader's replica |
+| `INGRESS_CONFIRM_FAULTED` | an own frame on the queue differs from the oldest pending one (spec §16 A-4) |
 | `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced (spec §16 A-7, §3.4) |
 | `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot (§3.4) |
 
-- **The tap-stall timer runs on local monotonic time.** Consensus time arrives in the very
-  `ClusterHeartbeat` frames being watched for, so it would stop with the tap.
-- **A replay is not a stall.** The tap-stall check is suspended while the instance is not caught up. The
+- **The queue-stall timer runs on local monotonic time.** Consensus time arrives in the very
+  `ClusterHeartbeat` frames being watched for, so it would stop with the queue.
+- **A replay is not a stall.** The queue-stall check is suspended while the instance is not caught up. The
   recovery-stall fence (`RecoveryStallFence`) covers that time instead, armed only after the first catch-up,
   because a cold start replays the whole log and has no useful bound.
 - **A correct Replayer cannot trip it.** The recovery-stall timeout (60 s) exceeds the Replayer's longest
   pending wait of 20 s (spec §10.1).
 - **Only an instance that acts fences on a stall:** the designated gateway instance, or the replica on the
   leader's member (any replica off the cluster). Another holds nothing a stale view could act on, so it logs
-  `TapStalled` or `RecoveryStalled` once, keeps following the tap and recovering, and logs when the stall
-  clears. It cannot begin to act while stalled, since designation and leadership reach it on the tap. A
+  `QueueStalled` or `RecoveryStalled` once, keeps following the queue and recovering, and logs when the stall
+  clears. It cannot begin to act while stalled, since designation and leadership reach it on the queue. A
   standby that never recovers stays up and unready, so alert on that log line.
 - **Only an announced instance fences on a lost session.** Closing the session a designated instance's
-  `GatewayStarted` bound is what promotes its sibling (§2.2), and the tap carries no frame for that close, so a
+  `GatewayStarted` bound is what promotes its sibling (§2.2), and the queue carries no frame for that close, so a
   replacement session could act before the instance has seen whether it was superseded. Any other instance
   holds nothing the close changed — a standby, and one designated after its session was lost,
   which announces on the replacement instead: it opens a new session as the first was opened, starting an
   attempt at most once a second and advancing it a step per duty cycle, and fences with `CLUSTER_SESSION_LOST`
-  only if none opens within the tap-stall timeout and the attempt then under way fails, since one whose request
+  only if none opens within the queue-stall timeout and the attempt then under way fails, since one whose request
   an election swallowed spends its whole timeout. What was unconfirmed on the old session is dropped, not resent
   (§5).
 
 Being superseded is not a fence. When a `GatewayActive` names a sibling, the instance's listener gets
-`onStandby`; it closes its external connections, keeps its cluster session and goes on following the tap,
+`onStandby`; it closes its external connections, keeps its cluster session and goes on following the queue,
 so it can be designated again. It publishes nothing on the way out: to the cluster this looks the same as
 the process dying. The sequencer refuses whatever its session sends after that `GatewayActive` (spec
 **S-6**), including frames placed before the instance read it, so the instance drops what it still has
@@ -204,7 +204,7 @@ that `gatewaySourceId` (spec §7.1).
 
 ## 3. Stream recovery
 
-A consumer reads the co-located tap directly for live data, untethered, so a slow consumer is dropped
+A consumer reads the co-located queue directly for live data, untethered, so a slow consumer is dropped
 instead of back-pressuring the sequencer (§1.3). It asks the co-located Replayer for history at a cold start
 and after a gap.
 
@@ -213,7 +213,7 @@ and after a gap.
 The Replayer is not on the live path; clients use it only to catch up. Its job is to serve one recording,
 correctly, to many clients at once, and to say so plainly when it cannot.
 
-- **One recording.** It serves only the member's active tap recording. Every start of the member replays the
+- **One recording.** It serves only the member's active queue recording. Every start of the member replays the
   log from `globalSeqNo` 1 into a new recording, so the active one holds the whole log, and an older one is a
   prefix of it that nothing reads.
 - **Integrity.** Each client checks that the first frame it dispatches is `globalSeqNo` 1, and that a resumed
@@ -225,7 +225,7 @@ correctly, to many clients at once, and to say so plainly when it cannot.
   control session is read every duty cycle, because the archive closes a session whose pings go unread; a
   session it closes anyway cannot be reopened, so that ends the duty cycle.
 - **Slots.** At most `MAX_CONCURRENT_REPLAYS` = 4 replays run at once, and a freed slot goes to a waiting
-  client at once. While the tap's recording trails the tap by more than a quarter of the publication window,
+  client at once. While the queue's recording trails the queue by more than a quarter of the publication window,
   a new replay starts only when none is running: replays compete with the recorder for the disk, and the
   recorder is what holds the sequencer back. A slot frees when its replay's publication is gone: when the
   client closes its replay subscription at the replay's end, or when the driver times out a client that died
@@ -271,13 +271,13 @@ start and without a bound, so one image delivers history followed by live data.
 ### 3.3 Gateway host
 
 A gateway host runs clients but no member (`start-gateway-host.sh`). Its `ReplayerServer` runs its own media
-driver and archive, and a relay copies a member's tap onto the host's own: one archive replay of the
+driver and archive, and a relay copies a member's queue onto the host's own: one archive replay of the
 member's active recording, over UDP, that follows it live. Clients on the host then recover exactly as §3.1
-and §3.2 describe, against the host's archive. The relay's decisions are in `TapRelay`, which is unit-tested
+and §3.2 describe, against the host's archive. The relay's decisions are in `QueueRelay`, which is unit-tested
 directly.
 
 - **The next frame only.** The relay republishes a frame only if its `globalSeqNo` is one past the last it
-  published, and drops anything at or below it, so the host's tap holds each frame once, in order, whichever
+  published, and drops anything at or below it, so the host's queue holds each frame once, in order, whichever
   member it came from.
 - **Member lost.** Nothing received for 3 s (`SOURCE_TIMEOUT_MS`, three cluster heartbeats), an ended
   replay, or an archive request unanswered for 1 s moves the relay to the next member in
@@ -290,10 +290,10 @@ directly.
   member's full-log replay does, so the host's new recording starts at `globalSeqNo` 1, as a client checks
   (§3.1). The cost is the
   whole history over the network per restart.
-- **The local recording.** A local tap that refuses a frame is not spun on: the frame is offered again next
+- **The local recording.** A local queue that refuses a frame is not spun on: the frame is offered again next
   cycle, and the member's replay waits under Aeron flow control. A local recording that stops, or makes no
-  progress for 1 s while the tap is back-pressured, exits the process with code 70.
-- **No member reachable.** The host's tap goes silent, and its clients' tap-stall checks (§2.1) fire, as
+  progress for 1 s while the queue is back-pressured, exits the process with code 70.
+- **No member reachable.** The host's queue goes silent, and its clients' queue-stall checks (§2.1) fire, as
   they would on a member whose cluster lost quorum.
 
 ### 3.4 Snapshot restore
@@ -322,7 +322,7 @@ with none left, it walks the recording as §3.2 describes.
 - **Divergence.** At every later round each instance compares its own serialization with the sequenced end.
   One that differs is fenced with `SNAPSHOT_DIVERGED` (spec §16 A-7). Its file of that round is never
   confirmed, so its restart restores the round before, or walks, and rebuilds the state from the log.
-- **After a member restart.** The member records its tap again from `globalSeqNo` 1. A client whose cut the
+- **After a member restart.** The member records its queue again from `globalSeqNo` 1. A client whose cut the
   new recording has not reached is answered `ReplayPending` and waits for it.
 
 ## 4. Leader-only work
@@ -346,7 +346,7 @@ failover: a reply, an order sent outward, a notification. The client tier provid
   opens once caught up, whoever leads, and closes on every `LeadershipChanged` as above. Exactly one must run,
   since nothing elects between two.
 - **A lost cluster session closes the gate** until a new one opens: the replica replaces it without blocking, as
-  §2.1 describes for a standby, and fences only if none opens within the tap-stall timeout and the attempt then
+  §2.1 describes for a standby, and fences only if none opens within the queue-stall timeout and the attempt then
   under way fails. Whatever it
   dispatched meanwhile is redispatched when the gate reopens, since nothing elects a replica and its requests
   stay outstanding on the log.
@@ -358,8 +358,8 @@ on its `globalSeqNo`, makes a re-emission byte-identical, so consumers can drop 
 
 ## 5. Ingress across a failover
 
-A producer that must not lose a frame confirms each one on its own tap (spec §16 A-4, A-5).
-`PendingSends` holds every placed frame until the producer's own tap shows it, matched by cluster session
+A producer that must not lose a frame confirms each one on its own queue (spec §16 A-4, A-5).
+`PendingSends` holds every placed frame until the producer's own queue shows it, matched by cluster session
 id. After a `LeadershipChanged` with a newer term, any frame stamped with an older term that has not appeared
 is lost, and the lost frames are exactly the newest ones stamped with that term.
 
@@ -368,7 +368,7 @@ the sender abandons a send already retrying through the election (`setIngressHol
 resent oldest first. The result is every frame sequenced exactly once, in order.
 
 `failover-test.sh` runs two producers across a leader kill: the one using `PendingSends` must see every frame
-on the tap exactly once and in order, and the other reports what it lost. `csharp-client-test.sh` runs the
+on the queue exactly once and in order, and the other reports what it lost. `csharp-client-test.sh` runs the
 same check with the C# client.
 
 ## 6. Operational tooling and verification
@@ -376,7 +376,7 @@ same check with the C# client.
 - **`clusterctl`** ([`clusterctl.md`](clusterctl.md)): `start` and `shutdown` bracket a run with sequenced
   markers; `activate` is the manual promotion (§2.2); `request-snapshot` starts an application snapshot round
   (§3.4); `snapshot` is refused.
-- **Metrics** ([`ops.md`](ops.md)): `seqeron_sequencer_tap_stalled` (set when a member is about to terminate,
+- **Metrics** ([`ops.md`](ops.md)): `seqeron_sequencer_queue_stalled` (set when a member is about to terminate,
   §1.3), `seqeron_sequencer_gateway_promotion_total` (§2.2), the `seqeron_replayer_*` family (§3.1), and
   Prometheus's per-member `up`.
 
@@ -385,10 +385,10 @@ Each failure above has a harness that produces it against a live cluster, all un
 
 | harness | what it does, and what must hold |
 | --- | --- |
-| `chaos-runner.sh` | randomized faults against three members and a `TestGateway` pair, reproducible from its printed seed: kill and restart the leader or a follower, `SIGKILL` a follower, `SIGSTOP`/`SIGCONT` a member, drop one live tap frame (§3.2), stop a member's tap recording (§1.3, asserting the member exits). After each round there must be one leader, the pair must still serve, and consumers must still deliver in order. At the end every member's recording must be gap-free, strictly increasing in `globalSeqNo`, and at the same high mark on all three (§1.1) |
+| `chaos-runner.sh` | randomized faults against three members and a `TestGateway` pair, reproducible from its printed seed: kill and restart the leader or a follower, `SIGKILL` a follower, `SIGSTOP`/`SIGCONT` a member, drop one live queue frame (§3.2), stop a member's queue recording (§1.3, asserting the member exits). After each round there must be one leader, the pair must still serve, and consumers must still deliver in order. At the end every member's recording must be gap-free, strictly increasing in `globalSeqNo`, and at the same high mark on all three (§1.1) |
 | `failover-test.sh` | a leader kill with a replay consumer, and the confirmed-ingress check of §5 |
 | `gap-recovery-test.sh` | a caught-up consumer drops one live frame after a leader failover, and must resume and keep delivering (§3.2) |
-| `paused-subscriber-test.sh` | a caught-up consumer is `SIGSTOP`ped while more than two tap windows go by; its member must stay up, with no tap-stall fatal (§1.3), and once resumed the consumer must heal the gap its eviction left (§3.2) |
+| `paused-subscriber-test.sh` | a caught-up consumer is `SIGSTOP`ped while more than two queue windows go by; its member must stay up, with no queue-stall fatal (§1.3), and once resumed the consumer must heal the gap its eviction left (§3.2) |
 | `session-replace-test.sh` | a `TestApplication` on a follower is `SIGSTOP`ped past its session timeout, then the other two members are, so its member has no quorum; each time it must open a new session rather than fence (§2.1, §4), and the cluster heartbeat must keep reaching it while an attempt is pending. Then both `TestGateway` instances are paused past their session timeout: the standby, designated while its own session was lost, must replace it and serve rather than fence (§2.1) |
 | `replayer-restart-test.sh` | member 0's `SequencerServer` is killed under a caught-up client; the client must fail fast, and a fresh cold start must be served from the member's new recording alone (§3.1) |
 | `gateway-host-test.sh` | a gateway host whose relay reads the leader, which is then killed; a `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to another member. The host is then restarted, and a cold start there must catch up from its new recording (§3.3) |

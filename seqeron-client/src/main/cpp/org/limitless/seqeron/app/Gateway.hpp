@@ -98,14 +98,14 @@ class Gateway
         std::string gatewayName;
         // This replica's client id, its counters' label; unique among the co-located apps on its node.
         std::int32_t clientId = 0;
-        // The node whose tap this instance follows.
+        // The node whose queue this instance follows.
         std::int32_t memberId = 0;
         // This client's own egress endpoint; two media drivers on one host cannot both bind a port.
         std::string egressChannel;
         // The members to reach, "memberId=host:port,...".
         std::string ingressEndpoints = protocol::ingressEndpointsCsv();
         std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
-        std::int64_t tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
+        std::int64_t queueStallTimeoutMs = DEFAULT_QUEUE_STALL_TIMEOUT_MS;
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
         // The logical gateway's sourceId, the one its rows declare. Required with a snapshotListener, whose snapshot
         // counter it labels.
@@ -135,7 +135,7 @@ class Gateway
       m_snapshots{ m_config.snapshotListener, m_store.get(), [this] { m_session.keepAlive(); } },
       m_restore{ *this },
       m_dispatch{ *this },
-      m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
+      m_session{ m_config.clientId, m_config.pendingCapacity, m_config.queueStallTimeoutMs,
                  m_config.recoveryStallTimeoutMs, m_dispatch },
       m_snapshotFrames{ m_session, [this] { return m_lifecycle.gatewaySourceId(); } }
     {
@@ -151,7 +151,7 @@ class Gateway
     Gateway& operator=(const Gateway&) = delete;
 
     /**
-     * Opens the cluster session and starts following this node's tap; the gate stays shut until designated.
+     * Opens the cluster session and starts following this node's queue; the gate stays shut until designated.
      *
      * @param aeron the client, on the co-located member's Aeron directory
      */
@@ -174,7 +174,7 @@ class Gateway
         m_session.start(std::move(aeron), m_config.memberId, m_config.egressChannel, m_config.ingressEndpoints);
     }
 
-    // One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle, the
+    // One duty-cycle iteration: the cluster session and the queue, then whatever the connection lifecycle, the
     // election and a snapshot round still owe. Nothing once fenced, so a designation dispatched in the cycle that
     // fenced opens no gate. Returns units of work done, for the caller's idle strategy.
     int doWork()
@@ -348,7 +348,7 @@ class Gateway
         return m_session.lastGlobalSeqNo();
     }
 
-    // Closes the cluster session and the tap. The Aeron client is the caller's and is left open.
+    // Closes the cluster session and the queue. The Aeron client is the caller's and is left open.
     void close()
     {
         m_session.close();
@@ -530,7 +530,7 @@ class Gateway
         Gateway& m_gateway;
     };
 
-    // What comes off the tap, split into what the election reads and what the consumer does.
+    // What comes off the queue, split into what the election reads and what the consumer does.
     class SessionDispatch
     {
       public:
@@ -643,7 +643,7 @@ class Gateway
         }
 
         // Not once this activation's GatewayStarted went out: closing the session it bound promotes the sibling, and
-        // no frame on the tap says whether that promotion is still to come, so a replacement could act on a stale
+        // no frame on the queue says whether that promotion is still to come, so a replacement could act on a stale
         // view. One designated after its session was lost bound nothing, and announces on the new one.
         [[nodiscard]] bool mayReconnect() const
         {

@@ -10,15 +10,15 @@ using SbeBuffer = Org.SbeTool.Sbe.Dll.DirectBuffer;
 namespace Org.Limitless.Seqeron.Sequencer.Client;
 
 /// <summary>
-/// A producer's ingress frames that its own tap has not yet shown, which of them a leader change lost, and their
+/// A producer's ingress frames that its own queue has not yet shown, which of them a leader change lost, and their
 /// resend ahead of anything new.
 /// <para><b>Why a count is enough.</b> A leader drops ingress stamped with any term but its own, and every election
-/// discards the ingress the old leader had not read. So a frame stamped term T is either on the tap before the first
+/// discards the ingress the old leader had not read. So a frame stamped term T is either on the queue before the first
 /// <c>LeadershipChanged</c> with a term above T, or lost, and the lost ones are the newest frames stamped T. Once
 /// that boundary has passed, every frame still pending with a term below it is <see cref="Missing"/>. The same holds
 /// when the same member wins the new term.</para>
 /// <para><b>Resent in order, never twice.</b> A committed frame is never missing, so nothing is duplicated. From a
-/// newer term's first sign — the sender's <c>NewLeader</c> or the tap's <c>LeadershipChanged</c>, whichever comes
+/// newer term's first sign — the sender's <c>NewLeader</c> or the queue's <c>LeadershipChanged</c>, whichever comes
 /// first — until every older frame is seen or resent, <see cref="IsHolding"/>: send nothing new, and give this to
 /// the sender with <c>SetIngressHold</c>, so a send already spinning through the election is given up rather than
 /// landing ahead of the resend. <see cref="ResendMissing"/> does the resend. Given to an
@@ -30,7 +30,7 @@ namespace Org.Limitless.Seqeron.Sequencer.Client;
 /// often the sequencer rejected a frame (S-7), so check §9.2 before sending. Tracking into a full ring latches it
 /// too: an untracked send breaks the count.</para>
 /// <para>Limits: it lasts only as long as the process, so a promoted standby starts with nothing pending; it needs
-/// the producer to follow its own tap; a lost session's frames are <see cref="DiscardUnconfirmed">discarded</see>,
+/// the producer to follow its own queue; a lost session's frames are <see cref="DiscardUnconfirmed">discarded</see>,
 /// since nothing bounds them; loss with no leader change has no boundary and is not detected. <c>PendingSends.java</c>
 /// and <c>sequencer/client/PendingSends.hpp</c> are its twins; keep the three in step.</para>
 /// </summary>
@@ -131,7 +131,7 @@ public sealed class PendingSends : IIngressTracker
         return resent;
     }
 
-    /// <summary>Every frame off the tap, in order. Only this producer's own frames change anything.</summary>
+    /// <summary>Every frame off the queue, in order. Only this producer's own frames change anything.</summary>
     /// <param name="sequencedEvent">the frame</param>
     public void OnSequenced(SequencedEvent sequencedEvent)
     {
@@ -154,9 +154,8 @@ public sealed class PendingSends : IIngressTracker
     }
 
     /// <summary>Forgets every pending frame, for a session replaced after the cluster closed it. That close is on no
-    /// tap, so nothing tells which of its frames committed: those that did still arrive and match nothing, and the rest
-    /// are lost, as they are when the producer restarts.</summary>
-    /// <returns>how many were dropped</returns>
+    /// queue, so nothing tells which of its frames committed: those that did still arrive and match nothing, and the
+    /// rest are lost, as they are when the producer restarts.</summary> <returns>how many were dropped</returns>
     public int DiscardUnconfirmed()
     {
         int dropped = _size;
@@ -176,7 +175,7 @@ public sealed class PendingSends : IIngressTracker
         return count;
     }
 
-    /// <summary>Frames tracked and not yet seen on the tap, missing ones included.</summary>
+    /// <summary>Frames tracked and not yet seen on the queue, missing ones included.</summary>
     public int Count => _size;
 
     /// <summary>Latched: the count can no longer be trusted, so fence the producer.</summary>

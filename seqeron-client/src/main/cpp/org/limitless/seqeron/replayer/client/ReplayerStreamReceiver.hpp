@@ -1,6 +1,6 @@
 #pragma once
 
-// ReplayerStreamReceiver — app-replica side of the per-node Replayer. Reads the co-located tap live and
+// ReplayerStreamReceiver — app-replica side of the per-node Replayer. Reads the co-located queue live and
 // asks the Replayer for history and gaps. The Aeron adapter only: every decision lives in ReplayerRecovery.
 //
 #include <array>
@@ -26,23 +26,23 @@
 
 namespace org::limitless::seqeron::replayer::client {
 
-// The tap as a consumer subscribes to it: untethered, so a slow app is dropped and heals by replay
+// The queue as a consumer subscribes to it: untethered, so a slow app is dropped and heals by replay
 // rather than back-pressuring the sequencer.
-inline const std::string FEEDER_CONSUMER_CHANNEL = std::string(protocol::FEEDER_CHANNEL) + "|tether=false";
+inline const std::string QUEUE_CONSUMER_CHANNEL = std::string(protocol::QUEUE_CHANNEL) + "|tether=false";
 
-// Untethered like the tap, because the Replayer answers every app from one duty-cycle thread.
+// Untethered like the queue, because the Replayer answers every app from one duty-cycle thread.
 inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(protocol::REPLAYER_IPC_CHANNEL) + "|tether=false";
 
 /**
- * Follows the co-located SequencerService IPC tap directly, decoding and dispatching sequenced
+ * Follows the co-located SequencerService IPC queue directly, decoding and dispatching sequenced
  * messages to the caller exactly like ClusterStreamClient — same SequencedEvent/LifecycleEvent callbacks
  * — plus an OnLeadershipChanged callback and currentLeaderMemberId()/isCaughtUp() accessors that the
  * caller uses to gate leader-only emission: every node runs a replica, and only the leader's submits.
  *
  * Startup: cold replicas walk the node's active recording from its start via the Replayer — it holds the
- * whole log, every leader tenure included — riding the replay image and de-duping by globalSeqNo. The tap
+ * whole log, every leader tenure included — riding the replay image and de-duping by globalSeqNo. The queue
  * is dispatched throughout, so it closes the seam itself the moment the replay reaches it. A steady-state
- * tap gap clears isCaughtUp() and resumes the active recording just below the hole, falling back to a walk
+ * queue gap clears isCaughtUp() and resumes the active recording just below the hole, falling back to a walk
  * if that resume does not land where it was anchored. No archive connection is opened here.
  */
 class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
@@ -74,9 +74,9 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
       m_recovery(*this, std::move(onSequenced), std::move(onConnected), std::move(onDisconnected),
                  std::move(onLeadershipChanged), std::move(onCaughtUp)),
       // Temporaries: FragmentAssembler copies the delegate into its own member.
-      m_tapAssembler(
+      m_queueAssembler(
           std::make_unique<aeron::FragmentAssembler>([this](auto& buffer, auto offset, auto length, auto& header) {
-              onTapFragment(buffer, offset, length, header);
+              onQueueFragment(buffer, offset, length, header);
           })),
       m_replayAssembler(
           std::make_unique<aeron::FragmentAssembler>([this](auto& buffer, auto offset, auto length, auto& header) {
@@ -84,7 +84,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
           })),
       m_controlAssembler(std::make_unique<aeron::FragmentAssembler>(
           [this](auto& buffer, auto offset, auto length, auto&) { onControlFragment(buffer, offset, length); })),
-      m_tapPoll(m_tapAssembler->handler()),
+      m_queuePoll(m_queueAssembler->handler()),
       m_replayPoll(m_replayAssembler->handler()),
       m_controlPoll(m_controlAssembler->handler())
     {}
@@ -107,7 +107,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     }
 
     /**
-     * Subscribes the tap and control streams, opens the request publication and the convergence counter,
+     * Subscribes the queue and control streams, opens the request publication and the convergence counter,
      * and requests the cold-start replay, or the snapshot to restore first.
      *
      * @param aeron    the client, on the co-located member's Aeron directory
@@ -123,7 +123,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
             m_aeron, protocol::APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + std::to_string(memberId) + " client=" + std::to_string(m_clientId),
             memberId, m_clientId);
-        m_tapSubRegId = m_aeron->addSubscription(FEEDER_CONSUMER_CHANNEL, protocol::FEEDER_STREAM_ID);
+        m_queueSubRegId = m_aeron->addSubscription(QUEUE_CONSUMER_CHANNEL, protocol::QUEUE_STREAM_ID);
         // No standing replay subscription: openReplay opens one per episode, filtered to its session id.
         m_controlSubRegId = m_aeron->addSubscription(REPLAYER_CONTROL_CHANNEL, protocol::REPLAYER_CONTROL_STREAM_ID);
         m_requestPubRegId =
@@ -138,15 +138,15 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         closeReplay();
         m_recovery.close();
         resolveResources(); // an add already answered would otherwise stay open with nothing holding it
-        m_tapSub.reset();
+        m_queueSub.reset();
         m_controlSub.reset();
         m_requestPub.reset();
         m_recoveryStalledCounter.reset();
-        m_tapSubRegId = m_controlSubRegId = m_requestPubRegId = m_recoveryStalledCounterRegId = -1;
+        m_queueSubRegId = m_controlSubRegId = m_requestPubRegId = m_recoveryStalledCounterRegId = -1;
     }
 
     // One duty-cycle iteration; returns fragments consumed. Drains control, rides an attached replay image,
-    // and always drains and dispatches the tap: ReplayerRecovery's contiguity check decides what a tap frame
+    // and always drains and dispatches the queue: ReplayerRecovery's contiguity check decides what a queue frame
     // is worth mid-walk. Throws std::runtime_error once this node's recording does not hold what recovery asked of
     // it.
     int poll()
@@ -193,14 +193,14 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
                 }
             }
             // else: Replaying received, image not yet attached — nothing to poll this cycle, fall
-            // through to the tap drain below rather than holding the whole duty cycle on it.
+            // through to the queue drain below rather than holding the whole duty cycle on it.
         }
 
-        // Always drain the tap: it is untethered, so an unpolled subscription falls behind. Frames ahead of
+        // Always drain the queue: it is untethered, so an unpolled subscription falls behind. Frames ahead of
         // an in-flight replay are retained or dropped by the contiguity check; the one at the seam is needed.
-        if (m_tapSub)
+        if (m_queueSub)
         {
-            work += m_tapSub->poll(m_tapPoll, FRAGMENT_LIMIT);
+            work += m_queueSub->poll(m_queuePoll, FRAGMENT_LIMIT);
         }
 
         m_recovery.checkRecoveryProgress();
@@ -292,9 +292,9 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
 
     void resolveResources()
     {
-        if (!m_tapSub && m_tapSubRegId >= 0)
+        if (!m_queueSub && m_queueSubRegId >= 0)
         {
-            m_tapSub = m_aeron->findSubscription(m_tapSubRegId);
+            m_queueSub = m_aeron->findSubscription(m_queueSubRegId);
         }
         if (!m_replaySub && m_replaySubRegId >= 0)
         {
@@ -314,8 +314,8 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         }
     }
 
-    void onTapFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
-                       const aeron::util::index_t length, const aeron::Header& header)
+    void onQueueFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
+                         const aeron::util::index_t length, const aeron::Header& header)
     {
         m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length),
                            protocol::frameStartPosition(header), protocol::nowNs(), /*fromReplay=*/false);
@@ -360,25 +360,25 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
 
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::int64_t m_replyId = -1; // the id the Replayer addresses this receiver's replies to, drawn at start
-    std::int64_t m_tapSubRegId = -1;
+    std::int64_t m_queueSubRegId = -1;
     std::int64_t m_replaySubRegId = -1;
     std::int64_t m_controlSubRegId = -1;
     std::int64_t m_requestPubRegId = -1;
     std::int64_t m_recoveryStalledCounterRegId = -1;
-    std::shared_ptr<aeron::Subscription> m_tapSub;
+    std::shared_ptr<aeron::Subscription> m_queueSub;
     std::shared_ptr<aeron::Subscription> m_replaySub;
     std::shared_ptr<aeron::Subscription> m_controlSub;
     std::shared_ptr<aeron::Publication> m_requestPub;
     std::shared_ptr<aeron::Image> m_replayImage;
     std::shared_ptr<aeron::Counter> m_recoveryStalledCounter;
 
-    std::unique_ptr<aeron::FragmentAssembler> m_tapAssembler;
+    std::unique_ptr<aeron::FragmentAssembler> m_queueAssembler;
     std::unique_ptr<aeron::FragmentAssembler> m_replayAssembler;
     std::unique_ptr<aeron::FragmentAssembler> m_controlAssembler;
 
     // Composed once: FragmentAssembler::handler() builds a fresh std::function per call, and these
     // are polled every duty-cycle iteration.
-    aeron::fragment_handler_t m_tapPoll;
+    aeron::fragment_handler_t m_queuePoll;
     aeron::fragment_handler_t m_replayPoll;
     aeron::fragment_handler_t m_controlPoll;
 };

@@ -17,11 +17,11 @@ public final class SeqeronCounters {
     /** Last type id of the sequencer's block. */
     public static final int SEQUENCER_TYPE_ID_MAX = 5099;
 
-    /** Mirrors {@code Sequencer.globalSeqNo()} — the last globalSeqNo emitted on this node's tap. */
+    /** Mirrors {@code Sequencer.globalSeqNo()} — the last globalSeqNo emitted on this node's queue. */
     public static final int SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID = 5000;
 
-    /** Count of times the tap-emit back-pressure alert threshold has fired. */
-    public static final int SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID = 5001;
+    /** Count of times the queue-emit back-pressure alert threshold has fired. */
+    public static final int SEQUENCER_QUEUE_BACKPRESSURE_ALERTS_TYPE_ID = 5001;
 
     /** Count of malformed ingress messages skipped by {@code Sequencer.sequenceMessage}. */
     public static final int SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID = 5002;
@@ -41,8 +41,8 @@ public final class SeqeronCounters {
     /** 1 once the bootstrap {@code GatewayActive} has been emitted in this cluster's log, else 0. */
     public static final int SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID = 5007;
 
-    /** 1 while tap back-pressure has lasted past the stall threshold with no recording progress, else 0. */
-    public static final int SEQUENCER_TAP_STALLED_TYPE_ID = 5008;
+    /** 1 while queue back-pressure has lasted past the stall threshold with no recording progress, else 0. */
+    public static final int SEQUENCER_QUEUE_STALLED_TYPE_ID = 5008;
 
     // 5009 is retired, and never reused.
 
@@ -58,7 +58,7 @@ public final class SeqeronCounters {
     /** Last type id of the Replayer's block. */
     public static final int REPLAYER_TYPE_ID_MAX = 5199;
 
-    /** 1 once the co-located tap recording is visible and replay requests are being served, else 0. */
+    /** 1 once the co-located queue recording is visible and replay requests are being served, else 0. */
     public static final int REPLAYER_READY_TYPE_ID = 5101;
 
     /** Current count of in-flight replays, out of {@code MAX_CONCURRENT_REPLAYS}. */
@@ -77,7 +77,7 @@ public final class SeqeronCounters {
     public static final int REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5107;
 
     /**
-     * Count of replay requests held pending only because the tap recording trailed the tap while a replay ran,
+     * Count of replay requests held pending only because the queue recording trailed the queue while a replay ran,
      * resends included: a held client resends about every 500 ms.
      */
     public static final int REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;

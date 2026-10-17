@@ -3,18 +3,18 @@ using Xunit;
 namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
-/// Unit tests for the tap-silence verdict a producer applies once caught up. No Aeron runtime: the catch-up
+/// Unit tests for the queue-silence verdict a producer applies once caught up. No Aeron runtime: the catch-up
 /// transition and the <c>ClusterHeartbeat</c> arrivals are exactly the two signals <c>App.Session</c> feeds in off
-/// <c>ReplayerStreamReceiver</c>. Case for case with <c>TapStallFenceTest.java</c>.
+/// <c>ReplayerStreamReceiver</c>. Case for case with <c>QueueStallFenceTest.java</c>.
 /// </summary>
-public class TapStallFenceTest
+public class QueueStallFenceTest
 {
     private const long DeadlineMs = 20 * 1000;
 
     // Arbitrary clock origin: the fence is only ever read as a difference.
     private const long T0 = 7 * 3_600_000L;
 
-    private readonly TapStallFence _fence = new TapStallFence(DeadlineMs);
+    private readonly QueueStallFence _fence = new QueueStallFence(DeadlineMs);
 
     private static long Seconds(long s)
     {

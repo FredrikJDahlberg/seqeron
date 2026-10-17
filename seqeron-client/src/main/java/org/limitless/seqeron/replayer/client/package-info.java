@@ -2,7 +2,7 @@
  * Consuming the ordered stream: the client side of the replay protocol.
  *
  * <p>{@link org.limitless.seqeron.replayer.client.ReplayerStreamReceiver} is the entry point. It replays
- * this node's history through the co-located Replayer, switches to the live tap once caught up, heals gaps
+ * this node's history through the co-located Replayer, switches to the live queue once caught up, heals gaps
  * by itself, and delivers every frame once in {@code globalSeqNo} order to the three handlers
  * ({@link org.limitless.seqeron.replayer.client.SequencedHandler},
  * {@link org.limitless.seqeron.replayer.client.LeadershipHandler},

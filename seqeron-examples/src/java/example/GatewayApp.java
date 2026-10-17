@@ -23,7 +23,7 @@ import org.limitless.seqeron.protocol.Publish;
  * <p>A gateway is the producer kind the cluster elects: the topology names both instances, the cluster
  * designates one, and only that one serves. What is left here is the edge. A real gateway opens a socket in
  * {@link #onActivated}; this one takes a single simulated client connection instead, and pings the cluster on
- * it once a second, reading each ping back off its own tap.
+ * it once a second, reading each ping back off its own queue.
  *
  * <p>It runs the C++ example's pair, so either instance may be either language. Load
  * {@code seqeron-examples/topology.xml}, then run one instance or both; stop the first and the second takes
@@ -139,7 +139,7 @@ public final class GatewayApp implements Gateway.Listener {
         pingSentNs = 0;
     }
 
-    /** Every application payload on this node's tap, in {@code globalSeqNo} order, history and live alike. */
+    /** Every application payload on this node's queue, in {@code globalSeqNo} order, history and live alike. */
     @Override
     public void onSequenced(final Payload payload) {
         if (pingSentNs != 0 && payload.connectionId() == connectionId && payload.payloadId() == PING_PAYLOAD_ID &&
@@ -168,7 +168,7 @@ public final class GatewayApp implements Gateway.Listener {
 
     @Override
     public void onCaughtUp(final long globalSeqNo) {
-        System.out.printf("# caught up at %d — following the tap live%n", globalSeqNo);
+        System.out.printf("# caught up at %d — following the queue live%n", globalSeqNo);
     }
 
     @Override

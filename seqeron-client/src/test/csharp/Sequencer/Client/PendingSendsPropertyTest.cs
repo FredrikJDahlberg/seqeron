@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sequencer.Client;
 /// its own term and drops the rest, commits a prefix, and loses everything uncommitted at an election. After one,
 /// the old leader either still takes ingress and drops it, or is gone and a send spins until egress brings the
 /// <c>NewLeader</c> — giving the send up if the hold is on, as <c>ClusterStreamSender</c> does. The sender may
-/// reconnect on a new session then. The tap lags, a sibling shares the producer's <c>sourceId</c>, and term ids
+/// reconnect on a new session then. The queue lags, a sibling shares the producer's <c>sourceId</c>, and term ids
 /// skip, as after a failed ballot.
 /// <para>Checked once the faults stop and everything has drained: the log holds every frame the producer sent
 /// exactly once, in send order, and nothing faulted. Seeds are fixed; the failing one is in the test name. Draws are
@@ -30,7 +30,7 @@ public class PendingSendsPropertyTest
     private const long LeadershipChanged = -1;
     private const int PayloadId = 6;
 
-    // One tap entry: frame Value from Session, or a term's LeadershipChanged.
+    // One queue entry: frame Value from Session, or a term's LeadershipChanged.
     private readonly record struct Entry(long Session, long Value);
 
     private readonly PendingSends _pending = new PendingSends(Capacity);
@@ -43,8 +43,8 @@ public class PendingSendsPropertyTest
     // Accepted by the current leader, not yet committed.
     private readonly Queue<Entry> _uncommitted = new Queue<Entry>();
 
-    // Committed, not yet delivered to the producer's tap.
-    private readonly Queue<Entry> _tap = new Queue<Entry>();
+    // Committed, not yet delivered to the producer's queue.
+    private readonly Queue<Entry> _queue = new Queue<Entry>();
 
     // The producer's frames in log order.
     private readonly List<long> _log = new List<long>();
@@ -114,7 +114,7 @@ public class PendingSendsPropertyTest
             }
             else if (action < 55)
             {
-                _tap.Enqueue(new Entry(Sibling, _rng.Roll(8)));
+                _queue.Enqueue(new Entry(Sibling, _rng.Roll(8)));
             }
             else if (action < 80)
             {
@@ -128,7 +128,7 @@ public class PendingSendsPropertyTest
             {
                 _uncommitted.Clear();
                 _clusterTerm += 1 + _rng.Roll(2);
-                _tap.Enqueue(new Entry(LeadershipChanged, _clusterTerm));
+                _queue.Enqueue(new Entry(LeadershipChanged, _clusterTerm));
                 _oldLeaderTakesIngress = _rng.Roll(2) == 0;
             }
             else if (_senderTerm != _clusterTerm)
@@ -184,15 +184,15 @@ public class PendingSendsPropertyTest
         {
             Entry entry = _uncommitted.Dequeue();
             _log.Add(entry.Value);
-            _tap.Enqueue(entry);
+            _queue.Enqueue(entry);
         }
     }
 
     private void Deliver(int count)
     {
-        for (int k = count; k > 0 && _tap.Count > 0; k--)
+        for (int k = count; k > 0 && _queue.Count > 0; k--)
         {
-            Entry entry = _tap.Dequeue();
+            Entry entry = _queue.Dequeue();
             if (entry.Session == LeadershipChanged)
             {
                 _pending.OnLeadershipChanged(entry.Value);

@@ -25,7 +25,7 @@ internal sealed class GatewayLifecycle
     /// <summary>Where this instance stands.</summary>
     public enum State
     {
-        /// <summary>Following the tap through history; the gate stays shut whatever the activation says.</summary>
+        /// <summary>Following the queue through history; the gate stays shut whatever the activation says.</summary>
         Replaying,
 
         /// <summary>Caught up with the gate shut. Where a standby sits and a superseded instance lands.</summary>
@@ -79,7 +79,7 @@ internal sealed class GatewayLifecycle
         _actions = actions;
     }
 
-    /// <summary>The tap reached the live frontier for the first time.</summary>
+    /// <summary>The queue reached the live frontier for the first time.</summary>
     /// <returns>whether this left <see cref="State.Replaying"/></returns>
     public bool OnCaughtUp()
     {

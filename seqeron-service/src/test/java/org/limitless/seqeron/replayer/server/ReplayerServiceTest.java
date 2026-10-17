@@ -219,7 +219,7 @@ class ReplayerServiceTest {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
 
-        // The client resumes from a frame it read off the tap, which the recording may still trail.
+        // The client resumes from a frame it read off the queue, which the recording may still trail.
         final Reply reply = request(CLIENT, 1, 4096);
 
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId());
@@ -393,11 +393,11 @@ class ReplayerServiceTest {
     }
 
     @Test
-    void whileTheTapRecordingIsBehindASecondReplayWaitsForTheFirstToEnd() {
+    void whileTheQueueRecordingIsBehindASecondReplayWaitsForTheFirstToEnd() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         final long window = FakeReplayer.TERM_BUFFER_LENGTH / 2;
-        fakeReplayer.tapBacklog(new Replayer.TapBacklog(window / 4 + 1, window));
+        fakeReplayer.queueBacklog(new Replayer.QueueBacklog(window / 4 + 1, window));
 
         assertEquals(ReplayingDecoder.TEMPLATE_ID, request(CLIENT, 1, FROM_START).templateId());
         final long session = lastClientReplay().replaySessionId();
@@ -413,15 +413,15 @@ class ReplayerServiceTest {
     }
 
     @Test
-    void aTapRecordingThatCatchesUpLetsTheNextResendRunAlongside() {
+    void aQueueRecordingThatCatchesUpLetsTheNextResendRunAlongside() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         final long window = FakeReplayer.TERM_BUFFER_LENGTH / 2;
-        fakeReplayer.tapBacklog(new Replayer.TapBacklog(window / 4 + 1, window));
+        fakeReplayer.queueBacklog(new Replayer.QueueBacklog(window / 4 + 1, window));
         request(CLIENT, 1, FROM_START);
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, request(OTHER_CLIENT, 1, FROM_START).templateId());
 
-        fakeReplayer.tapBacklog(new Replayer.TapBacklog(window / 4, window));
+        fakeReplayer.queueBacklog(new Replayer.QueueBacklog(window / 4, window));
 
         assertEquals(ReplayingDecoder.TEMPLATE_ID, request(OTHER_CLIENT, 2, FROM_START).templateId());
         assertEquals(2, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));

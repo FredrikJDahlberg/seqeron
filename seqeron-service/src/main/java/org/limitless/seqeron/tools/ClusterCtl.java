@@ -45,12 +45,12 @@ import org.xml.sax.SAXParseException;
 
 /**
  * clusterctl — the operator cluster life-cycle tool (doc/clusterctl.md). Node-local: it shares a {@code
- * SequencerServer} host's Aeron directory (to read the tap) and {@code clusterDir} (for {@link ClusterTool}).
+ * SequencerServer} host's Aeron directory (to read the queue) and {@code clusterDir} (for {@link ClusterTool}).
  * Named so as not to shadow Aeron's {@code io.aeron.cluster.ClusterControl}.
  *
  * <p>Commands:
  * <ul>
- *   <li><b>start</b> — publishes a {@code ClusterStarted} marker and waits for its echo on the tap;
+ *   <li><b>start</b> — publishes a {@code ClusterStarted} marker and waits for its echo on the queue;
  *       non-zero if there is no leader or no echo. It records that the system is up; it starts nothing.</li>
  *   <li><b>shutdown</b> — safe to execute on every node.
  *   <li><b>activate &lt;gatewayId&gt;</b> — manual standby promotion: publishes
@@ -231,13 +231,13 @@ public final class ClusterCtl {
     private static int requestSnapshot() {
         final long correlationId = System.nanoTime();
         try (Session session = new Session()) {
-            final Subscription tap = awaitTap(session);
-            if (tap == null) {
+            final Subscription queue = awaitQueue(session);
+            if (queue == null) {
                 return 1;
             }
             publishMarker(session, SystemFrame.SNAPSHOT_REQUESTED, correlationId);
             final SnapshotStartedEchoHandler started = new SnapshotStartedEchoHandler(correlationId);
-            final long cut = awaitEcho(session, tap, started);
+            final long cut = awaitEcho(session, queue, started);
             if (cut < 0) {
                 System.err.println(started.requestSeqNo < 0
                     ? "[clusterctl] request-snapshot: no sequenced SnapshotRequested echo within timeout"
@@ -345,8 +345,8 @@ public final class ClusterCtl {
      * @param topology topology definition
      */
     private static long publishTopologyAndAwaitEcho(final Session session, final TopologyDocument topology) {
-        final Subscription tap = awaitTap(session);
-        if (tap == null) {
+        final Subscription queue = awaitQueue(session);
+        if (queue == null) {
             return -1;
         }
 
@@ -389,7 +389,7 @@ public final class ClusterCtl {
             publish(session, SystemFrame.SNAPSHOT_POLICY_REGISTERED, payload, policyEncoder.encodedLength());
         }
 
-        return awaitEcho(session, tap, new ListEchoHandler(rows.get(rows.size() - 1).gatewayId()));
+        return awaitEcho(session, queue, new ListEchoHandler(rows.get(rows.size() - 1).gatewayId()));
     }
 
     /** Matches the sequenced echo of the list's last row by gatewayId. */
@@ -411,12 +411,12 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes {@code GatewayActivationRequested(gatewayId)} and reads the tap for the {@code GatewayActive}
+     * Publishes {@code GatewayActivationRequested(gatewayId)} and reads the queue for the {@code GatewayActive}
      * behind it, matched by {@code gatewayId}. Returns its globalSeqNo, or -1 on timeout.
      */
     private static long publishGatewayActiveAndAwaitEcho(final Session session, final int gatewayId) {
-        final Subscription tap = awaitTap(session);
-        if (tap == null) {
+        final Subscription queue = awaitQueue(session);
+        if (queue == null) {
             return -1;
         }
 
@@ -426,7 +426,7 @@ public final class ClusterCtl {
         encoder.gatewayId(gatewayId);
         publish(session, SystemFrame.GATEWAY_ACTIVATION_REQUESTED, payload, encoder.encodedLength());
 
-        return awaitEcho(session, tap, new GatewayActiveEchoHandler(gatewayId));
+        return awaitEcho(session, queue, new GatewayActiveEchoHandler(gatewayId));
     }
 
     /** Matches the sequenced {@code GatewayActive} echo of our own marker by gatewayId. */
@@ -483,7 +483,7 @@ public final class ClusterCtl {
         ClusterTool.main(toolArgs);
     }
 
-    /** This tool's cluster session, and the co-located media driver it reaches the cluster and the tap through. */
+    /** This tool's cluster session, and the co-located media driver it reaches the cluster and the queue through. */
     private static final class Session implements AutoCloseable {
         private final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR));
         private final ClusterStreamSender sender = new ClusterStreamSender();
@@ -518,19 +518,19 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes the marker for {@code systemEventType} with {@code correlationId}, then reads the tap for its
+     * Publishes the marker for {@code systemEventType} with {@code correlationId}, then reads the queue for its
      * echo. Returns the assigned globalSeqNo, or -1 on timeout.
      */
     private static long publishMarkerAndAwaitEcho(final Session session, final int systemEventType,
                                                   final long correlationId) {
-        final Subscription tap = awaitTap(session);
-        if (tap == null) {
+        final Subscription queue = awaitQueue(session);
+        if (queue == null) {
             return -1;
         }
 
         publishMarker(session, systemEventType, correlationId);
 
-        return awaitEcho(session, tap, new MarkerEchoHandler(systemEventType, correlationId));
+        return awaitEcho(session, queue, new MarkerEchoHandler(systemEventType, correlationId));
     }
 
     /**
@@ -546,15 +546,15 @@ public final class ClusterCtl {
     }
 
     /**
-     * Reads the tap until {@code handler} sees its echo, or {@link #ECHO_TIMEOUT_NS} passes, polling egress
+     * Reads the queue until {@code handler} sees its echo, or {@link #ECHO_TIMEOUT_NS} passes, polling egress
      * alongside so the publishing session stays alive.
      * @return the echoed frame's globalSeqNo, or -1 on timeout
      */
-    private static long awaitEcho(final Session session, final Subscription tap, final EchoHandler handler) {
+    private static long awaitEcho(final Session session, final Subscription queue, final EchoHandler handler) {
         final FragmentAssembler assembler = new FragmentAssembler(handler);
         final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
         while (!handler.found && System.nanoTime() < deadline) {
-            final int fragments = tap.poll(assembler, 10);
+            final int fragments = queue.poll(assembler, 10);
             session.sender.pollEgress();
             IDLE.idle(fragments);
         }
@@ -594,23 +594,24 @@ public final class ClusterCtl {
     }
 
     /**
-     * Subscribes to this node's tap, untethered, and waits for it to connect; null (having said why) if it never
-     * does. Tethered, a stopped or killed clusterctl would hold the tap back until its member terminated.
+     * Subscribes to this node's queue, untethered, and waits for it to connect; null (having said why) if it never
+     * does. Tethered, a stopped or killed clusterctl would hold the queue back until its member terminated.
      */
-    private static Subscription awaitTap(final Session session) {
-        final Subscription tap =
-            session.aeron.addSubscription(ReplayerStreamReceiver.FEEDER_CONSUMER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
+    private static Subscription awaitQueue(final Session session) {
+        final Subscription queue =
+            session.aeron.addSubscription(ReplayerStreamReceiver.QUEUE_CONSUMER_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
-        while (!tap.isConnected()) {
+        while (!queue.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {
-                System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerServer?%n",
-                                  FrameLayer.FEEDER_STREAM_ID);
+                System.err.printf(
+                    "[clusterctl] queue (aeron:ipc/%d) not available — co-located with a SequencerServer?%n",
+                    FrameLayer.QUEUE_STREAM_ID);
                 return null;
             }
             session.sender.pollEgress();
             IDLE.idle();
         }
-        return tap;
+        return queue;
     }
 
     /** Matches our marker's echo by correlationId; one decoder serves the three byte-identical markers. */

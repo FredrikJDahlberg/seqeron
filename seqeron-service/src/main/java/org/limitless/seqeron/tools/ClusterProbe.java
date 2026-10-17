@@ -38,16 +38,16 @@ import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The cluster tier's own load generator and tap consumer, so its end-to-end scripts need no product
+ * The cluster tier's own load generator and queue consumer, so its end-to-end scripts need no product
  * binary. Four modes, one message ({@code sbe-probe.xml}, {@code payloadId} 5):
  * <ul>
- *   <li><b>submit</b> — flood {@code probe.count} {@code ProbeMarker}s at ingress. Opens no tap
+ *   <li><b>submit</b> — flood {@code probe.count} {@code ProbeMarker}s at ingress. Opens no queue
  *       subscription, which an unpolled flood would back-pressure.</li>
- *   <li><b>ping</b> — submit one and wait for its sequenced echo off the co-located tap: ingress,
- *       consensus and tap in one round trip.</li>
- *   <li><b>follow</b> — replay history through the co-located Replayer, then follow the tap live.</li>
+ *   <li><b>ping</b> — submit one and wait for its sequenced echo off the co-located queue: ingress,
+ *       consensus and queue in one round trip.</li>
+ *   <li><b>follow</b> — replay history through the co-located Replayer, then follow the queue live.</li>
  *   <li><b>confirm</b> — send {@code probe.count} through {@link ClusterStreamSender} and a
- *       {@link PendingSends} while following its own tap; exit 0 only if the tap shows seqNo 1..count
+ *       {@link PendingSends} while following its own queue; exit 0 only if the queue shows seqNo 1..count
  *       exactly once, in order. {@code -Dprobe.pendingSends=false} is the control.</li>
  * </ul>
  *
@@ -66,7 +66,7 @@ import org.limitless.seqeron.util.Logger;
  *   probe.pacingMicros      — submit, confirm: pause between frames; default 0 (as fast as ingress accepts)
  *   probe.pendingSends      — confirm: hold and resend across a leader change; default true
  *   probe.latencyStats      — follow: record and report post-catch-up delivery latency; default false
- *   probe.faultInjection    — follow: install the SIGUSR1 tap-drop handler; default false
+ *   probe.faultInjection    — follow: install the SIGUSR1 queue-drop handler; default false
  *   probe.faultDropCount    — follow: frames dropped per SIGUSR1; default 1
  *   probe.idleStrategy      — follow: backoff (default), yielding or busyspin
  * </pre>
@@ -133,7 +133,7 @@ public final class ClusterProbe {
     private static final long NEW_LEADER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
 
-    /** confirm: frames in flight between send and the tap; far above what one round trip holds. */
+    /** confirm: frames in flight between send and the queue; far above what one round trip holds. */
     private static final int PENDING_CAPACITY = 4096;
 
     /** confirm: how long the run may go without sending, resending or seeing an own frame before it is judged. */
@@ -194,16 +194,16 @@ public final class ClusterProbe {
     }
 
     /**
-     * Submits one {@code ProbeMarker} and waits for its own sequenced echo off the co-located tap — the
-     * whole path (ingress, consensus, tap) in one round trip.
+     * Submits one {@code ProbeMarker} and waits for its own sequenced echo off the co-located queue — the
+     * whole path (ingress, consensus, queue) in one round trip.
      * @return 0 if the echo arrived, 1 otherwise
      */
     private static int ping() {
         // Distinctive, so a concurrent flood's 1..count cannot be mistaken for this frame's echo.
         final long seqNo = System.currentTimeMillis();
         try (AeronCluster cluster = connectCluster()) {
-            final Subscription tap = awaitTap(cluster);
-            if (tap == null) {
+            final Subscription queue = awaitQueue(cluster);
+            if (queue == null) {
                 return 1;
             }
             final MarkerEncoder marker = new MarkerEncoder();
@@ -214,13 +214,13 @@ public final class ClusterProbe {
             final IdleStrategy idle = new YieldingIdleStrategy();
             final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
             while (!handler.found && System.nanoTime() < deadline) {
-                final int fragments = tap.poll(assembler, 10);
+                final int fragments = queue.poll(assembler, 10);
                 cluster.pollEgress();
                 idle.idle(fragments);
             }
             if (!handler.found) {
                 Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
-                             "ping seqNo %d was not echoed on the tap within %ds", seqNo,
+                             "ping seqNo %d was not echoed on the queue within %ds", seqNo,
                              TimeUnit.NANOSECONDS.toSeconds(ECHO_TIMEOUT_NS));
                 return 1;
             }
@@ -314,10 +314,10 @@ public final class ClusterProbe {
     // ── confirm ───────────────────────────────────────────────────────────────────
 
     /**
-     * Sends seqNo 1..count while following this node's tap, then judges what the tap showed from this
+     * Sends seqNo 1..count while following this node's queue, then judges what the queue showed from this
      * process's own sessions. The frames go out as fast as the pacing allows, so a leader killed meanwhile
      * has some in flight.
-     * @return 0 if the tap showed every frame exactly once, in order
+     * @return 0 if the queue showed every frame exactly once, in order
      */
     private static int confirm(final int count) {
         final boolean tracked = Boolean.parseBoolean(System.getProperty("probe.pendingSends", "true"));
@@ -402,7 +402,7 @@ public final class ClusterProbe {
         }
     }
 
-    /** The seqNos this process's own sessions put on the tap, in tap order. */
+    /** The seqNos this process's own sessions put on the queue, in queue order. */
     private static final class OwnFrames {
         private final LongHashSet sessions = new LongHashSet();
         private final LongArrayList seqNos = new LongArrayList();
@@ -422,7 +422,7 @@ public final class ClusterProbe {
             return seqNos.isEmpty() ? 0 : seqNos.getLong(seqNos.size() - 1);
         }
 
-        /** 0 if the tap showed 1..count exactly once, in order; logs the tally either way. */
+        /** 0 if the queue showed 1..count exactly once, in order; logs the tally either way. */
         private int judge(final int count, final int resent) {
             final LongHashSet distinct = new LongHashSet();
             int outOfOrder = 0;
@@ -436,7 +436,7 @@ public final class ClusterProbe {
             final int duplicated = seqNos.size() - distinct.size();
             final boolean exact = missing == 0 && duplicated == 0 && outOfOrder == 0;
             Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
-                        "confirm: %s — tap showed %d of %d: missing %d, duplicated %d, out of order %d; resent %d",
+                        "confirm: %s — queue showed %d of %d: missing %d, duplicated %d, out of order %d; resent %d",
                         exact ? "EXACT" : "NOT EXACT", seqNos.size(), count, missing, duplicated, outOfOrder, resent);
             return exact ? 0 : 1;
         }
@@ -464,9 +464,10 @@ public final class ClusterProbe {
         final AtomicBoolean announcedLive = new AtomicBoolean();
         // Two hand-offs, as the fault has to cross two threads: SIGUSR1 accumulates into faultDropArmed,
         // the duty cycle moves it here, and the poll thread is the only decrementer.
-        final AtomicInteger tapDropsPending = new AtomicInteger();
-        final BooleanSupplier tapFaults =
-            faultInjection ? () -> tapDropsPending.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0 : null;
+        final AtomicInteger queueDropsPending = new AtomicInteger();
+        final BooleanSupplier queueFaults = faultInjection ? ()
+            -> queueDropsPending.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0
+            : null;
         final ReplayerStreamReceiver receiver = new ReplayerStreamReceiver(clientId, stats::onSequenced, null, () -> {
             // Fires on every transition to caught-up, including re-convergence after a gap.
             if (announcedLive.compareAndSet(false, true)) {
@@ -475,17 +476,17 @@ public final class ClusterProbe {
                 Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "re-converged at globalSeqNo %d",
                             self.get().lastGlobalSeqNo());
             }
-        }, tapFaults);
+        }, queueFaults);
         self.set(receiver);
         stats.receiver = receiver;
         receiver.start(aeron, MEMBER_ID);
         Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
-                    "Following the node tap — replaying history via the Replayer, then live");
+                    "Following the node queue — replaying history via the Replayer, then live");
 
         if (faultInjection) {
             sun.misc.Signal.handle(new sun.misc.Signal("USR1"), signal -> faultDropArmed.addAndGet(dropPerSignal));
             Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
-                        "fault injection ENABLED — SIGUSR1 drops %d live tap frame(s)", dropPerSignal);
+                        "fault injection ENABLED — SIGUSR1 drops %d live queue frame(s)", dropPerSignal);
         }
 
         final AtomicBoolean running = new AtomicBoolean(true);
@@ -497,10 +498,9 @@ public final class ClusterProbe {
                 while (running.get()) {
                     if (faultInjection && faultDropArmed.get() > 0) {
                         final int armed = faultDropArmed.getAndSet(0);
-                        tapDropsPending.addAndGet(armed);
+                        queueDropsPending.addAndGet(armed);
                         Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
-                                    "fault injection: armed %d tap drop(s)",
-                                    armed);
+                                    "fault injection: armed %d queue drop(s)", armed);
                     }
                     idle.idle(receiver.poll());
                 }
@@ -534,7 +534,7 @@ public final class ClusterProbe {
     }
 
     /**
-     * Counts delivered frames and, when enabled, the cluster-commit → tap delivery latency of the ones
+     * Counts delivered frames and, when enabled, the cluster-commit → queue delivery latency of the ones
      * delivered while caught up. Replayed history is excluded: its "latency" is the age of the archive.
      */
     private static final class DeliveryStats {
@@ -577,7 +577,7 @@ public final class ClusterProbe {
             final long[] sorted = Arrays.copyOf(samplesUs, sampleCount);
             Arrays.sort(sorted);
             Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
-                        "delivery latency (cluster-commit -> tap, n=%d): p50=%dus p90=%dus p99=%dus p99.9=%dus "
+                        "delivery latency (cluster-commit -> queue, n=%d): p50=%dus p90=%dus p99=%dus p99.9=%dus "
                             + "max=%dus (both stamps are epoch nanoseconds, but the commit timestamp is the "
                             + "leader's clock, so a cross-host sample carries the clock offset between the two)",
                         sampleCount, pct(sorted, 0.50), pct(sorted, 0.90), pct(sorted, 0.99), pct(sorted, 0.999),
@@ -602,23 +602,23 @@ public final class ClusterProbe {
             .newLeaderTimeoutNs(NEW_LEADER_TIMEOUT_NS));
     }
 
-    /** Subscribes this node's tap, untethered, and waits for it to connect. */
-    private static Subscription awaitTap(final AeronCluster cluster) {
-        final Subscription tap = cluster.context().aeron()
-            .addSubscription(ReplayerStreamReceiver.FEEDER_CONSUMER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
+    /** Subscribes this node's queue, untethered, and waits for it to connect. */
+    private static Subscription awaitQueue(final AeronCluster cluster) {
+        final Subscription queue = cluster.context().aeron().addSubscription(
+            ReplayerStreamReceiver.QUEUE_CONSUMER_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
         final IdleStrategy idle = new YieldingIdleStrategy();
         final long deadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
-        while (!tap.isConnected()) {
+        while (!queue.isConnected()) {
             if (System.nanoTime() >= deadline) {
                 Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
-                             "tap (aeron:ipc/%d) not available — co-located with a SequencerServer?",
-                             FrameLayer.FEEDER_STREAM_ID);
+                             "queue (aeron:ipc/%d) not available — co-located with a SequencerServer?",
+                             FrameLayer.QUEUE_STREAM_ID);
                 return null;
             }
             cluster.pollEgress();
             idle.idle();
         }
-        return tap;
+        return queue;
     }
 
     /**
@@ -666,9 +666,9 @@ public final class ClusterProbe {
             Usage: ClusterProbe <submit|ping|follow|confirm>
 
               submit  flood -Dprobe.count frames at cluster ingress (default 1000)
-              ping    submit one frame and wait for its sequenced echo on the tap
-              follow  replay history via the co-located Replayer, then follow the tap live
-              confirm send -Dprobe.count frames and check the tap shows each once, in order
+              ping    submit one frame and wait for its sequenced echo on the queue
+              follow  replay history via the co-located Replayer, then follow the queue live
+              confirm send -Dprobe.count frames and check the queue shows each once, in order
 
             See the class javadoc for the -Dprobe.* properties.""");
     }

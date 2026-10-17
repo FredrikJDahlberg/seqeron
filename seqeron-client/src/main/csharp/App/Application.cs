@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.App;
 /// One replica of a co-located application — the kind of producer nothing elects. One runs per node, the topology's
 /// <c>&lt;applications&gt;</c> section names it, and <c>LeadershipChanged</c> already picks the replica that
 /// submits: this one publishes only while its own node leads. What that takes is behind it — the cluster session
-/// over the node's own <c>aeron:ipc</c>, the tap it follows, the leader gate, confirmed ingress across a failover,
+/// over the node's own <c>aeron:ipc</c>, the queue it follows, the leader gate, confirmed ingress across a failover,
 /// and the fences that say it may no longer act.
 /// <para><b>Off the cluster</b> (<see cref="ApplicationOptions.OffCluster"/>), on a gateway host, it is the one
 /// instance rather than one of three: its gate opens once caught up, whoever leads, and it submits over UDP. Nothing
@@ -37,14 +37,14 @@ namespace Org.Limitless.Seqeron.App;
 /// </summary>
 public sealed class Application : IDisposable
 {
-    /// <summary>How long the tap may be silent before this replica is fenced — 20 heartbeat periods.</summary>
-    public const long DefaultTapStallTimeoutMs = Session.DefaultTapStallTimeoutMs;
+    /// <summary>How long the queue may be silent before this replica is fenced — 20 heartbeat periods.</summary>
+    public const long DefaultQueueStallTimeoutMs = Session.DefaultQueueStallTimeoutMs;
 
     /// <summary>How long recovery may dispatch nothing, once caught up before; longer, as a re-walk is
     /// slower.</summary>
     public const long DefaultRecoveryStallTimeoutMs = Session.DefaultRecoveryStallTimeoutMs;
 
-    /// <summary>Frames in flight between a publish and the tap; far above what one round trip holds.</summary>
+    /// <summary>Frames in flight between a publish and the queue; far above what one round trip holds.</summary>
     public const int DefaultPendingCapacity = Session.DefaultPendingCapacity;
 
     /// <summary>How long ingress is tried on this member's own <c>aeron:ipc</c>: short, as a follower never
@@ -95,7 +95,7 @@ public sealed class Application : IDisposable
         _gate = new LeaderGate(options.MemberId, options.OffCluster);
         SnapshotStore store = options.SnapshotListener == null ? null : new SnapshotStore(options.SnapshotDirectory);
         _snapshots = new SnapshotTaker(options.SnapshotListener, store, KeepAlive);
-        _session = new Session(options.ClientId, options.PendingCapacity, options.TapStallTimeoutMs,
+        _session = new Session(options.ClientId, options.PendingCapacity, options.QueueStallTimeoutMs,
                                options.RecoveryStallTimeoutMs, new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _sourceId);
         if (store != null)
@@ -104,7 +104,7 @@ public sealed class Application : IDisposable
         }
     }
 
-    /// <summary>Opens the cluster session on this node and starts following its tap; the gate stays shut until
+    /// <summary>Opens the cluster session on this node and starts following its queue; the gate stays shut until
     /// caught up.</summary>
     public void Start(Aeron aeron)
     {
@@ -125,7 +125,7 @@ public sealed class Application : IDisposable
         }
     }
 
-    /// <summary>One duty-cycle iteration: the cluster session and the tap, then the gate over what they
+    /// <summary>One duty-cycle iteration: the cluster session and the queue, then the gate over what they
     /// left. Nothing once fenced.</summary>
     /// <returns>units of work done, for the caller's idle strategy</returns>
     public int DoWork()
@@ -201,7 +201,7 @@ public sealed class Application : IDisposable
 
     public long LastGlobalSeqNo => _session.LastGlobalSeqNo;
 
-    /// <summary>Closes the cluster session and the tap. The Aeron client is the caller's and is left open.</summary>
+    /// <summary>Closes the cluster session and the queue. The Aeron client is the caller's and is left open.</summary>
     public void Dispose()
     {
         _session.Dispose();
@@ -243,7 +243,7 @@ public sealed class Application : IDisposable
         return _session.PublishPayload(frameSourceId, connectionId, payloadId, payload, length);
     }
 
-    // What comes off the tap, and the one frame the gate is driven by.
+    // What comes off the queue, and the one frame the gate is driven by.
     private sealed class SessionDispatch : Session.IDispatch
     {
         private readonly Application _app;

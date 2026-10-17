@@ -4,7 +4,7 @@
 #
 # One Windows machine stands in for both. The member runs in WSL1, which shares Windows' network stack, so
 # everything meets on localhost UDP. Windows runs the gateway host (node 3: ReplayerServer relaying the
-# member's tap onto its own) and, attached to its driver through the default Aeron directory, the C# probe and
+# member's queue onto its own) and, attached to its driver through the default Aeron directory, the C# probe and
 # the C# examples. Three phases, all of them client functionality:
 #
 #   A  UDP ingress from the gateway host, through PendingSends            confirm EXACT

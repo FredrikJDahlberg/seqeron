@@ -11,18 +11,18 @@ using SbeBuffer = Org.SbeTool.Sbe.Dll.DirectBuffer;
 namespace Org.Limitless.Seqeron.Replayer.Client;
 
 /// <summary>
-/// App-replica side of the per-node <c>ReplayerService</c>: reads the co-located tap live and asks the Replayer for
+/// App-replica side of the per-node <c>ReplayerService</c>: reads the co-located queue live and asks the Replayer for
 /// history and gaps. The Aeron adapter only: every decision lives in <c>ReplayerRecovery</c>.
 /// <c>ReplayerStreamReceiver.java</c> and <c>replayer/client/ReplayerStreamReceiver.hpp</c> are its twins.
 /// <para>Single-threaded: every method runs on the one duty-cycle thread.</para>
 /// </summary>
 public sealed class ReplayerStreamReceiver : IDisposable
 {
-    /// <summary>The tap as a consumer addresses it: untethered, so a slow app is dropped and heals via
+    /// <summary>The queue as a consumer addresses it: untethered, so a slow app is dropped and heals via
     /// replay.</summary>
-    public const string FeederConsumerChannel = FrameLayer.FeederChannel + "|tether=false";
+    public const string QueueConsumerChannel = FrameLayer.QueueChannel + "|tether=false";
 
-    // Untethered like the tap: the Replayer answers every app from one thread, so an app that stops polling must
+    // Untethered like the queue: the Replayer answers every app from one thread, so an app that stops polling must
     // not back-pressure the others' replies. A dropped reply costs one resend interval.
     private const string ControlChannel = ReplayProtocol.IpcChannel + "|tether=false";
 
@@ -33,14 +33,14 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
     private readonly int _clientId;
     private readonly ReplayerRecovery _recovery;
-    private readonly Func<bool> _tapFaults;
+    private readonly Func<bool> _queueFaults;
 
     private readonly Replay.MessageHeader _requestHeader = new Replay.MessageHeader();
     private readonly Replay.ReplayRequest _replayRequest = new Replay.ReplayRequest();
     private readonly UnsafeBuffer _requestBuffer = new UnsafeBuffer(GC.AllocateArray<byte>(RequestBufferLength, true));
     private readonly SbeBuffer _requestView = new SbeBuffer();
 
-    private readonly FragmentAssembler _tapHandler;
+    private readonly FragmentAssembler _queueHandler;
     private readonly FragmentAssembler _replayHandler;
     private readonly FragmentAssembler _controlHandler;
 
@@ -49,30 +49,30 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
     // The id the Replayer addresses this receiver's replies to, drawn from the driver at start; -1 before.
     private long _replyId = -1;
-    private Subscription _tapSubscription;
+    private Subscription _queueSubscription;
     private Subscription _replaySubscription;
     private Subscription _controlSubscription;
     private Publication _requestPublication;
     private Image _replayImage;
     private Counter _recoveryStalledCounter;
 
-    /// <summary>A receiver, dropping a live tap frame whenever <paramref name="tapFaults"/> answers true.</summary>
+    /// <summary>A receiver, dropping a live queue frame whenever <paramref name="queueFaults"/> answers true.</summary>
     /// <param name="clientId">this replica's id on the node, its counters' <c>client</c> label; replicas sharing one
     /// share their counters' series</param>
     /// <param name="onSequenced">receives every in-order frame</param>
     /// <param name="onLeadershipChanged">receives each leadership change, or null to have it reach
     /// <paramref name="onSequenced"/></param>
     /// <param name="onCaughtUp">fires on every transition to caught-up, or null</param>
-    /// <param name="tapFaults">test harnesses only: polled once per live tap frame, on the poll thread; null drops
+    /// <param name="queueFaults">test harnesses only: polled once per live queue frame, on the poll thread; null drops
     /// nothing</param>
     /// <exception cref="ArgumentNullException">if <paramref name="onSequenced"/> is null</exception>
     public ReplayerStreamReceiver(int clientId, SequencedHandler onSequenced, LeadershipHandler onLeadershipChanged,
-                                  CaughtUpHandler onCaughtUp, Func<bool> tapFaults = null)
+                                  CaughtUpHandler onCaughtUp, Func<bool> queueFaults = null)
     {
         _clientId = clientId;
-        _tapFaults = tapFaults;
+        _queueFaults = queueFaults;
         _recovery = new ReplayerRecovery(new Actions(this), onSequenced, onLeadershipChanged, onCaughtUp);
-        _tapHandler = new FragmentAssembler(OnTapFragment);
+        _queueHandler = new FragmentAssembler(OnQueueFragment);
         _replayHandler = new FragmentAssembler(OnReplayFragment);
         _controlHandler = new FragmentAssembler(OnControlFragment);
         SbeBuffers.Wrap(_requestView, _requestBuffer, 0, RequestBufferLength);
@@ -88,7 +88,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
         _recovery.RestoreFrom(store, handler);
     }
 
-    /// <summary>Subscribes the tap and control streams, opens the request publication and the convergence counter,
+    /// <summary>Subscribes the queue and control streams, opens the request publication and the convergence counter,
     /// and requests the cold-start replay from the recording's start, or the snapshot to restore first.</summary>
     /// <param name="aeron">client sharing the co-located node's media driver</param>
     /// <param name="memberId">this app's node, to label the counter</param>
@@ -102,14 +102,14 @@ public sealed class ReplayerStreamReceiver : IDisposable
         _recoveryStalledCounter = SeqeronCounters.AddAppCounter(
             aeron, SeqeronCounters.AppRecoveryStalledTypeId,
             $"seqeron.app.recoveryStalled member={memberId} client={_clientId}", memberId, _clientId);
-        _tapSubscription = aeron.AddSubscription(FeederConsumerChannel, FrameLayer.FeederStreamId);
+        _queueSubscription = aeron.AddSubscription(QueueConsumerChannel, FrameLayer.QueueStreamId);
         _controlSubscription = aeron.AddSubscription(ControlChannel, ReplayProtocol.ControlStreamId);
         _requestPublication = aeron.AddPublication(ReplayProtocol.IpcChannel, ReplayProtocol.RequestStreamId);
         _recovery.Start();
     }
 
     /// <summary>One duty-cycle iteration: drain control, ride an attached replay image, and always drain and
-    /// dispatch the tap — <c>ReplayerRecovery</c>'s contiguity check, not the poll routing, decides what a tap
+    /// dispatch the queue — <c>ReplayerRecovery</c>'s contiguity check, not the poll routing, decides what a queue
     /// frame is worth mid-walk.</summary>
     /// <returns>fragments consumed</returns>
     /// <exception cref="InvalidOperationException">once this node's recording does not hold what recovery asked of
@@ -153,16 +153,16 @@ public sealed class ReplayerStreamReceiver : IDisposable
                 }
             }
         }
-        if (_tapSubscription != null)
+        if (_queueSubscription != null)
         {
-            work += _tapSubscription.Poll(_tapHandler, FragmentLimit);
+            work += _queueSubscription.Poll(_queueHandler, FragmentLimit);
         }
 
         _recovery.CheckRecoveryProgress();
         return work;
     }
 
-    /// <summary>Whether this client is following the live tail; revoked on a tap gap, re-established at the
+    /// <summary>Whether this client is following the live tail; revoked on a queue gap, re-established at the
     /// seam.</summary>
     public bool IsCaughtUp => _recovery.IsCaughtUp;
 
@@ -184,8 +184,8 @@ public sealed class ReplayerStreamReceiver : IDisposable
     {
         CloseReplay();
         _recovery.Close();
-        _tapSubscription?.Dispose();
-        _tapSubscription = null;
+        _queueSubscription?.Dispose();
+        _queueSubscription = null;
         _controlSubscription?.Dispose();
         _controlSubscription = null;
         _requestPublication?.Dispose();
@@ -194,9 +194,9 @@ public sealed class ReplayerStreamReceiver : IDisposable
         _recoveryStalledCounter = null;
     }
 
-    private void OnTapFragment(IDirectBuffer buffer, int offset, int length, Header header)
+    private void OnQueueFragment(IDirectBuffer buffer, int offset, int length, Header header)
     {
-        if (_tapFaults != null && _tapFaults())
+        if (_queueFaults != null && _queueFaults())
         {
             return;
         }

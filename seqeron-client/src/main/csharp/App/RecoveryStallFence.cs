@@ -2,7 +2,7 @@ namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
 /// A gateway's recovery-stall fence: recovery dispatching nothing for a deadline, once this instance has been
-/// caught up at least once. It covers the state a tap-silence watchdog cannot, because that watchdog is gated on
+/// caught up at least once. It covers the state a queue-silence watchdog cannot, because that watchdog is gated on
 /// <c>IsCaughtUp</c>: a recovery that never converges would otherwise keep an active gateway serving behind a view
 /// of the log frozen at a hole it cannot close.
 /// <para><b>Progress, not elapsed recovery.</b> A converging re-walk always advances the <c>globalSeqNo</c> it has

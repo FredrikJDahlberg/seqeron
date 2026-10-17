@@ -51,10 +51,10 @@ public final class AeronReplayer implements Replayer {
     }
 
     @Override
-    public List<Replayer.RecordingSpan> listTapRecordings() {
+    public List<Replayer.RecordingSpan> listQueueRecordings() {
         final List<Replayer.RecordingSpan> spans = new ArrayList<>();
         archive.listRecordingsForUri(
-            0, Integer.MAX_VALUE, "", FrameLayer.FEEDER_STREAM_ID,
+            0, Integer.MAX_VALUE, "", FrameLayer.QUEUE_STREAM_ID,
             (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp, startPosition, stopPosition,
              initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
              originalChannel, sourceIdentity)
@@ -64,7 +64,7 @@ public final class AeronReplayer implements Replayer {
     }
 
     @Override
-    public Replayer.TapBacklog tapBacklog(final Replayer.RecordingSpan span) {
+    public Replayer.QueueBacklog queueBacklog(final Replayer.RecordingSpan span) {
         final CountersReader counters = aeron.countersReader();
         final DirectBuffer metaData = counters.metaDataBuffer();
         for (int counterId = 0, maxId = counters.maxCounterId(); counterId <= maxId; counterId++) {
@@ -73,15 +73,15 @@ public final class AeronReplayer implements Replayer {
                 continue;
             }
             final int key = CountersReader.metaDataOffset(counterId) + CountersReader.KEY_OFFSET;
-            if (metaData.getInt(key + StreamCounter.STREAM_ID_OFFSET) != FrameLayer.FEEDER_STREAM_ID ||
-                !FrameLayer.FEEDER_CHANNEL.equals(metaData.getStringAscii(key + StreamCounter.CHANNEL_OFFSET))) {
+            if (metaData.getInt(key + StreamCounter.STREAM_ID_OFFSET) != FrameLayer.QUEUE_STREAM_ID ||
+                !FrameLayer.QUEUE_CHANNEL.equals(metaData.getStringAscii(key + StreamCounter.CHANNEL_OFFSET))) {
                 continue;
             }
             final int recordingCounterId = RecordingPos.findCounterIdBySession(
                 counters, metaData.getInt(key + StreamCounter.SESSION_ID_OFFSET), archive.archiveId());
             if (recordingCounterId != CountersReader.NULL_COUNTER_ID &&
                 RecordingPos.getRecordingId(counters, recordingCounterId) == span.recordingId()) {
-                return new Replayer.TapBacklog(
+                return new Replayer.QueueBacklog(
                     counters.getCounterValue(counterId) - counters.getCounterValue(recordingCounterId),
                     Configuration.producerWindowLength(span.termBufferLength(),
                                                        Configuration.ipcPublicationTermWindowLength()));

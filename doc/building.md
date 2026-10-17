@@ -114,9 +114,9 @@ WSL1 distribution that has a JDK 21.
 | Script | Purpose |
 |--------|---------|
 | `start-three-node-cluster.sh` | Start a local 3-node Raft cluster with a per-node `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_NO_CONSUMERS=1` leaves out the replicas, for a caller that runs its own |
-| `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's tap recording is one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
-| `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault injection) and verify it resumes its recording at the hole and heals rather than wedging |
-| `paused-subscriber-test.sh` | `SIGSTOP` a caught-up consumer while more than two tap windows go by, and verify its member stays up and the resumed consumer heals the hole its eviction left |
+| `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's queue recording is one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
+| `gap-recovery-test.sh` | Drop a live queue frame on a caught-up consumer (SIGUSR1 fault injection) and verify it resumes its recording at the hole and heals rather than wedging |
+| `paused-subscriber-test.sh` | `SIGSTOP` a caught-up consumer while more than two queue windows go by, and verify its member stays up and the resumed consumer heals the hole its eviction left |
 | `session-replace-test.sh` | `SIGSTOP` a `TestApplication` past its session timeout, then take quorum away from its member, and verify it replaces its cluster session both times, unfenced, without its duty cycle stopping while an attempt is pending; then pause the `TestGateway` pair past its session timeout, and verify the standby takes the role over rather than fencing alongside the active instance. Needs `./gradlew uberJar compileTestJava` |
 | `replayer-restart-test.sh` | Kill and restart a client's own node and verify the client fails fast and a fresh cold start is served from the node's new recording alone |
 | `gateway-host-test.sh` | A `confirm` producer on a gateway host (node 3) streams while the member its relay reads, the leader, is killed: every frame must come back exactly once, in order, and the relay must move to another member. The host is then restarted, and a fresh `ClusterProbe` follower there must catch up from its new recording |
@@ -138,9 +138,9 @@ its `test/seqeron-*.sh` after `./gradlew operatorDist`.
 
 `seqeron-examples` holds the smallest clients there are, one per language in `src/java`, `src/cpp` and
 `src/csharp`, and the same flow in each: replay a node's history through that node's co-located Replayer,
-switch to the live tap on catching up, and print every frame in `globalSeqNo` order. Each produces as well
+switch to the live queue on catching up, and print every frame in `globalSeqNo` order. Each produces as well
 as consumes — a `ConnectionOpened` announcing itself, then one ping payload a second whose echo it reads
-back off its own tap — so both families are covered in both directions. Each is a **separate build**,
+back off its own queue — so both families are covered in both directions. Each is a **separate build**,
 sharing that one source tree: the Java one resolves `org.limitless:seqeron` — the client tier alone, no
 sequencer and no archive — the C++ one pulls `seqeron_core` in with `FetchContent`, and the C# one resolves
 the `Org.Limitless.Seqeron` package from `build/nuget`, so what the artifacts fail to expose fails there

@@ -13,23 +13,23 @@ import org.agrona.concurrent.status.AtomicCounter;
  */
 public interface Replayer {
     /**
-     * One tap recording as read off an archive listing. {@code startPosition} is carried because a replay
+     * One queue recording as read off an archive listing. {@code startPosition} is carried because a replay
      * must start at or after it, though it is always 0 today.
      */
     record RecordingSpan(long recordingId, long startPosition, boolean active, int termBufferLength) { }
 
     /**
-     * How far a recording trails the tap it records, and the window it may trail by before the tap's publisher
+     * How far a recording trails the queue it records, and the window it may trail by before the queue's publisher
      * blocks on it.
      */
-    record TapBacklog(long bytes, long window) { }
+    record QueueBacklog(long bytes, long window) { }
 
     /**
-     * Every tap recording the local archive holds, in whatever order it listed them; which one is served is
+     * Every queue recording the local archive holds, in whatever order it listed them; which one is served is
      * {@code ReplayerService}'s decision.
      * @return the recordings, possibly empty
      */
-    List<RecordingSpan> listTapRecordings();
+    List<RecordingSpan> listQueueRecordings();
 
     /**
      * Where a still-recording recording has reached. On every request's path, so read off the node's counters
@@ -47,11 +47,11 @@ public interface Replayer {
     long stopPosition(long recordingId);
 
     /**
-     * How far the active tap recording trails the tap, read off this node's counters.
-     * @param span the active tap recording
-     * @return its backlog, or {@code null} when the counters show no tap publication it records
+     * How far the active queue recording trails the queue, read off this node's counters.
+     * @param span the active queue recording
+     * @return its backlog, or {@code null} when the counters show no queue publication it records
      */
-    TapBacklog tapBacklog(RecordingSpan span);
+    QueueBacklog queueBacklog(RecordingSpan span);
 
     /**
      * Starts a bounded replay onto a node-local IPC stream.

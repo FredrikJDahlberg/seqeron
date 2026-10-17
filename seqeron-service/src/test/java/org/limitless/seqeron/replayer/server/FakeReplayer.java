@@ -30,7 +30,7 @@ final class FakeReplayer implements Replayer {
     /** Counter slots; the service allocates seven. */
     private static final int COUNTER_CAPACITY = 16;
 
-    /** Every recording's term length: the driver's default IPC term, as a member's tap has. */
+    /** Every recording's term length: the driver's default IPC term, as a member's queue has. */
     static final int TERM_BUFFER_LENGTH = 16 * 1024 * 1024;
 
     /** One {@code startReplay} the service asked for. */
@@ -39,7 +39,7 @@ final class FakeReplayer implements Replayer {
     private final List<Replayer.RecordingSpan> recordings = new ArrayList<>();
     private final Map<Long, Long> recordingPositions = new HashMap<>();
     private final Map<Long, Long> stopPositions = new HashMap<>();
-    private Replayer.TapBacklog tapBacklog;
+    private Replayer.QueueBacklog queueBacklog;
 
     private final List<StartedReplay> startedReplays = new ArrayList<>();
     private final List<Long> stoppedReplays = new ArrayList<>();
@@ -68,7 +68,7 @@ final class FakeReplayer implements Replayer {
 
     // ── Scripting the node ──────────────────────────────────────────────────────
 
-    /** Adds one tap recording. A negative tip means the archive cannot say where it ends. */
+    /** Adds one queue recording. A negative tip means the archive cannot say where it ends. */
     void addRecording(final long recordingId, final long startPosition, final boolean active, final long tip) {
         recordings.add(new Replayer.RecordingSpan(recordingId, startPosition, active, TERM_BUFFER_LENGTH));
         if (active) {
@@ -109,11 +109,11 @@ final class FakeReplayer implements Replayer {
     }
 
     /**
-     * What the counters say the active recording trails the tap by; {@code null}, the default, is no tap
+     * What the counters say the active recording trails the queue by; {@code null}, the default, is no queue
      * publication found.
      */
-    void tapBacklog(final Replayer.TapBacklog backlog) {
-        tapBacklog = backlog;
+    void queueBacklog(final Replayer.QueueBacklog backlog) {
+        queueBacklog = backlog;
     }
 
     /** Makes every subsequent {@code startReplay} throw, as an archive that will not serve a replay does. */
@@ -143,7 +143,7 @@ final class FakeReplayer implements Replayer {
         archiveSessionError = error;
     }
 
-    /** How many times the archive's tap recordings were listed. */
+    /** How many times the archive's queue recordings were listed. */
     int listings() {
         return listings;
     }
@@ -197,7 +197,7 @@ final class FakeReplayer implements Replayer {
     // ── Replayer ─────────────────────────────────────────────────────
 
     @Override
-    public List<Replayer.RecordingSpan> listTapRecordings() {
+    public List<Replayer.RecordingSpan> listQueueRecordings() {
         ++listings;
         throwIfArchiveDown();
         return new ArrayList<>(recordings);
@@ -216,8 +216,8 @@ final class FakeReplayer implements Replayer {
     }
 
     @Override
-    public Replayer.TapBacklog tapBacklog(final Replayer.RecordingSpan span) {
-        return tapBacklog;
+    public Replayer.QueueBacklog queueBacklog(final Replayer.RecordingSpan span) {
+        return queueBacklog;
     }
 
     @Override

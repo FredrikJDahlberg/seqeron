@@ -22,8 +22,8 @@ public class HotPathAllocationTest
     private const long SessionId = 4242;
     private const int PayloadId = 6;
 
-    [Fact(DisplayName = "a live tap frame is dispatched without allocating")]
-    public void LiveTapDispatchAllocatesNothing()
+    [Fact(DisplayName = "a live queue frame is dispatched without allocating")]
+    public void LiveQueueDispatchAllocatesNothing()
     {
         var recovery = new ReplayerRecovery(new QuietActions(), Ignore, null, null);
         recovery.Start();
@@ -36,16 +36,16 @@ public class HotPathAllocationTest
         // Every frame back to back in one buffer, so the measured loop wraps nothing.
         var offsets = new List<int>();
         var lengths = new List<int>();
-        var tap = new List<byte>();
+        var queue = new List<byte>();
         for (long globalSeqNo = 1; globalSeqNo <= 2 * Frames; globalSeqNo++)
         {
             byte[] frame = globalSeqNo % 2 == 0 ? Protocol.Frames.ClusterHeartbeat(globalSeqNo)
                                                 : Protocol.Frames.Payload(globalSeqNo, 32);
-            offsets.Add(tap.Count);
+            offsets.Add(queue.Count);
             lengths.Add(frame.Length);
-            tap.AddRange(frame);
+            queue.AddRange(frame);
         }
-        using var buffer = new UnsafeBuffer(tap.ToArray());
+        using var buffer = new UnsafeBuffer(queue.ToArray());
 
         Deliver(recovery, buffer, offsets, lengths, 0);
         Assert.True(recovery.IsCaughtUp);
@@ -57,7 +57,7 @@ public class HotPathAllocationTest
         Assert.Equal(0, allocated);
     }
 
-    [Fact(DisplayName = "a tracked publish, and its confirmation off the tap, allocate nothing")]
+    [Fact(DisplayName = "a tracked publish, and its confirmation off the queue, allocate nothing")]
     public void TrackedPublishAllocatesNothing()
     {
         var pending = new PendingSends(4);

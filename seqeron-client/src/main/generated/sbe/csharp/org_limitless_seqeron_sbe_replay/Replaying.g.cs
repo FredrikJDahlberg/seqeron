@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Replay
 {
     /// <summary>
-    /// The replayer started a replay. The client attaches to replaySessionId on stream 201,                               follows it until catchUpPosition, then switches to the live tap, de-duplicating                               on globalSeqNo
+    /// The replayer started a replay. The client attaches to replaySessionId on stream 201,                               follows it until catchUpPosition, then switches to the live queue, de-duplicating                               on globalSeqNo
     /// </summary>
     public sealed partial class Replaying
     {
@@ -249,7 +249,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         public const long CatchUpPositionMaxValue = 9223372036854775807L;
 
         /// <summary>
-        /// Position at which the replay ends and the client switches to the live tap. The                             client detects completion by reaching it, not by image close: a bounded replay                             of an active recording does not close its image at the bound
+        /// Position at which the replay ends and the client switches to the live queue. The                             client detects completion by reaching it, not by image close: a bounded replay                             of an active recording does not close its image at the bound
         /// </summary>
         public long CatchUpPosition
         {

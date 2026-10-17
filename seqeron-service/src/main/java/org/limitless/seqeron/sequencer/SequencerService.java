@@ -25,23 +25,23 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * The Aeron adapter over {@link Sequencer}: it decides when to call the state machine and publishes what
- * comes back on this node's tap, which the co-located archive records. It holds no replicated state.
+ * comes back on this node's queue, which the co-located archive records. It holds no replicated state.
  *
- * <p>Every node publishes and records its own tap; the tap publication and its recording are created once
+ * <p>Every node publishes and records its own queue; the queue publication and its recording are created once
  * in {@link #onStart} and span every leader tenure.
  *
  * <p>Snapshots are refused ({@link #onTakeSnapshot} throws, {@link #onStart} rejects a snapshot image):
  * recovery is always full-log replay, which is what keeps each node's recording complete.
  */
 public final class SequencerService implements ClusteredService {
-    /** How long {@link #onStart} waits for the archive to start recording the tap before refusing to start. */
-    private static final long TAP_RECORDING_START_TIMEOUT_MS = 5_000;
+    /** How long {@link #onStart} waits for the archive to start recording the queue before refusing to start. */
+    private static final long QUEUE_RECORDING_START_TIMEOUT_MS = 5_000;
 
     /** Set at launch to enable the test-only fault below; unset in production. */
     private static final String FAULT_INJECTION_ENV = "SEQERON_FAULT_INJECTION";
 
-    /** Touch this file in the cluster directory to arm the fault. See {@link #injectTapRecordingFault}. */
-    private static final String TAP_FAULT_TRIGGER_FILE = "tap-stall-fault";
+    /** Touch this file in the cluster directory to arm the fault. See {@link #injectQueueRecordingFault}. */
+    private static final String QUEUE_FAULT_TRIGGER_FILE = "queue-stall-fault";
 
     /** Correlation id of the one repeating heartbeat timer; rescheduling it moves its deadline. */
     private static final long HEARTBEAT_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
@@ -49,9 +49,9 @@ public final class SequencerService implements ClusteredService {
     private final Sequencer sequencer;
 
     /** Everything here that can back-pressure, and the decision to terminate rather than wait. */
-    private final TapPublisher tap = new TapPublisher(new TapActions());
+    private final QueuePublisher queue = new QueuePublisher(new QueueActions());
 
-    /** Brings the whole node down; wired by {@link SequencerServer}. See {@link TapPublisher}. */
+    /** Brings the whole node down; wired by {@link SequencerServer}. See {@link QueuePublisher}. */
     private final Runnable fatalHandler;
 
     private final int memberId;
@@ -61,20 +61,20 @@ public final class SequencerService implements ClusteredService {
 
     // Aeron runtime
     private Cluster cluster;
-    private ExclusivePublication tapPub;
+    private ExclusivePublication queuePub;
     private AeronArchive aeronArchive;
     private CountersReader counters;
 
-    // Tap recording liveness
-    private int tapRecordingCounterId = CountersReader.NULL_COUNTER_ID;
-    private long tapRecordingId = RecordingPos.NULL_RECORDING_ID;
-    /** Test-only fault trigger; null unless fault injection is enabled. See {@link #injectTapRecordingFault}. */
-    private Path tapFaultTrigger;
+    // Queue recording liveness
+    private int queueRecordingCounterId = CountersReader.NULL_COUNTER_ID;
+    private long queueRecordingId = RecordingPos.NULL_RECORDING_ID;
+    /** Test-only fault trigger; null unless fault injection is enabled. See {@link #injectQueueRecordingFault}. */
+    private Path queueFaultTrigger;
 
     // Operator counters
     private Counter globalSeqNoCounter;
-    private Counter tapBackPressureAlertCounter;
-    private Counter tapStalledCounter;
+    private Counter queueBackPressureAlertCounter;
+    private Counter queueStalledCounter;
     private Counter rejectedIngressCounter;
     private Counter leadershipChangeCounter;
     private Counter currentLeaderMemberIdCounter;
@@ -88,11 +88,11 @@ public final class SequencerService implements ClusteredService {
      * @param memberId       this node's cluster memberId
      * @param archiveContext the co-located archive's client settings; this service owns it
      * @param fatalHandler   run once, from a cluster callback, when this node can no longer record its own
-     *                       tap. Must not block: it signals a shutdown and returns.
+     *                       queue. Must not block: it signals a shutdown and returns.
      */
     public SequencerService(final int memberId, final AeronArchive.Context archiveContext,
                             final Runnable fatalHandler) {
-        this.sequencer = new Sequencer(memberId, tap::emit);
+        this.sequencer = new Sequencer(memberId, queue::emit);
         this.memberId = memberId;
         this.archiveContext = archiveContext;
         this.fatalHandler = fatalHandler;
@@ -115,43 +115,44 @@ public final class SequencerService implements ClusteredService {
         this.cluster = cluster;
         this.counters = cluster.context().aeron().countersReader();
         if (null != System.getenv(FAULT_INJECTION_ENV)) {
-            tapFaultTrigger = cluster.context().clusterDir().toPath().resolve(TAP_FAULT_TRIGGER_FILE);
+            queueFaultTrigger = cluster.context().clusterDir().toPath().resolve(QUEUE_FAULT_TRIGGER_FILE);
         }
 
         try {
             aeronArchive = AeronArchive.connect(archiveContext.aeron(cluster.context().aeron()));
-            tapPub = cluster.context().aeron().addExclusivePublication(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
-            aeronArchive.startRecording(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID, SourceLocation.LOCAL);
-            if (!awaitTapRecordingActive()) {
-                throw new IllegalStateException("the co-located archive did not start recording the tap within "
-                                                + TAP_RECORDING_START_TIMEOUT_MS + "ms");
+            queuePub =
+                cluster.context().aeron().addExclusivePublication(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
+            aeronArchive.startRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID, SourceLocation.LOCAL);
+            if (!awaitQueueRecordingActive()) {
+                throw new IllegalStateException("the co-located archive did not start recording the queue within " +
+                                                QUEUE_RECORDING_START_TIMEOUT_MS + "ms");
             }
         } catch (final RuntimeException ex) {
-            CloseHelper.quietCloseAll(aeronArchive, tapPub);
-            throw refuseStart("[SequencerService] Refusing to start, the tap cannot be recorded: " + ex);
+            CloseHelper.quietCloseAll(aeronArchive, queuePub);
+            throw refuseStart("[SequencerService] Refusing to start, the queue cannot be recorded: " + ex);
         }
         createCounters();
     }
 
     /**
-     * Blocks until the archive's recording has attached to the tap publication, and keeps its counter for
-     * {@link TapPublisher#checkRecordingAlive}.
+     * Blocks until the archive's recording has attached to the queue publication, and keeps its counter for
+     * {@link QueuePublisher#checkRecordingAlive}.
      * @return whether the recording attached before the deadline; the caller refuses the start if not
      */
 
-    private boolean awaitTapRecordingActive() {
+    private boolean awaitQueueRecordingActive() {
         final long archiveId = aeronArchive.archiveId();
-        final long deadlineMs = Clocks.monotonicMs() + TAP_RECORDING_START_TIMEOUT_MS;
+        final long deadlineMs = Clocks.monotonicMs() + QUEUE_RECORDING_START_TIMEOUT_MS;
         int counterId;
-        while ((counterId = RecordingPos.findCounterIdBySession(counters, tapPub.sessionId(), archiveId)) ==
+        while ((counterId = RecordingPos.findCounterIdBySession(counters, queuePub.sessionId(), archiveId)) ==
                CountersReader.NULL_COUNTER_ID) {
             if (Clocks.monotonicMs() >= deadlineMs) {
                 return false;
             }
             cluster.idleStrategy().idle();
         }
-        tapRecordingCounterId = counterId;
-        tapRecordingId = RecordingPos.getRecordingId(counters, counterId);
+        queueRecordingCounterId = counterId;
+        queueRecordingId = RecordingPos.getRecordingId(counters, counterId);
         return true;
     }
 
@@ -169,9 +170,9 @@ public final class SequencerService implements ClusteredService {
     /** Creates this node's operator counters. */
     private void createCounters() {
         globalSeqNoCounter = counter(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, "globalSeqNo");
-        tapBackPressureAlertCounter =
-            counter(SeqeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID, "tapBackPressureAlerts");
-        tapStalledCounter = counter(SeqeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID, "tapStalled");
+        queueBackPressureAlertCounter =
+            counter(SeqeronCounters.SEQUENCER_QUEUE_BACKPRESSURE_ALERTS_TYPE_ID, "queueBackPressureAlerts");
+        queueStalledCounter = counter(SeqeronCounters.SEQUENCER_QUEUE_STALLED_TYPE_ID, "queueStalled");
         rejectedIngressCounter =
             counter(SeqeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID, "rejectedIngressCount");
         leadershipChangeCounter =
@@ -261,30 +262,30 @@ public final class SequencerService implements ClusteredService {
             sequencer.clusterHeartbeat(timestamp);
             updateCounters();
             lastHeartbeatTimestampCounter.set(TimeUnit.NANOSECONDS.toMillis(timestamp)); // exported as ms
-            injectTapRecordingFault();
-            tap.checkRecordingAlive();
+            injectQueueRecordingFault();
+            queue.checkRecordingAlive();
             scheduleHeartbeat();
         }
     }
 
     /**
      * Test-only fault injection for chaos-runner.sh, inert unless {@link #FAULT_INJECTION_ENV} is set:
-     * touching {@code <clusterDir>/tap-stall-fault} stops this node's tap recording, the one way to provoke
-     * {@link TapPublisher#checkRecordingAlive} from outside the JVM. One-shot per process.
+     * touching {@code <clusterDir>/queue-stall-fault} stops this node's queue recording, the one way to provoke
+     * {@link QueuePublisher#checkRecordingAlive} from outside the JVM. One-shot per process.
      */
-    private void injectTapRecordingFault() {
-        if (tapFaultTrigger == null || !Files.exists(tapFaultTrigger)) {
+    private void injectQueueRecordingFault() {
+        if (queueFaultTrigger == null || !Files.exists(queueFaultTrigger)) {
             return;
         }
-        tapFaultTrigger = null;
+        queueFaultTrigger = null;
         Logger.info(Logger.CoreComponent.SequencerService, memberId,
-                    "fault injection: stopping this node's tap recording");
-        aeronArchive.stopRecording(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
+                    "fault injection: stopping this node's queue recording");
+        aeronArchive.stopRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
     }
 
-    /** Re-arms the cluster clock one heartbeat ahead; see {@link TapPublisher#scheduleHeartbeat}. */
+    /** Re-arms the cluster clock one heartbeat ahead; see {@link QueuePublisher#scheduleHeartbeat}. */
     private void scheduleHeartbeat() {
-        tap.scheduleHeartbeat(cluster.time() + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS);
+        queue.scheduleHeartbeat(cluster.time() + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS);
     }
 
     /**
@@ -295,7 +296,7 @@ public final class SequencerService implements ClusteredService {
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
         throw new UnsupportedOperationException(
             "[SequencerService] Snapshots are not supported: recovery is full-log replay from globalSeqNo 1, "
-            + "which is what keeps each node's tap recording complete. Stop the cluster with clusterctl "
+            + "which is what keeps each node's queue recording complete. Stop the cluster with clusterctl "
             + "shutdown (ABORT), not a SNAPSHOT/SHUTDOWN toggle.");
     }
 
@@ -350,16 +351,16 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onTerminate(final Cluster cluster) {
-        CloseHelper.quietCloseAll(aeronArchive, tapPub);
+        CloseHelper.quietCloseAll(aeronArchive, queuePub);
         closeCounters();
     }
 
     /** Closes the operator counters; a node whose start was refused created none. */
     private void closeCounters() {
-        CloseHelper.quietCloseAll(globalSeqNoCounter, tapBackPressureAlertCounter, tapStalledCounter,
+        CloseHelper.quietCloseAll(globalSeqNoCounter, queueBackPressureAlertCounter, queueStalledCounter,
                                   rejectedIngressCounter, leadershipChangeCounter, currentLeaderMemberIdCounter,
-                                  lastHeartbeatTimestampCounter, gatewayPromotionCounter,
-                                  gatewayPromotionFailedCounter, bootstrapActivatedCounter, messagesSequencedCounter);
+                                  lastHeartbeatTimestampCounter, gatewayPromotionCounter, gatewayPromotionFailedCounter,
+                                  bootstrapActivatedCounter, messagesSequencedCounter);
     }
 
     /** Mirrors the sequencer's state onto the operator counters after a callback. */
@@ -370,11 +371,11 @@ public final class SequencerService implements ClusteredService {
         bootstrapActivatedCounter.set(sequencer.bootstrapActivationEmitted() ? 1 : 0);
     }
 
-    /** The Aeron half of {@link TapPublisher}: calls through to the runtime, no decisions. */
-    private final class TapActions implements TapPublisher.Actions {
+    /** The Aeron half of {@link QueuePublisher}: calls through to the runtime, no decisions. */
+    private final class QueueActions implements QueuePublisher.Actions {
         @Override
         public long offerFrame(final DirectBuffer buffer, final int length) {
-            return tapPub.offer(buffer, 0, length);
+            return queuePub.offer(buffer, 0, length);
         }
 
         @Override
@@ -400,27 +401,27 @@ public final class SequencerService implements ClusteredService {
 
         @Override
         public boolean recordingActive() {
-            return RecordingPos.isActive(counters, tapRecordingCounterId, tapRecordingId);
+            return RecordingPos.isActive(counters, queueRecordingCounterId, queueRecordingId);
         }
 
         @Override
         public long recordedPosition() {
-            return counters.getCounterValue(tapRecordingCounterId);
+            return counters.getCounterValue(queueRecordingCounterId);
         }
 
         @Override
         public long recordingId() {
-            return tapRecordingId;
+            return queueRecordingId;
         }
 
         @Override
-        public void tapBackPressureAlert() {
-            tapBackPressureAlertCounter.increment();
+        public void queueBackPressureAlert() {
+            queueBackPressureAlertCounter.increment();
         }
 
         @Override
-        public void tapStalled(final boolean stalled) {
-            tapStalledCounter.set(stalled ? 1 : 0);
+        public void queueStalled(final boolean stalled) {
+            queueStalledCounter.set(stalled ? 1 : 0);
         }
 
         @Override

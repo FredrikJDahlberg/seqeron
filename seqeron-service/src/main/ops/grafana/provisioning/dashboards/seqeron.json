@@ -98,7 +98,7 @@
     {
       "id": 7,
       "title": "Node apply lag (ms)",
-      "description": "How far behind the cluster each node's SequencerService is: scrape time minus the consensus timestamp of the last 1 Hz ClusterHeartbeat it applied. A node lagging here publishes a contiguous, gap-free tap that is simply OLD, so its co-located apps serve stale state — a condition neither the tap-stall (silence) nor the recovery-stall watchdog can see. Steady state is a sawtooth bounded by the 1 s heartbeat period plus the 15 s scrape interval; a sustained climb on one member is that member falling behind. Reads the leader's clock against Prometheus's, so it also carries any NTP skew between them.",
+      "description": "How far behind the cluster each node's SequencerService is: scrape time minus the consensus timestamp of the last 1 Hz ClusterHeartbeat it applied. A node lagging here publishes a contiguous, gap-free queue that is simply OLD, so its co-located apps serve stale state — a condition neither the queue-stall (silence) nor the recovery-stall watchdog can see. Steady state is a sawtooth bounded by the 1 s heartbeat period plus the 15 s scrape interval; a sustained climb on one member is that member falling behind. Reads the leader's clock against Prometheus's, so it also carries any NTP skew between them.",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
@@ -138,12 +138,12 @@
     },
     {
       "id": 10,
-      "title": "Tap back-pressure alerts/s",
+      "title": "Queue back-pressure alerts/s",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
       "targets": [
-        { "refId": "A", "expr": "rate(seqeron_sequencer_tap_backpressure_alerts_total[5m])", "legendFormat": "member {{member}}" }
+        { "refId": "A", "expr": "rate(seqeron_sequencer_queue_backpressure_alerts_total[5m])", "legendFormat": "member {{member}}" }
       ],
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
@@ -225,7 +225,7 @@
     {
       "id": 18,
       "title": "Replay requests throttled/s",
-      "description": "Replay requests the Replayer held because its tap recording trailed the tap by more than a quarter of the publication window while a replay was running; it then starts one replay at a time, since replays compete with the recorder for the disk. A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the tap, the condition that back-pressures the sequencer.",
+      "description": "Replay requests the Replayer held because its queue recording trailed the queue by more than a quarter of the publication window while a replay was running; it then starts one replay at a time, since replays compete with the recorder for the disk. A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the queue, the condition that back-pressures the sequencer.",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 52, "w": 12, "h": 8 },

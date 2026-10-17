@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// A submitted system frame on the tap: a sequenced ingress frame, payload unchanged
+    /// A submitted system frame on the queue: a sequenced ingress frame, payload unchanged
     /// </summary>
     public sealed partial class SequencedSystem
     {

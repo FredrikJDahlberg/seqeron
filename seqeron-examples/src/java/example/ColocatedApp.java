@@ -18,7 +18,7 @@ import org.limitless.seqeron.protocol.Publish;
  * The same flow as {@link FollowStream}, written against the front door instead of the tiers under it.
  * Look at the imports: {@code app}, {@code protocol.Publish}, Aeron and Agrona, and nothing else. There is
  * no receiver here, no sender, no envelope and no {@code systemEventType} — the façade assembles the
- * cluster session, the tap, confirmed ingress across a failover, the fences and the leader gate, and hands
+ * cluster session, the queue, confirmed ingress across a failover, the fences and the leader gate, and hands
  * this class {@link Payload}s.
  *
  * <p>A co-located application is the producer kind nothing elects: one replica per node, publishing only
@@ -112,7 +112,7 @@ public final class ColocatedApp implements Application.Listener {
 
     /**
      * One payload at cluster ingress, on this application's own `sourceId` and no connection. Nothing waits
-     * here for the echo: this process is its own consumer and picks it up off the tap like any other frame.
+     * here for the echo: this process is its own consumer and picks it up off the queue like any other frame.
      */
     private void ping() {
         pingSentNs = System.nanoTime();
@@ -125,7 +125,7 @@ public final class ColocatedApp implements Application.Listener {
     }
 
     /**
-     * Every application payload on this node's tap, in {@code globalSeqNo} order, history and live alike —
+     * Every application payload on this node's queue, in {@code globalSeqNo} order, history and live alike —
      * every replica sees the same ones and so holds the same state. System frames never arrive here; the
      * façade acts on them and reports only what an application has a decision to make about.
      */
@@ -159,7 +159,7 @@ public final class ColocatedApp implements Application.Listener {
 
     @Override
     public void onCaughtUp(final long globalSeqNo) {
-        System.out.printf("# caught up at %d — following the tap live%n", globalSeqNo);
+        System.out.printf("# caught up at %d — following the queue live%n", globalSeqNo);
     }
 
     /**

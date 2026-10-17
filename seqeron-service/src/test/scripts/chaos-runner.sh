@@ -23,7 +23,7 @@
 #
 # TOPOLOGY (borrowed from gap-recovery-test.sh for a deterministic initial leader): members 1 & 2 start
 #   first so the initial leader is one of them; member 0 joins as a follower after. Member 0 (CN) hosts the
-#   safety-oracle/tap-drop-target consumer (fault injection armed for the SIGUSR1 tap-drop); members 1 and 2
+#   safety-oracle/queue-drop-target consumer (fault injection armed for the SIGUSR1 queue-drop); members 1 and 2
 #   host a plain consumer replica each. All three members are legal fault targets; restart_colocated_apps
 #   brings each member's co-located apps back up in place. LEADER_CHANGES controls the round count for a
 #   dedicated ONLY_FAULT=fault_kill_leader run (every round is a genuine failover, since every member is a
@@ -95,7 +95,7 @@ ELECTION_TIMEOUT_SECS="${ELECTION_TIMEOUT_SECS:-15}"
 NODE_START_TIMEOUT_SECS="${NODE_START_TIMEOUT_SECS:-15}"
 APP_CATCHUP_TIMEOUT_SECS="${APP_CATCHUP_TIMEOUT_SECS:-30}"
 PROC_EXIT_TIMEOUT_SECS="${PROC_EXIT_TIMEOUT_SECS:-10}"   # a signalled member actually dying: measured 0.2s
-TAP_STALL_DEADLINE_SECS="${TAP_STALL_DEADLINE_SECS:-10}"
+QUEUE_STALL_DEADLINE_SECS="${QUEUE_STALL_DEADLINE_SECS:-10}"
 # Not a harness deadline — the CLUSTER's own session timeout, passed to every member below. It is the
 # one Aeron timeout a slow host does lengthen: a gateway's keep-alive shares its duty cycle with a
 # blocking ingress offer, so a failover that leaves ingress unconnected can starve keep-alives past
@@ -107,7 +107,7 @@ JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 SNAPSHOT_DIR="${TMP_DIR}/seqeron-chaos-snapshots"   # each gateway instance's own files, kept across its restarts
 CLUSTER_HOSTS="$(cluster_hosts_string 3)"
-CN=0            # observation / tap-drop-target consumer host — a fault target like any other member
+CN=0            # observation / queue-drop-target consumer host — a fault target like any other member
 # The gateway pair, one instance per member so a kill of either host is a genuine promotion. Rank 0 is
 # GW-T-A, so a quiet run has A serving on member CN and B standing by on GW_B_MEMBER.
 GW_A_MEMBER=$CN
@@ -125,12 +125,12 @@ CONSUMER_PID=""; LOAD_PID=""
 declare -a FAULT_HISTORY=()
 DRIVER_LOSS_FAIL=0   # set by check_driver_loss_failfast, folded into the round result by check_invariants
 RESTART_FAIL=0       # set by assert_restarted, folded into the round result by check_invariants
-TAP_STALL_FAIL=0     # set by fault_tap_stall, folded into the round result by check_invariants
+QUEUE_STALL_FAIL=0     # set by fault_queue_stall, folded into the round result by check_invariants
 FAILOVER_FAIL=0      # set by fault_kill_leader, folded into the round result by check_invariants
 declare -a SEQ_LOG_OFFSET   # lines already in seq-<m>.log when its CURRENT boot started — see wait_running
-# Set by fault_tap_drop, consumed by check_invariants: which replica was armed and its pre-fault gap
+# Set by fault_queue_drop, consumed by check_invariants: which replica was armed and its pre-fault gap
 # counts, so the round can assert the drop ACTUALLY LANDED rather than passing on liveness alone.
-TAP_DROP_TARGET=""; TAP_DROP_LOG=""; TAP_DROP_RESUMES=0
+QUEUE_DROP_TARGET=""; QUEUE_DROP_LOG=""; QUEUE_DROP_RESUMES=0
 # Per-replica RecoveryStalled alarms already accounted for, so check_invariants (c) fails a round on a
 # NEW one rather than re-reporting an episode some earlier round already owned.
 declare -a RECOVERY_STALL_BASELINE=(0 0 0)
@@ -143,7 +143,7 @@ start_seq() {  # start_seq <memberId> — append so leadership history survives 
   # "Running" from the one the previous boot left in the same (appended-to) file.
   SEQ_LOG_OFFSET[$m]=0
   [[ -f "$LOG_DIR/seq-$m.log" ]] && SEQ_LOG_OFFSET[$m]=$(wc -l < "$LOG_DIR/seq-$m.log")
-  # SEQERON_FAULT_INJECTION arms the tap-recording fault fault_tap_stall triggers by file (the archive is
+  # SEQERON_FAULT_INJECTION arms the queue-recording fault fault_queue_stall triggers by file (the archive is
   # in-process, so it cannot be stalled from outside); inert until that file appears.
   SEQERON_FAULT_INJECTION=1 \
   java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
@@ -236,7 +236,7 @@ start_seq 0; wait_running 0 || { echo "member 0 not up"; exit 1; }
 
 for m in 0 1 2; do wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" "$APP_CATCHUP_TIMEOUT_SECS" || true; done
 
-# Consumer on member 0: fault-injection ON (SIGUSR1 tap-drop) + latency stats (flushed on exit, not read here).
+# Consumer on member 0: fault-injection ON (SIGUSR1 queue-drop) + latency stats (flushed on exit, not read here).
 # Extracted into start_consumer (below) so restart_colocated_apps can relaunch it in place when member 0
 # itself is a fault target — the same driver-death problem members 1/2's replicas have on restart.
 CONSUMER_LOG="$LOG_DIR/consumer.log"
@@ -249,12 +249,12 @@ start_consumer() {
 start_consumer
 wait_for_log "$CONSUMER_LOG" "following live" "$APP_CATCHUP_TIMEOUT_SECS" || { echo "consumer never caught up"; exit 1; }
 
-# A consumer replica on members 1 and 2 too: every node's tap must have a reader, so a fault on any member
+# A consumer replica on members 1 and 2 too: every node's queue must have a reader, so a fault on any member
 # has something co-located to take down with it and something to bring back. Latency stats stay unique to
-# the member-0 observation consumer, but fault injection is armed on ALL THREE so fault_tap_drop can aim at
+# the member-0 observation consumer, but fault injection is armed on ALL THREE so fault_queue_drop can aim at
 # whichever replica is currently leader-co-located. Defined as a function for the same reason start_consumer
 # is: restart_colocated_apps must relaunch a replica with the SAME arguments, or a restarted one silently
-# loses its arm and every later tap-drop aimed at it is a no-op.
+# loses its arm and every later queue-drop aimed at it is a no-op.
 start_replica() {  # start_replica <memberId>  (members 1/2; member 0's replica is start_consumer)
   local m="$1"
   java "${JAVA_OPTS[@]}" -Dprobe.memberId="$m" -Dprobe.clientId=9 -Dprobe.faultInjection=true \
@@ -372,12 +372,12 @@ start_background_load
 target_leader() { echo "$1"; }                                    # the current leader — always a legal kill target
 a_follower()    { local l="$1" p; while :; do p=$(( RANDOM % 3 )); [[ "$p" != "$l" ]] && { echo "$p"; return; }; done; }  # a random non-leader among {0,1,2}
 # Member 0's consumer is the observation one (CONSUMER_PID/consumer.log); 1 and 2 are plain
-# replicas. Both are legal tap-drop targets, so resolve either by memberId.
+# replicas. Both are legal queue-drop targets, so resolve either by memberId.
 replica_pid() { local m="$1"; [[ "$m" == "$CN" ]] && echo "${CONSUMER_PID:-}" || echo "${EXTRA_CONSUMER_PIDS[$m]:-}"; }
 replica_log() { local m="$1"; [[ "$m" == "$CN" ]] && echo "$CONSUMER_LOG" || echo "$LOG_DIR/consumer-$m.log"; }
 # A gap the consumer repaired by RESUMING its recording at the hole — the healthy recovery, and the proof
-# that an armed tap-drop actually landed.
-count_tap_resumes() { grep -c 'tap gap: expected globalSeqNo' "$1" 2>/dev/null || true; }
+# that an armed queue-drop actually landed.
+count_queue_resumes() { grep -c 'queue gap: expected globalSeqNo' "$1" 2>/dev/null || true; }
 # The client's own "I am not serving" alarm (RecoveryStalled, ReplayerStreamReceiver::checkRecoveryProgress):
 # recovery dispatched nothing for RECOVERY_PROGRESS_TIMEOUT_MS while not caught up. Unlike the one-shot
 # "following live" marker this fires per episode, so it reads CURRENT state rather than latching at boot.
@@ -450,7 +450,7 @@ check_driver_loss_failfast() {  # <memberId whose driver just died>
 # restart: the driver dies with the SequencerServer process, and none of these clients reconnect to the
 # fresh driver the restart creates at the same path — they just fault (DriverTimeoutException /
 # "MediaDriver has been shutdown") and sit dead for the rest of the run. That leaves a permanent hole:
-# e.g. if member $m later becomes leader, its dead consumer replica can't be the one that reads its tap —
+# e.g. if member $m later becomes leader, its dead consumer replica can't be the one that reads its queue —
 # NewOrderSingle with an ExecutionReport (leader-only emission), so a later round's FIX round-trip probe
 # hangs waiting for one that will never come.
 restart_colocated_apps() {
@@ -515,13 +515,13 @@ fault_kill_follower() {  # crash a follower -> should be transparent (quorum hol
 # boundary — unverifiable, so Archive.launch REFUSES to open the catalog ("Found potentially incomplete
 # last fragment straddling page boundary in file: …/1-0.rec. Run `ArchiveTool verify` for corrective
 # action!") and the member never comes back for the rest of the run. Observed on the cluster LOG
-# recording (streamId 100), not just the tap. verify truncates the torn fragment and writes the
+# recording (streamId 100), not just the queue. verify truncates the torn fragment and writes the
 # recovered stopPosition into the catalog descriptor, which is what stops the next boot from tripping
 # over it: Catalog.refreshAndFixDescriptor only recomputes a stopPosition that is still NULL_POSITION.
 # Nothing committed is lost — the fragment was never fully written, so it is behind this member's acked
 # append position, and it re-replicates from the leader on rejoin.
 # Only the SIGKILL path needs this: every other fault here leaves through the shutdown barrier
-# (fault_tap_stall's self-termination included, SequencerServer.java), so the Archive gets a clean close.
+# (fault_queue_stall's self-termination included, SequencerServer.java), so the Archive gets a clean close.
 repair_archive() {  # repair_archive <memberId>
   # One `local` per variable, deliberately: bash 3.2 (the macOS default) expands $m in the SAME
   # `local` statement from the OUTER scope rather than from the local just assigned, so a combined
@@ -577,47 +577,47 @@ fault_pause_node() {  # SIGSTOP a killable node (GC-pause / stall simulation: so
   log "FAULT pause-node: SIGSTOP member $P for ${PAUSE_SECS}s"; kill -STOP "${SEQ_PIDS[$P]}" 2>/dev/null
   sleep "$PAUSE_SECS"; kill -CONT "${SEQ_PIDS[$P]}" 2>/dev/null; log "  SIGCONT member $P"
 }
-fault_tap_drop() {  # drop one live tap frame -> gap -> resume-at-the-hole recovery (SIGUSR1 path)
-  # Aimed at the replica CO-LOCATED WITH THE LEADER, not always member 0's: that node's tap is the busiest
+fault_queue_drop() {  # drop one live queue frame -> gap -> resume-at-the-hole recovery (SIGUSR1 path)
+  # Aimed at the replica CO-LOCATED WITH THE LEADER, not always member 0's: that node's queue is the busiest
   # (its own sequencer is the one publishing), so a gap episode there is the one under most pressure.
   # Member 0 is usually a follower — bring-up elects the initial leader from members 1/2 — so a fixed
   # target would exercise only the quiet case.
   local L="$1" T; T="$(target_leader "$L")"
   local pid; pid="$(replica_pid "$T")"
-  TAP_DROP_TARGET="$T"
-  TAP_DROP_LOG="$(replica_log "$T")"
-  TAP_DROP_RESUMES="$(count_tap_resumes "$TAP_DROP_LOG")"
-  log "FAULT tap-drop: SIGUSR1 member $T's replica (leader-co-located; arm one-frame live-tap drop)"
+  QUEUE_DROP_TARGET="$T"
+  QUEUE_DROP_LOG="$(replica_log "$T")"
+  QUEUE_DROP_RESUMES="$(count_queue_resumes "$QUEUE_DROP_LOG")"
+  log "FAULT queue-drop: SIGUSR1 member $T's replica (leader-co-located; arm one-frame live-queue drop)"
   kill -USR1 "$pid" 2>/dev/null || log "  WARN no live replica pid for member $T"
 }
-fault_tap_stall() {  # kill a node's local tap recording -> it must notice within a heartbeat and TERMINATE ITSELF
-  # The one fault the node is expected to answer by dying: a node that cannot record its own tap can no
-  # longer serve the history it is responsible for, so it exits non-zero (SequencerService.fatalTapFailure)
+fault_queue_stall() {  # kill a node's local queue recording -> it must notice within a heartbeat and TERMINATE ITSELF
+  # The one fault the node is expected to answer by dying: a node that cannot record its own queue can no
+  # longer serve the history it is responsible for, so it exits non-zero (SequencerService.fatalQueueFailure)
   # and is restarted, rebuilding its recording over the full-log replay. Aimed at a follower — failover is
   # already covered by fault_kill_leader, and this asserts the self-termination, not the election.
   local L="$1" T; T="$(a_follower "$L")"
-  log "FAULT tap-stall: stop member $T's tap recording (expect FATAL + self-termination)"
-  touch "$BASE_DIR/cluster-$T/tap-stall-fault"
-  local W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W > TAP_STALL_DEADLINE_SECS * 5)) && break; done
+  log "FAULT queue-stall: stop member $T's queue recording (expect FATAL + self-termination)"
+  touch "$BASE_DIR/cluster-$T/queue-stall-fault"
+  local W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W > QUEUE_STALL_DEADLINE_SECS * 5)) && break; done
   if kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; then
-    log "  INVARIANT FAIL: member $T kept running for ${TAP_STALL_DEADLINE_SECS}s with no tap recording"
-    TAP_STALL_FAIL=1
+    log "  INVARIANT FAIL: member $T kept running for ${QUEUE_STALL_DEADLINE_SECS}s with no queue recording"
+    QUEUE_STALL_FAIL=1
     # Still wait for it to actually die before restarting below, or the restart hits its own archive
     # mark file ("active mark file detected") and the round after this one fails for the wrong reason.
     kill "${SEQ_PIDS[$T]}" 2>/dev/null
     W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W > PROC_EXIT_TIMEOUT_SECS * 5)) && break; done
   else
     # Scoped to the CURRENT boot, like wait_running: start_seq APPENDS, so a whole-file grep matches the
-    # FATAL line an EARLIER tap-stall round left behind and passes a member that has since died of
+    # FATAL line an EARLIER queue-stall round left behind and passes a member that has since died of
     # something else entirely. The same member does get stalled twice in a run, so this is reachable.
     if tail -n "+$(( ${SEQ_LOG_OFFSET[$T]:-0} + 1 ))" "$LOG_DIR/seq-$T.log" 2>/dev/null \
        | grep -q "FATAL:.*terminating this node"; then
       log "  ok: member $T detected the dead recording and terminated"
     else
-      log "  INVARIANT FAIL: member $T died without the FATAL tap-recording line"; TAP_STALL_FAIL=1
+      log "  INVARIANT FAIL: member $T died without the FATAL queue-recording line"; QUEUE_STALL_FAIL=1
     fi
   fi
-  rm -f "$BASE_DIR/cluster-$T/tap-stall-fault"   # else the restarted node re-arms it immediately
+  rm -f "$BASE_DIR/cluster-$T/queue-stall-fault"   # else the restarted node re-arms it immediately
   sleep 2
   start_seq "$T"; assert_restarted "$T"
   sleep 2                                                       # let the restored member rejoin (full-log replay)
@@ -625,7 +625,7 @@ fault_tap_stall() {  # kill a node's local tap recording -> it must notice withi
 }
 # Targeted mode: set ONLY_FAULT=<fn> (e.g. fault_kill_leader) to run just that fault every round,
 # for deterministically exercising one failure path in-loop rather than seed-hunting for it.
-FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_node fault_tap_drop fault_tap_stall)
+FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_node fault_queue_drop fault_queue_stall)
 [[ -n "${ONLY_FAULT:-}" ]] && FAULTS=("$ONLY_FAULT")
 
 # NOTE — on killing the media driver: there is deliberately no fault_kill_aeronmd, and there is no
@@ -665,12 +665,12 @@ check_invariants() {
   local L; L="$(current_leader)"
   [[ -z "$L" ]] && { log "  INVARIANT FAIL: no leader"; fail=1; } || log "  ok: leader = member $L"
   # (b) liveness: one round trip through the whole path — submit a ProbeMarker to cluster ingress and
-  # wait for its own sequenced echo off the co-located tap. Exit 0 iff ingress accepted it, consensus
+  # wait for its own sequenced echo off the co-located queue. Exit 0 iff ingress accepted it, consensus
   # committed it, and it came back. Its seqNo is a timestamp, so the background load's 1..N cannot be
   # mistaken for it.
   if java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -cp "$JAR" \
        org.limitless.seqeron.tools.ClusterProbe ping > "$LOG_DIR/probe.log" 2>&1; then
-    log "  ok: ingress->consensus->tap round-trip probe passed"
+    log "  ok: ingress->consensus->queue round-trip probe passed"
   else
     log "  INVARIANT FAIL: round-trip probe failed (see $LOG_DIR/probe.log)"; fail=1
   fi
@@ -729,18 +729,18 @@ check_invariants() {
   else
     log "  ok: all 3 replicas up and serving"
   fi
-  # (c2) EFFICACY, for tap-drop rounds only: the armed drop must have produced a real gap episode on the
+  # (c2) EFFICACY, for queue-drop rounds only: the armed drop must have produced a real gap episode on the
   #      target, repaired by a RESUME at the hole. Without this the fault is unverified — a SIGUSR1 to a
   #      dead/unarmed replica silently does nothing and the round still passes (a), (b) and (c), which is
   #      exactly what it did before.
-  if [[ -n "$TAP_DROP_TARGET" ]]; then
-    local resumes; resumes="$(count_tap_resumes "$TAP_DROP_LOG")"
-    if (( resumes > TAP_DROP_RESUMES )); then
-      log "  ok: tap-drop landed on member $TAP_DROP_TARGET — gap resumed at the hole ($TAP_DROP_RESUMES -> $resumes)"
+  if [[ -n "$QUEUE_DROP_TARGET" ]]; then
+    local resumes; resumes="$(count_queue_resumes "$QUEUE_DROP_LOG")"
+    if (( resumes > QUEUE_DROP_RESUMES )); then
+      log "  ok: queue-drop landed on member $QUEUE_DROP_TARGET — gap resumed at the hole ($QUEUE_DROP_RESUMES -> $resumes)"
     else
-      log "  INVARIANT FAIL: tap-drop on member $TAP_DROP_TARGET produced NO gap episode (resumes stuck at $resumes) — fault did not land"; fail=1
+      log "  INVARIANT FAIL: queue-drop on member $QUEUE_DROP_TARGET produced NO gap episode (resumes stuck at $resumes) — fault did not land"; fail=1
     fi
-    TAP_DROP_TARGET=""
+    QUEUE_DROP_TARGET=""
   fi
   # (d) fail-fast on media-driver loss, as observed by this round's check_driver_loss_failfast (kill
   #     faults only; the flag stays 0 for rounds that never killed a member). Reset either way so a
@@ -757,11 +757,11 @@ check_invariants() {
   #     either way, same as (d), so a violation is attributed to the round that caused it.
   [[ "$RESTART_FAIL" == "1" ]] && fail=1
   RESTART_FAIL=0
-  # (f) the tap-stall target self-terminated, and did it for the RIGHT reason, as observed by
-  #     fault_tap_stall. Its two INVARIANT FAIL branches used to only log — they set no flag, so a node
+  # (f) the queue-stall target self-terminated, and did it for the RIGHT reason, as observed by
+  #     fault_queue_stall. Its two INVARIANT FAIL branches used to only log — they set no flag, so a node
   #     that kept sequencing history it could not record printed a failure and the round still PASSED.
-  [[ "$TAP_STALL_FAIL" == "1" ]] && fail=1
-  TAP_STALL_FAIL=0
+  [[ "$QUEUE_STALL_FAIL" == "1" ]] && fail=1
+  QUEUE_STALL_FAIL=0
   # (g) a kill-leader round produced a GENUINE failover, as observed by fault_kill_leader.
   [[ "$FAILOVER_FAIL" == "1" ]] && fail=1
   FAILOVER_FAIL=0
@@ -784,13 +784,13 @@ check_invariants() {
   return $fail
 }
 
-# ── End-of-run safety oracle: verify EVERY node's tap ────────────────────────────
+# ── End-of-run safety oracle: verify EVERY node's queue ────────────────────────────
 # The real safety property of the sequencer: the SEQUENCED stream (out of the cluster — sbe-sequenced,
 # schema 202, carrying globalSeqNo; ingress into the cluster is unsequenced and has none) must be a
 # gap-free, strictly-monotone run 1,2,3,…,N — and EVERY node must have recorded the identical run
 # (Raft replicates the same state to all). So decode all three members' archives and assert both.
 #
-# A killed/restarted node ROTATES its tap: a pre-kill partial recording (globalSeqNo 1..K) plus a
+# A killed/restarted node ROTATES its queue: a pre-kill partial recording (globalSeqNo 1..K) plus a
 # post-restart recording that re-records 1..N from scratch (recovery is always full-log replay from
 # gseq 1 — there are no snapshots). So each RECORDING is checked independently and reset at its
 # "[Catalog] Recording ID" boundary — NOT concatenated (that would read the K→1 restart as a regression).
@@ -826,7 +826,7 @@ verify_sequence() {
       > "$LOG_DIR/sequenced-dump-$m.txt" 2>&1 || { log "  member $m: no recording at $archive"; rc=1; continue; }
     local hw
     hw=$(awk -v member="$m" '
-      /\[Catalog\] Recording ID/ { expected=0; next }           # new recording -> reset (rotated tap)
+      /\[Catalog\] Recording ID/ { expected=0; next }           # new recording -> reset (rotated queue)
       /"globalSeqNo"/ {
         s=$0; gsub(/[^0-9]/, "", s); n=s+0; total++
         if (expected==0) {                                       # first sequenced msg in THIS recording
@@ -839,7 +839,7 @@ verify_sequence() {
       END { if (total==0) { printf "  member %s SAFETY FAIL: no sequenced messages decoded\n", member > "/dev/stderr"; exit 1 } print max }
     ' "$LOG_DIR/sequenced-dump-$m.txt") || { rc=1; continue; }
     highwater[$m]="$hw"
-    log "  member $m: tap gap-free & monotone, high-water globalSeqNo=$hw"
+    log "  member $m: queue gap-free & monotone, high-water globalSeqNo=$hw"
   done
   for m in 0 1 2; do kill -CONT "${SEQ_PIDS[$m]:-0}" 2>/dev/null; done
   # Convergence: every node must have recorded the same final globalSeqNo.
@@ -872,7 +872,7 @@ for (( round=1; round<=ROUNDS; round++ )); do
 done
 
 echo ""
-log "verifying sequenced-stream integrity across all node tap recordings…"
+log "verifying sequenced-stream integrity across all node queue recordings…"
 if verify_sequence; then
   echo "=== CHAOS SURVIVED: $PASSED/$ROUNDS liveness rounds + sequence intact (SEED=$SEED) ==="
 else

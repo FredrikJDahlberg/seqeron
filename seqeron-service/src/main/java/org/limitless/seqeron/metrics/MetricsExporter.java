@@ -35,12 +35,11 @@ public final class MetricsExporter {
 
     private static final Map<Integer, MetricMeta> METRICS_BY_TYPE_ID = Map.ofEntries(
         Map.entry(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID,
-                  new MetricMeta("seqeron_sequencer_global_seq_no", "Last globalSeqNo emitted on this node's tap.",
+                  new MetricMeta("seqeron_sequencer_global_seq_no", "Last globalSeqNo emitted on this node's queue.",
                                  "gauge")),
-        Map.entry(SeqeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID,
-                  new MetricMeta("seqeron_sequencer_tap_backpressure_alerts_total",
-                                 "Count of times the tap-emit back-pressure alert threshold has fired.",
-                                 "counter")),
+        Map.entry(SeqeronCounters.SEQUENCER_QUEUE_BACKPRESSURE_ALERTS_TYPE_ID,
+                  new MetricMeta("seqeron_sequencer_queue_backpressure_alerts_total",
+                                 "Count of times the queue-emit back-pressure alert threshold has fired.", "counter")),
         Map.entry(SeqeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID,
                   new MetricMeta("seqeron_sequencer_rejected_ingress_total",
                                  "Count of malformed ingress messages skipped by Sequencer.sequenceMessage.",
@@ -54,11 +53,10 @@ public final class MetricsExporter {
         Map.entry(SeqeronCounters.SEQUENCER_LAST_CLUSTER_HEARTBEAT_TIMESTAMP_TYPE_ID,
                   new MetricMeta("seqeron_sequencer_last_tick_timestamp_ms",
                                  "Consensus timestamp of the last 1Hz ClusterHeartbeat emitted.", "gauge")),
-        Map.entry(
-            SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
-            new MetricMeta("seqeron_sequencer_gateway_promotion_total",
-                           "Count of standby-promotion GatewayActive frames emitted on a gateway session close.",
-                           "counter")),
+        Map.entry(SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
+                  new MetricMeta("seqeron_sequencer_gateway_promotion_total",
+                                 "Count of standby-promotion GatewayActive frames emitted on a gateway session close.",
+                                 "counter")),
         Map.entry(SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID,
                   new MetricMeta("seqeron_sequencer_gateway_promotion_failed_total",
                                  "Count of gateways left with no active instance and no standby to promote.",
@@ -68,9 +66,9 @@ public final class MetricsExporter {
                                  "1 once the bootstrap GatewayActive has been emitted in this cluster's log, else 0.",
                                  "gauge")),
         Map.entry(
-            SeqeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID,
-            new MetricMeta("seqeron_sequencer_tap_stalled",
-                           "1 while tap-emit back-pressure has been sustained past the stall threshold, else 0.",
+            SeqeronCounters.SEQUENCER_QUEUE_STALLED_TYPE_ID,
+            new MetricMeta("seqeron_sequencer_queue_stalled",
+                           "1 while queue-emit back-pressure has been sustained past the stall threshold, else 0.",
                            "gauge")),
         Map.entry(SeqeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID,
                   new MetricMeta("seqeron_sequencer_ingress_messages_total",
@@ -83,7 +81,7 @@ public final class MetricsExporter {
         Map.entry(
             SeqeronCounters.REPLAYER_READY_TYPE_ID,
             new MetricMeta("seqeron_replayer_ready",
-                           "1 once the co-located tap recording is visible and replay requests are being served.",
+                           "1 once the co-located queue recording is visible and replay requests are being served.",
                            "gauge")),
         Map.entry(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID,
                   new MetricMeta("seqeron_replayer_active_slots", "Current count of in-flight replays.", "gauge")),
@@ -102,16 +100,16 @@ public final class MetricsExporter {
                       "counter")),
         Map.entry(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID,
                   new MetricMeta("seqeron_replayer_throttled_requests_total",
-                                 "Count of replay requests held because the tap recording trailed the tap while a "
+                                 "Count of replay requests held because the queue recording trailed the queue while a "
                                      + "replay ran, resends included.",
                                  "counter")),
-        Map.entry(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
-                  new MetricMeta(
-                      "seqeron_app_recovery_stalled",
-                      "1 while a co-located replica's recovery has dispatched nothing for 30s while not caught "
-                          + "up, else 0. It is holding, which is correct — but it is not serving, and this is the "
-                          + "only signal that says so.",
-                      "gauge")),
+        Map.entry(
+            SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
+            new MetricMeta("seqeron_app_recovery_stalled",
+                           "1 while a co-located replica's recovery has dispatched nothing for 30s while not caught "
+                               + "up, else 0. It is holding, which is correct — but it is not serving, and this is the "
+                               + "only signal that says so.",
+                           "gauge")),
         Map.entry(SeqeronCounters.APP_SNAPSHOT_ROUND_TYPE_ID,
                   new MetricMeta("seqeron_app_snapshot_round",
                                  "The last snapshot round this client confirmed. A client whose round lags the "

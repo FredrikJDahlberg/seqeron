@@ -10,7 +10,7 @@ import org.limitless.seqeron.sbe.frame.SequencedSystemEncoder;
 
 /**
  * Builds a {@link SequencedEvent} from outside its package, for the tests of what consumes one. An event is
- * a view over a real tap frame, so this encodes one rather than setting fields: the same bytes the sequencer
+ * a view over a real queue frame, so this encodes one rather than setting fields: the same bytes the sequencer
  * would emit, read back through the same decoder.
  */
 public final class SequencedEvents {

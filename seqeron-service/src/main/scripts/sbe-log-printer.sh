@@ -6,7 +6,7 @@
 # and prints every recorded SBE message as JSON.
 #
 # Every IR file packaged in the jar is loaded by default — frame (the
-# envelopes and system messages, on the tap, stream 205), probe (ClusterProbe's
+# envelopes and system messages, on the queue, stream 205), probe (ClusterProbe's
 # payload), replay (the node-local control plane) and cluster (the Raft
 # consensus log, stream 100), plus any application IR on the classpath — and each frame is decoded against the schema its
 # own header names. The set is whatever is on the classpath, not a list in the
@@ -22,7 +22,7 @@
 # By default every recording in the catalog is dumped, not just one.
 #
 # --stream <id> selects the newest recording on that stream instead. Prefer it
-# for the tap: a node restart mints a new tap recording that replays the whole
+# for the queue: a node restart mints a new queue recording that replays the whole
 # history from globalSeqNo 1, so older ones are strict prefixes of the newest and
 # dumping them all just repeats the same history.
 #

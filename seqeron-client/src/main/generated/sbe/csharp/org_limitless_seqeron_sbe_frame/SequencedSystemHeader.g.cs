@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// System frame header on the tap: the ingress header, plus globalSeqNo and timestamp. Also the header of the three synthesized templates
+    /// System frame header on the queue: the ingress header, plus globalSeqNo and timestamp. Also the header of the three synthesized templates
     /// </summary>
     public sealed partial class SequencedSystemHeader
     {

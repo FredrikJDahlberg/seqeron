@@ -34,7 +34,7 @@ public sealed class SystemFrame
 
     // The systemEventType table (§7). A submitted event's value is its payload codec's template id; the four
     // synthesized events have templates of their own and stamp these at offset 16, so that field discriminates
-    // every frame on the tap. SystemFrame.java and SequencedFrame.hpp hold the same table.
+    // every frame on the queue. SystemFrame.java and SequencedFrame.hpp hold the same table.
 
     /// <summary>A connection opened at a producer; <c>header.connectionId</c> names it.</summary>
     public const int ConnectionOpened = Frame.ConnectionOpened.TemplateId;

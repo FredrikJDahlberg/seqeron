@@ -18,7 +18,7 @@ namespace Example;
 /// <para>A gateway is the producer kind the cluster elects: the topology names both instances, the cluster
 /// designates one, and only that one serves. What is left here is the edge. A real gateway opens a socket in
 /// <see cref="OnActivated"/>; this one takes a single simulated client connection instead, and pings the cluster on
-/// it once a second, reading each ping back off its own tap.</para>
+/// it once a second, reading each ping back off its own queue.</para>
 /// <para>Load <c>seqeron-examples/topology-csharp.xml</c>, then run one instance or both; stop the first and the
 /// second takes over. Environment: <c>SEQERON_EXAMPLE_GATEWAY_NAME</c> (default <c>GW-EX-CS-A</c>),
 /// <c>SEQERON_NODE_MEMBER_ID</c> (default 0), <c>SEQERON_REPLAYER_CLIENT_ID</c> (default 21 for A, 22 for B),
@@ -134,7 +134,7 @@ public sealed class GatewayApp : IGatewayListener
         _pingSentTicks = 0;
     }
 
-    // Every application payload on this node's tap, in globalSeqNo order, history and live alike.
+    // Every application payload on this node's queue, in globalSeqNo order, history and live alike.
     public void OnSequenced(Payload payload)
     {
         if (_pingSentTicks != 0 && payload.ConnectionId == _connectionId && payload.PayloadId == PingPayloadId &&
@@ -162,7 +162,7 @@ public sealed class GatewayApp : IGatewayListener
 
     public void OnCaughtUp(long globalSeqNo)
     {
-        Console.WriteLine($"# caught up at {globalSeqNo} — following the tap live");
+        Console.WriteLine($"# caught up at {globalSeqNo} — following the queue live");
     }
 
     public void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs)

@@ -15,7 +15,7 @@
 
 namespace org::limitless::seqeron::sequencer::client {
 
-// A producer's ingress frames that its own tap has not yet shown, which of them a leader change lost (every
+// A producer's ingress frames that its own queue has not yet shown, which of them a leader change lost (every
 // frame still pending with a term below the latest LeadershipChanged's), and their resend ahead of anything
 // new: while isHolding(), send nothing new, and give this to the sender with setIngressHold. Own frames are
 // matched by session, and one that differs from the oldest pending copy latches isFaulted(). The Java twin is
@@ -114,9 +114,9 @@ class PendingSends : public IngressTracker
     }
 
     /**
-     * Matches a frame off the tap against the pending ones. Only this producer's own frames change anything.
+     * Matches a frame off the queue against the pending ones. Only this producer's own frames change anything.
      *
-     * @param event every frame off the tap, in order
+     * @param event every frame off the queue, in order
      */
     void onSequenced(const protocol::SequencedEvent& event)
     {
@@ -139,7 +139,7 @@ class PendingSends : public IngressTracker
     }
 
     /**
-     * Forgets every pending frame, for a session replaced after the cluster closed it: nothing on the tap tells
+     * Forgets every pending frame, for a session replaced after the cluster closed it: nothing on the queue tells
      * which of its frames committed.
      *
      * @return how many were dropped
@@ -163,7 +163,7 @@ class PendingSends : public IngressTracker
         return count;
     }
 
-    // Frames tracked and not yet seen on the tap, missing ones included.
+    // Frames tracked and not yet seen on the queue, missing ones included.
     [[nodiscard]] std::size_t size() const noexcept
     {
         return m_size;

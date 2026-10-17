@@ -23,16 +23,16 @@ The sections before [Façades](#façades-app) define the model and the contract;
 
 | API | guarantees | out of scope |
 | --- | --- | --- |
-| [`ReplayerStreamReceiver`](#replayerstreamreceiver) | Every log message exactly once, in `globalSeqNo` order: archive replay from the local recording, then the live tap, with gap detection and resumption internal. Optional snapshot restore first. | Filtering: every consumer receives every producer's messages. |
+| [`ReplayerStreamReceiver`](#replayerstreamreceiver) | Every log message exactly once, in `globalSeqNo` order: archive replay from the local recording, then the live queue, with gap detection and resumption internal. Optional snapshot restore first. | Filtering: every consumer receives every producer's messages. |
 | [`Gateway`](#gateway) | One instance of an active/hot-standby pair; the cluster designates the active instance. A connection id space never reused across handovers, and every connection's open and close on the log, so a successor knows its predecessor's connection state. Nothing an instance sends after a sibling is designated reaches the log (spec **S-6**). Confirmed ingress; fencing. | Edge connection continuity across a handover: the successor reopens the edge and counterparties reconnect. |
 | [`Application`](#application) | One replica per cluster member, all holding identical state; only the leader's replica publishes. Work outstanding at a failover is redispatched by the next leader's replica (`OutstandingWork`). Confirmed ingress; fencing. | Exactly-once replies: across a failover, delivery is at-least-once. |
 | Confirmed ingress (both façades) | Every placed message is sequenced exactly once, in order, across any number of leader failovers. | Producer process failure: a restarted producer, or a promoted standby, starts with nothing pending. A replaced cluster session, or a gateway instance a sibling superseded: what was pending is dropped. |
 | [Snapshots](#snapshots) (both façades) | Restart from the newest log-confirmed snapshot, then only the messages after its cut. Fencing of any instance whose state diverges from its source's. | Member restart: a member always replays its full log. |
 
 A **fence** is `onFenced(ClusterError, detail)`, raised once, after which the instance takes no further
-action; the façade releases its cluster session before raising it, and its tap and replay subscriptions at the
+action; the façade releases its cluster session before raising it, and its queue and replay subscriptions at the
 end of that `doWork()`, so a fenced instance holds no Replayer slot. Causes: cluster session lost (on a `Gateway` instance that announced its activation on it, or not replaced within 20 s),
-ingress confirmation fault, recovery stall, tap stall, snapshot divergence, unrestorable snapshot ([`fault-tolerance.md`](fault-tolerance.md) §2.1). Loss of the media driver
+ingress confirmation fault, recovery stall, queue stall, snapshot divergence, unrestorable snapshot ([`fault-tolerance.md`](fault-tolerance.md) §2.1). Loss of the media driver
 is not a fence; it raises from `doWork()`.
 
 ## Execution model
@@ -41,7 +41,7 @@ is not a fence; it raises from `doWork()`.
   façade's `doWork()` (or the receiver's `poll()`), which returns a work count for the caller's idle
   strategy, Agrona `Agent` style. All callbacks run on that thread, inside that call.
 - **Co-located media driver.** `start(aeron)` takes an Aeron client connected to the media driver of a
-  cluster member or [gateway host](#replayerstreamreceiver) on the same host. The tap and the replay are IPC;
+  cluster member or [gateway host](#replayerstreamreceiver) on the same host. The queue and the replay are IPC;
   no client reads the stream from a remote host.
 - **Bounded callbacks.** The duty cycle carries the cluster session keep-alive. A session idle for
   `sequencer.sessionTimeoutMs` (default 1 s) is closed by the cluster; for a gateway, that hands over to the
@@ -50,14 +50,14 @@ is not a fence; it raises from `doWork()`.
   elections until the offer lands, for at most 10 s; beyond that the session is treated as lost. A
   `Gateway` instance that announced its activation on that session is fenced; an `Application`, or any other
   `Gateway` instance, opens a new session, starting an attempt at most once a second without blocking its duty
-  cycle, and is fenced only if none opens within the tap-stall timeout and the attempt then under way fails. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
-  ingress tracks it to the producer's own tap), `Declined` (not placed; retryable), or `Refused` (never
+  cycle, and is fenced only if none opens within the queue-stall timeout and the attempt then under way fails. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
+  ingress tracks it to the producer's own queue), `Declined` (not placed; retryable), or `Refused` (never
   placeable).
 - **Flyweights.** `Payload` and `SequencedEvent` are views over the receive buffer, valid only for the
   callback. Copy out what outlives it.
 - **Zero allocation on the hot path.** Dispatch and confirmed publish allocate nothing once warm; the C#
   suite asserts zero bytes per message.
-- **Untethered subscription.** A consumer that falls a window behind the tap publication is dropped by the
+- **Untethered subscription.** A consumer that falls a window behind the queue publication is dropped by the
   media driver and resumes from its Replayer automatically. Ordering holds; the cluster never sees back
   pressure from a consumer.
 
@@ -131,13 +131,13 @@ The guarantees are conditional on these; spec §16 states them normatively (**A-
 ### Read-only consumers
 
 Audit, risk or downstream feeds take a `ReplayerStreamReceiver` (or an `Application` if they may later
-publish): replay from `globalSeqNo` 1 or the newest confirmed snapshot, then follow the tap. Consumers are
+publish): replay from `globalSeqNo` 1 or the newest confirmed snapshot, then follow the queue. Consumers are
 invisible to the cluster and unbounded in number per node. `FollowStream` in `seqeron-examples` is the
 minimal case.
 
 ## Façades (`app`)
 
-A façade composes the full duty cycle for one producer kind — cluster session, tap subscription, confirmed
+A façade composes the full duty cycle for one producer kind — cluster session, queue subscription, confirmed
 ingress, fencing, and the election or leader gate — in the required order. Code written against one sees
 neither the message envelope nor seqeron's system messages.
 
@@ -165,18 +165,18 @@ top-level rather than nested, per .NET design guidelines.
 | `gatewayName` | required | | | topology row this instance joins |
 | `sourceId` | with `snapshotListener` | required | | `sourceId` declared in the topology row |
 | `clientId` | ✓ | ✓ | 0 | the client's counter label, unique per node |
-| `memberId` | ✓ | ✓ | 0 | member (or gateway host node id) whose tap is followed |
+| `memberId` | ✓ | ✓ | 0 | member (or gateway host node id) whose queue is followed |
 | `egressChannel` | required | required | | cluster session egress channel |
 | `ingressEndpoints` | ✓ | ✓ | `PortLayout.ingressEndpoints()` | member ingress endpoints |
 | `offCluster` | | ✓ | false | single instance on a gateway host ([Application](#application)) |
 | `snapshotListener` | ✓ | ✓ | none | participate in snapshot rounds |
 | `snapshotDirectory` | with `snapshotListener` | with `snapshotListener` | | this instance's snapshot files |
 | `pendingCapacity` | ✓ | ✓ | 1,024 | messages tracked by confirmed ingress; beyond it `publish` returns `Declined` |
-| `tapStallTimeoutMs` | ✓ | ✓ | 20,000 | no `ClusterHeartbeat` for this long fences with `TAP_STALLED` a designated instance or the leader's replica; any other logs it |
+| `queueStallTimeoutMs` | ✓ | ✓ | 20,000 | no `ClusterHeartbeat` for this long fences with `QUEUE_STALLED` a designated instance or the leader's replica; any other logs it |
 | `recoveryStallTimeoutMs` | ✓ | ✓ | 60,000 | recovery dispatching nothing for this long fences with `RECOVERY_STALLED`, as above |
 | `ipcConnectTimeoutMs` | | ✓ | 500 | wait for IPC ingress to the local member while it leads |
 
-The stall defaults are `DEFAULT_TAP_STALL_TIMEOUT_MS` (20 heartbeat intervals) and
+The stall defaults are `DEFAULT_QUEUE_STALL_TIMEOUT_MS` (20 heartbeat intervals) and
 `DEFAULT_RECOVERY_STALL_TIMEOUT_MS` (3× that).
 
 **Dependency boundary.** A façade's signatures name only `app` and `protocol.Publish` (C++ `protocol::Publish`).
@@ -225,7 +225,7 @@ gateway.close();
 
 | operation | semantics |
 |---|---|
-| `doWork()` | one duty-cycle iteration: session, tap, confirmed ingress, fences, connection lifecycle, election |
+| `doWork()` | one duty-cycle iteration: session, queue, confirmed ingress, fences, connection lifecycle, election |
 | `gateClosed()` | the edge closed on its own (failed dial, counterparty hang-up). The designation stands; `doWork()` reopens it via `onActivated` without a new `GatewayStarted`. For initiators; acceptors never call it |
 | `keepAlive()` | session keep-alive for a callback that spins; `doWork()` already sends one per cycle |
 | `canAccept()` | serving, and ingress not held for a post-failover resend |
@@ -265,7 +265,7 @@ otherwise.
 
 | operation | semantics |
 |---|---|
-| `doWork()` | one duty-cycle iteration: session, tap, confirmed ingress, fences, leader gate |
+| `doWork()` | one duty-cycle iteration: session, queue, confirmed ingress, fences, leader gate |
 | `canPublish()` | gate open and ingress not held |
 | `isLeading()` | gate open |
 | `publish(payloadId, payload, length)` | submit under the application's `sourceId`, no connection. C++ also `publish<Encoder>(payloadId, fill)` |
@@ -326,11 +326,11 @@ package-private (Java), `internal` (C#) or in `app::detail` (C++). Confirmed ing
 ## `ReplayerStreamReceiver`
 
 The single read path (`replayer.client`, every language). It replays local history through the co-located
-Replayer (an Aeron Archive replay), switches to the live tap once caught up, recovers gaps internally, and
+Replayer (an Aeron Archive replay), switches to the live queue once caught up, recovers gaps internally, and
 delivers every message once in `globalSeqNo` order. Each façade owns one.
 
 The local node is a cluster member or a **gateway host** — a host with no member, running
-`start-gateway-host.sh`, whose Replayer relays a member's tap into a local recording
+`start-gateway-host.sh`, whose Replayer relays a member's queue into a local recording
 ([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)). A client there attaches to the host's Aeron
 directory and passes the host's node id (unused by any member) as `memberId`. `Gateway` is unchanged;
 `Application` requires [`offCluster`](#application).
@@ -393,7 +393,7 @@ flyweight `onSequenced` receives. Its fields carry the decoder's names, plus the
 languages.
 
 **Without a receiver.** `SequencedFrameDecoder` (Java, C#) and `unwrapFrame`/`FrameView` (C++) strip the
-envelope from a raw tap message read out of a recording. `ClusterStreamClient` (C++ only,
+envelope from a raw queue message read out of a recording. `ClusterStreamClient` (C++ only,
 `sequencer/client/ClusterStreamClient.hpp`) performs bounded archive scans; it is not a live path. A caller
 that keeps the archive session `connectLocalArchive` or `connectToArchiveWithClusterStream` returned calls
 `pollArchiveSession` every duty cycle, because the archive closes a session whose pings go unread.
@@ -423,7 +423,7 @@ Aeron's layout: a component's server at the package root, its client in `.client
 
 | type | contents |
 |---|---|
-| `FrameLayer` (Java, C#), `SequencedFrame.hpp` (C++) | tap identity (`FEEDER_STREAM_ID` 205), spec §12 size limits; Java/C# also the heartbeat interval |
+| `FrameLayer` (Java, C#), `SequencedFrame.hpp` (C++) | queue identity (`QUEUE_STREAM_ID` 205), spec §12 size limits; Java/C# also the heartbeat interval |
 | `SystemFrame` (Java, C#), `SequencedFrame.hpp` (C++) | `systemEventType` values |
 | `PortLayout` | cluster port block, per-member ingress endpoints, the producer endpoint list (`ingressEndpoints()`, `ingressEndpoints(parseHosts("h0,h1,h2"))`; C++ `ingressEndpointsCsv`), archive control channel, a node's default Aeron directory (`aeronDir(nodeId)`; C++ `util::resolveAeronDir`); honours `SEQERON_PORT_BASE` and `SEQERON_HOSTS` |
 | `ReplayProtocol` | replay protocol channel and stream ids, `NO_REPLAY_NEEDED` |
@@ -452,12 +452,12 @@ Visible for cross-package or test access only; no compatibility guarantee.
   - `replayer/client/detail`: `ReplayerRecovery`, `ReplayerRecoveryActions`.
   - `sequencer/client/detail/Transport.hpp`: `IngressTransport`/`EgressTransport` and their Aeron
     implementations, injected into `ClusterStreamSender::connect` in tests.
-  - `app/detail`: `Session`, `GatewayLifecycle`, `LeaderGate`, `RecoveryStallFence`, `TapStallFence`.
+  - `app/detail`: `Session`, `GatewayLifecycle`, `LeaderGate`, `RecoveryStallFence`, `QueueStallFence`.
     `makePayload` builds a `Payload` for unit-testing a listener.
 - **Java package-private and C# `internal` types** — the same components. `FacadeSurfaceTest` fails the
   build if a public signature names one (C#: any public type outside `App` beyond `Publish`, `Aeron` and the
   two buffer interfaces). The C# test assembly reaches them via `InternalsVisibleTo`.
-- **`seqeron-service`**: `Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`,
+- **`seqeron-service`**: `Sequencer`, `SequencerService`, `SequencerServer`, `QueuePublisher`,
   `replayer.server`, `tools`, `MetricsExporter`.
 - **`sequencer.client`**: the producer components below.
 
@@ -472,7 +472,7 @@ those callers sit in other packages, not as a supported way to produce: a produc
 | `IngressPublisher` | Encode and offer; returns `protocol.Publish`: `Published`, `Refused` (above `MAX_PAYLOAD_LENGTH`; nothing offered; final), or `Declined` (transport result; retryable). Java/C#: `publishPayload`/`publishSystem` on pre-encoded bytes. C++: free functions templated on the encoder, populated via a `Fill`. |
 | `offerFrame` (C++) | Offers a caller-encoded message; both `publish*` functions end here. It carries schemaless payloads (spec §13.2), which C++'s encoder-templated `publishPayload` cannot express. Takes the same `IngressTracker`, so confirmation still applies. |
 | `SystemFrame` (Java, C#) | Wraps an encoded payload in its envelope and returns the length; the offer is the caller's. |
-| `PendingSends` | Confirmed ingress. A successful offer is not a sequenced message, and a failover silently drops what the old leader had not committed. Install it as `IngressPublisher`'s tracker and on the sender via `setIngressHold`, feed it your own tap and each leadership term, and call `resendMissing` (spec §16 A-4, A-5). |
+| `PendingSends` | Confirmed ingress. A successful offer is not a sequenced message, and a failover silently drops what the old leader had not committed. Install it as `IngressPublisher`'s tracker and on the sender via `setIngressHold`, feed it your own queue and each leadership term, and call `resendMissing` (spec §16 A-4, A-5). |
 
 `IngressTracker` (implemented by `PendingSends`) and `IngressSender` (implemented by `ClusterStreamSender`)
 are seams; implement them only to replace those types.

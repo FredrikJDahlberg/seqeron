@@ -232,7 +232,7 @@ jobs:
   # The consumable surface from source; the `installed` job below takes the find_package path. Both halves
   # of seqeron-examples resolve seqeron the way an outside consumer does — a published coordinate, and FetchContent over the checkout — so a
   # dependency re-scoped back to `implementation` or an include root that stops resolving
-  # out-of-tree fails here rather than in someone else's build. None of them is run: following a tap
+  # out-of-tree fails here rather than in someone else's build. None of them is run: following a queue
   # needs a live cluster, which is what the harnesses under seqeron-service/src/test/scripts are for.
   examples:
     name: examples

@@ -21,7 +21,7 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * One replica of a co-located application — the kind of producer nothing elects. One runs per node, the
  * topology's {@code <applications>} section names it, and {@code LeadershipChanged} already picks the
  * replica that submits: this one publishes only while its own node leads. What that takes is behind it —
- * the cluster session over the node's own {@code aeron:ipc}, the tap it follows, the leader gate,
+ * the cluster session over the node's own {@code aeron:ipc}, the queue it follows, the leader gate,
  * confirmed ingress across a failover, and the fences that say it may no longer act.
  *
  * <p><b>Off the cluster</b> ({@link Builder#offCluster}), on a gateway host, it is the one instance rather
@@ -45,13 +45,13 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * step.
  */
 public final class Application implements AutoCloseable {
-    /** How long the tap may be silent before this replica is fenced — 20 heartbeat periods. */
-    public static final long DEFAULT_TAP_STALL_TIMEOUT_MS = Session.DEFAULT_TAP_STALL_TIMEOUT_MS;
+    /** How long the queue may be silent before this replica is fenced — 20 heartbeat periods. */
+    public static final long DEFAULT_QUEUE_STALL_TIMEOUT_MS = Session.DEFAULT_QUEUE_STALL_TIMEOUT_MS;
 
     /** How long recovery may dispatch nothing, once caught up before; longer, as a re-walk is slower. */
     public static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = Session.DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
 
-    /** Frames in flight between a publish and the tap; far above what one round trip holds. */
+    /** Frames in flight between a publish and the queue; far above what one round trip holds. */
     public static final int DEFAULT_PENDING_CAPACITY = Session.DEFAULT_PENDING_CAPACITY;
 
     /** How long ingress is tried on this member's own {@code aeron:ipc}: short, as a follower never answers. */
@@ -72,7 +72,7 @@ public final class Application implements AutoCloseable {
          */
         void onLeadershipChanged(boolean leading);
 
-        /** One application payload off this node's tap, in {@code globalSeqNo} order. */
+        /** One application payload off this node's queue, in {@code globalSeqNo} order. */
         void onSequenced(Payload payload);
 
         /** Every transition to caught-up, the first included. */
@@ -116,7 +116,7 @@ public final class Application implements AutoCloseable {
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
         this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
-        this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
+        this.session = new Session(builder.clientId, builder.pendingCapacity, builder.queueStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, () -> sourceId);
         if (store != null) {
@@ -128,7 +128,7 @@ public final class Application implements AutoCloseable {
         return new Builder();
     }
 
-    /** Opens the cluster session on this node and starts following its tap; the gate stays shut until caught up. */
+    /** Opens the cluster session on this node and starts following its queue; the gate stays shut until caught up. */
     public void start(final Aeron aeron) {
         if (offCluster) {
             session.start(aeron, memberId, egressChannel, ingressEndpoints);
@@ -144,7 +144,7 @@ public final class Application implements AutoCloseable {
     }
 
     /**
-     * One duty-cycle iteration: the cluster session and the tap, then the gate over what they left. Nothing once
+     * One duty-cycle iteration: the cluster session and the queue, then the gate over what they left. Nothing once
      * fenced.
      * @return units of work done, for the caller's idle strategy
      */
@@ -215,7 +215,7 @@ public final class Application implements AutoCloseable {
         return session.lastGlobalSeqNo();
     }
 
-    /** Closes the cluster session and the tap. The Aeron client is the caller's and is left open. */
+    /** Closes the cluster session and the queue. The Aeron client is the caller's and is left open. */
     @Override
     public void close() {
         session.close();
@@ -238,7 +238,7 @@ public final class Application implements AutoCloseable {
         return session.publishPayload(frameSourceId, connectionId, payloadId, payload, length);
     }
 
-    /** What comes off the tap, and the one frame the gate is driven by. */
+    /** What comes off the queue, and the one frame the gate is driven by. */
     private final class SessionDispatch implements Session.Dispatch {
         private final ApplicationRegisteredDecoder row = new ApplicationRegisteredDecoder();
         private final SnapshotStartedDecoder started = new SnapshotStartedDecoder();
@@ -343,7 +343,7 @@ public final class Application implements AutoCloseable {
         private SnapshotListener snapshotListener;
         private Path snapshotDirectory;
         private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
-        private long tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
+        private long queueStallTimeoutMs = DEFAULT_QUEUE_STALL_TIMEOUT_MS;
         private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
         private long ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
 
@@ -362,7 +362,7 @@ public final class Application implements AutoCloseable {
             return this;
         }
 
-        /** The node this replica runs on: whose tap it follows, and whose leadership opens its gate. */
+        /** The node this replica runs on: whose queue it follows, and whose leadership opens its gate. */
         public Builder memberId(final int memberId) {
             this.memberId = memberId;
             return this;
@@ -418,8 +418,8 @@ public final class Application implements AutoCloseable {
             return this;
         }
 
-        public Builder tapStallTimeoutMs(final long tapStallTimeoutMs) {
-            this.tapStallTimeoutMs = tapStallTimeoutMs;
+        public Builder queueStallTimeoutMs(final long queueStallTimeoutMs) {
+            this.queueStallTimeoutMs = queueStallTimeoutMs;
             return this;
         }
 

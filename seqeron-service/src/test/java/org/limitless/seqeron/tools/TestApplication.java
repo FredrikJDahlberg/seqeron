@@ -93,7 +93,7 @@ public final class TestApplication implements Application.Listener, SnapshotList
                  .build()) {
             app = application;
             app.start(aeron);
-            log("following the tap as sourceId %d, snapshots in %s", sourceId, snapshotDir);
+            log("following the queue as sourceId %d, snapshots in %s", sourceId, snapshotDir);
             final IdleStrategy idle = IdleStrategies.fromProperty(ClusterProbe.IDLE_STRATEGY_PROPERTY).get();
             long nextMarkerNs = 0;
             while (running.get() && !fenced) {

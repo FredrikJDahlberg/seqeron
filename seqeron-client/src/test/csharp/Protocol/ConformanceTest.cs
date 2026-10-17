@@ -383,7 +383,7 @@ public class ConformanceTest
         registered.ProtocolVersion = 1;
         registered.SetProtocolName("basicdata");
 
-        byte[][] tap = {
+        byte[][] queue = {
             Frames.Payload(1, 8, payloadId: 4095),
             Frames.SystemEvent(2, SystemFrame.PayloadIdRegistered, body.AsSpan(0, registered.Size)),
             Frames.ClusterHeartbeat(3),
@@ -392,7 +392,7 @@ public class ConformanceTest
             Frames.SnapshotStarted(6, 1),
         };
         long expected = 1;
-        foreach (byte[] frame in tap)
+        foreach (byte[] frame in queue)
         {
             Assert.True(Wrap(frame), $"frame {expected} is unreadable, so P-3 would lose its globalSeqNo");
             Assert.Equal(expected, _view.GlobalSeqNo);

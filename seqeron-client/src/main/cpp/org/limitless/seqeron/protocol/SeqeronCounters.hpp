@@ -17,10 +17,10 @@ namespace org::limitless::seqeron::protocol {
 inline constexpr std::int32_t SEQUENCER_TYPE_ID_MIN = 5000;
 inline constexpr std::int32_t SEQUENCER_TYPE_ID_MAX = 5099;
 
-// The last globalSeqNo emitted on this node's tap.
+// The last globalSeqNo emitted on this node's queue.
 inline constexpr std::int32_t SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID = 5000;
-// Count of times the tap-emit back-pressure alert threshold has fired.
-inline constexpr std::int32_t SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID = 5001;
+// Count of times the queue-emit back-pressure alert threshold has fired.
+inline constexpr std::int32_t SEQUENCER_QUEUE_BACKPRESSURE_ALERTS_TYPE_ID = 5001;
 // Count of malformed ingress messages the sequencer skipped.
 inline constexpr std::int32_t SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID = 5002;
 // Count of leadership changes this node has observed and sequenced.
@@ -33,8 +33,8 @@ inline constexpr std::int32_t SEQUENCER_LAST_CLUSTER_HEARTBEAT_TIMESTAMP_TYPE_ID
 inline constexpr std::int32_t SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID = 5006;
 // 1 once the bootstrap GatewayActive has been emitted in this cluster's log, else 0.
 inline constexpr std::int32_t SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID = 5007;
-// 1 while tap back-pressure has lasted past the stall threshold with no recording progress, else 0.
-inline constexpr std::int32_t SEQUENCER_TAP_STALLED_TYPE_ID = 5008;
+// 1 while queue back-pressure has lasted past the stall threshold with no recording progress, else 0.
+inline constexpr std::int32_t SEQUENCER_QUEUE_STALLED_TYPE_ID = 5008;
 // 5009 is retired, and never reused.
 // Count of ingress messages successfully sequenced.
 inline constexpr std::int32_t SEQUENCER_INGRESS_MESSAGES_TYPE_ID = 5010;
@@ -45,7 +45,7 @@ inline constexpr std::int32_t SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID =
 inline constexpr std::int32_t REPLAYER_TYPE_ID_MIN = 5100;
 inline constexpr std::int32_t REPLAYER_TYPE_ID_MAX = 5199;
 
-// 1 once the co-located tap recording is visible and replay requests are being served, else 0.
+// 1 once the co-located queue recording is visible and replay requests are being served, else 0.
 inline constexpr std::int32_t REPLAYER_READY_TYPE_ID = 5101;
 // Current count of in-flight replays.
 inline constexpr std::int32_t REPLAYER_ACTIVE_SLOTS_TYPE_ID = 5102;
@@ -55,7 +55,7 @@ inline constexpr std::int32_t REPLAYER_PENDING_REQUESTS_TYPE_ID = 5103;
 inline constexpr std::int32_t REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID = 5104;
 // Count of control replies dropped because an app stopped draining the control stream.
 inline constexpr std::int32_t REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5107;
-// Count of replay requests held pending only because the tap recording trailed the tap while a replay ran.
+// Count of replay requests held pending only because the queue recording trailed the queue while a replay ran.
 inline constexpr std::int32_t REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;
 // Count of local-archive calls that threw; a sustained rate means the archive is not serving replays.
 inline constexpr std::int32_t REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
