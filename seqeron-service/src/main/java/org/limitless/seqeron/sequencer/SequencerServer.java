@@ -99,10 +99,10 @@ public final class SequencerServer {
     private static final String PROP_LEADER_HEARTBEAT_TIMEOUT_MS = "sequencer.leaderHeartbeatTimeoutMs";
     private static final String PROP_ELECTION_TIMEOUT_MS = "sequencer.electionTimeoutMs";
 
-    private static final long DEFAULT_SESSION_TIMEOUT_MS = 5000;
-    private static final long DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS = 200;
-    private static final long DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS = 2000;
-    private static final long DEFAULT_ELECTION_TIMEOUT_MS = 1000;
+    public static final long DEFAULT_SESSION_TIMEOUT_MS = 5000;
+    public static final long DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS = 200;
+    public static final long DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS = 2000;
+    public static final long DEFAULT_ELECTION_TIMEOUT_MS = 1000;
 
     /** Session limit when {@code aeron.cluster.max.sessions} is not set; see doc/ops.md, "Cluster sessions". */
     private static final int DEFAULT_MAX_CONCURRENT_SESSIONS = 64;

@@ -62,7 +62,9 @@ final class InProcessCluster implements AutoCloseable {
     void start(final int m) {
         final SequencerServer.Config config = new SequencerServer.Config(
             m, Collections.nCopies(MEMBERS, PortLayout.DEFAULT_HOST), PortLayout.DEFAULT_HOST, baseDir.toString(),
-            aeronDir(m), BackoffIdleStrategy::new, 5000, 200, 2000, 1000); // SequencerServer's default timings
+            aeronDir(m), BackoffIdleStrategy::new, SequencerServer.DEFAULT_SESSION_TIMEOUT_MS,
+            SequencerServer.DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS, SequencerServer.DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS,
+            SequencerServer.DEFAULT_ELECTION_TIMEOUT_MS);
         final AtomicBoolean isCut = cut[m];
         final AtomicBoolean isCutAllButConsensus = cutAllButConsensus[m];
         final AtomicBoolean isMuted = muted[m];
