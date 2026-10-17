@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
+import org.agrona.CloseHelper;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
@@ -24,6 +25,7 @@ import org.limitless.seqeron.util.Logger;
 /**
  * Launches one Sequencer cluster node: an Aeron Cluster with an embedded media driver, archive and
  * consensus module, running {@link SequencerService}, and the node's {@link ReplayerServer} on the same driver.
+ * {@link #main} launches one from system properties; {@link #launch} launches one in the calling process.
  *
  * <p><b>Port layout</b> (member m on base + 10m, for up to seven members; three shown). The base is 9300
  * unless {@code SEQERON_PORT_BASE} overrides it (see {@link PortLayout}); the reserved block is wider than
@@ -97,26 +99,116 @@ public final class SequencerServer {
      */
     private static final long FATAL_SHUTDOWN_BACKSTOP_MS = 15_000;
 
+    private final ClusteredMediaDriver driver;
+    private final ClusteredServiceContainer container;
+    private final ReplayerServer replayer;
+
+    /**
+     * One node's settings, which {@link #fromProperties()} reads from the system properties above.
+     *
+     * @param memberId                  this node's Raft member id
+     * @param hosts                     every member's host, in member-id order
+     * @param host                      the host this node's channels bind to and advertise
+     * @param baseDir                   the root of the archive and cluster directories
+     * @param aeronDir                  the embedded media driver's directory
+     * @param idleStrategies            the idle strategy of every agent, the Replayer's included
+     * @param sessionTimeoutMs          how long the cluster keeps a client session with no keep-alives
+     * @param leaderHeartbeatIntervalMs how often the leader heartbeats its followers
+     * @param leaderHeartbeatTimeoutMs  how long a follower waits for a leader heartbeat before an election
+     * @param electionTimeoutMs         how long an election stage waits on the other members
+     */
+    public record Config(int memberId, List<String> hosts, String host, String baseDir, String aeronDir,
+                         Supplier<IdleStrategy> idleStrategies, long sessionTimeoutMs, long leaderHeartbeatIntervalMs,
+                         long leaderHeartbeatTimeoutMs, long electionTimeoutMs) {
+        /**
+         * Reads the settings from the system properties, with their documented defaults.
+         *
+         * @return the settings
+         * @throws IllegalArgumentException if the host list has no entry for the member id, or it names several
+         *                                  members and no base directory is set
+         */
+        public static Config fromProperties() {
+            final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
+            final List<String> hosts = resolveHosts(
+                System.getProperty(PROP_HOSTS), System.getProperty(PROP_BASE_DIR) != null, PortLayout.HOSTS, memberId);
+            return new Config(memberId, hosts, System.getProperty(PROP_HOST, hosts.get(memberId)),
+                              System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq"),
+                              System.getProperty(PROP_AERON_DIR, PortLayout.aeronDir(memberId)),
+                              IdleStrategies.fromProperty(PROP_IDLE_STRATEGY),
+                              Long.getLong(PROP_SESSION_TIMEOUT_MS, DEFAULT_SESSION_TIMEOUT_MS),
+                              Long.getLong(PROP_LEADER_HEARTBEAT_INTERVAL_MS, DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS),
+                              Long.getLong(PROP_LEADER_HEARTBEAT_TIMEOUT_MS, DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS),
+                              Long.getLong(PROP_ELECTION_TIMEOUT_MS, DEFAULT_ELECTION_TIMEOUT_MS));
+        }
+    }
+
+    private SequencerServer(final ClusteredMediaDriver driver, final ClusteredServiceContainer container,
+                            final ReplayerServer replayer) {
+        this.driver = driver;
+        this.container = container;
+        this.replayer = replayer;
+    }
+
     public static void main(final String[] args) {
-        final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
-        final List<String> hosts = resolveHosts(System.getProperty(PROP_HOSTS),
-                                                System.getProperty(PROP_BASE_DIR) != null, PortLayout.HOSTS, memberId);
-        final String host = System.getProperty(PROP_HOST, hosts.get(memberId));
-        final String baseDir =
-            System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq");
-        final String aeronDir = System.getProperty(PROP_AERON_DIR, PortLayout.aeronDir(memberId));
+        final Config config = Config.fromProperties();
+        final int memberId = config.memberId();
+
+        final AtomicBoolean fatal = new AtomicBoolean();
+        final boolean replayerStopped;
+        try (ShutdownSignalBarrier barrier = new ShutdownSignalBarrier()) {
+            final Runnable fatalHandler = () -> {
+                if (fatal.compareAndSet(false, true)) {
+                    startFatalShutdownBackstop(memberId);
+                }
+                barrier.signalAll();
+            };
+
+            Logger.info(Logger.CoreComponent.SequencerServer, memberId,
+                        "Starting member %d | ingress=%s | archive=%s | baseDir=%s | idle=%s", memberId,
+                        udp(config.host(), PortLayout.ingressPort(memberId)),
+                        udp(config.host(), PortLayout.archivePort(memberId)), config.baseDir(),
+                        System.getProperty(PROP_IDLE_STRATEGY, "backoff"));
+
+            final SequencerServer node = launch(config, barrier::signalAll, fatalHandler);
+            Logger.info(Logger.CoreComponent.SequencerServer, memberId, "Running — Ctrl-C to stop");
+            barrier.await();
+            replayerStopped = node.stop();
+        } finally {
+            Logger.info(Logger.CoreComponent.SequencerServer, memberId, "Shutdown complete");
+        }
+        if (fatal.get()) {
+            System.exit(NodeDriver.EXIT_FATAL);
+        }
+        if (!replayerStopped) {
+            System.exit(NodeDriver.EXIT_SHUTDOWN_TIMEOUT);
+        }
+    }
+
+    /**
+     * Launches one node in this process; {@link #main} is this over {@link Config#fromProperties()}.
+     *
+     * @param config          the node's settings
+     * @param terminationHook run when the consensus module or the service container terminates the node
+     * @param fatalHandler    run when the node cannot go on: its queue recording stopped, or its Replayer failed
+     * @return the running node, which {@link #stop()} stops
+     */
+    public static SequencerServer launch(final Config config, final Runnable terminationHook,
+                                         final Runnable fatalHandler) {
+        final int memberId = config.memberId();
+        final String host = config.host();
+        final String aeronDir = config.aeronDir();
+        final Supplier<IdleStrategy> idleStrategySupplier = config.idleStrategies();
         final int archivePort = PortLayout.archivePort(memberId);
         final int ingressPort = PortLayout.ingressPort(memberId);
 
-        final String clusterMembers = buildClusterMembers(hosts);
+        final String clusterMembers = buildClusterMembers(config.hosts());
 
-        final File archiveDir = new File(baseDir + "/archive-" + memberId);
-        final File clusterDir = new File(baseDir + "/cluster-" + memberId);
+        final File archiveDir = new File(config.baseDir() + "/archive-" + memberId);
+        final File clusterDir = new File(config.baseDir() + "/cluster-" + memberId);
 
-        final Supplier<IdleStrategy> idleStrategySupplier = IdleStrategies.fromProperty(PROP_IDLE_STRATEGY);
         final MediaDriver.Context driverCtx = NodeDriver.context(aeronDir, idleStrategySupplier);
         NodeDriver.warnUnlessTmpfs(Logger.CoreComponent.SequencerServer, memberId, aeronDir);
-        NodeDriver.warnIfTmpfs(Logger.CoreComponent.SequencerServer, memberId, baseDir);
+        NodeDriver.warnIfTmpfs(Logger.CoreComponent.SequencerServer, memberId, config.baseDir());
 
         final AeronArchive.Context localArchiveCtx = new AeronArchive.Context()
                                                          .lock(NoOpLock.INSTANCE)
@@ -140,7 +232,6 @@ public final class SequencerServer {
                 .idleStrategySupplier(idleStrategySupplier);
         NodeDriver.recordChecksums(archiveCtx, Logger.CoreComponent.SequencerServer, memberId);
 
-        final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
         final ConsensusModule.Context consensusCtx =
             new ConsensusModule.Context()
                 .aeronDirectoryName(aeronDir)
@@ -152,18 +243,14 @@ public final class SequencerServer {
                 .replicationChannel(udp(host, 0))
                 .archiveContext(localArchiveCtx.clone())
                 .isIpcIngressAllowed(true) // Lets a co-located client share aeron directory
-                .terminationHook(barrier::signalAll)
+                .terminationHook(terminationHook)
                 .deleteDirOnStart(false)
-                .leaderHeartbeatIntervalNs(TimeUnit.MILLISECONDS.toNanos(
-                    Long.getLong(PROP_LEADER_HEARTBEAT_INTERVAL_MS, DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS)))
-                .leaderHeartbeatTimeoutNs(TimeUnit.MILLISECONDS.toNanos(
-                    Long.getLong(PROP_LEADER_HEARTBEAT_TIMEOUT_MS, DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS)))
-                .electionTimeoutNs(
-                    TimeUnit.MILLISECONDS.toNanos(Long.getLong(PROP_ELECTION_TIMEOUT_MS, DEFAULT_ELECTION_TIMEOUT_MS)))
+                .leaderHeartbeatIntervalNs(TimeUnit.MILLISECONDS.toNanos(config.leaderHeartbeatIntervalMs()))
+                .leaderHeartbeatTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.leaderHeartbeatTimeoutMs()))
+                .electionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.electionTimeoutMs()))
                 .electionStatusIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
                 .startupCanvassTimeoutNs(TimeUnit.SECONDS.toNanos(5))
-                .sessionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(
-                    Long.getLong(PROP_SESSION_TIMEOUT_MS, DEFAULT_SESSION_TIMEOUT_MS)))
+                .sessionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.sessionTimeoutMs()))
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
                               -> Logger.error(Logger.CoreComponent.ConsensusModule,
@@ -172,13 +259,6 @@ public final class SequencerServer {
             consensusCtx.maxConcurrentSessions(DEFAULT_MAX_CONCURRENT_SESSIONS);
         }
 
-        final AtomicBoolean fatal = new AtomicBoolean();
-        final Runnable fatalHandler = () -> {
-            if (fatal.compareAndSet(false, true)) {
-                startFatalShutdownBackstop(memberId);
-            }
-            barrier.signalAll();
-        };
         final SequencerService service = new SequencerService(memberId, localArchiveCtx.clone(), fatalHandler);
 
         final ClusteredServiceContainer.Context serviceCtx =
@@ -187,33 +267,35 @@ public final class SequencerServer {
                 .archiveContext(localArchiveCtx.clone())
                 .clusterDir(clusterDir)
                 .clusteredService(service)
-                .terminationHook(barrier::signalAll)
+                .terminationHook(terminationHook)
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
                               -> Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError,
                                               memberId, "%s", t.toString()));
 
-        Logger.info(Logger.CoreComponent.SequencerServer, memberId,
-                    "Starting member %d | ingress=%s | archive=%s | baseDir=%s | idle=%s", memberId,
-                    udp(host, ingressPort), udp(host, archivePort), baseDir,
-                    System.getProperty(PROP_IDLE_STRATEGY, "backoff"));
+        ClusteredMediaDriver driver = null;
+        ClusteredServiceContainer container = null;
+        try {
+            driver = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
+            container = ClusteredServiceContainer.launch(serviceCtx);
+            return new SequencerServer(driver, container,
+                                       ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, fatalHandler));
+        } catch (final RuntimeException ex) {
+            CloseHelper.quietCloseAll(container, driver);
+            throw ex;
+        }
+    }
 
-        final boolean replayerStopped;
-        try (barrier; ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
-             ClusteredServiceContainer container = ClusteredServiceContainer.launch(serviceCtx)) {
-            final ReplayerServer replayer =
-                ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, fatalHandler);
-            Logger.info(Logger.CoreComponent.SequencerServer, memberId, "Running — Ctrl-C to stop");
-            barrier.await();
-            replayerStopped = replayer.stop();
+    /**
+     * Stops the node: the Replayer, then the service container, then the media driver, archive and consensus module.
+     *
+     * @return false if the Replayer did not stop within its timeout
+     */
+    public boolean stop() {
+        try {
+            return replayer.stop();
         } finally {
-            Logger.info(Logger.CoreComponent.SequencerServer, memberId, "Shutdown complete");
-        }
-        if (fatal.get()) {
-            System.exit(NodeDriver.EXIT_FATAL);
-        }
-        if (!replayerStopped) {
-            System.exit(NodeDriver.EXIT_SHUTDOWN_TIMEOUT);
+            CloseHelper.closeAll(container, driver);
         }
     }
 
