@@ -12,13 +12,17 @@ import io.aeron.driver.SendChannelEndpointSupplier;
 import io.aeron.driver.ext.DebugReceiveChannelEndpoint;
 import io.aeron.driver.ext.DebugSendChannelEndpoint;
 import io.aeron.driver.ext.LossGenerator;
+import io.aeron.protocol.DataHeaderFlyweight;
+import io.aeron.protocol.ErrorFlyweight;
+import io.aeron.protocol.HeaderFlyweight;
 import java.io.File;
+import java.nio.ByteOrder;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.agrona.CloseHelper;
+import org.agrona.DirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
@@ -108,6 +112,20 @@ public final class SequencerServer {
     private final ClusteredMediaDriver driver;
     private final ClusteredServiceContainer container;
     private final ReplayerServer replayer;
+
+    /** Which UDP frames a node's driver drops, for test harnesses. */
+    @FunctionalInterface
+    public interface UdpFaults {
+        /**
+         * Called for each UDP frame the driver sends or receives, on the driver's threads.
+         *
+         * @param publication true for a frame of one of the node's publications: the data it sends and the status
+         *                    messages it receives for it; false for one of its subscriptions
+         * @param streamId    the frame's stream id
+         * @return whether to drop it
+         */
+        boolean drops(boolean publication, int streamId);
+    }
 
     /**
      * One node's settings, which {@link #fromProperties()} reads from the system properties above.
@@ -204,13 +222,14 @@ public final class SequencerServer {
     }
 
     /**
-     * As above, dropping every UDP frame the node's driver sends or receives while {@code udpFaults} answers true,
-     * which cuts the node off from its peers and remote clients alike. Test harnesses only.
+     * As above, dropping every UDP frame the node's driver sends or receives that {@code udpFaults} names, which can
+     * cut the node off from its peers and remote clients alike, or from some streams, or in one direction. Test
+     * harnesses only.
      *
-     * @param udpFaults polled once per UDP frame, on the driver's threads; null drops nothing
+     * @param udpFaults the frames to drop; null drops nothing
      */
     public static SequencerServer launch(final Config config, final Runnable terminationHook,
-                                         final Runnable fatalHandler, final BooleanSupplier udpFaults) {
+                                         final Runnable fatalHandler, final UdpFaults udpFaults) {
         final int memberId = config.memberId();
         final String host = config.host();
         final String aeronDir = config.aeronDir();
@@ -225,12 +244,13 @@ public final class SequencerServer {
 
         final MediaDriver.Context driverCtx = NodeDriver.context(aeronDir, idleStrategySupplier);
         if (udpFaults != null) {
-            final LossGenerator drop = (address, buffer, length) -> udpFaults.getAsBoolean();
+            final LossGenerator dropSent = (address, buffer, length) -> udpFaults.drops(true, streamId(buffer));
+            final LossGenerator dropReceived = (address, buffer, length) -> udpFaults.drops(false, streamId(buffer));
             final SendChannelEndpointSupplier send =
-                (udp, status, ctx) -> new DebugSendChannelEndpoint(udp, status, ctx, drop, drop);
+                (udp, status, ctx) -> new DebugSendChannelEndpoint(udp, status, ctx, dropSent, dropSent);
             final ReceiveChannelEndpointSupplier receive =
                 (udp, dispatcher, status,
-                 ctx) -> new DebugReceiveChannelEndpoint(udp, dispatcher, status, ctx, drop, drop);
+                 ctx) -> new DebugReceiveChannelEndpoint(udp, dispatcher, status, ctx, dropReceived, dropReceived);
             driverCtx.sendChannelEndpointSupplier(send).receiveChannelEndpointSupplier(receive);
         }
         NodeDriver.warnUnlessTmpfs(Logger.CoreComponent.SequencerServer, memberId, aeronDir);
@@ -374,6 +394,16 @@ public final class SequencerServer {
 
     private static String udp(final String host, final int port) {
         return "aeron:udp?endpoint=" + host + ":" + port;
+    }
+
+    /** A UDP frame's stream id, which data, pad and setup frames carry after their term offset. */
+    private static int streamId(final DirectBuffer frame) {
+        final int type = frame.getShort(HeaderFlyweight.TYPE_FIELD_OFFSET, ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
+        final boolean afterTermOffset = type == HeaderFlyweight.HDR_TYPE_DATA || type == HeaderFlyweight.HDR_TYPE_PAD ||
+            type == HeaderFlyweight.HDR_TYPE_SETUP;
+        return frame.getInt(afterTermOffset ? DataHeaderFlyweight.STREAM_ID_FIELD_OFFSET
+                                            : ErrorFlyweight.STREAM_ID_FIELD_OFFSET,
+                            ByteOrder.LITTLE_ENDIAN);
     }
 
     /** The {@code clusterMembers} string for a cluster whose member {@code i} runs on {@code hosts.get(i)}. */

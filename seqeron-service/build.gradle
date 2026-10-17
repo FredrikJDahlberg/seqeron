@@ -40,6 +40,10 @@ testing {
                     if (project.hasProperty('seed')) {
                         systemProperty 'seqeron.seed', project.property('seed')
                     }
+                    // -PknownAeronFaults runs the tests that reproduce faults in the pinned Aeron, and fail on it.
+                    if (project.hasProperty('knownAeronFaults')) {
+                        systemProperty 'seqeron.knownAeronFaults', 'true'
+                    }
                     shouldRunAfter tasks.named('test')
                 }
             }

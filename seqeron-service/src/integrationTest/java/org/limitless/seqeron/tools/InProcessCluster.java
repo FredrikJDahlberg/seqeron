@@ -2,6 +2,7 @@ package org.limitless.seqeron.tools;
 
 import io.aeron.Aeron;
 import io.aeron.cluster.ConsensusModule;
+import io.aeron.cluster.ElectionState;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.test.Tests;
 import java.nio.file.Path;
@@ -12,7 +13,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.stream.IntStream;
-import org.agrona.collections.MutableReference;
+import org.agrona.collections.MutableLong;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.PortLayout;
@@ -20,8 +21,9 @@ import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.sequencer.SequencerServer;
 
 /**
- * Three members launched in this JVM, each on its own directories under one base, each one's UDP able to be cut, and
- * optionally a gateway host beside them.
+ * Three members launched in this JVM, each on its own directories under one base, each one's UDP able to be cut,
+ * wholly, all but its consensus traffic, or only the consensus messages it sends, and optionally a gateway host beside
+ * them.
  */
 final class InProcessCluster implements AutoCloseable {
     static final int MEMBERS = 3;
@@ -32,6 +34,8 @@ final class InProcessCluster implements AutoCloseable {
     private final Path baseDir;
     private final AtomicReferenceArray<SequencerServer> nodes = new AtomicReferenceArray<>(MEMBERS);
     private final AtomicBoolean[] cut = new AtomicBoolean[MEMBERS];
+    private final AtomicBoolean[] cutAllButConsensus = new AtomicBoolean[MEMBERS];
+    private final AtomicBoolean[] muted = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean fatal = new AtomicBoolean();
     private final AtomicBoolean terminated = new AtomicBoolean();
     private ReplayerServer gatewayHost;
@@ -40,6 +44,8 @@ final class InProcessCluster implements AutoCloseable {
         this.baseDir = baseDir;
         for (int m = 0; m < MEMBERS; m++) {
             cut[m] = new AtomicBoolean();
+            cutAllButConsensus[m] = new AtomicBoolean();
+            muted[m] = new AtomicBoolean();
         }
     }
 
@@ -55,7 +61,13 @@ final class InProcessCluster implements AutoCloseable {
             m, Collections.nCopies(MEMBERS, PortLayout.DEFAULT_HOST), PortLayout.DEFAULT_HOST, baseDir.toString(),
             aeronDir(m), BackoffIdleStrategy::new, 1000, 20, 200, 200); // SequencerServer's default timings
         final AtomicBoolean isCut = cut[m];
-        nodes.set(m, SequencerServer.launch(config, () -> terminated.set(true), () -> fatal.set(true), isCut::get));
+        final AtomicBoolean isCutAllButConsensus = cutAllButConsensus[m];
+        final AtomicBoolean isMuted = muted[m];
+        final SequencerServer.UdpFaults udpFaults = (publication, streamId)
+            -> isCut.get() ||
+            (streamId == ConsensusModule.Configuration.CONSENSUS_STREAM_ID_DEFAULT ? publication && isMuted.get()
+                                                                                   : isCutAllButConsensus.get());
+        nodes.set(m, SequencerServer.launch(config, () -> terminated.set(true), () -> fatal.set(true), udpFaults));
     }
 
     /** Launches the gateway host: its own driver and archive, relaying a member's queue onto its own. */
@@ -84,6 +96,16 @@ final class InProcessCluster implements AutoCloseable {
     /** Drops, or stops dropping, every UDP frame member {@code m} sends or receives. */
     void cut(final int m, final boolean isCut) {
         cut[m].set(isCut);
+    }
+
+    /** As {@link #cut}, but member {@code m} keeps its consensus traffic: it still votes, but copies no log. */
+    void cutAllButConsensus(final int m, final boolean isCut) {
+        cutAllButConsensus[m].set(isCut);
+    }
+
+    /** Drops, or stops dropping, member {@code m}'s consensus messages to its peers, though it still hears theirs. */
+    void mute(final int m, final boolean isMuted) {
+        muted[m].set(isMuted);
     }
 
     /** Member {@code m}'s Aeron directory, or the gateway host's for {@link #GATEWAY_HOST}. */
@@ -131,16 +153,29 @@ final class InProcessCluster implements AutoCloseable {
         }
     }
 
-    private Cluster.Role role(final int m) {
+    Cluster.Role role(final int m) {
+        return Cluster.Role.get(counter(m, ConsensusModule.Configuration.CLUSTER_NODE_ROLE_TYPE_ID));
+    }
+
+    ElectionState electionState(final int m) {
+        return ElectionState.get(counter(m, ConsensusModule.Configuration.ELECTION_STATE_TYPE_ID));
+    }
+
+    long commitPosition(final int m) {
+        return counter(m, ConsensusModule.Configuration.COMMIT_POSITION_TYPE_ID);
+    }
+
+    /** Member {@code m}'s consensus-module counter of the given type, or 0 before the module allocates it. */
+    private long counter(final int m, final int typeId) {
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir(m)))) {
             final CountersReader counters = aeron.countersReader();
-            final MutableReference<Cluster.Role> role = new MutableReference<>(Cluster.Role.FOLLOWER);
-            counters.forEach((counterId, typeId, keyBuffer, label) -> {
-                if (typeId == ConsensusModule.Configuration.CLUSTER_NODE_ROLE_TYPE_ID) {
-                    role.set(Cluster.Role.get(counters.getCounterValue(counterId)));
+            final MutableLong value = new MutableLong();
+            counters.forEach((counterId, counterTypeId, keyBuffer, label) -> {
+                if (counterTypeId == typeId) {
+                    value.set(counters.getCounterValue(counterId));
                 }
             });
-            return role.get();
+            return value.get();
         }
     }
 
