@@ -246,7 +246,9 @@ thirteen end-to-end scripts under `seqeron-service/src/test/scripts`. Coverage i
 `SequencerServer.launch` and a gateway host through `ReplayerServer.launchGatewayHost`, on Aeron's
 `aeron-test-support`. `FailoverConfirmTest` is `failover-test.sh`'s confirm producer across a leader stop;
 `FailoverPropertyTest` runs a producer on the gateway host through seeded rounds of member stops and UDP cuts
-(`SequencerServer.launch`'s `udpFaults` overload), and `-Pseed=<n>` replays a run's draws. `SystemTestWatcher` fails
+(`SequencerServer.launch`'s `udpFaults` overload), and `-Pseed=<n>` replays a run's draws. Both then check every
+queue recording on every archive frame for frame (`QueueRecordings`), which a client's `ReplayerRecovery` would paper
+over. `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;
 neither `test` nor `check` runs it. A member stopped in-process is closed rather than killed, and a cut drops frames

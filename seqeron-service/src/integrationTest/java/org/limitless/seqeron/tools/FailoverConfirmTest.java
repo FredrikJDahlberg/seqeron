@@ -21,7 +21,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * failover-test.sh's confirm producer in one JVM: three members, a producer co-located with a follower sending
  * through {@code PendingSends}, and the leader stopped mid-stream. The producer's queue must show every frame
- * exactly once, in order.
+ * exactly once, in order, and once the old leader is back, every member's queue recordings must be one log.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class FailoverConfirmTest {
@@ -71,6 +71,9 @@ class FailoverConfirmTest {
                        "PendingSends still held " + producer.held() + " frame(s) after the drain timeout");
             assertNotEquals(leader, producer.lastLeader(), "no new leader took over from member " + leader);
             producer.assertExactlyOnceInOrder();
+
+            cluster.start(leader); // its recording rebuilds over the full-log replay
+            QueueRecordings.assertOneLog(cluster.archives(), producer.lastGlobalSeqNo());
         }
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");
