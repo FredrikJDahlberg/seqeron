@@ -7,10 +7,16 @@ import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.NanosecondClusterClock;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
+import io.aeron.driver.ReceiveChannelEndpointSupplier;
+import io.aeron.driver.SendChannelEndpointSupplier;
+import io.aeron.driver.ext.DebugReceiveChannelEndpoint;
+import io.aeron.driver.ext.DebugSendChannelEndpoint;
+import io.aeron.driver.ext.LossGenerator;
 import java.io.File;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.IdleStrategy;
@@ -194,6 +200,17 @@ public final class SequencerServer {
      */
     public static SequencerServer launch(final Config config, final Runnable terminationHook,
                                          final Runnable fatalHandler) {
+        return launch(config, terminationHook, fatalHandler, null);
+    }
+
+    /**
+     * As above, dropping every UDP frame the node's driver sends or receives while {@code udpFaults} answers true,
+     * which cuts the node off from its peers and remote clients alike. Test harnesses only.
+     *
+     * @param udpFaults polled once per UDP frame, on the driver's threads; null drops nothing
+     */
+    public static SequencerServer launch(final Config config, final Runnable terminationHook,
+                                         final Runnable fatalHandler, final BooleanSupplier udpFaults) {
         final int memberId = config.memberId();
         final String host = config.host();
         final String aeronDir = config.aeronDir();
@@ -207,6 +224,15 @@ public final class SequencerServer {
         final File clusterDir = new File(config.baseDir() + "/cluster-" + memberId);
 
         final MediaDriver.Context driverCtx = NodeDriver.context(aeronDir, idleStrategySupplier);
+        if (udpFaults != null) {
+            final LossGenerator drop = (address, buffer, length) -> udpFaults.getAsBoolean();
+            final SendChannelEndpointSupplier send =
+                (udp, status, ctx) -> new DebugSendChannelEndpoint(udp, status, ctx, drop, drop);
+            final ReceiveChannelEndpointSupplier receive =
+                (udp, dispatcher, status,
+                 ctx) -> new DebugReceiveChannelEndpoint(udp, dispatcher, status, ctx, drop, drop);
+            driverCtx.sendChannelEndpointSupplier(send).receiveChannelEndpointSupplier(receive);
+        }
         NodeDriver.warnUnlessTmpfs(Logger.CoreComponent.SequencerServer, memberId, aeronDir);
         NodeDriver.warnIfTmpfs(Logger.CoreComponent.SequencerServer, memberId, config.baseDir());
 

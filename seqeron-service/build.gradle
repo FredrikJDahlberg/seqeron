@@ -36,6 +36,10 @@ testing {
                     jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED',
                             '--add-opens=java.base/java.util.zip=ALL-UNNAMED'
                     environment 'SEQERON_PORT_BASE', '9500'
+                    // -Pseed=<n> replays FailoverPropertyTest's fault schedule; the seed is printed on a failure.
+                    if (project.hasProperty('seed')) {
+                        systemProperty 'seqeron.seed', project.property('seed')
+                    }
                     shouldRunAfter tasks.named('test')
                 }
             }

@@ -107,15 +107,21 @@ end-to-end harnesses below. Coverage is a JaCoCo report at `build/reports/jacoco
 ./gradlew :seqeron-service:integrationTest
 ```
 
-The suite launches members in the test's own JVM through `SequencerServer.launch`, on Aeron's
-`aeron-test-support`. `FailoverConfirmTest` is `failover-test.sh`'s confirm producer in about two seconds: a
-producer on a follower streams through `PendingSends`, the leader is stopped mid-stream, and its queue must show
-every frame exactly once, in order. `SystemTestWatcher` fails a test on any error in a driver's, archive's or
+The suite launches members in the test's own JVM through `SequencerServer.launch`, and a gateway host through
+`ReplayerServer.launchGatewayHost`, on Aeron's `aeron-test-support`. `FailoverConfirmTest` is
+`failover-test.sh`'s confirm producer in about two seconds: a producer on a follower streams through
+`PendingSends`, the leader is stopped mid-stream, and its queue must show every frame exactly once, in order.
+`FailoverPropertyTest` puts the producer on a gateway host and runs six seeded rounds, each stopping and restarting
+a member or cutting its UDP for up to 1.5 s, the leader or a follower as the round draws. The producer's queue must
+come out exact and every member must be up at the end. A failure prints its seed, and
+`./gradlew :seqeron-service:integrationTest -Pseed=<n>` replays the rounds' draws, though not the threads'
+timing. The UDP cut is `SequencerServer.launch`'s `udpFaults` overload, which drops every frame a member's driver
+sends or receives while it answers true. `SystemTestWatcher` fails a test on any error in a driver's, archive's or
 consensus module's error log, and copies a failed test's directories to `seqeron-service/build/test-output`. The
 suite runs on JUnit 6, which `aeron-test-support` is built against, and on cluster port base 9500, clear of a
-local cluster on 9300. A member stopped in-process is closed rather than killed, and every member shares one
-JVM's CPU and GC, so the harnesses below remain the evidence for process death, network faults and the C# and
-C++ clients.
+local cluster on 9300. A member stopped in-process is closed rather than killed, a cut drops frames rather than
+delaying, reordering or duplicating them, and every member shares one JVM's CPU and GC, so the harnesses below
+remain the evidence for process death, the network faults faulteron injects, and the C# and C++ clients.
 
 ## End-to-end harnesses
 
