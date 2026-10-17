@@ -206,6 +206,8 @@ int main()
             : std::filesystem::temp_directory_path() /
                   ("seqeron-example-snapshots-" + std::to_string(SOURCE_ID) + "-" + std::to_string(memberId));
 
+    // A line at a time even into a file or a pipe, as the Java and C# twins print.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 

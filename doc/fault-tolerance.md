@@ -368,8 +368,8 @@ the sender abandons a send already retrying through the election (`setIngressHol
 resent oldest first. The result is every frame sequenced exactly once, in order.
 
 `failover-test.sh` runs two producers across a leader kill: the one using `PendingSends` must see every frame
-on the queue exactly once and in order, and the other reports what it lost. `csharp-client-test.sh` runs the
-same check with the C# client.
+on the queue exactly once and in order, and the other reports what it lost. `cpp-client-test.sh` and
+`csharp-client-test.sh` run the same check with the C++ and C# clients.
 
 ## 6. Operational tooling and verification
 
@@ -394,6 +394,7 @@ Each failure above has a harness that produces it against a live cluster, all un
 | `gateway-host-test.sh` | a gateway host whose relay reads the leader, which is then killed; a `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to another member. The host is then restarted, and a cold start there must catch up from its new recording (§3.3) |
 | `snapshot-test.sh` | the `TestGateway` pair on three members with snapshot rounds every 2 s. The standby restarts and restores, the active instance is killed and the restored one takes over, and the killed one returns as a hot standby, restoring from the file it confirmed while it served. Each restore must report the state the client traffic implies, and no instance may be fenced, so every round is also compared against the restored state (§3.4) |
 | `csharp-client-test.sh` | the C# client against three members: confirmed ingress across a leader kill (§5), a cold start from `globalSeqNo` 1 (§3.2), and a C# gateway pair handed over when its active instance is killed (§2.2, §2.3) |
+| `cpp-client-test.sh` | the C++ client against three members: confirmed ingress across a leader kill (§5), a cold start from `globalSeqNo` 1 (§3.2), the C++ gateway pair handed over when its active instance is killed (§2.2, §2.3), and an application replica restored from a snapshot it confirmed (§3.4) |
 | `csharp-windows-test.sh` | the C# client on Windows beside a gateway host, against one member in WSL1: confirmed ingress (§5), a cold start through the gateway host (§3.2, §3.3), and the C# gateway pair handed over (§2.2, §2.3). One member, because three cannot hold Raft's heartbeats under WSL1; the leader kill is `csharp-client-test.sh`'s |
 | `docker-failover-test.sh` | `ROUNDS` (default 15) leader kills against `docker/compose.yml` under continuous `ProbeMarker` load, restoring each killed member before the next. Every round must change leadership and the killed member must rejoin; an observer on each surviving member must deliver in `globalSeqNo` order throughout; and a cold start at the end must replay the whole multi-tenure history from one recording and reach live. Needs Docker and `./gradlew operatorDist`; CI runs it as `failover.yml`, and `ROUNDS=3` is a quick local run |
 | `replay-bench.sh` | times a cold `ClusterProbe follow` from launch to caught up against a preloaded archive, optionally under load. `replay-bench.sh 400000` builds about 70 MB of history, which must converge in well under a second; `NEVER CAUGHT UP` indicates a replay stall (§3.2), not a slow machine |

@@ -145,6 +145,8 @@ int main()
     const std::int32_t clientId = util::envInt("SEQERON_REPLAYER_CLIENT_ID", 15 + instance);
     const std::string aeronDir = util::resolveAeronDir("SEQERON_AERON_DIR", memberId);
 
+    // A line at a time even into a file or a pipe, as the Java and C# twins print.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 

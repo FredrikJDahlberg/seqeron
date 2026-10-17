@@ -50,7 +50,8 @@ A gateway needs what a co-located application does not: a topology row naming it
 list, the pair `GW-EX-A`/`GW-EX-B` on `sourceId` 13. Load it once, into a cluster that has not loaded
 another list. The cluster designates only the first list it sees; into one that has, designate an
 instance with `clusterctl.sh activate 12` instead. The Java and C++ examples run the same pair, so either
-instance may be either language.
+instance may be either language. `cpp-client-test.sh` in `seqeron-service/src/test/scripts` runs the C++
+examples against a live cluster, the pair through a handover and `snapshot_app` through a restore.
 
 ## C#
 

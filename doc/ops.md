@@ -175,6 +175,7 @@ seqeron's processes bind these ports, and an application's own must stay clear o
 | 9200, 9201 | `TestGateway`'s TCP listeners (test harnesses only) |
 | `9202 + memberId` | `seqeron-examples`' cluster egress (UDP) |
 | 9205, 9206 | `seqeron-examples`' C++ gateway pair's cluster egress (UDP) |
+| 9220–9224 | `cpp-client-test.sh`'s C++ probes' cluster egress (UDP, test harnesses only) |
 
 - **`base`** is 9300 unless `SEQERON_PORT_BASE` sets it, to a value from 1024 to 65466; a process given an
   invalid value fails at startup. Moving the base does not move the other ports in the table.
@@ -237,7 +238,7 @@ This repository's processes use the ids below. An application's should start at 
 | 19 | `seqeron-examples` `FollowStream` (C#) |
 | 20 | `seqeron-examples` `ColocatedApp` (C#) |
 | 21, 22 | `seqeron-examples` `GatewayApp` (C#), GW-EX-CS-A, GW-EX-CS-B |
-| 31–36 | `csharp-client-test.sh` C# probes |
+| 31–36 | `csharp-client-test.sh` C# probes; `cpp-client-test.sh` C++ probes |
 | 41–43 | `csharp-windows-test.sh` C# probes |
 
 ## Driver threads

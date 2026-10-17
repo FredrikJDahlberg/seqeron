@@ -140,10 +140,12 @@ failover silently loses whatever the old leader had not committed — the sessio
 full) and to the sender with `setIngressHold`, feeds it its own queue and each `LeadershipChanged`'s term, and
 resends what a term change lost. Every language,
 case for case, with a property test asserting exactly-once, in-order delivery across random failovers;
-`failover-test.sh` proves the same across a real leader kill, and `csharp-client-test.sh` for C#.
+`failover-test.sh` proves the same across a real leader kill, `cpp-client-test.sh` for C++ and
+`csharp-client-test.sh` for C#.
 
 **The C++ half is a client library, not a program.** `seqeron_core` is a header-only INTERFACE
-target and the only binary the build produces is `core_tests`. There is **no C++ replay server** —
+target and the only binaries the build produces are `core_tests` and `cluster_probe`, the tool
+`cpp-client-test.sh` drives. There is **no C++ replay server** —
 the server side of the replay protocol is Java only.
 
 `seqeron-service/src/main/ops/` holds the Prometheus and Grafana provisioning the metrics scripts feed
@@ -235,11 +237,11 @@ dispatch and the confirmed publish to zero bytes a frame.
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the twelve end-to-end scripts under
+mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the thirteen end-to-end scripts under
 `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
-**Nine of the twelve harnesses are Java-only.** Eight drive the cluster through `tools/ClusterProbe`, which
+**Nine of the thirteen harnesses are Java-only.** Eight drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the queue (`ping`), replays history through the co-located Replayer and then follows the queue live
 (`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own queue shows
@@ -254,7 +256,11 @@ is the containerized multi-round failover soak (`docker/compose.yml`, `./gradlew
 the C# twin of the probe's `confirm` and `follow`, then the C# examples, its gateway pair through a handover.
 It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`. The twelfth,
 `csharp-windows-test.sh`, runs the same C# client on Windows, where it is deployed: one member in WSL1 (three elect without end there) and
-the C# clients beside a gateway host on Windows, on one `windows-latest` runner (CI's `windows.yml`).
+the C# clients beside a gateway host on Windows, on one `windows-latest` runner (CI's `windows.yml`). The
+thirteenth, `cpp-client-test.sh`, is `csharp-client-test.sh` for the C++ client tier: `cluster_probe`
+(`seqeron-client/src/test/cpp-probe`, built by the root CMake project beside `core_tests`), then the C++ examples
+built as an outside consumer builds them, their gateway pair through a handover, and `snapshot_app` restored from a
+round it confirmed. It needs CMake beside the uber jar, and CI runs it in `chaos.yml`.
 `chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session

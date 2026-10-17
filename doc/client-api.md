@@ -252,7 +252,7 @@ highest connection id, replacing the pre-cut messages on restore. See [Snapshots
 
 **Reference implementations.** `TestGateway` (`seqeron-service/src/test/java/org/limitless/seqeron/tools/TestGateway.java`);
 `seqeron-examples/src/java/example/GatewayApp.java` and `src/cpp/GatewayApp.cpp` (one pair, from
-`seqeron-examples/topology.xml`);
+`seqeron-examples/topology.xml`, the C++ one handed over by `cpp-client-test.sh`);
 `seqeron-examples/src/csharp/GatewayApp` (pair from `topology-csharp.xml`, handed over by
 `csharp-client-test.sh`).
 
