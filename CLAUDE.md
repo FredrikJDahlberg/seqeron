@@ -258,7 +258,8 @@ It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`. The tw
 `csharp-windows-test.sh`, runs the same C# client on Windows, where it is deployed: one member in WSL1 (three elect without end there) and
 the C# clients beside a gateway host on Windows, on one `windows-latest` runner (CI's `windows.yml`). The
 thirteenth, `cpp-client-test.sh`, is `csharp-client-test.sh` for the C++ client tier: `cluster_probe`
-(`seqeron-client/src/test/cpp-probe`, built by the root CMake project beside `core_tests`), then the C++ examples
+(`seqeron-client/src/test/cpp-probe`, a target beside `core_tests`, which the harness builds in the examples' tree
+so that Aeron is built once), then the C++ examples
 built as an outside consumer builds them, their gateway pair through a handover, and `snapshot_app` restored from a
 round it confirmed. It needs CMake beside the uber jar, and CI runs it in `chaos.yml`.
 `chaos-runner` needs one more thing the probe cannot supply — a **gateway

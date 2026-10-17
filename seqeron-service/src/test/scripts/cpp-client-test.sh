@@ -17,9 +17,10 @@
 # and no member logs a rejected ingress frame. The control in D reports what the kill had in flight; like
 # failover-test.sh's, it is not asserted, since a kill can land between two frames.
 #
-# Needs the uber jar and CMake. The probe builds in SEQERON_CPP_BUILD (default cmake-build-release) and the examples
-# in SEQERON_EXAMPLES_BUILD (default seqeron-examples/cmake-build-release); either is configured as Release when it
-# does not exist yet, and an existing one is built as configured.
+# Needs the uber jar and CMake. The probe and the examples build in one tree, SEQERON_EXAMPLES_BUILD (default
+# seqeron-examples/cmake-build-e2e), so Aeron is built once: SEQERON_BUILD_TESTS=ON has the seqeron it fetches define
+# cluster_probe too. Its own tree, since that setting sticks. One that does not exist yet is configured as Release;
+# an existing one keeps its type.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,23 +35,14 @@ command -v cmake > /dev/null || { echo "no cmake on PATH"; exit 1; }
 LOG_DIR="logs/cpp-client"
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
-CPP_BUILD="${SEQERON_CPP_BUILD:-${REPO_ROOT}/cmake-build-release}"
-EXAMPLES_BUILD="${SEQERON_EXAMPLES_BUILD:-${REPO_ROOT}/seqeron-examples/cmake-build-release}"
-JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
-
-# build <source> <build dir> <target...>
-build() {
-  local src=$1 dir=$2
-  shift 2
-  if [[ ! -f "$dir/CMakeCache.txt" ]]; then
-    cmake -S "$src" -B "$dir" -DCMAKE_BUILD_TYPE=Release >> "$LOG_DIR/build.log" 2>&1 || return 1
-  fi
-  cmake --build "$dir" --target "$@" -j "$JOBS" >> "$LOG_DIR/build.log" 2>&1
-}
-build "$REPO_ROOT" "$CPP_BUILD" cluster_probe || { echo "probe build failed: $LOG_DIR/build.log"; exit 1; }
-build "${REPO_ROOT}/seqeron-examples" "$EXAMPLES_BUILD" follow_stream colocated_app gateway_app snapshot_app ||
-  { echo "examples build failed: $LOG_DIR/build.log"; exit 1; }
-PROBE="${CPP_BUILD}/cluster_probe"
+EXAMPLES_BUILD="${SEQERON_EXAMPLES_BUILD:-${REPO_ROOT}/seqeron-examples/cmake-build-e2e}"
+CONFIGURE=(-DSEQERON_BUILD_TESTS=ON)
+[[ -f "$EXAMPLES_BUILD/CMakeCache.txt" ]] || CONFIGURE+=(-DCMAKE_BUILD_TYPE=Release)
+{ cmake -S "${REPO_ROOT}/seqeron-examples" -B "$EXAMPLES_BUILD" "${CONFIGURE[@]}" &&
+  cmake --build "$EXAMPLES_BUILD" -j "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" \
+    --target cluster_probe follow_stream colocated_app gateway_app snapshot_app; } > "$LOG_DIR/build.log" 2>&1 ||
+  { echo "build failed: $LOG_DIR/build.log"; exit 1; }
+PROBE="${EXAMPLES_BUILD}/_deps/seqeron-build/cluster_probe"
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqcpp"
