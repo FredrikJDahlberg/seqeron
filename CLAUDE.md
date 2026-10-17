@@ -249,8 +249,9 @@ thirteen end-to-end scripts under `seqeron-service/src/test/scripts`. Coverage i
 (`SequencerServer.launch`'s `udpFaults` overload, which picks frames by stream id and direction), and `-Pseed=<n>`
 replays a run's draws. Both then check every queue recording on every archive frame for frame (`QueueRecordings`),
 which a client's `ReplayerRecovery` would paper over. `CommittedEntryLossTest` scripts the fault sequence under which
-Aeron Cluster 1.53.2 loses a committed entry; it fails on that Aeron, so only `-PknownAeronFaults` runs it, against an
-upgrade. `SystemTestWatcher` fails
+Aeron Cluster 1.53.2 loses a committed entry. Its check that the entry survives fails on that Aeron, so only
+`-PknownAeronFaults` runs it, against an upgrade; its check that the member that truncated it takes itself down and
+rejoins on restart runs by default. `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;
 neither `test` nor `check` runs it. A member stopped in-process is closed rather than killed, and a cut drops frames
@@ -336,7 +337,9 @@ and a node whose recording has stopped or stopped advancing **terminates itself*
 than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its recording over the
 full-log replay it does anyway. The 1 Hz heartbeat runs the same liveness check, because a *stopped*
 recording back-pressures nothing at all (the untethered app subscribers keep the publication connected)
-and would otherwise be silent.
+and would otherwise be silent. A node whose consensus module truncates its log below what it applied terminates itself
+too, which Aeron Cluster 1.53.2 does to a committed entry (`SequencerServer.truncatesAppliedLog`,
+`doc/fault-tolerance.md` §1.4).
 
 Note that **no cluster callback may signal failure by throwing**: `Image.boundedControlledPoll` has
 already advanced the log position past the message and `AgentRunner` keeps the agent alive, so a throw

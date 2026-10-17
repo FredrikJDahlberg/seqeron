@@ -52,6 +52,21 @@ final class QueueRecordings {
     static void assertOneLog(final Map<String, String> aeronDirs, final long untilGlobalSeqNo) {
         final List<Recording> recordings = new ArrayList<>();
         aeronDirs.forEach((name, aeronDir) -> recordings.addAll(read(name, aeronDir, untilGlobalSeqNo)));
+        assertOneLog(recordings);
+    }
+
+    /**
+     * As {@link #assertOneLog(Map, long)}, over the active recordings alone: a member restarted after the others
+     * discarded entries it applied holds one log again only from its restart.
+     */
+    static void assertActiveOneLog(final Map<String, String> aeronDirs, final long untilGlobalSeqNo) {
+        final List<Recording> recordings = new ArrayList<>();
+        aeronDirs.forEach((name, aeronDir) -> recordings.addAll(read(name, aeronDir, untilGlobalSeqNo)));
+        recordings.removeIf(recording -> !recording.active());
+        assertOneLog(recordings);
+    }
+
+    private static void assertOneLog(final List<Recording> recordings) {
         Recording longest = recordings.get(0);
         for (final Recording recording : recordings) {
             if (recording.digests.size() > longest.digests.size()) {

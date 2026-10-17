@@ -36,7 +36,7 @@ final class InProcessCluster implements AutoCloseable {
     private final AtomicBoolean[] cut = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean[] cutAllButConsensus = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean[] muted = new AtomicBoolean[MEMBERS];
-    private final AtomicBoolean fatal = new AtomicBoolean();
+    private final AtomicBoolean[] fatal = new AtomicBoolean[MEMBERS + 1];
     private final AtomicBoolean terminated = new AtomicBoolean();
     private ReplayerServer gatewayHost;
 
@@ -46,6 +46,9 @@ final class InProcessCluster implements AutoCloseable {
             cut[m] = new AtomicBoolean();
             cutAllButConsensus[m] = new AtomicBoolean();
             muted[m] = new AtomicBoolean();
+        }
+        for (int m = 0; m <= MEMBERS; m++) {
+            fatal[m] = new AtomicBoolean();
         }
     }
 
@@ -67,7 +70,8 @@ final class InProcessCluster implements AutoCloseable {
             -> isCut.get() ||
             (streamId == ConsensusModule.Configuration.CONSENSUS_STREAM_ID_DEFAULT ? publication && isMuted.get()
                                                                                    : isCutAllButConsensus.get());
-        nodes.set(m, SequencerServer.launch(config, () -> terminated.set(true), () -> fatal.set(true), udpFaults));
+        final AtomicBoolean isFatal = fatal[m];
+        nodes.set(m, SequencerServer.launch(config, () -> terminated.set(true), () -> isFatal.set(true), udpFaults));
     }
 
     /** Launches the gateway host: its own driver and archive, relaying a member's queue onto its own. */
@@ -78,7 +82,7 @@ final class InProcessCluster implements AutoCloseable {
         gatewayHost = ReplayerServer.launchGatewayHost(
             new ReplayerServer.GatewayHostConfig(GATEWAY_HOST, aeronDir(GATEWAY_HOST), baseDir.toString(), archives,
                                                  PortLayout.DEFAULT_HOST, BackoffIdleStrategy::new),
-            () -> fatal.set(true));
+            () -> fatal[GATEWAY_HOST].set(true));
     }
 
     /** Stops member {@code m}, which a member stopped in-process does by closing rather than by dying. */
@@ -128,7 +132,17 @@ final class InProcessCluster implements AutoCloseable {
     }
 
     boolean fatal() {
-        return fatal.get();
+        for (final AtomicBoolean isFatal : fatal) {
+            if (isFatal.get()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether member {@code m}, or the gateway host for {@link #GATEWAY_HOST}, raised a fatal, in any run of it. */
+    boolean fatal(final int m) {
+        return fatal[m].get();
     }
 
     boolean terminated() {

@@ -104,7 +104,23 @@ failed member led. In a three-member cluster a second failure loses quorum. A re
 full log and rebuilds its recording. Start-up has the same bound — the recording must be live within 5 s
 (`QUEUE_RECORDING_START_TIMEOUT_MS`) — so a member that exits 70 again at once still has broken storage.
 
-### 1.4 Shutdown and restart
+### 1.4 A node whose applied log is truncated takes itself down
+
+Aeron Cluster 1.53.2 can lose an entry it has committed. A follower that restarts while the leader waits on a member
+that cannot copy the log truncates the entries it acknowledged, and if the leader is cut before they are copied back,
+the other two elect without them (`CommittedEntryLossTest` scripts it). Rejoining, the old leader truncates what it
+committed and applied. Then it either never completes an election again, or, when the others' log has reached the same
+position, rejoins with a queue that differs from theirs from the lost entry on. Its peers keep quorum, so nothing else
+shows either.
+
+Raft never truncates an applied entry, so the consensus module's truncation event says when it happens: the log cut
+below the position the node has applied. `SequencerServer` exits 70 on it. The restart
+replays the log the others kept and rebuilds the member's recording.
+
+It cannot undo what was read before. The member's earlier recording, and the restarted follower's, hold frames at
+globalSeqNos the log now gives to others, and a client that consumed them acted on history the cluster discarded.
+
+### 1.5 Shutdown and restart
 
 `clusterctl shutdown` runs on the leader. It publishes a `ClusterStopped` marker, waits (best effort) for it
 on the queue, then calls `ClusterTool.abort`. `SequencerServer` connects

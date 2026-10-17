@@ -5,6 +5,7 @@ import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.ClusteredMediaDriver;
 import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.NanosecondClusterClock;
+import io.aeron.cluster.client.ClusterEvent;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ReceiveChannelEndpointSupplier;
@@ -21,6 +22,8 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
@@ -108,6 +111,10 @@ public final class SequencerServer {
      * that may be what failed. A healthy one fits inside chaos-runner's 10s queue-stall deadline.
      */
     private static final long FATAL_SHUTDOWN_BACKSTOP_MS = 15_000;
+
+    /** The positions in the event the consensus module raises as it truncates its log. */
+    private static final Pattern TRUNCATION =
+        Pattern.compile("Truncating Cluster Log - .* this\\.logPosition=(-?\\d+) .* newPosition=(-?\\d+)$");
 
     private final ClusteredMediaDriver driver;
     private final ClusteredServiceContainer container;
@@ -213,7 +220,8 @@ public final class SequencerServer {
      *
      * @param config          the node's settings
      * @param terminationHook run when the consensus module or the service container terminates the node
-     * @param fatalHandler    run when the node cannot go on: its queue recording stopped, or its Replayer failed
+     * @param fatalHandler    run when the node cannot go on: its queue recording stopped, its Replayer failed, or
+     *                        its log was truncated below what it applied
      * @return the running node, which {@link #stop()} stops
      */
     public static SequencerServer launch(final Config config, final Runnable terminationHook,
@@ -298,9 +306,17 @@ public final class SequencerServer {
                 .startupCanvassTimeoutNs(TimeUnit.SECONDS.toNanos(5))
                 .sessionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.sessionTimeoutMs()))
                 .idleStrategySupplier(idleStrategySupplier)
-                .errorHandler(t
-                              -> Logger.error(Logger.CoreComponent.ConsensusModule,
-                                              Logger.CoreEventCode.ConsensusModuleError, memberId, "%s", t.toString()));
+                .errorHandler(t -> {
+                    Logger.error(Logger.CoreComponent.ConsensusModule, Logger.CoreEventCode.ConsensusModuleError,
+                                 memberId, "%s", t.toString());
+                    if (truncatesAppliedLog(t)) {
+                        Logger.fault(Logger.CoreComponent.SequencerServer, Logger.CoreEventCode.AppliedLogTruncated,
+                                     memberId,
+                                     "FATAL: the log was truncated below what this node applied — terminating this "
+                                         + "node; its peers keep quorum and its restart replays the log they kept");
+                        fatalHandler.run();
+                    }
+                });
         if (System.getProperty(ConsensusModule.Configuration.MAX_CONCURRENT_SESSIONS_PROP_NAME) == null) {
             consensusCtx.maxConcurrentSessions(DEFAULT_MAX_CONCURRENT_SESSIONS);
         }
@@ -390,6 +406,19 @@ public final class SequencerServer {
                     + "which is not persistent storage for the Raft log and archive");
         }
         return hosts;
+    }
+
+    /**
+     * Whether {@code t} is the consensus module truncating its log below the position it has applied, which Aeron
+     * Cluster 1.53.2 does to entries it committed (doc/fault-tolerance.md §1.4). The services then hold state the log
+     * no longer has, and only a restart rebuilds it.
+     */
+    static boolean truncatesAppliedLog(final Throwable t) {
+        if (!(t instanceof ClusterEvent) || t.getMessage() == null) {
+            return false;
+        }
+        final Matcher truncation = TRUNCATION.matcher(t.getMessage());
+        return truncation.find() && Long.parseLong(truncation.group(2)) < Long.parseLong(truncation.group(1));
     }
 
     private static String udp(final String host, final int port) {

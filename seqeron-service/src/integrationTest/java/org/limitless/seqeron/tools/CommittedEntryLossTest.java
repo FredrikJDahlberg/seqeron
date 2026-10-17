@@ -1,6 +1,7 @@
 package org.limitless.seqeron.tools;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.aeron.Aeron;
 import io.aeron.Subscription;
@@ -40,9 +41,12 @@ import org.limitless.seqeron.protocol.SequencedFrameDecoder;
  * Every member's queue recording must still be one log. The stuck run behind it took a follower restart and a leader
  * cut a round apart, its log replication timing out in place of the stream cut here. Fails on 1.53.2, so it runs only
  * under {@code -PknownAeronFaults}, against an Aeron upgrade.
+ *
+ * <p>The second test checks that the leader takes itself down as it truncates entries it applied, and that, restarted,
+ * it rejoins with an active recording that is one log with the others'. Left up, it either cannot rejoin or rejoins
+ * with a queue that differs from theirs.
  */
 @ExtendWith(InterruptingTestCallback.class)
-@EnabledIfSystemProperty(named = "seqeron.knownAeronFaults", matches = "true")
 class CommittedEntryLossTest {
     @RegisterExtension final SystemTestWatcher watcher = new SystemTestWatcher();
 
@@ -64,7 +68,38 @@ class CommittedEntryLossTest {
 
     @Test
     @InterruptAfter(120)
+    @EnabledIfSystemProperty(named = "seqeron.knownAeronFaults", matches = "true")
     void aCommittedEntrySurvivesAFollowerRestartAndALeaderCut() {
+        loseACommittedEntry();
+
+        QueueRecordings.assertOneLog(cluster.archives(), nextGlobalSeqNo(cluster.awaitLeader()));
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+        assertFalse(cluster.terminated(), "a member terminated");
+    }
+
+    @Test
+    @InterruptAfter(120)
+    void aMemberThatTruncatedACommittedEntryRestartsAndRejoins() {
+        final int truncated = loseACommittedEntry();
+        final long commitPosition = cluster.commitPosition(cluster.awaitLeader());
+        await(() -> cluster.fatal(truncated) || isCaughtUp(truncated, commitPosition));
+        if (cluster.fatal(truncated)) {
+            System.out.printf("member %d raised a fatal: restarting it%n", truncated);
+            cluster.stop(truncated);
+            cluster.start(truncated);
+            final long restartCommitPosition = cluster.commitPosition(cluster.awaitLeader());
+            await(() -> isCaughtUp(truncated, restartCommitPosition));
+        }
+
+        QueueRecordings.assertActiveOneLog(cluster.archives(), nextGlobalSeqNo(cluster.awaitLeader()));
+        for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
+            assertTrue(m == truncated || !cluster.fatal(m), "member " + m + " raised a fatal");
+        }
+        assertFalse(cluster.terminated(), "a member terminated");
+    }
+
+    /** Scripts the four steps above; returns the leader cut in the fourth, which truncates what it committed. */
+    private int loseACommittedEntry() {
         final int oldLeader = cluster.awaitLeader();
         await(() -> isFollowing(0) && isFollowing(1) && isFollowing(2));
         cluster.cut(oldLeader, true);
@@ -99,15 +134,17 @@ class CommittedEntryLossTest {
         await(() -> isLeading(oldLeader) || isLeading(follower));
         log("elected without the leader", oldLeader, leader, follower);
         cluster.cut(leader, false);
-
-        QueueRecordings.assertOneLog(cluster.archives(), nextGlobalSeqNo(cluster.awaitLeader()));
-        assertFalse(cluster.fatal(), "a member raised a fatal");
-        assertFalse(cluster.terminated(), "a member terminated");
+        return leader;
     }
 
     /** Whether member {@code m} is out of its election and has seen a commit. */
     private boolean isFollowing(final int m) {
         return cluster.electionState(m) == ElectionState.CLOSED && cluster.commitPosition(m) > 0;
+    }
+
+    /** Whether member {@code m} is out of its election and has committed past {@code commitPosition}. */
+    private boolean isCaughtUp(final int m, final long commitPosition) {
+        return isFollowing(m) && cluster.commitPosition(m) > commitPosition;
     }
 
     private boolean isLeading(final int m) {
