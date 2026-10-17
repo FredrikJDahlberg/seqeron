@@ -94,7 +94,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: FredrikJDahlberg/faulteron
-          ref: ad4209117b7725fdfd8d02856e8d781dbef84365
+          ref: 6a8f7d66fba963513e9a11da4e68df16e47d0939
           path: faulteron
 
       - uses: actions/setup-java@v6
