@@ -18,6 +18,31 @@ dependencies {
     testImplementation "io.aeron:aeron-driver:${rootProject.ext.aeronVersion}"
 }
 
+// ── Integration tests ──────────────────────────────────────────────────────────
+// Members launched in the test's own JVM (SequencerServer.launch), on Aeron's test kit. `test` stays free of
+// any Aeron runtime; this suite is where one runs. Its cluster block is moved off 9300 so a local cluster and
+// a run of this suite do not collide.
+testing {
+    suites {
+        integrationTest(JvmTestSuite) {
+            // The JUnit aeron-test-support is built against, which differs from the unit suites'.
+            useJUnitJupiter('6.1.3')
+            dependencies {
+                implementation project()
+                implementation "io.aeron:aeron-test-support:${rootProject.ext.aeronVersion}"
+            }
+            targets.all {
+                testTask.configure {
+                    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED',
+                            '--add-opens=java.base/java.util.zip=ALL-UNNAMED'
+                    environment 'SEQERON_PORT_BASE', '9500'
+                    shouldRunAfter tasks.named('test')
+                }
+            }
+        }
+    }
+}
+
 // ── SBE code generation ────────────────────────────────────────────────────────
 // The two schemas the node owns. sbe-probe.xml (payloadId 5) is the protocol ClusterProbe speaks so this
 // repo's e2e scripts can drive a cluster with no product binary built; it is private to tools/ClusterProbe,
