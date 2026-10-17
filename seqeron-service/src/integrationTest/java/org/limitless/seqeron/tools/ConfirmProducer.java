@@ -38,6 +38,7 @@ final class ConfirmProducer implements AutoCloseable {
     private final ProbeMarkerDecoder decoder = new ProbeMarkerDecoder();
     private final LongArrayList seqNos = new LongArrayList();
     private volatile int lastLeader = InProcessCluster.NO_MEMBER;
+    private long lastGlobalSeqNo;
     private boolean caughtUp;
     private long next = 1;
     private long nextSendNs;
@@ -71,6 +72,7 @@ final class ConfirmProducer implements AutoCloseable {
             decoder.wrap(event.buffer(), event.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH,
                          event.blockLength(), event.version());
             seqNos.addLong(decoder.seqNo());
+            lastGlobalSeqNo = event.globalSeqNo();
         }
     }
 
@@ -130,6 +132,11 @@ final class ConfirmProducer implements AutoCloseable {
     /** The leader the newest {@code LeadershipChanged} named, or {@link InProcessCluster#NO_MEMBER}. */
     int lastLeader() {
         return lastLeader;
+    }
+
+    /** The globalSeqNo of the newest own frame the queue showed. */
+    long lastGlobalSeqNo() {
+        return lastGlobalSeqNo;
     }
 
     /** The queue showed seqNo 1..count, each once, in order. */

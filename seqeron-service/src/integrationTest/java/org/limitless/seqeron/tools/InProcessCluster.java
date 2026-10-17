@@ -6,7 +6,9 @@ import io.aeron.cluster.service.Cluster;
 import io.aeron.test.Tests;
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.stream.IntStream;
@@ -87,6 +89,20 @@ final class InProcessCluster implements AutoCloseable {
     /** Member {@code m}'s Aeron directory, or the gateway host's for {@link #GATEWAY_HOST}. */
     String aeronDir(final int m) {
         return baseDir.resolve("aeron-" + m).toString();
+    }
+
+    /** Each running member's driver directory, and the gateway host's if launched, by name. */
+    Map<String, String> archives() {
+        final Map<String, String> archives = new LinkedHashMap<>();
+        for (int m = 0; m < MEMBERS; m++) {
+            if (isRunning(m)) {
+                archives.put("member " + m, aeronDir(m));
+            }
+        }
+        if (gatewayHost != null) {
+            archives.put("the gateway host", aeronDir(GATEWAY_HOST));
+        }
+        return archives;
     }
 
     boolean fatal() {

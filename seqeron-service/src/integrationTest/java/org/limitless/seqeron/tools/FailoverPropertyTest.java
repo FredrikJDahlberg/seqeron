@@ -27,8 +27,8 @@ import org.junit.jupiter.api.io.TempDir;
  * Seeded faults against three members while a producer on a gateway host streams through {@code PendingSends}. Each
  * round stops a member and restarts it, or cuts its UDP and restores it: the leader or a follower, as the round draws.
  * The producer's queue, relayed from whichever member the host reaches, must show every frame exactly once, in order,
- * and every member must be up at the end. The seed fixes each round's draws, not which member leads when it runs;
- * {@code -Pseed=<n>} replays them.
+ * every member must be up at the end, and every queue recording on every member and on the host must be one log. The
+ * seed fixes each round's draws, not which member leads when it runs; {@code -Pseed=<n>} replays them.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class FailoverPropertyTest {
@@ -97,6 +97,7 @@ class FailoverPropertyTest {
             assertTrue(producer.isDrained(),
                        "PendingSends still held " + producer.held() + " frame(s) after the drain timeout");
             producer.assertExactlyOnceInOrder();
+            QueueRecordings.assertOneLog(cluster.archives(), producer.lastGlobalSeqNo());
         }
         for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
             assertTrue(cluster.isRunning(m), "member " + m + " is down");

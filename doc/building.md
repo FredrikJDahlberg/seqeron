@@ -115,8 +115,12 @@ The suite launches members in the test's own JVM through `SequencerServer.launch
 a member or cutting its UDP for up to 1.5 s, the leader or a follower as the round draws. The producer's queue must
 come out exact and every member must be up at the end. A failure prints its seed, and
 `./gradlew :seqeron-service:integrationTest -Pseed=<n>` replays the rounds' draws, though not the threads'
-timing. The UDP cut is `SequencerServer.launch`'s `udpFaults` overload, which drops every frame a member's driver
-sends or receives while it answers true. `SystemTestWatcher` fails a test on any error in a driver's, archive's or
+timing. Both tests then read every queue recording on every member, and on the host, straight off its archive,
+since a client's `ReplayerRecovery` would hide a repeated frame or replay over a gap: each must hold globalSeqNo 1
+onwards once each, in order, and the same frame wherever two hold the same globalSeqNo.
+
+The UDP cut is `SequencerServer.launch`'s `udpFaults` overload, which drops every frame a member's driver sends or
+receives while it answers true. `SystemTestWatcher` fails a test on any error in a driver's, archive's or
 consensus module's error log, and copies a failed test's directories to `seqeron-service/build/test-output`. The
 suite runs on JUnit 6, which `aeron-test-support` is built against, and on cluster port base 9500, clear of a
 local cluster on 9300. A member stopped in-process is closed rather than killed, a cut drops frames rather than
