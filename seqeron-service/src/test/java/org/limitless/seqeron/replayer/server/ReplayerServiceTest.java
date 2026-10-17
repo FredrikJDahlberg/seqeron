@@ -93,13 +93,13 @@ class ReplayerServiceTest {
     }
 
     @Test
-    void requestsArrivingBeforeReadinessAreHeldWithoutBeingQueued() {
-        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 1, FROM_START));
+    void requestsArrivingBeforeReadinessAreAnsweredWithoutBecomingPending() {
+        fakeReplayer.offerRequest(replayRequest(CLIENT, 1, FROM_START));
 
         replayerService.poll();
 
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, lastReply().templateId());
-        // The app's own resend timer is the retry — queueing here would only re-try the same not-ready state.
+        // The app's own resend timer is the retry — holding it here would only re-try the same not-ready state.
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID));
     }
 
@@ -368,7 +368,7 @@ class ReplayerServiceTest {
     // ── Slots ───────────────────────────────────────────────────────────────────
 
     @Test
-    void aClientBeyondTheConcurrencyCapIsQueuedAndServedWhenASlotFrees() {
+    void aClientBeyondTheConcurrencyCapIsHeldAndServedWhenASlotFrees() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         for (int client = 1; client <= ReplayerService.MAX_CONCURRENT_REPLAYS; client++) {
@@ -464,7 +464,7 @@ class ReplayerServiceTest {
     @Test
     void aReplyToAnAppThatStoppedReadingIsDroppedAndCounted() {
         fakeReplayer.controlOfferResult(Publication.BACK_PRESSURED);
-        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 1, FROM_START));
+        fakeReplayer.offerRequest(replayRequest(CLIENT, 1, FROM_START));
 
         replayerService.poll();
 
@@ -476,17 +476,17 @@ class ReplayerServiceTest {
     @Test
     void aFreshBurstOfDroppedRepliesIsReportedAgainAfterAQuietPeriod() {
         fakeReplayer.controlOfferResult(Publication.BACK_PRESSURED);
-        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 1, FROM_START));
+        fakeReplayer.offerRequest(replayRequest(CLIENT, 1, FROM_START));
         replayerService.poll();
 
         // Same episode: a wedged app is answered on every resend, and the counter carries the rate.
         fakeReplayer.advanceMillis(1_000);
-        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 2, FROM_START));
+        fakeReplayer.offerRequest(replayRequest(CLIENT, 2, FROM_START));
         replayerService.poll();
         assertEquals(1, logCount(Logger.CoreEventCode.ControlReplyDropped));
 
         fakeReplayer.advanceMillis(60_000);
-        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 3, FROM_START));
+        fakeReplayer.offerRequest(replayRequest(CLIENT, 3, FROM_START));
         replayerService.poll();
 
         assertEquals(2, logCount(Logger.CoreEventCode.ControlReplyDropped), "a distinct episode names itself");
@@ -496,7 +496,7 @@ class ReplayerServiceTest {
     @Test
     void aReplyToAnAppNotSubscribedYetIsDroppedWithoutBeingCounted() {
         fakeReplayer.controlOfferResult(Publication.NOT_CONNECTED);
-        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 1, FROM_START));
+        fakeReplayer.offerRequest(replayRequest(CLIENT, 1, FROM_START));
 
         replayerService.poll();
 
@@ -508,7 +508,7 @@ class ReplayerServiceTest {
     @Test
     void aClosedControlPublicationTakesTheDutyCycleDownLoudly() {
         fakeReplayer.controlOfferResult(Publication.CLOSED);
-        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 1, FROM_START));
+        fakeReplayer.offerRequest(replayRequest(CLIENT, 1, FROM_START));
 
         assertThrows(IllegalStateException.class, () -> replayerService.poll());
     }
@@ -518,7 +518,7 @@ class ReplayerServiceTest {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         fakeReplayer.controlOfferResult(Publication.CLOSED);
-        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 1, FROM_START));
+        fakeReplayer.offerRequest(replayRequest(CLIENT, 1, FROM_START));
 
         replayerService.run(new AtomicBoolean(true));
 
@@ -540,7 +540,7 @@ class ReplayerServiceTest {
 
     /** Delivers one ReplayRequest and returns the reply it drew. */
     private Reply request(final long clientId, final long requestId, final long fromPosition) {
-        fakeReplayer.enqueueRequest(replayRequest(clientId, requestId, fromPosition));
+        fakeReplayer.offerRequest(replayRequest(clientId, requestId, fromPosition));
         replayerService.poll();
         return lastReply();
     }

@@ -145,7 +145,7 @@ public final class Gateway implements AutoCloseable {
     private final SnapshotEndDecoder snapshotEnd = new SnapshotEndDecoder();
 
     /** Connection lifecycle frames still to be placed, in the order they were asked for. */
-    private final ArrayDeque<Lifecycle> lifecycleQueue = new ArrayDeque<>();
+    private final ArrayDeque<Lifecycle> lifecycleBacklog = new ArrayDeque<>();
 
     /** Connections whose {@code ConnectionOpened} has not landed: nothing may be published on one yet. */
     private final Set<Integer> unopened = new HashSet<>();
@@ -254,7 +254,7 @@ public final class Gateway implements AutoCloseable {
 
     /**
      * Takes one connection into the cluster's view of this gateway: allocates its id from the resume point
-     * and queues its {@code ConnectionOpened}, which {@link #doWork()} places and retries.
+     * and adds its {@code ConnectionOpened} to the backlog that {@link #doWork()} places and retries.
      *
      * @return the connection's id, or {@link #NO_CONNECTION} if this instance is not serving
      */
@@ -274,7 +274,7 @@ public final class Gateway implements AutoCloseable {
             return NO_CONNECTION;
         }
         final int connectionId = nextConnectionId++;
-        lifecycleQueue.add(new Lifecycle(connectionId, SystemFrame.CONNECTION_OPENED, connectionData));
+        lifecycleBacklog.add(new Lifecycle(connectionId, SystemFrame.CONNECTION_OPENED, connectionData));
         unopened.add(connectionId);
         connections.add(connectionId);
         return connectionId;
@@ -288,10 +288,10 @@ public final class Gateway implements AutoCloseable {
         }
         connections.remove(connectionId);
         if (unopened.remove(connectionId)) {
-            lifecycleQueue.removeIf(queued -> queued.connectionId() == connectionId);
+            lifecycleBacklog.removeIf(entry -> entry.connectionId() == connectionId);
             return;
         }
-        lifecycleQueue.add(new Lifecycle(connectionId, SystemFrame.CONNECTION_CLOSED, NO_CONNECTION_DATA));
+        lifecycleBacklog.add(new Lifecycle(connectionId, SystemFrame.CONNECTION_CLOSED, NO_CONNECTION_DATA));
     }
 
     /**
@@ -355,23 +355,23 @@ public final class Gateway implements AutoCloseable {
     /** Places what the connection lifecycle owes, oldest first, stopping at the first frame that is declined. */
     private int drainLifecycle() {
         int work = 0;
-        while (!lifecycleQueue.isEmpty()) {
-            final Lifecycle next = lifecycleQueue.peek();
+        while (!lifecycleBacklog.isEmpty()) {
+            final Lifecycle next = lifecycleBacklog.peek();
             if (!published(session.publishSystem(lifecycle.gatewaySourceId(), next.connectionId(),
                                                  next.systemEventType(), body, encode(next)))) {
                 break;
             }
-            lifecycleQueue.poll();
+            lifecycleBacklog.poll();
             unopened.remove(next.connectionId());
             work++;
         }
         return work;
     }
 
-    private int encode(final Lifecycle queued) {
-        if (queued.systemEventType() == SystemFrame.CONNECTION_OPENED) {
+    private int encode(final Lifecycle entry) {
+        if (entry.systemEventType() == SystemFrame.CONNECTION_OPENED) {
             connectionOpened.wrap(body, 0);
-            connectionOpened.putConnectionData(queued.connectionData(), 0, queued.connectionData().length);
+            connectionOpened.putConnectionData(entry.connectionData(), 0, entry.connectionData().length);
             return connectionOpened.encodedLength();
         }
         connectionClosed.wrap(body, 0);
@@ -443,7 +443,7 @@ public final class Gateway implements AutoCloseable {
         @Override
         public void closeGate() {
             // The connections go with the edge, and a successor's GatewayStarted is what releases them.
-            lifecycleQueue.clear();
+            lifecycleBacklog.clear();
             unopened.clear();
             connections.clear();
             listener.onStandby();

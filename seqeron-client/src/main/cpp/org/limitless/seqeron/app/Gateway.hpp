@@ -218,7 +218,7 @@ class Gateway
 
     /**
      * Takes one connection into the cluster's view of this gateway: allocates its id from the resume point
-     * and queues its ConnectionOpened, which doWork() places and retries.
+     * and adds its ConnectionOpened to the backlog that doWork() places and retries.
      *
      * @param connectionData the ConnectionOpened's connectionData, copied; what a standby rebuilds the
      *                       connection's state from
@@ -232,7 +232,7 @@ class Gateway
             return NO_CONNECTION;
         }
         const std::int32_t connectionId = m_nextConnectionId++;
-        m_lifecycleQueue.push_back(
+        m_lifecycleBacklog.push_back(
             { connectionId, protocol::CONNECTION_OPENED, std::vector<char>(connectionData, connectionData + length) });
         m_unopened.insert(connectionId);
         m_connections.insert(connectionId);
@@ -250,8 +250,8 @@ class Gateway
     }
 
     /**
-     * Releases a connection that has gone, queueing its ConnectionClosed, which doWork() places and retries.
-     * One the cluster never heard of is dropped rather than announced.
+     * Releases a connection that has gone, adding its ConnectionClosed to the backlog that doWork() places and
+     * retries. One the cluster never heard of is dropped rather than announced.
      *
      * @param connectionId the id openConnection returned
      */
@@ -265,11 +265,11 @@ class Gateway
         m_connections.erase(connectionId);
         if (m_unopened.erase(connectionId) > 0)
         {
-            std::erase_if(m_lifecycleQueue,
-                          [connectionId](const Lifecycle& queued) { return queued.connectionId == connectionId; });
+            std::erase_if(m_lifecycleBacklog,
+                          [connectionId](const Lifecycle& entry) { return entry.connectionId == connectionId; });
             return;
         }
-        m_lifecycleQueue.push_back({ connectionId, protocol::CONNECTION_CLOSED, {} });
+        m_lifecycleBacklog.push_back({ connectionId, protocol::CONNECTION_CLOSED, {} });
     }
 
     /**
@@ -391,9 +391,9 @@ class Gateway
     int drainLifecycle()
     {
         int work = 0;
-        while (!m_lifecycleQueue.empty())
+        while (!m_lifecycleBacklog.empty())
         {
-            const Lifecycle& next = m_lifecycleQueue.front();
+            const Lifecycle& next = m_lifecycleBacklog.front();
             const auto result =
                 next.systemEventType == protocol::CONNECTION_OPENED
                     ? m_session.template publishSystem<sbe::frame::ConnectionOpened>(
@@ -410,7 +410,7 @@ class Gateway
                 break;
             }
             m_unopened.erase(next.connectionId);
-            m_lifecycleQueue.pop_front();
+            m_lifecycleBacklog.pop_front();
             work++;
         }
         return work;
@@ -488,7 +488,7 @@ class Gateway
         void closeGate()
         {
             // The connections go with the edge, and a successor's GatewayStarted is what releases them.
-            m_gateway.m_lifecycleQueue.clear();
+            m_gateway.m_lifecycleBacklog.clear();
             m_gateway.m_unopened.clear();
             m_gateway.m_connections.clear();
             m_gateway.m_listener.onStandby();
@@ -690,7 +690,7 @@ class Gateway
     detail::SnapshotFrames<detail::Session<SessionDispatch>> m_snapshotFrames;
 
     // Connection lifecycle frames still to be placed, in the order they were asked for.
-    std::deque<Lifecycle> m_lifecycleQueue;
+    std::deque<Lifecycle> m_lifecycleBacklog;
 
     // Connections whose ConnectionOpened has not landed: nothing may be published on one yet.
     std::unordered_set<std::int32_t> m_unopened;

@@ -76,7 +76,7 @@ public sealed class Gateway : IDisposable
     private readonly UnsafeBuffer _stagingBuffer;
 
     // Connection lifecycle frames still to be placed, in the order they were asked for.
-    private readonly List<Lifecycle> _lifecycleQueue = new List<Lifecycle>();
+    private readonly List<Lifecycle> _lifecycleBacklog = new List<Lifecycle>();
 
     // Connections whose ConnectionOpened has not landed: nothing may be published on one yet.
     private readonly HashSet<int> _unopened = new HashSet<int>();
@@ -195,7 +195,7 @@ public sealed class Gateway : IDisposable
     public bool CanAccept => _lifecycle.IsServing && !_session.IsHolding;
 
     /// <summary>Takes one connection into the cluster's view of this gateway: allocates its id from the resume point
-    /// and queues its <c>ConnectionOpened</c>, which <see cref="DoWork"/> places and retries.</summary>
+    /// and adds its <c>ConnectionOpened</c> to the backlog that <see cref="DoWork"/> places and retries.</summary>
     /// <param name="connectionData">opaque bytes the frame carries, from offset 0</param>
     /// <param name="length">bytes of <paramref name="connectionData"/></param>
     /// <returns>the connection's id, or <see cref="NoConnection"/> if this instance is not serving</returns>
@@ -230,10 +230,10 @@ public sealed class Gateway : IDisposable
         _connections.Remove(connectionId);
         if (_unopened.Remove(connectionId))
         {
-            _lifecycleQueue.RemoveAll(queued => queued.ConnectionId == connectionId);
+            _lifecycleBacklog.RemoveAll(entry => entry.ConnectionId == connectionId);
             return;
         }
-        _lifecycleQueue.Add(new Lifecycle(connectionId, SystemFrame.ConnectionClosed, NoConnectionData));
+        _lifecycleBacklog.Add(new Lifecycle(connectionId, SystemFrame.ConnectionClosed, NoConnectionData));
     }
 
     /// <summary>Submits one application payload on a connection, stamped with this gateway's
@@ -299,7 +299,7 @@ public sealed class Gateway : IDisposable
             return NoConnection;
         }
         int connectionId = _nextConnectionId++;
-        _lifecycleQueue.Add(new Lifecycle(connectionId, SystemFrame.ConnectionOpened, connectionData));
+        _lifecycleBacklog.Add(new Lifecycle(connectionId, SystemFrame.ConnectionOpened, connectionData));
         _unopened.Add(connectionId);
         _connections.Add(connectionId);
         return connectionId;
@@ -309,27 +309,27 @@ public sealed class Gateway : IDisposable
     private int DrainLifecycle()
     {
         int work = 0;
-        while (_lifecycleQueue.Count > 0)
+        while (_lifecycleBacklog.Count > 0)
         {
-            Lifecycle next = _lifecycleQueue[0];
+            Lifecycle next = _lifecycleBacklog[0];
             if (!Published(_session.PublishSystem(_lifecycle.GatewaySourceId, next.ConnectionId, next.SystemEventType,
                                                   _body, Encode(next))))
             {
                 break;
             }
-            _lifecycleQueue.RemoveAt(0);
+            _lifecycleBacklog.RemoveAt(0);
             _unopened.Remove(next.ConnectionId);
             work++;
         }
         return work;
     }
 
-    private int Encode(Lifecycle queued)
+    private int Encode(Lifecycle entry)
     {
-        if (queued.SystemEventType == SystemFrame.ConnectionOpened)
+        if (entry.SystemEventType == SystemFrame.ConnectionOpened)
         {
             _connectionOpened.WrapForEncode(_bodyView, 0);
-            _connectionOpened.SetConnectionData(queued.ConnectionData);
+            _connectionOpened.SetConnectionData(entry.ConnectionData);
             return _connectionOpened.Size;
         }
         _connectionClosed.WrapForEncode(_bodyView, 0);
@@ -398,7 +398,7 @@ public sealed class Gateway : IDisposable
         public void CloseGate()
         {
             // The connections go with the edge, and a successor's GatewayStarted is what releases them.
-            _gateway._lifecycleQueue.Clear();
+            _gateway._lifecycleBacklog.Clear();
             _gateway._unopened.Clear();
             _gateway._connections.Clear();
             _gateway._listener.OnStandby();
