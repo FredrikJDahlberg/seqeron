@@ -308,7 +308,89 @@ public class PendingSendsTest
         Assert.False(_pending.IsFaulted);
     }
 
-    [Fact(DisplayName = "a lost session's frames are discarded, and one that committed comes back matching nothing")]
+    [Fact(DisplayName = "frames not seen before their session's SessionClosed are missing, and hold")]
+    public void FramesNotSeenBeforeTheirSessionClosedAreMissing()
+    {
+        Send(Own, 1, 1);
+        Send(Own, 1, 2);
+        Send(Own, 1, 3);
+        Arrive(Own, 1);
+        SessionClosed(Own);
+        Assert.Equal(2, _pending.Missing());
+        Assert.True(_pending.IsHolding);
+        Assert.True(_pending.IsClosed(Own));
+    }
+
+    [Fact(DisplayName = "another session's SessionClosed changes nothing")]
+    public void AnotherSessionsCloseChangesNothing()
+    {
+        Send(Own, 1, 1);
+        SessionClosed(Sibling);
+        Assert.Equal(0, _pending.Missing());
+        Assert.False(_pending.IsHolding);
+        Assert.False(_pending.IsClosed(Sibling));
+    }
+
+    [Fact(DisplayName = "frames on a replaced session hold until its SessionClosed, then the lost ones are resent")]
+    public void ReplacedSessionsFramesHoldUntilItsClose()
+    {
+        var sender = new FakeSender(1);
+        Send(Own, 1, 1);
+        Send(Own, 1, 2);
+        sender.Session = Own + 1;
+        Assert.Equal(0, _pending.ResendMissing(sender));
+        Assert.True(_pending.IsHolding, "the old session's frames are unsettled");
+        Arrive(Own, 1);
+        Assert.True(_pending.IsHolding);
+        SessionClosed(Own);
+        Assert.Equal(1, _pending.Missing());
+        Assert.Equal(1, _pending.ResendMissing(sender));
+        Assert.Equal(new List<int> { 2 }, sender.Sent);
+        Assert.False(_pending.IsHolding);
+        Arrive(Own + 1, 2);
+        Assert.Equal(0, _pending.Count);
+        Assert.False(_pending.IsFaulted);
+    }
+
+    [Fact(DisplayName = "nothing is resent onto a session the queue has shown closed")]
+    public void NothingIsResentOntoAClosedSession()
+    {
+        var sender = new FakeSender(1);
+        Send(Own, 1, 1);
+        SessionClosed(Own);
+        Assert.Equal(0, _pending.ResendMissing(sender));
+        Assert.Empty(sender.Sent);
+        sender.Session = Own + 1;
+        Assert.False(_pending.IsClosed(Own + 1));
+        Assert.Equal(1, _pending.ResendMissing(sender));
+        Assert.Equal(new List<int> { 1 }, sender.Sent);
+    }
+
+    [Fact(DisplayName = "a frame tracked on a session the queue has shown closed is missing at once")]
+    public void FrameOnAClosedSessionIsMissingAtOnce()
+    {
+        Send(Own, 1, 1);
+        Arrive(Own, 1);
+        SessionClosed(Own);
+        Assert.False(_pending.IsHolding);
+        Send(Own, 1, 2);
+        Assert.Equal(1, _pending.Missing());
+        Assert.True(_pending.IsHolding);
+    }
+
+    [Fact(DisplayName = "a replaced session whose close never comes is settled by the term instead")]
+    public void ReplacedSessionWithNoCloseIsSettledByTheTerm()
+    {
+        var sender = new FakeSender(2) { Session = Own + 1 };
+        Send(Own, 1, 1);
+        _pending.ResendMissing(sender);
+        Assert.True(_pending.IsHolding);
+        _pending.OnLeadershipChanged(2);
+        Assert.Equal(1, _pending.ResendMissing(sender));
+        Assert.False(_pending.IsHolding);
+    }
+
+    [Fact(DisplayName = "discarded frames are forgotten, and one that committed comes back matching nothing")]
     public void DiscardedSessionsFramesMatchNothing()
     {
         Send(Own, 1, 1);
@@ -349,5 +431,10 @@ public class PendingSendsTest
     {
         _body.PutInt(0, n);
         _pending.OnSequenced(SequencedEvents.Of(session, system, id, _bodyBytes));
+    }
+
+    private void SessionClosed(long session)
+    {
+        _pending.OnSequenced(SequencedEvents.SessionClosed(session));
     }
 }

@@ -138,7 +138,7 @@ failover silently loses whatever the old leader had not committed — the sessio
 `sequencer/client/PendingSends` is the confirm-on-queue tracker (spec §16 A-4, A-5): a producer gives it to
 `IngressPublisher` as its `IngressTracker` (which tracks what it places and declines while it holds or is
 full) and to the sender with `setIngressHold`, feeds it its own queue and each `LeadershipChanged`'s term, and
-resends what a term change lost. Every language,
+resends what a term change or a closed session lost. Every language,
 case for case, with a property test asserting exactly-once, in-order delivery across random failovers;
 `failover-test.sh` proves the same across a real leader kill, `cpp-client-test.sh` for C++ and
 `csharp-client-test.sh` for C#.
@@ -348,8 +348,8 @@ fragment handler raises to the Aeron error handler and advances the subscriber p
 why a client records the fault and raises it from its own duty cycle instead.
 
 Besides forwarded ingress, the sequencer synthesizes its own frames on the same `globalSeqNo` counter:
-`ConnectionOpened`/`ConnectionClosed` (cluster session lifecycle), `LeadershipChanged` (one per term,
-same leader or not), and a **1 Hz `ClusterHeartbeat`** (`Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS`) — the cluster
+`SessionClosed` (one per cluster session close: nothing from that session reaches the log after it),
+`LeadershipChanged` (one per term, same leader or not), and a **1 Hz `ClusterHeartbeat`** (`Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS`) — the cluster
 clock, so consumers have a consensus-driven time source that keeps advancing while a producer is silent,
 which is exactly when a gateway's keepalive watchdog must probe.
 
@@ -410,9 +410,9 @@ a seed makes the same fault sequence in each.
 is `Unsequenced` (100) on ingress, republished as `Sequenced` (101) on the queue, carrying one opaque
 length-prefixed payload named by `header.payloadId`. The **system** family is seqeron's own vocabulary
 (spec §7), named by `header.systemEventType` at the same offset: `UnsequencedSystem` (102) →
-`SequencedSystem` (103) for the twelve events a producer submits, plus four templates of their own for
-the four the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105), `GatewayActive`
-(106), `SnapshotStarted` (107). Sequencing is copy-18/append-16 for both, the payload is never re-encoded, and `sequenceMessage`
+`SequencedSystem` (103) for the twelve events a producer submits, plus five templates of their own for
+the five the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105), `GatewayActive`
+(106), `SnapshotStarted` (107), `SessionClosed` (108). Sequencing is copy-18/append-16 for both, the payload is never re-encoded, and `sequenceMessage`
 validates every frame against `doc/seqeron-protocol-spec.md` §9.2.
 
 **The cluster tier decodes no `payloadId` at all** — every application payload is copied through
@@ -464,7 +464,7 @@ Four schemas, split by who speaks them — `sbe-frame`, `sbe-replay` and `sbe-cl
 a distinct namespace so one include path
 covers all of them:
 
-- `sbe-frame.xml` (schema 210) — the eight top-level templates, their four header composites, and the
+- `sbe-frame.xml` (schema 210) — the nine top-level templates, their four header composites, and the
   twelve submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
   list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`, the snapshot frames). No system message carries
   a `header` field — the frame's is the only one. Seqeron's own, and the only thing this tier decodes.

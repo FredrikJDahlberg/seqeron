@@ -85,6 +85,10 @@ class PendingSendsTest {
         pending.onSequenced(SequencedEvents.of(session, system, id, body, 0, Integer.BYTES));
     }
 
+    private void sessionClosed(final long session) {
+        pending.onSequenced(SequencedEvents.sessionClosed(session));
+    }
+
     @Test
     @DisplayName("every frame seen on its own queue leaves nothing pending")
     void everyFrameSeenLeavesNothingPending() {
@@ -332,7 +336,90 @@ class PendingSendsTest {
     }
 
     @Test
-    @DisplayName("a lost session's frames are discarded, and one that committed comes back matching nothing")
+    @DisplayName("frames not seen before their session's SessionClosed are missing, and hold")
+    void framesNotSeenBeforeTheirSessionClosedAreMissing() {
+        send(OWN, 1, 1);
+        send(OWN, 1, 2);
+        send(OWN, 1, 3);
+        arrive(OWN, 1);
+        sessionClosed(OWN);
+        assertEquals(2, pending.missing());
+        assertTrue(pending.isHolding());
+        assertTrue(pending.isClosed(OWN));
+    }
+
+    @Test
+    @DisplayName("another session's SessionClosed changes nothing")
+    void anotherSessionsCloseChangesNothing() {
+        send(OWN, 1, 1);
+        sessionClosed(SIBLING);
+        assertEquals(0, pending.missing());
+        assertFalse(pending.isHolding());
+        assertFalse(pending.isClosed(SIBLING));
+    }
+
+    @Test
+    @DisplayName("frames on a replaced session hold until its SessionClosed, then the lost ones are resent")
+    void replacedSessionsFramesHoldUntilItsClose() {
+        final FakeSender sender = new FakeSender(1);
+        send(OWN, 1, 1);
+        send(OWN, 1, 2);
+        sender.session = OWN + 1;
+        assertEquals(0, pending.resendMissing(sender), "nothing is known lost yet");
+        assertTrue(pending.isHolding(), "but the old session's frames are unsettled");
+        arrive(OWN, 1);
+        assertTrue(pending.isHolding());
+        sessionClosed(OWN);
+        assertEquals(1, pending.missing());
+        assertEquals(1, pending.resendMissing(sender));
+        assertEquals(List.of(2), sender.sent);
+        assertFalse(pending.isHolding());
+        arrive(OWN + 1, 2);
+        assertEquals(0, pending.size());
+        assertFalse(pending.isFaulted());
+    }
+
+    @Test
+    @DisplayName("nothing is resent onto a session the queue has shown closed")
+    void nothingIsResentOntoAClosedSession() {
+        final FakeSender sender = new FakeSender(1);
+        send(OWN, 1, 1);
+        sessionClosed(OWN);
+        assertEquals(0, pending.resendMissing(sender));
+        assertTrue(sender.sent.isEmpty());
+        sender.session = OWN + 1;
+        assertFalse(pending.isClosed(OWN + 1));
+        assertEquals(1, pending.resendMissing(sender));
+        assertEquals(List.of(1), sender.sent);
+    }
+
+    @Test
+    @DisplayName("a frame tracked on a session the queue has shown closed is missing at once")
+    void frameOnAClosedSessionIsMissingAtOnce() {
+        send(OWN, 1, 1);
+        arrive(OWN, 1);
+        sessionClosed(OWN);
+        assertFalse(pending.isHolding());
+        send(OWN, 1, 2);
+        assertEquals(1, pending.missing());
+        assertTrue(pending.isHolding());
+    }
+
+    @Test
+    @DisplayName("a replaced session whose close never comes is settled by the term instead")
+    void replacedSessionWithNoCloseIsSettledByTheTerm() {
+        final FakeSender sender = new FakeSender(2);
+        send(OWN, 1, 1);
+        sender.session = OWN + 1;
+        pending.resendMissing(sender);
+        assertTrue(pending.isHolding());
+        pending.onLeadershipChanged(2);
+        assertEquals(1, pending.resendMissing(sender));
+        assertFalse(pending.isHolding());
+    }
+
+    @Test
+    @DisplayName("discarded frames are forgotten, and one that committed comes back matching nothing")
     void discardedSessionsFramesMatchNothing() {
         send(OWN, 1, 1);
         send(OWN, 1, 2);

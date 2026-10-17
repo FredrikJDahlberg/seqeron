@@ -281,10 +281,11 @@ final class Session implements AutoCloseable {
     /**
      * Whether a cluster session is open. The recorded fault and {@code isConnected()} as well as the sender's
      * latch: {@code AeronCluster} also closes itself, with no event at all, when a new leader does not arrive
-     * before its timeout.
+     * before its timeout. And the queue, whose {@code SessionClosed} is the cluster's own word.
      */
     boolean hasSession() {
-        return sessionFault == null && !sender.isSessionLost() && sender.isConnected();
+        return sessionFault == null && !sender.isSessionLost() && sender.isConnected() &&
+               !pending.isClosed(sender.clusterSessionId());
     }
 
     /**
@@ -315,7 +316,11 @@ final class Session implements AutoCloseable {
         }
         sessionFault = null;
         sessionLostSinceMs = -1;
-        discardUnconfirmed("the session they went out on was lost (" + why + ")");
+        if (pending.size() > 0) {
+            Logger.info(Logger.CoreComponent.Cluster, null,
+                        "%d unconfirmed frames hold new ones until the queue settles them: the session they went out "
+                            + "on was lost (%s)", pending.size(), why);
+        }
     }
 
     /** Forgets every frame not yet seen on the queue, for a façade that knows none of them will be sequenced. */

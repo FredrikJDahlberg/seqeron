@@ -1,5 +1,6 @@
 using System;
 using Adaptive.Agrona.Concurrent;
+using Org.Limitless.Seqeron.Protocol;
 using Org.SbeTool.Sbe.Dll;
 using Frame = Org.Limitless.Seqeron.Sbe.Frame;
 
@@ -24,6 +25,31 @@ internal static class SequencedEvents
 
         var sequencedEvent = new SequencedEvent();
         if (!sequencedEvent.Wrap(new UnsafeBuffer(frame), 0, frameLength))
+        {
+            throw new InvalidOperationException("encoded frame did not read back as one");
+        }
+        sequencedEvent.Set(0, 0);
+        return sequencedEvent;
+    }
+
+    /// <summary>The <c>SessionClosed</c> the sequencer synthesizes when a session closes.</summary>
+    /// <param name="clusterSessionId">the session that closed</param>
+    public static SequencedEvent SessionClosed(long clusterSessionId)
+    {
+        var frame = new byte[64];
+        var closed = new Frame.SessionClosed();
+        closed.WrapForEncodeAndApplyHeader(new DirectBuffer(frame), 0, new Frame.MessageHeader());
+        Frame.SequencedSystemHeader header = closed.Header;
+        header.SourceId = -1;
+        header.ConnectionId = -1;
+        header.SessionId = -1;
+        header.SystemEventType = SystemFrame.SessionClosed;
+        header.GlobalSeqNo = 0;
+        header.Timestamp = 0;
+        closed.ClusterSessionId = clusterSessionId;
+
+        var sequencedEvent = new SequencedEvent();
+        if (!sequencedEvent.Wrap(new UnsafeBuffer(frame), 0, Frame.MessageHeader.Size + closed.Size))
         {
             throw new InvalidOperationException("encoded frame did not read back as one");
         }

@@ -52,7 +52,7 @@ internal static class Frames
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
 
-    // The four the sequencer synthesizes: their own templates, fields inline, -1 identity (F-4).
+    // The five the sequencer synthesizes: their own templates, fields inline, -1 identity (F-4).
     public static byte[] ClusterHeartbeat(long globalSeqNo)
     {
         var bytes = new byte[128];
@@ -90,6 +90,16 @@ internal static class Frames
         encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Frame.MessageHeader());
         Synthesized(encoder.Header, globalSeqNo, SystemFrame.SnapshotStarted);
         encoder.Round = round;
+        return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
+    }
+
+    public static byte[] SessionClosed(long globalSeqNo, long clusterSessionId)
+    {
+        var bytes = new byte[128];
+        var encoder = new Frame.SessionClosed();
+        encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Frame.MessageHeader());
+        Synthesized(encoder.Header, globalSeqNo, SystemFrame.SessionClosed);
+        encoder.ClusterSessionId = clusterSessionId;
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
 

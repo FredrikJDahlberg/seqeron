@@ -20,7 +20,7 @@ hosts that run applications but no member.
 
 Inside the member, `Sequencer` is the replicated state machine: it stamps each ingress frame with the
 next `globalSeqNo` and the Raft consensus timestamp, and synthesizes the frames the cluster owns
-(`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`, `SnapshotStarted`). It has no Aeron dependency
+(`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`, `SnapshotStarted`, `SessionClosed`). It has no Aeron dependency
 and is unit-tested directly. `SequencerService` is its Aeron adapter and holds no replicated state of its
 own. Every member publishes every sequenced frame on a node-local queue (`aeron:ipc`, stream 205), which its
 archive records.

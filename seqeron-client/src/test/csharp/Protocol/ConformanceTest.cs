@@ -139,6 +139,7 @@ public class ConformanceTest
         // A ClusterHeartbeat is a template of its own: no length prefix and no payload at all.
         Assert.Equal(42, Frames.ClusterHeartbeat(1).Length);   // 8 + 34, the cheapest frame in the system
         Assert.Equal(50, Frames.SnapshotStarted(1, 1).Length); // 8 + 34 + the round
+        Assert.Equal(50, Frames.SessionClosed(1, 1).Length);   // 8 + 34 + the session
 
         // §12's ceiling, as a frame on the wire.
         Assert.Equal(44 + FrameLayer.MaxPayloadLength, Frames.Payload(1, FrameLayer.MaxPayloadLength).Length);
@@ -223,7 +224,7 @@ public class ConformanceTest
         Assert.Equal(0xDEADBEEF, endIn.Crc32c);
         Assert.Equal(2u, endIn.FormatVersion);
 
-        // The four synthesized ones: fields inline in the frame's own block, and -1 marking the class (F-4). The
+        // The five synthesized ones: fields inline in the frame's own block, and -1 marking the class (F-4). The
         // payload offset is the block's, so a decoder wraps there with its own compiled constants.
         Assert.True(Wrap(Frames.ClusterHeartbeat(5)));
         Assert.Equal(SystemFrame.ClusterHeartbeat, _view.SystemEventType);
@@ -255,6 +256,15 @@ public class ConformanceTest
                                (c, v, o) => c.WrapForDecode(v, o, Frame.SnapshotStarted.BlockLength,
                                                             Frame.SnapshotStarted.SchemaVersion))
                             .Round);
+
+        frame = Frames.SessionClosed(11, SessionId);
+        Assert.True(Wrap(frame));
+        Assert.Equal(SystemFrame.SessionClosed, _view.SystemEventType);
+        Assert.Equal(-1, _view.SourceSessionId); // the closed session is the field's, not the header's
+        Assert.Equal(SessionId, Decode(frame, new Frame.SessionClosed(),
+                                       (c, v, o) => c.WrapForDecode(v, o, Frame.SessionClosed.BlockLength,
+                                                                    Frame.SessionClosed.SchemaVersion))
+                                    .ClusterSessionId);
     }
 
     // ── Row 4b. The producer refuses before the wire (T-3, §12) ───────────────────
@@ -309,7 +319,8 @@ public class ConformanceTest
         Assert.Equal(SystemFrame.Refused, encoder.Wrap(frame, -1, ConnectionId, SessionId, SystemFrame.ClusterStarted,
                                                        body, Frame.ClusterStarted.BlockLength));
         foreach (int synthesized in new[] { SystemFrame.LeadershipChanged, SystemFrame.ClusterHeartbeat,
-                                            SystemFrame.GatewayActive, SystemFrame.SnapshotStarted, 999 })
+                                            SystemFrame.GatewayActive, SystemFrame.SnapshotStarted,
+                                            SystemFrame.SessionClosed, 999 })
         {
             Assert.Equal(SystemFrame.Refused, encoder.Wrap(frame, SourceId, ConnectionId, SessionId, synthesized, body,
                                                            Frame.ClusterStarted.BlockLength));
@@ -373,7 +384,7 @@ public class ConformanceTest
     [Fact]
     public void UnknownPayloadsAndEventsAreReadableSoContinuityHolds()
     {
-        // globalSeqNo sits at 18 on all six sequenced messages (F-3), so the continuity read is branch-free over
+        // globalSeqNo sits at 18 on all seven sequenced messages (F-3), so the continuity read is branch-free over
         // frames the consumer comprehends none of. A frame dropped here is a globalSeqNo missing from that read,
         // which reads as a gap that is not there.
         var body = new byte[64];
@@ -390,6 +401,7 @@ public class ConformanceTest
             Frames.LeadershipChanged(4, 2, 1),
             Frames.GatewayActive(5, 3),
             Frames.SnapshotStarted(6, 1),
+            Frames.SessionClosed(7, SessionId),
         };
         long expected = 1;
         foreach (byte[] frame in queue)

@@ -20,6 +20,7 @@ import org.limitless.seqeron.sbe.frame.SequencedEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderEncoder;
+import org.limitless.seqeron.sbe.frame.SessionClosedEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.SnapshotStartedEncoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedDecoder;
@@ -109,6 +110,7 @@ public final class Sequencer {
     private final ClusterHeartbeatEncoder clusterHeartbeatEncoder = new ClusterHeartbeatEncoder();
     private final GatewayActiveEncoder gatewayActiveEncoder = new GatewayActiveEncoder();
     private final SnapshotStartedEncoder snapshotStartedEncoder = new SnapshotStartedEncoder();
+    private final SessionClosedEncoder sessionClosedEncoder = new SessionClosedEncoder();
 
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
     private final FrameSink sink;
@@ -499,13 +501,24 @@ public final class Sequencer {
     }
 
     /**
-     * A cluster session closed. If the designated instance of a gateway was bound to it, promote its standby.
+     * A cluster session closed. If the designated instance of a gateway was bound to it, promote its standby; then
+     * publish {@code SessionClosed}, so a producer that sees it has seen any promotion too.
      * @param sessionId session identity
      * @param timestamp now
      * @return whether a {@code GatewayActive} was published; false if this wasn't a designated gateway
      *     instance's session, or it was one with no standby to promote
      */
     public boolean sessionClosed(final long sessionId, final long timestamp) {
+        final boolean promoted = promoteOnClose(sessionId, timestamp);
+        final long globalSeq = ++globalSeqNo;
+        sessionClosedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        stampSynthesized(sessionClosedEncoder.header(), SystemFrame.SESSION_CLOSED, globalSeq, timestamp);
+        sessionClosedEncoder.clusterSessionId(sessionId);
+        publish(MessageHeaderEncoder.ENCODED_LENGTH + sessionClosedEncoder.encodedLength());
+        return promoted;
+    }
+
+    private boolean promoteOnClose(final long sessionId, final long timestamp) {
         final long closedGatewayId = sessionGateway.remove(sessionId);
         if (closedGatewayId == NO_BINDING || !unbind(rowFor((int)closedGatewayId), sessionId) ||
             !isDesignated((int)closedGatewayId)) {

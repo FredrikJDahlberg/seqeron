@@ -2,8 +2,9 @@
 // term and drops the rest, commits a prefix, and loses everything uncommitted at an election. After one, the
 // old leader either still takes ingress and drops it, or is gone and a send spins until egress brings the
 // NewLeader — giving the send up if the hold is on, as ClusterStreamSender does. The sender may reconnect on a
-// new session then. The queue lags, a sibling shares the producer's sourceId, and term ids skip, as after a
-// failed ballot.
+// new session then. The cluster also closes the producer's session at random, and drops what it sends on it
+// until the producer replaces it; a close an election loses, the next leader makes again. The queue lags, a
+// sibling shares the producer's sourceId, and term ids skip, as after a failed ballot.
 //
 // Checked once the faults stop and everything has drained: the log holds every frame the producer sent
 // exactly once, in send order, and nothing faulted. Seeds are fixed; the failing one is in the test name. The
@@ -19,8 +20,9 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
+#include "org/limitless/seqeron/helpers/SessionClosedEvent.hpp"
 #include "org/limitless/seqeron/helpers/SplitMix64.hpp"
+#include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
 
 #include "org_limitless_seqeron_sbe_frame/Unsequenced.h"
 
@@ -34,10 +36,11 @@ constexpr int STEPS = 5'000;
 constexpr int QUIESCE_ROUNDS = 100;
 constexpr std::int64_t SIBLING = 1'000'000;
 constexpr std::int64_t LEADERSHIP_CHANGED = -1;
+constexpr std::int64_t SESSION_CLOSED = -2;
 constexpr std::uint16_t PAYLOAD_ID = 6;
 constexpr int ALL = std::numeric_limits<int>::max();
 
-// One queue entry: frame value from session, or a term's LeadershipChanged.
+// One log entry: frame value from session, a term's LeadershipChanged, or a session's close.
 struct Entry
 {
     std::int64_t session;
@@ -59,7 +62,7 @@ struct Model
                     return false;
                 }
             }
-            if (model.senderTerm == model.clusterTerm)
+            if (model.senderTerm == model.clusterTerm && !model.closedAtCluster)
             {
                 std::int64_t value = 0;
                 std::memcpy(&value, bytes + protocol::MIN_INGRESS_LENGTH, sizeof(value));
@@ -113,15 +116,46 @@ struct Model
         if (roll(2) == 0)
         {
             ++session;
+            closedAtCluster = false;
         }
         pending.onNewLeader(senderTerm);
+    }
+
+    // Everything uncommitted is lost but the closes, which the new leader makes again.
+    void elect()
+    {
+        std::vector<Entry> closes;
+        for (const Entry& entry : uncommitted)
+        {
+            if (entry.session == SESSION_CLOSED)
+            {
+                closes.push_back(entry);
+            }
+        }
+        uncommitted.clear();
+        clusterTerm += 1 + roll(2);
+        queue.push_back({ LEADERSHIP_CHANGED, clusterTerm });
+        uncommitted.insert(uncommitted.end(), closes.begin(), closes.end());
+        oldLeaderTakesIngress = roll(2) == 0;
+    }
+
+    // The producer opens a new session in the current term, and resends in the same duty cycle, as Session does.
+    void replaceSession()
+    {
+        ++session;
+        senderTerm = clusterTerm;
+        closedAtCluster = false;
+        resent += pending.resendMissing(sender);
     }
 
     void commit(const int count)
     {
         for (int k = count; k > 0 && !uncommitted.empty(); --k)
         {
-            log.push_back(uncommitted.front().value);
+            if (uncommitted.front().session != SESSION_CLOSED)
+            {
+                log.push_back(uncommitted.front().value);
+            }
             queue.push_back(uncommitted.front());
             uncommitted.pop_front();
         }
@@ -136,6 +170,11 @@ struct Model
             if (entry.session == LEADERSHIP_CHANGED)
             {
                 pending.onLeadershipChanged(entry.value);
+                continue;
+            }
+            if (entry.session == SESSION_CLOSED)
+            {
+                pending.onSequenced(helpers::SessionClosedEvent{ entry.value }.event);
                 continue;
             }
             protocol::SequencedEvent event{};
@@ -158,6 +197,7 @@ struct Model
     std::int64_t senderTerm = 0;
     std::int64_t session = 1;
     bool oldLeaderTakesIngress = false;
+    bool closedAtCluster = false; // the cluster has closed session, and the producer has not replaced it yet
     std::int64_t next = 0;
     std::size_t resent = 0;
 };
@@ -193,10 +233,22 @@ TEST_P(PendingSendsProperty, LogsEveryFrameOnceInOrderAcrossFailovers)
         }
         else if (action < 87)
         {
-            model.uncommitted.clear();
-            model.clusterTerm += 1 + model.roll(2);
-            model.queue.push_back({ LEADERSHIP_CHANGED, model.clusterTerm });
-            model.oldLeaderTakesIngress = model.roll(2) == 0;
+            model.elect();
+        }
+        else if (action < 88)
+        {
+            if (!model.closedAtCluster)
+            {
+                model.closedAtCluster = true;
+                model.uncommitted.push_back({ SESSION_CLOSED, model.session });
+            }
+        }
+        else if (action < 91)
+        {
+            if (model.closedAtCluster)
+            {
+                model.replaceSession();
+            }
         }
         else if (model.senderTerm != model.clusterTerm)
         {
@@ -205,6 +257,10 @@ TEST_P(PendingSendsProperty, LogsEveryFrameOnceInOrderAcrossFailovers)
     }
     for (int round = 0; round < QUIESCE_ROUNDS && model.pending.size() > 0; ++round)
     {
+        if (model.closedAtCluster)
+        {
+            model.replaceSession();
+        }
         if (model.senderTerm != model.clusterTerm)
         {
             model.newLeader();

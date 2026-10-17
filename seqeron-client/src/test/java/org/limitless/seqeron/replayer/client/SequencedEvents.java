@@ -4,9 +4,11 @@ import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemEncoder;
+import org.limitless.seqeron.sbe.frame.SessionClosedEncoder;
 
 /**
  * Builds a {@link SequencedEvent} from outside its package, for the tests of what consumes one. An event is
@@ -28,6 +30,22 @@ public final class SequencedEvents {
 
         final SequencedEvent event = new SequencedEvent();
         if (!event.wrap(frame, 0, frameLength)) {
+            throw new IllegalStateException("encoded frame did not read back as one");
+        }
+        event.set(0, 0);
+        return event;
+    }
+
+    /** The {@code SessionClosed} the sequencer synthesizes when {@code clusterSessionId} closes. */
+    public static SequencedEvent sessionClosed(final long clusterSessionId) {
+        final MutableDirectBuffer frame = new UnsafeBuffer(new byte[FrameLayer.MAX_INGRESS_LENGTH]);
+        final SessionClosedEncoder closed = new SessionClosedEncoder();
+        closed.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
+        closed.header().sourceId(-1).connectionId(-1).sessionId(-1).systemEventType(SystemFrame.SESSION_CLOSED)
+            .globalSeqNo(0).timestamp(0);
+        closed.clusterSessionId(clusterSessionId);
+        final SequencedEvent event = new SequencedEvent();
+        if (!event.wrap(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + closed.encodedLength())) {
             throw new IllegalStateException("encoded frame did not read back as one");
         }
         event.set(0, 0);

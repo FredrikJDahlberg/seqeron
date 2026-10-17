@@ -5,9 +5,9 @@
     Two families. The application family (Unsequenced 100, Sequenced 101) carries one opaque,
     length-prefixed payload named by header.payloadId (§6); the cluster tier never decodes it. The
     system family carries seqeron's own messages, named by header.systemEventType: twelve submitted
-    events in UnsequencedSystem 102 / SequencedSystem 103, and four that the sequencer synthesizes as
+    events in UnsequencedSystem 102 / SequencedSystem 103, and five that the sequencer synthesizes as
     templates of their own (ClusterHeartbeat 104, LeadershipChanged 105, GatewayActive 106,
-    SnapshotStarted 107).
+    SnapshotStarted 107, SessionClosed 108).
 
     Each unsequenced header composite is a byte prefix of its sequenced counterpart, and the two
     families' composites differ only in the name of the uint16 at offset 16 (F-3), so globalSeqNo is
@@ -75,7 +75,7 @@
 
         <!-- 34 bytes: unsequencedSystemHeader's 18, then globalSeqNo and timestamp. -->
         <composite name="sequencedSystemHeader"
-                   description="System frame header on the queue: the ingress header, plus globalSeqNo and timestamp. Also the header of the three synthesized templates">
+                   description="System frame header on the queue: the ingress header, plus globalSeqNo and timestamp. Also the header of the synthesized templates">
             <type name="sourceId"        primitiveType="int32"
                   description="Copied from ingress; -1 on a synthesized frame (F-4)"/>
             <type name="connectionId"    primitiveType="int32"
@@ -175,6 +175,14 @@
         <field name="header" id="20001" type="sequencedSystemHeader"/>
         <field name="round"  id="20049" type="int64"
                description="The round's number, from 1"/>
+    </sbe:message>
+
+    <sbe:message name="SessionClosed" id="108"
+                 description="A cluster session closed. Nothing from that session reaches the log after this frame,
+                              so a frame it submitted that is not on the queue before it never will be (A-4)">
+        <field name="header"           id="20001" type="sequencedSystemHeader"/>
+        <field name="clusterSessionId" id="20058" type="int64"
+               description="The Aeron Cluster session that closed"/>
     </sbe:message>
 
     <!-- ── The twelve submitted system events ───────────────────────────────────────────────────────────

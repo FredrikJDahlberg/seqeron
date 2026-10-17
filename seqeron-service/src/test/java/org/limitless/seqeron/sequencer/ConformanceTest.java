@@ -36,6 +36,7 @@ import org.limitless.seqeron.sbe.frame.SequencedDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder;
+import org.limitless.seqeron.sbe.frame.SessionClosedDecoder;
 import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotRequestedEncoder;
@@ -233,7 +234,7 @@ class ConformanceTest {
     }
 
     @Test
-    @DisplayName("row 3: the four synthesized frames carry their template, their fields and a redundant type")
+    @DisplayName("row 3: the five synthesized frames carry their template, their fields and a redundant type")
     void synthesizedFramesCarryTheirOwnTemplates() {
         sequencer.clusterHeartbeat(TIMESTAMP);
         assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, lastTemplateId());
@@ -266,6 +267,16 @@ class ConformanceTest {
         round.wrap(frames.last(), MessageHeaderDecoder.ENCODED_LENGTH, SnapshotStartedDecoder.BLOCK_LENGTH,
                    SnapshotStartedDecoder.SCHEMA_VERSION);
         assertEquals(1, round.round());
+
+        sequencer.sessionClosed(SESSION_ID, TIMESTAMP);
+        assertEquals(SessionClosedDecoder.TEMPLATE_ID, lastTemplateId());
+        assertEquals(50, frames.lastLength());
+        assertEquals(SystemFrame.SESSION_CLOSED, wrapSequenced().systemEventType());
+        assertEquals(-1L, wrapSequenced().sourceSessionId(), "the closed session is the field's, not the header's");
+        final SessionClosedDecoder closed = new SessionClosedDecoder();
+        closed.wrap(frames.last(), MessageHeaderDecoder.ENCODED_LENGTH, SessionClosedDecoder.BLOCK_LENGTH,
+                    SessionClosedDecoder.SCHEMA_VERSION);
+        assertEquals(SESSION_ID, closed.clusterSessionId());
     }
 
     // ── Row 4. The rejection table (§9.2, S-4/S-5/S-7) ───────────────────────────────────────────
@@ -297,13 +308,14 @@ class ConformanceTest {
     }
 
     @Test
-    @DisplayName("row 4 condition 3: a non-ingress templateId, the synthesized four included, is refused")
+    @DisplayName("row 4 condition 3: a non-ingress templateId, the synthesized five included, is refused")
     void conditionThreeTemplateId() {
         for (final int templateId : new int[] {SequencedDecoder.TEMPLATE_ID, SequencedSystemDecoder.TEMPLATE_ID,
                                                ClusterHeartbeatDecoder.TEMPLATE_ID,
                                                LeadershipChangedDecoder.TEMPLATE_ID,
                                                GatewayActiveDecoder.TEMPLATE_ID,
-                                               SnapshotStartedDecoder.TEMPLATE_ID}) {
+                                               SnapshotStartedDecoder.TEMPLATE_ID,
+                                               SessionClosedDecoder.TEMPLATE_ID}) {
             final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4));
             ingress.putShort(TEMPLATE_ID_OFFSET, (short)templateId, ByteOrder.LITTLE_ENDIAN);
             assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
@@ -360,7 +372,7 @@ class ConformanceTest {
     void conditionEightSystemEventType() {
         for (final int systemEventType : new int[] {99, RETIRED_SNAPSHOT_CHUNK, SystemFrame.LEADERSHIP_CHANGED,
                                                     SystemFrame.CLUSTER_HEARTBEAT, SystemFrame.GATEWAY_ACTIVE,
-                                                    SystemFrame.SNAPSHOT_STARTED}) {
+                                                    SystemFrame.SNAPSHOT_STARTED, SystemFrame.SESSION_CLOSED}) {
             final int length = systemFrame(systemEventType, SOURCE_ID, syntheticPayload(8));
             assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
                            "systemEventType " + systemEventType);
@@ -504,8 +516,8 @@ class ConformanceTest {
     @Test
     @DisplayName("row 7: an unallocated payloadId and an unhandled systemEventType are skipped, in sequence")
     void selectiveConsumption() {
-        // A contiguous run over all six sequenced messages: an application payload under a payloadId
-        // nothing allocates, a submitted system event no consumer here handles, and the four synthesized.
+        // A contiguous run over all seven sequenced messages: an application payload under a payloadId
+        // nothing allocates, a submitted system event no consumer here handles, and the five synthesized.
         final List<byte[]> queue = new ArrayList<>();
         queue.add(queuePayloadFrame(1, 4095, syntheticPayload(8)));
         queue.add(queueSystemFrame(2, SystemFrame.PAYLOAD_ID_REGISTERED, payloadIdRegisteredBody()));
@@ -513,9 +525,10 @@ class ConformanceTest {
         queue.add(queueSynthesized(4, LeadershipChangedDecoder.TEMPLATE_ID, SystemFrame.LEADERSHIP_CHANGED));
         queue.add(queueSynthesized(5, GatewayActiveDecoder.TEMPLATE_ID, SystemFrame.GATEWAY_ACTIVE));
         queue.add(queueSynthesized(6, SnapshotStartedDecoder.TEMPLATE_ID, SystemFrame.SNAPSHOT_STARTED));
+        queue.add(queueSynthesized(7, SessionClosedDecoder.TEMPLATE_ID, SystemFrame.SESSION_CLOSED));
 
         // A consumer that recognises none of them still reads every one, and tracks continuity across all
-        // six: the read is branch-free because globalSeqNo sits at 18 on every sequenced message (F-3).
+        // seven: the read is branch-free because globalSeqNo sits at 18 on every sequenced message (F-3).
         long expected = 1;
         for (final byte[] frame : queue) {
             final SequencedFrameDecoder view = new SequencedFrameDecoder();
@@ -526,10 +539,10 @@ class ConformanceTest {
         }
 
         // And an empty payload is a frame like any other: it names no message, but it holds a globalSeqNo.
-        final byte[] empty = queuePayloadFrame(7, 4095, new byte[0]);
+        final byte[] empty = queuePayloadFrame(8, 4095, new byte[0]);
         final SequencedFrameDecoder view = new SequencedFrameDecoder();
         assertTrue(view.wrap(new org.agrona.concurrent.UnsafeBuffer(empty), 0, empty.length));
-        assertEquals(7, view.globalSeqNo());
+        assertEquals(8, view.globalSeqNo());
         assertEquals(0, view.templateId(), "no inner declaration, so nothing can dispatch on it (P-1)");
     }
 
@@ -558,6 +571,14 @@ class ConformanceTest {
             encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
             stampSynthesized(encoder.header(), systemEventType, globalSeqNo);
             encoder.round(1);
+            return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
+        }
+        if (templateId == SessionClosedDecoder.TEMPLATE_ID) {
+            final org.limitless.seqeron.sbe.frame.SessionClosedEncoder encoder =
+                new org.limitless.seqeron.sbe.frame.SessionClosedEncoder();
+            encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
+            stampSynthesized(encoder.header(), systemEventType, globalSeqNo);
+            encoder.clusterSessionId(SESSION_ID);
             return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
         }
         final org.limitless.seqeron.sbe.frame.GatewayActiveEncoder encoder =
@@ -659,12 +680,13 @@ class ConformanceTest {
         // Rank 1 binds and loses it: rank 0 comes back — lowest-rank-excluding, not next-rank-up.
         bind(sequencer, 12, 100L);
         assertTrue(sequencer.sessionClosed(100L, TIMESTAMP));
-        assertEquals(11, lastGatewayActive());
+        assertEquals(SessionClosedDecoder.TEMPLATE_ID, lastTemplateId(), "a close ends on its SessionClosed");
+        assertEquals(11, gatewayActiveAt(frames, frames.count() - 2));
 
         // Rank 0 binds a session and loses it: rank 1 is promoted.
         bind(sequencer, 11, 101L);
         assertTrue(sequencer.sessionClosed(101L, TIMESTAMP));
-        assertEquals(12, lastGatewayActive());
+        assertEquals(12, gatewayActiveAt(frames, frames.count() - 2));
     }
 
     @Test
@@ -700,7 +722,7 @@ class ConformanceTest {
         final long before = sole.globalSeqNo();
         assertFalse(sole.sessionClosed(200L, TIMESTAMP));
         assertEquals(1L, sole.gatewayPromotionFailedCount(), "a gateway's session closed with nobody to promote");
-        assertEquals(before, sole.globalSeqNo(), "no sibling, so no frame and no sequence number");
+        assertEquals(before + 1, sole.globalSeqNo(), "no sibling, so no GatewayActive: only the close's SessionClosed");
     }
 
     @Test
