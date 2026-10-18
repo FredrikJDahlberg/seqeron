@@ -6,7 +6,9 @@
 //            PendingSends unless --untracked — and exits 0 iff its own queue showed 1..count exactly once, in order.
 //            --colocated connects through the member's IPC ingress first, falling back to UDP.
 //   follow:  cold-starts a ReplayerStreamReceiver, follows the queue live for --live-seconds after catching up, and
-//            exits 0 iff it dispatched every frame from clusterSeqNo 1 with no gap.
+//            exits 0 iff it dispatched every frame from groupSeqNo 1 with no gap.
+//
+// Both read the queue of --group, or else the default queue (spec §3.1), and address their frames to it.
 //
 // ProbeMarker is encoded by hand: sbe-probe.xml (schema 214) generates no C++ codecs. The egress port is explicit,
 // since ClusterStreamSender sends its egress channel to the cluster as given rather than resolving an ephemeral one.
@@ -26,9 +28,14 @@
 #include <vector>
 
 #include "Aeron.h"
+#include "org_limitless_seqeron_sbe_replay/MessageHeader.h"
+#include "org_limitless_seqeron_sbe_replay/QueueRequest.h"
+#include "org_limitless_seqeron_sbe_replay/QueueResolved.h"
+#include "org_limitless_seqeron_sbe_replay/ReplayPending.h"
 
 #include "org/limitless/seqeron/protocol/PortLayout.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
+#include "org/limitless/seqeron/protocol/ReplayProtocol.hpp"
 #include "org/limitless/seqeron/replayer/client/ReplayerStreamReceiver.hpp"
 #include "org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
@@ -42,6 +49,7 @@ namespace {
 namespace client = org::limitless::seqeron::sequencer::client;
 namespace protocol = org::limitless::seqeron::protocol;
 namespace replayer = org::limitless::seqeron::replayer::client;
+namespace replay = org::limitless::seqeron::sbe::replay;
 namespace util = org::limitless::seqeron::util;
 
 constexpr util::Component CLUSTER_PROBE{ "ClusterProbe" };
@@ -49,10 +57,7 @@ constexpr util::Component CLUSTER_PROBE{ "ClusterProbe" };
 constexpr std::uint16_t PROBE_PAYLOAD_ID = 5;
 constexpr std::int32_t PROBE_SOURCE_ID = 8;
 constexpr std::int32_t NO_CONNECTION = -1;
-// The probe resolves no group yet (spec A-9), so its frames address none and §9.2 condition 14 refuses them.
-constexpr std::uint16_t UNRESOLVED_GROUP_MASK = 0;
-// The queue the probe reads: group 1's, the first the harnesses' topologies declare.
-constexpr std::int32_t GROUP_ID = 1;
+constexpr std::int64_t QUEUE_REQUEST_RESEND_MS = 500;
 
 // ProbeMarker's MessageHeader, then seqNo uint64, then filler as uint16-length var data.
 constexpr std::uint16_t PROBE_MARKER_TEMPLATE_ID = 1;
@@ -206,6 +211,74 @@ std::shared_ptr<aeron::Aeron> connect(const Options& options)
 }
 
 // This client's own egress endpoint on its member's host.
+// --group, or else the default queue's group, which the node's Replayer names in answer to a QueueRequest naming no
+// source (R-6); waits until it does.
+std::int32_t groupId(const std::shared_ptr<aeron::Aeron>& aeron, const Options& options)
+{
+    const std::int32_t configured = options.integer("group", 0);
+    if (configured != 0)
+    {
+        return configured;
+    }
+    const std::int64_t clientId = aeron->nextCorrelationId();
+    std::int64_t requestId = 0;
+    std::int32_t resolved = 0;
+    const std::int64_t controlId =
+        aeron->addSubscription(replayer::REPLAYER_CONTROL_CHANNEL, protocol::REPLAYER_CONTROL_STREAM_ID);
+    const std::int64_t requestsId =
+        aeron->addPublication(protocol::REPLAYER_IPC_CHANNEL, protocol::REPLAYER_REQUEST_STREAM_ID);
+    std::shared_ptr<aeron::Subscription> control;
+    std::shared_ptr<aeron::Publication> requests;
+    const aeron::fragment_handler_t onControl = [&](const aeron::concurrent::AtomicBuffer& buffer,
+                                                    const aeron::util::index_t offset,
+                                                    const aeron::util::index_t length, const aeron::Header&) {
+        char* const message = reinterpret_cast<char*>(buffer.buffer()) + offset;
+        const auto bufferLength = static_cast<std::uint64_t>(length);
+        replay::MessageHeader header;
+        header.wrap(message, 0, 0, bufferLength);
+        if (header.schemaId() != replay::MessageHeader::sbeSchemaId() ||
+            header.templateId() != replay::QueueResolved::sbeTemplateId())
+        {
+            return;
+        }
+        replay::QueueResolved answer;
+        answer.wrapForDecode(message, replay::MessageHeader::encodedLength(), header.blockLength(), header.version(),
+                             bufferLength);
+        if (answer.clientId() == clientId && answer.requestId() == requestId)
+        {
+            resolved = answer.queueId();
+        }
+    };
+    auto idle = util::resolveIdleStrategy();
+    std::int64_t lastRequestMs = monotonicMs() - QUEUE_REQUEST_RESEND_MS;
+    while (resolved == 0)
+    {
+        control = control ? control : aeron->findSubscription(controlId);
+        requests = requests ? requests : aeron->findPublication(requestsId);
+        if (requests && requests->isConnected() && monotonicMs() - lastRequestMs >= QUEUE_REQUEST_RESEND_MS)
+        {
+            alignas(16) std::array<std::uint8_t, 64> buffer{};
+            replay::QueueRequest request;
+            request.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
+            request.clientId(clientId).requestId(++requestId).sourceId(protocol::REPLAYER_NO_SOURCE_ID);
+            aeron::concurrent::AtomicBuffer atomic(buffer.data(), buffer.size());
+            requests->offer(
+                atomic, 0,
+                static_cast<aeron::util::index_t>(replay::MessageHeader::encodedLength() + request.encodedLength()));
+            lastRequestMs = monotonicMs();
+        }
+        idle.idle(control ? control->poll(onControl, 10) : 0);
+    }
+    util::Logger::info(CLUSTER_PROBE, "reads group %d's queue, the default", resolved);
+    return resolved;
+}
+
+// The probe is in no group: its frames address the queue it reads.
+std::uint16_t groupMask(const std::int32_t groupId)
+{
+    return static_cast<std::uint16_t>(1U << (groupId - 1));
+}
+
 std::string egressChannel(const Options& options)
 {
     const auto& hosts = protocol::clusterHosts();
@@ -230,6 +303,7 @@ int confirm(const Options& options)
     auto idle = util::resolveIdleStrategy();
 
     const std::shared_ptr<aeron::Aeron> aeron = connect(options);
+    const std::int32_t group = groupId(aeron, options);
     client::ClusterStreamSender sender;
     replayer::ReplayerStreamReceiver receiver(
         options.clientId(),
@@ -242,7 +316,7 @@ int confirm(const Options& options)
         },
         {}, {}, [&](std::int32_t, const std::int64_t term, std::int64_t) { pending.onLeadershipChanged(term); },
         [&] { caughtUp = true; });
-    receiver.start(aeron, options.memberId(), GROUP_ID);
+    receiver.start(aeron, options.memberId(), group);
     while (!caughtUp)
     {
         idle.idle(receiver.poll());
@@ -289,9 +363,9 @@ int confirm(const Options& options)
         const std::int64_t nowUs = monotonicUs();
         if (next <= count && nowUs >= nextSendUs)
         {
-            const protocol::Publish outcome = client::publishPayload(
-                sender, tracked ? &pending : nullptr, PROBE_SOURCE_ID, NO_CONNECTION, PROBE_PAYLOAD_ID,
-                UNRESOLVED_GROUP_MASK, marker.encode(next), PROBE_MARKER_LENGTH);
+            const protocol::Publish outcome =
+                client::publishPayload(sender, tracked ? &pending : nullptr, PROBE_SOURCE_ID, NO_CONNECTION,
+                                       PROBE_PAYLOAD_ID, groupMask(group), marker.encode(next), PROBE_MARKER_LENGTH);
             if (outcome == protocol::Publish::Refused)
             {
                 throw std::logic_error("a ProbeMarker the sequencer would reject");
@@ -336,24 +410,24 @@ int follow(const Options& options)
         [&](const protocol::SequencedEvent& event) {
             if (first == 0)
             {
-                first = event.clusterSeqNo;
+                first = event.groupSeqNo;
             }
-            else if (event.clusterSeqNo != last + 1)
+            else if (event.groupSeqNo != last + 1)
             {
                 gaps++;
             }
-            last = event.clusterSeqNo;
+            last = event.groupSeqNo;
         },
         {}, {}, {},
         [&] {
             if (!caughtUp)
             {
-                util::Logger::info(CLUSTER_PROBE, "Caught up at clusterSeqNo %lld — following live",
+                util::Logger::info(CLUSTER_PROBE, "Caught up at groupSeqNo %lld — following live",
                                    static_cast<long long>(last));
             }
             caughtUp = true;
         });
-    receiver.start(aeron, options.memberId(), GROUP_ID);
+    receiver.start(aeron, options.memberId(), groupId(aeron, options));
     util::Logger::info(CLUSTER_PROBE, "Following the node queue — replaying history via the Replayer, then live");
     std::int64_t deadlineMs = INT64_MAX;
     while (monotonicMs() < deadlineMs)
@@ -366,7 +440,7 @@ int follow(const Options& options)
     }
     receiver.close();
     const bool exact = first == 1 && gaps == 0 && caughtUp;
-    util::Logger::info(CLUSTER_PROBE, "follow: %s — dispatched clusterSeqNo %lld to %lld, gaps %lld",
+    util::Logger::info(CLUSTER_PROBE, "follow: %s — dispatched groupSeqNo %lld to %lld, gaps %lld",
                        exact ? "CONTIGUOUS" : "NOT CONTIGUOUS", static_cast<long long>(first),
                        static_cast<long long>(last), static_cast<long long>(gaps));
     return exact ? 0 : 1;
@@ -374,7 +448,7 @@ int follow(const Options& options)
 
 int usage()
 {
-    std::fputs("usage: cluster_probe confirm|follow --member <id> --client-id <id> [--aeron-dir <dir>]\n"
+    std::fputs("usage: cluster_probe confirm|follow --member <id> --client-id <id> [--aeron-dir <dir>] [--group <id>]\n"
                "         confirm: --egress-port <port> [--count <n>] [--pacing-micros <us>] [--untracked] "
                "[--colocated]\n"
                "         follow:  [--live-seconds <s>]\n",

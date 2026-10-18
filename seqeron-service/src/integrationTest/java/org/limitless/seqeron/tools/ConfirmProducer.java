@@ -29,6 +29,7 @@ final class ConfirmProducer implements AutoCloseable {
 
     /** The queue it confirms on: group 1's, the in-process cluster's only group. */
     private static final int GROUP_ID = 1;
+    private static final int GROUP_MASK = 1 << (GROUP_ID - 1);
     private static final int NO_ID = -1;
     private static final byte[] NO_FILLER = new byte[0];
 
@@ -98,7 +99,7 @@ final class ConfirmProducer implements AutoCloseable {
         final int resentNow = pending.resendMissing(sender);
         resent += resentNow;
         if (next <= count && !pending.isHolding() && !pending.isFull() && now >= nextSendNs) {
-            final int length = marker.encode(next, NO_ID, ClusterProbe.PROBE_SOURCE_ID, NO_FILLER);
+            final int length = marker.encode(next, NO_ID, ClusterProbe.PROBE_SOURCE_ID, GROUP_MASK, NO_FILLER);
             if (sender.send(marker.frame(), length)) {
                 pending.track(marker.frame(), length, sender.clusterSessionId(), sender.leadershipTermId());
                 next++;

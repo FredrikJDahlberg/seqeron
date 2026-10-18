@@ -1,7 +1,7 @@
 # Log printer
 
-Every member's archive holds the complete sequenced history, and its Raft log holds every ingress frame
-the cluster accepted. `SbeLogPrinter` reads either as JSON, decoded against the SBE schemas. It is how
+Every member's archive holds each group's queue, and its Raft log holds every ingress frame the cluster
+accepted. `SbeLogPrinter` reads either as JSON, decoded against the SBE schemas. It is how
 an operator inspects what the cluster sequenced, how an engineer debugs a consumer against the frames it
 was given, and how an application's own payloads are exported to a decoder that understands them.
 
@@ -9,13 +9,13 @@ It reads an archive directory (`archive.catalog` and the segment files under `ar
 on a running cluster: a recording still being written is printed up to its current end.
 
 ```bash
-./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 --oneline
+./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 2001 --oneline
 ```
 
 Gradle runs it too, taking the same options as `-P` properties:
 
 ```bash
-./gradlew sbeLogPrinter -PlogDir="${TMPDIR:-/tmp}/seqeron-seq/archive-0" -Pstream=205 -Poneline
+./gradlew sbeLogPrinter -PlogDir="${TMPDIR:-/tmp}/seqeron-seq/archive-0" -Pstream=2001 -Poneline
 ```
 
 ## Schemas
@@ -32,7 +32,7 @@ recordings it holds.
 | `cluster` | 111 | the Raft log's session and consensus messages |
 
 ```
-[Catalog] Recording ID: 0 | Stream ID: 205 | ...    → frames  (schema 210)
+[Catalog] Recording ID: 0 | Stream ID: 2001 | ...   → frames  (schema 210)
 [Catalog] Recording ID: 1 | Stream ID: 100 | ...    → cluster (schema 111)
 ```
 
@@ -51,12 +51,12 @@ is what an entry added by a later Aeron version looks like.
 ## Selecting a recording
 
 An archive directory holds several recordings, and by default the printer prints them all. Stream 100 is
-the Raft log. Each recording on stream 205 is one generation of the queue: a member that restarts replays
-its whole log onto a new queue recording, which starts again at `clusterSeqNo` 1, so every earlier
-generation is a prefix of the newest.
+the Raft log, and stream 2000 + `groupId` is that group's queue. Each recording on a queue's stream is
+one generation of it: a member that restarts replays its whole log onto a new recording of each queue,
+which starts again at `groupSeqNo` 1, so every earlier generation is a prefix of the newest.
 
-`--stream 205` prints only the newest recording on the stream: one complete copy of the sequenced
-history, with nothing repeated. The selector is a stream rather than a recording id because recording
+`--stream 2001` prints only the newest recording on group 1's queue: one complete copy of that queue,
+with nothing repeated. No queue holds the whole log; the Raft log does. The selector is a stream rather than a recording id because recording
 ids change across restarts. Without `--stream` the older generations are printed as well. The printer
 exits non-zero when the stream names no recording.
 
@@ -68,9 +68,13 @@ that is all header, such as `ClusterHeartbeat`, would otherwise be indistinguish
 indented form:
 
 ```
-LeadershipChanged = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 5, "clusterSeqNo": 1, "timestamp": 1789409115713932000 }, "newLeaderMemberId": 0, "leadershipTermId": 0 }
-ClusterHeartbeat = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 16, "clusterSeqNo": 2, "timestamp": 1789409116715140000 } }
+LeadershipChanged = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 5, "groupMask": 0, "clusterSeqNo": 1, "timestamp": 1789409115713932000, "groupSeqNo": 1 }, "newLeaderMemberId": 0, "leadershipTermId": 0 }
+ClusterHeartbeat = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 16, "groupMask": 0, "clusterSeqNo": 9, "timestamp": 1789409116715140000, "groupSeqNo": 3 } }
 ```
+
+An application frame's line also names the groups its `groupMask` addresses, `groups=[orders, risk]`,
+from the queue's `GroupsRegistered`, its second frame; a bit no `GroupsRegistered` named yet prints as
+its `groupId`.
 
 The output as a whole is not a JSON document, because the `[Catalog]` and separator lines sit between
 the objects. With `--oneline`, each message line parses on its own.
@@ -82,13 +86,13 @@ something that can: it writes that protocol's payloads to standard output, raw a
 decoder that holds their schema ([`seqeron-protocol-spec.md`](seqeron-protocol-spec.md) §13.1).
 
 ```bash
-./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 \
+./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 2001 \
     -o 2 2>frames.log | order-decode
 ```
 
 - **Standard output carries the payloads alone.** Every text line moves to standard error: the
   `[Catalog]` lines, the frame dump and the errors. Redirected as above, the frames sit beside the
-  payloads in the same order, and each frame line carries its `clusterSeqNo`.
+  payloads in the same order, and each frame line carries its `clusterSeqNo` and `groupSeqNo`.
 - **The payload stream has no framing of its own.** An SBE payload declares its own block and var-data
   lengths, so the decoder that holds the schema delimits it.
 - **It reads the Raft log too.** With `--stream 100` it exports the same payloads as they arrived on

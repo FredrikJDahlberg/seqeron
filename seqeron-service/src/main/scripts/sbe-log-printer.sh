@@ -6,7 +6,7 @@
 # and prints every recorded SBE message as JSON.
 #
 # Every IR file packaged in the jar is loaded by default — frame (the
-# envelopes and system messages, on the queue, stream 205), probe (ClusterProbe's
+# envelopes and system messages, on the queues, stream 2000 + groupId), probe (ClusterProbe's
 # payload), replay (the node-local control plane) and cluster (the Raft
 # consensus log, stream 100), plus any application IR on the classpath — and each frame is decoded against the schema its
 # own header names. The set is whatever is on the classpath, not a list in the
@@ -22,9 +22,11 @@
 # By default every recording in the catalog is dumped, not just one.
 #
 # --stream <id> selects the newest recording on that stream instead. Prefer it
-# for the queue: a node restart mints a new queue recording that replays the whole
-# history from clusterSeqNo 1, so older ones are strict prefixes of the newest and
-# dumping them all just repeats the same history.
+# for a queue, stream 2000 + groupId: a node restart mints a new recording of each
+# queue that replays its whole history from groupSeqNo 1, so older ones are strict
+# prefixes of the newest and dumping them all just repeats the same history. Each
+# application frame's groupMask bits are labelled with the names in the queue's
+# GroupsRegistered.
 #
 # The cluster does not need to be stopped — an in-progress recording is
 # printed up to whatever has been written so far.
@@ -44,8 +46,8 @@
 #
 # Examples:
 #   ./gradlew uberJar
-#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205
-#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 -o 2 \
+#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 2001
+#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 2001 -o 2 \
 #       2>frames.log | order-decode
 
 set -euo pipefail
@@ -54,7 +56,7 @@ usage() {
     echo "Usage: $0 [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline] [-o <payloadId>]"
     echo "  --schema <name>  decode only this schema (default: every bundled one)"
     echo "  --spec <file>    decode against an IR file outside the jar instead"
-    echo "  --stream <id>    dump only the newest recording on that stream"
+    echo "  --stream <id>    dump only the newest recording on that stream; a queue is 2000 + groupId"
     echo "  --oneline        print each message as a single line of JSON"
     echo "  --list-schemas   list the bundled schema names and exit"
     echo "  -o <payloadId>   write that protocol's payloads to stdout, raw and back to back,"

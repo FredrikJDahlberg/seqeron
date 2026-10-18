@@ -8,11 +8,16 @@ import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import javax.xml.parsers.ParserConfigurationException;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
+import org.agrona.collections.Int2IntHashMap;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.YieldingIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
@@ -23,13 +28,17 @@ import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
-import org.limitless.seqeron.sbe.frame.ClusterStartedDecoder;
-import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
+import org.limitless.seqeron.replayer.client.SequencedEvent;
+import org.limitless.seqeron.sbe.frame.ApplicationRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredEncoder;
-import org.limitless.seqeron.sbe.frame.GatewayRegisteredDecoder;
+import org.limitless.seqeron.sbe.frame.ClusterStartedDecoder;
 import org.limitless.seqeron.sbe.frame.ClusterStartedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayActivationRequestedEncoder;
+import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
+import org.limitless.seqeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
+import org.limitless.seqeron.sbe.frame.GroupsRegisteredDecoder;
+import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
@@ -38,6 +47,7 @@ import org.limitless.seqeron.sequencer.SequencerService;
 import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.client.IngressPublisher;
 import org.limitless.seqeron.tools.TopologyDocument.ApplicationRow;
+import org.limitless.seqeron.tools.TopologyDocument.GroupRow;
 import org.limitless.seqeron.tools.TopologyDocument.ProtocolRow;
 import org.limitless.seqeron.tools.TopologyDocument.TopologyRow;
 import org.xml.sax.SAXException;
@@ -45,7 +55,8 @@ import org.xml.sax.SAXParseException;
 
 /**
  * clusterctl — the operator cluster life-cycle tool (doc/clusterctl.md). Node-local: it shares a {@code
- * SequencerServer} host's Aeron directory (to read the queue) and {@code clusterDir} (for {@link ClusterTool}).
+ * SequencerServer} host's Aeron directory (to read the default queue, which the node's Replayer names) and {@code
+ * clusterDir} (for {@link ClusterTool}).
  * Named so as not to shadow Aeron's {@code io.aeron.cluster.ClusterControl}.
  *
  * <p>Commands:
@@ -58,7 +69,8 @@ import org.xml.sax.SAXParseException;
  *       behind it, so the designation stays the cluster's and an unlisted {@code gatewayId} is refused.</li>
  *   <li><b>request-snapshot</b> — publishes {@code SnapshotRequested} and waits for the
  *       {@code SnapshotStarted} the sequencer synthesizes behind it (doc/snapshot.md §3).</li>
- *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's validated topology document.
+ *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's validated topology document, checked
+ *       against the log (spec §6.4); the first command an archive accepts.
  *   <li><b>counters</b> — lists this node's operator counters off the CnC file; needs no leader.</li>
  *   <li><b>help</b> — usage.</li>
  *   <li><i>anything else</i> — passed through to {@link ClusterTool} against this node's
@@ -79,6 +91,17 @@ public final class ClusterCtl {
 
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
+
+    /** The longest a first load's activation holds the queues up for (spec §7.4). */
+    private static final long ACTIVATION_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
+
+    /** How long load-topology may take to replay the default queue before it publishes. */
+    private static final long CATCH_UP_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
+
+    /** A {@code groupNames} slot. */
+    private static final int NAME_LENGTH = 32;
+
+    private static final int NO_GROUP = 0;
 
     /** Ingress is tried over this node's own aeron:ipc first; a follower answers on neither, so keep it short. */
     private static final long IPC_CONNECT_TIMEOUT_MS = 500;
@@ -297,9 +320,8 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes the topology document read from {@code args[1]} — one {@code GatewayRegistered} per list row,
-     * {@code remaining} counting down to 0, then the application and protocol rows and the snapshot policy —
-     * and waits for the last list row's echo. {@link TopologyDocument} validates the whole document before a byte is published.
+     * Publishes the topology document read from {@code args[1]} in spec §6.4's order, checked against the default
+     * queue before a row is published. {@link TopologyDocument} validates the whole document before a byte is.
      */
     private static int loadTopology(final String[] args) {
         if (args.length < 2) {
@@ -320,18 +342,7 @@ public final class ClusterCtl {
         }
 
         try (Session session = new Session()) {
-            final long clusterSeqNo = publishTopologyAndAwaitEcho(session, topology);
-            if (clusterSeqNo < 0) {
-                System.err.println("[clusterctl] load-topology: no sequenced GatewayRegistered echo within timeout");
-                return 1;
-            }
-            System.out.printf("[clusterctl] load-topology: %d gateway row(s) recorded, list complete at "
-                              + "clusterSeqNo=%d; %d application row(s) and %d protocol row(s) registered%s%n",
-                              topology.gateways().size(), clusterSeqNo, topology.applications().size(),
-                              topology.protocols().size(),
-                              topology.snapshots() == null ? ""
-                                  : "; snapshot interval " + topology.snapshots().intervalSeconds() + " s");
-            return 0;
+            return publishTopology(session, topology);
         } catch (final Exception ex) {
             System.err.println("[clusterctl] load-topology: no elected leader / cluster unreachable (" +
                                ex.getMessage() + ")");
@@ -340,73 +351,252 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes the topology document.
-     * @param session cluster session
-     * @param topology topology definition
+     * Spec §6.4's publish order on one session, which the {@code GroupsRegistered} makes the topology session:
+     * compare the groups with the active ones, publish them, check the rows' groups against those already
+     * registered, publish the rows, and wait for every frame published to appear on the default queue.
+     * @return the exit status
      */
-    private static long publishTopologyAndAwaitEcho(final Session session, final TopologyDocument topology) {
-        final Subscription queue = awaitQueue(session);
-        if (queue == null) {
-            return -1;
+    private static int publishTopology(final Session session, final TopologyDocument topology) {
+        final int active = DefaultQueue.resolve(session.aeron, CONNECT_TIMEOUT_NS, false);
+        if (active == DefaultQueue.NO_REPLAYER) {
+            System.err.println("[clusterctl] load-topology: no Replayer answered on " + AERON_DIR +
+                               " — co-located with a SequencerServer?");
+            return 1;
         }
+        // Before activation the default queue is the file's lowest group's.
+        final int groupId = active == DefaultQueue.NOT_ACTIVE ? topology.groups().getFirst().groupId() : active;
+        final TopologyLog log = new TopologyLog(session.sender.clusterSessionId());
+        try (ReplayerStreamReceiver receiver =
+                 new ReplayerStreamReceiver(RESERVED_SOURCE_ID, log::onSequenced, null, null)) {
+            receiver.start(session.aeron, MEMBER_ID, groupId);
+            if (active != DefaultQueue.NOT_ACTIVE) {
+                if (!poll(session, receiver, receiver::isCaughtUp, CATCH_UP_TIMEOUT_NS)) {
+                    System.err.printf("[clusterctl] load-topology: could not read group %d's queue to its end%n",
+                                      groupId);
+                    return 1;
+                }
+                if (!Arrays.equals(log.groupNames, topology.groupNames())) {
+                    System.err.println("[clusterctl] load-topology: the file's groups differ from the active ones, "
+                                       + "which are fixed for the life of the log (spec S-8); nothing published");
+                    return 1;
+                }
+            }
 
-        final List<TopologyRow> rows = topology.gateways();
-        final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(128);
-        final GatewayRegisteredEncoder encoder = new GatewayRegisteredEncoder();
-        for (int i = 0; i < rows.size(); i++) {
-            final TopologyRow row = rows.get(i);
-            encoder.wrap(payload, 0);
-            encoder.remaining(rows.size() - 1 - i)
-                   .gatewayId(row.gatewayId())
-                   .gatewaySourceId(row.gatewaySourceId())
-                   .gatewayName(row.gatewayName())
-                   .preferenceRank((short)row.preferenceRank())
-                   .snapshot((short)(row.snapshot() ? 1 : 0));
-            publish(session, SystemFrame.GATEWAY_REGISTERED, payload, encoder.encodedLength());
+            final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(GroupsRegisteredEncoder.BLOCK_LENGTH);
+            final byte[] groupNames = new byte[GroupsRegisteredEncoder.groupNamesLength()];
+            for (final GroupRow group : topology.groups()) {
+                final byte[] name = group.groupName().getBytes(StandardCharsets.US_ASCII);
+                System.arraycopy(name, 0, groupNames, (group.groupId() - 1) * NAME_LENGTH, name.length);
+            }
+            final GroupsRegisteredEncoder groupsEncoder = new GroupsRegisteredEncoder();
+            groupsEncoder.wrap(payload, 0).putGroupNames(groupNames, 0);
+            publish(session, log, SystemFrame.GROUPS_REGISTERED, payload, groupsEncoder.encodedLength());
+            if (!poll(session, receiver, () -> log.matched > 0, ECHO_TIMEOUT_NS + ACTIVATION_TIMEOUT_NS)) {
+                System.err.printf("[clusterctl] load-topology: the GroupsRegistered did not appear on group %d's "
+                                      + "queue: another load-topology holds the topology session, or the file's "
+                                      + "groups differ from the active ones%n",
+                                  groupId);
+                return 1;
+            }
+            final String moved = log.movedSource(topology);
+            if (moved != null) {
+                System.err.println("[clusterctl] load-topology: " + moved + "; a source's group is fixed (spec S-8)");
+                return 1;
+            }
+
+            final List<TopologyRow> rows = topology.gateways();
+            final GatewayRegisteredEncoder encoder = new GatewayRegisteredEncoder();
+            for (int i = 0; i < rows.size(); i++) {
+                final TopologyRow row = rows.get(i);
+                encoder.wrap(payload, 0);
+                encoder.remaining(rows.size() - 1 - i)
+                    .gatewayId(row.gatewayId())
+                    .gatewaySourceId(row.gatewaySourceId())
+                    .gatewayName(row.gatewayName())
+                    .preferenceRank((short)row.preferenceRank())
+                    .snapshot((short)(row.snapshot() ? 1 : 0))
+                    .groupId((short)row.groupId());
+                publish(session, log, SystemFrame.GATEWAY_REGISTERED, payload, encoder.encodedLength());
+            }
+
+            final ApplicationRegisteredEncoder applicationEncoder = new ApplicationRegisteredEncoder();
+            for (final ApplicationRow row : topology.applications()) {
+                applicationEncoder.wrap(payload, 0);
+                applicationEncoder.applicationSourceId(row.sourceId())
+                    .applicationName(row.applicationName())
+                    .snapshot((short)(row.snapshot() ? 1 : 0))
+                    .groupId((short)row.groupId());
+                publish(session, log, SystemFrame.APPLICATION_REGISTERED, payload, applicationEncoder.encodedLength());
+            }
+
+            final PayloadIdRegisteredEncoder protocolEncoder = new PayloadIdRegisteredEncoder();
+            for (final ProtocolRow row : topology.protocols()) {
+                protocolEncoder.wrap(payload, 0);
+                protocolEncoder.payloadId(row.payloadId())
+                    .protocolVersion(row.protocolVersion())
+                    .protocolName(row.protocolName());
+                publish(session, log, SystemFrame.PAYLOAD_ID_REGISTERED, payload, protocolEncoder.encodedLength());
+            }
+
+            if (topology.snapshots() != null) {
+                final SnapshotPolicyRegisteredEncoder policyEncoder = new SnapshotPolicyRegisteredEncoder();
+                policyEncoder.wrap(payload, 0).intervalSeconds(topology.snapshots().intervalSeconds());
+                publish(session, log, SystemFrame.SNAPSHOT_POLICY_REGISTERED, payload, policyEncoder.encodedLength());
+            }
+
+            if (!poll(session, receiver, () -> log.matched == log.published.size(), ECHO_TIMEOUT_NS)) {
+                System.err.printf("[clusterctl] load-topology: frame %d of %d, a %s, did not appear on group %d's "
+                                      + "queue: the sequencer refused it%n",
+                                  log.matched + 1, log.published.size(),
+                                  frameName(log.published.get(log.matched).systemEventType()), groupId);
+                return 1;
+            }
+            System.out.printf("[clusterctl] load-topology: %d group(s), %d gateway row(s), %d application row(s) and "
+                                  + "%d protocol row(s) recorded, the last at clusterSeqNo=%d%s%n",
+                              topology.groups().size(), rows.size(), topology.applications().size(),
+                              topology.protocols().size(), log.lastClusterSeqNo,
+                              topology.snapshots() == null
+                                  ? ""
+                                  : "; snapshot interval " + topology.snapshots().intervalSeconds() + " s");
+            return 0;
         }
-
-        final ApplicationRegisteredEncoder applicationEncoder = new ApplicationRegisteredEncoder();
-        for (final ApplicationRow row : topology.applications()) {
-            applicationEncoder.wrap(payload, 0);
-            applicationEncoder.applicationSourceId(row.sourceId())
-                              .applicationName(row.applicationName())
-                              .snapshot((short)(row.snapshot() ? 1 : 0));
-            publish(session, SystemFrame.APPLICATION_REGISTERED, payload, applicationEncoder.encodedLength());
-        }
-
-        final PayloadIdRegisteredEncoder protocolEncoder = new PayloadIdRegisteredEncoder();
-        for (final ProtocolRow row : topology.protocols()) {
-            protocolEncoder.wrap(payload, 0);
-            protocolEncoder.payloadId(row.payloadId())
-                           .protocolVersion(row.protocolVersion())
-                           .protocolName(row.protocolName());
-            publish(session, SystemFrame.PAYLOAD_ID_REGISTERED, payload, protocolEncoder.encodedLength());
-        }
-
-        if (topology.snapshots() != null) {
-            final SnapshotPolicyRegisteredEncoder policyEncoder = new SnapshotPolicyRegisteredEncoder();
-            policyEncoder.wrap(payload, 0).intervalSeconds(topology.snapshots().intervalSeconds());
-            publish(session, SystemFrame.SNAPSHOT_POLICY_REGISTERED, payload, policyEncoder.encodedLength());
-        }
-
-        return awaitEcho(session, queue, new ListEchoHandler(rows.get(rows.size() - 1).gatewayId()));
     }
 
-    /** Matches the sequenced echo of the list's last row by gatewayId. */
-    private static final class ListEchoHandler extends EchoHandler {
-        private final int gatewayId;
-        private final GatewayRegisteredDecoder decoder = new GatewayRegisteredDecoder();
+    /**
+     * Polls {@code receiver} until {@code done} or {@code timeoutNs} passes, polling egress alongside so the
+     * session stays alive.
+     */
+    private static boolean poll(final Session session, final ReplayerStreamReceiver receiver,
+                                final BooleanSupplier done, final long timeoutNs) {
+        final long deadline = System.nanoTime() + timeoutNs;
+        while (!done.getAsBoolean()) {
+            if (System.nanoTime() >= deadline) {
+                return false;
+            }
+            IDLE.idle(receiver.poll() + session.sender.pollEgress());
+        }
+        return true;
+    }
 
-        ListEchoHandler(final int gatewayId) {
-            super(SystemFrame.GATEWAY_REGISTERED);
-            this.gatewayId = gatewayId;
+    /** Publishes one topology frame, and expects it on the queue in the order published. */
+    private static void publish(final Session session, final TopologyLog log, final int systemEventType,
+                                final ExpandableArrayBuffer body, final int bodyLength) {
+        log.published.add(new PublishedFrame(systemEventType, Arrays.copyOf(body.byteArray(), bodyLength)));
+        publish(session, systemEventType, body, bodyLength);
+    }
+
+    private static String frameName(final int systemEventType) {
+        return switch (systemEventType) {
+            case SystemFrame.GROUPS_REGISTERED -> "GroupsRegistered";
+            case SystemFrame.GATEWAY_REGISTERED -> "GatewayRegistered";
+            case SystemFrame.APPLICATION_REGISTERED -> "ApplicationRegistered";
+            case SystemFrame.PAYLOAD_ID_REGISTERED -> "PayloadIdRegistered";
+            default -> "SnapshotPolicyRegistered";
+        };
+    }
+
+    /** A frame {@code load-topology} published: its event and its payload, which the queue carries unchanged. */
+    private record PublishedFrame(int systemEventType, byte[] body) { }
+
+    /**
+     * What {@code load-topology} reads off the default queue: the active groups and each source's group, from
+     * the frames before its {@code GroupsRegistered}, and its own frames, matched in the order published.
+     */
+    private static final class TopologyLog {
+        private final long sessionId;
+        private final GroupsRegisteredDecoder groups = new GroupsRegisteredDecoder();
+        private final GatewayRegisteredDecoder gateway = new GatewayRegisteredDecoder();
+        private final ApplicationRegisteredDecoder application = new ApplicationRegisteredDecoder();
+        private final byte[] groupNameBytes = new byte[GroupsRegisteredDecoder.groupNamesLength()];
+        private final Int2IntHashMap sourceGroups = new Int2IntHashMap(NO_GROUP);
+        private final List<PublishedFrame> published = new ArrayList<>();
+
+        /** The latest {@code GroupsRegistered}'s names, slot by slot; all null before one. */
+        private final String[] groupNames = new String[FrameLayer.MAX_GROUPS];
+        private int matched;
+        private long lastClusterSeqNo;
+
+        private TopologyLog(final long sessionId) {
+            this.sessionId = sessionId;
         }
 
-        @Override
-        boolean matches(final DirectBuffer buffer) {
-            decoder.wrap(buffer, view.payloadOffset(), GatewayRegisteredDecoder.BLOCK_LENGTH,
-                         MessageHeaderDecoder.SCHEMA_VERSION);
-            return decoder.gatewayId() == gatewayId && decoder.remaining() == 0;
+        private void onSequenced(final SequencedEvent event) {
+            if (!event.isSystem()) {
+                return;
+            }
+            if (matched < published.size() && isPublished(event, published.get(matched))) {
+                matched++;
+                lastClusterSeqNo = event.clusterSeqNo();
+                return;
+            }
+            if (matched > 0) {
+                return; // past this load's GroupsRegistered, which S-9 keeps any other load's rows from following
+            }
+            switch (event.systemEventType()) {
+            case SystemFrame.GROUPS_REGISTERED -> {
+                groups.wrap(event.buffer(), event.payloadOffset(), GroupsRegisteredDecoder.BLOCK_LENGTH,
+                            GroupsRegisteredDecoder.SCHEMA_VERSION);
+                groups.getGroupNames(groupNameBytes, 0);
+                for (int slot = 0; slot < FrameLayer.MAX_GROUPS; slot++) {
+                    int length = 0;
+                    while (length < NAME_LENGTH && groupNameBytes[slot * NAME_LENGTH + length] != 0) {
+                        length++;
+                    }
+                    groupNames[slot] = length == 0
+                        ? null
+                        : new String(groupNameBytes, slot * NAME_LENGTH, length, StandardCharsets.US_ASCII);
+                }
+            }
+            case SystemFrame.GATEWAY_REGISTERED -> {
+                gateway.wrap(event.buffer(), event.payloadOffset(), GatewayRegisteredDecoder.BLOCK_LENGTH,
+                             GatewayRegisteredDecoder.SCHEMA_VERSION);
+                sourceGroups.put(gateway.gatewaySourceId(), gateway.groupId());
+            }
+            case SystemFrame.APPLICATION_REGISTERED -> {
+                application.wrap(event.buffer(), event.payloadOffset(), ApplicationRegisteredDecoder.BLOCK_LENGTH,
+                                 ApplicationRegisteredDecoder.SCHEMA_VERSION);
+                sourceGroups.put(application.applicationSourceId(), application.groupId());
+            }
+            default -> {
+            }
+            }
+        }
+
+        private boolean isPublished(final SequencedEvent event, final PublishedFrame frame) {
+            if (event.sourceSessionId() != sessionId || event.systemEventType() != frame.systemEventType() ||
+                event.payloadLength() != frame.body().length) {
+                return false;
+            }
+            for (int i = 0; i < frame.body().length; i++) {
+                if (event.buffer().getByte(event.payloadOffset() + i) != frame.body()[i]) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /** The first of the file's sources the log registered with another group, described; null if none. */
+        private String movedSource(final TopologyDocument topology) {
+            for (final TopologyRow row : topology.gateways()) {
+                final String moved = moved(row.gatewayName(), row.gatewaySourceId(), row.groupId());
+                if (moved != null) {
+                    return moved;
+                }
+            }
+            for (final ApplicationRow row : topology.applications()) {
+                final String moved = moved(row.applicationName(), row.sourceId(), row.groupId());
+                if (moved != null) {
+                    return moved;
+                }
+            }
+            return null;
+        }
+
+        private String moved(final String name, final int sourceId, final int groupId) {
+            final int registered = sourceGroups.get(sourceId);
+            return registered == NO_GROUP || registered == groupId ? null
+                                                                   : name + " puts sourceId " + sourceId +
+                    " in group " + groupId + ", which the log registered in group " + registered;
         }
     }
 
@@ -594,18 +784,30 @@ public final class ClusterCtl {
     }
 
     /**
-     * Subscribes to this node's queue, untethered, and waits for it to connect; null (having said why) if it never
-     * does. Tethered, a stopped or killed clusterctl would hold the queue back until its member terminated.
+     * Subscribes to this node's default queue (spec §3.1), untethered, and waits for it to connect; null (having
+     * said why) if the Replayer names none or it never connects. Tethered, a stopped or killed clusterctl would hold
+     * the queue back until its member terminated.
      */
     private static Subscription awaitQueue(final Session session) {
-        final Subscription queue =
-            session.aeron.addSubscription(ReplayerStreamReceiver.QUEUE_CONSUMER_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
+        final int groupId = DefaultQueue.resolve(session.aeron, CONNECT_TIMEOUT_NS, false);
+        if (groupId == DefaultQueue.NO_REPLAYER) {
+            System.err.println("[clusterctl] no Replayer answered on " + AERON_DIR +
+                               " — co-located with a SequencerServer?");
+            return null;
+        }
+        if (groupId == DefaultQueue.NOT_ACTIVE) {
+            System.err.println("[clusterctl] no group is active: the cluster refuses everything before the first "
+                               + "load-topology");
+            return null;
+        }
+        final Subscription queue = session.aeron.addSubscription(ReplayerStreamReceiver.QUEUE_CONSUMER_CHANNEL,
+                                                                 FrameLayer.queueStreamId(groupId));
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!queue.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {
                 System.err.printf(
                     "[clusterctl] queue (aeron:ipc/%d) not available — co-located with a SequencerServer?%n",
-                    FrameLayer.QUEUE_STREAM_ID);
+                    FrameLayer.queueStreamId(groupId));
                 return null;
             }
             session.sender.pollEgress();
@@ -649,10 +851,10 @@ public final class ClusterCtl {
                            and a topology with a <snapshots> element)
               load-topology <file>
                            publish the topology document (XML, validated against the
-                           packaged topology.xsd): the gateway list, then the
-                           co-located applications, the protocol registry and the
-                           snapshot policy; run
-                           once per cluster lifetime, before any gateway starts
+                           packaged topology.xsd): the groups, then the gateway list,
+                           the co-located applications, the protocol registry and the
+                           snapshot policy; run it first, before start and before any
+                           gateway starts: the cluster refuses everything before it
               counters     list this node's seqeron operator counters (SequencerService/
                            ReplayerService); no cluster connection needed, safe on every node
               snapshot     Aeron's cluster snapshot; not supported (see request-snapshot)

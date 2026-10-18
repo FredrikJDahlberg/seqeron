@@ -49,10 +49,12 @@ A command that publishes works the same way every time:
    queue.
 
 Until a topology is loaded, the sequencer refuses every frame but the `<groups>` section's (spec §9.2
-condition 13), so every publishing command but `load-topology` exits 1 after the timeout, `start` included.
+condition 13), and the replayer names no default queue, so every publishing command but `load-topology`
+exits 1 at once, `start` included.
 
-It exits 0 on success; 1 if the cluster is unreachable, no leader answers, the frame does not appear in
-time, or the abort fails; 2 for a usage error or an invalid topology file.
+It exits 0 on success; 1 if the cluster is unreachable, no leader answers, no replayer names the default
+queue, a topology file conflicts with the log, the frame does not appear in time, or the abort fails; 2 for a
+usage error or an invalid topology file.
 
 ### start
 

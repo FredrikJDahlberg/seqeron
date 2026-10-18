@@ -29,6 +29,7 @@ import java.util.jar.JarFile;
 import org.agrona.BitUtil;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredDecoder;
 import uk.co.real_logic.sbe.ir.Ir;
@@ -76,6 +77,12 @@ public class SbeLogPrinter {
     /** Offset of the 2-byte discriminator in every frame header, common to all five messages (F-3). */
     private static final int DISCRIMINATOR_OFFSET =
         org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder.payloadIdEncodingOffset();
+
+    /** Offset of {@code groupMask} in every frame header, at the same offset in all four composites. */
+    private static final int GROUP_MASK_OFFSET =
+        org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder.groupMaskEncodingOffset();
+
+    private static final int GROUP_NAME_LENGTH = 32;
 
     /** The two application envelope templates, which carry one opaque payload (§4). */
     private static final int UNSEQUENCED_TEMPLATE_ID =
@@ -125,6 +132,8 @@ public class SbeLogPrinter {
     /** Protocol labels harvested from the {@code PayloadIdRegistered} rows in this recording (§6.3). */
     private final Map<Integer, String> protocolNames = new HashMap<>();
     private final PayloadIdRegisteredDecoder registrationDecoder = new PayloadIdRegisteredDecoder();
+    /** Group names from the recording's latest {@code GroupsRegistered}, slot by slot (§7.4). */
+    private final String[] groupNames = new String[FrameLayer.MAX_GROUPS];
     /** payloadId of the frame whose payload {@link #appendNested} is about to print. */
     private int nestedPayloadId = NO_PAYLOAD_ID;
     /** Where every text line goes. Stdout belongs to the payload stream while -o is on. */
@@ -283,6 +292,7 @@ public class SbeLogPrinter {
             // inline, so the frame line already printed the whole message.
             if (UNSEQUENCED_TEMPLATE_ID == templateId || SEQUENCED_TEMPLATE_ID == templateId) {
                 nestedPayloadId = framePayloadId(buffer, payloadOffset);
+                appendGroups(buffer, payloadOffset);
                 appendNested(buffer, payloadOffset(buffer, payloadOffset), frameEndOffset);
             } else if (UNSEQUENCED_SYSTEM_TEMPLATE_ID == templateId || SEQUENCED_SYSTEM_TEMPLATE_ID == templateId) {
                 appendSystemBody(schema, buffer, payloadOffset, frameEndOffset);
@@ -386,6 +396,52 @@ public class SbeLogPrinter {
     }
 
     /**
+     * Harvests a {@code GroupsRegistered} into the group names; the first on a queue is its second frame (§7.4).
+     * @param buffer segment buffer
+     * @param frameOffset offset of the frame's own SBE header
+     * @param frameEndOffset frame end offset
+     */
+    private void registerGroups(final UnsafeBuffer buffer, final int frameOffset, final int frameEndOffset) {
+        if (SystemFrame.GROUPS_REGISTERED != frameSystemEventType(buffer, frameOffset)) {
+            return;
+        }
+        final int offset = payloadOffset(buffer, frameOffset);
+        if (offset + FrameLayer.MAX_GROUPS * GROUP_NAME_LENGTH > frameEndOffset) {
+            return;
+        }
+        for (int slot = 0; slot < FrameLayer.MAX_GROUPS; slot++) {
+            final int start = offset + slot * GROUP_NAME_LENGTH;
+            int length = 0;
+            while (length < GROUP_NAME_LENGTH && buffer.getByte(start + length) != 0) {
+                length++;
+            }
+            groupNames[slot] = length == 0 ? null : buffer.getStringWithoutLengthAscii(start, length);
+        }
+    }
+
+    /**
+     * Labels each bit of an application frame's {@code groupMask} with its group's name, or its {@code groupId}
+     * before a {@code GroupsRegistered} names it (§13.1).
+     * @param buffer segment buffer
+     * @param frameOffset offset of the frame's own SBE header
+     */
+    private void appendGroups(final UnsafeBuffer buffer, final int frameOffset) {
+        final int groupMask = buffer.getShort(frameOffset + sbeHeaderDecoder.encodedLength() + GROUP_MASK_OFFSET,
+                                              ByteOrder.LITTLE_ENDIAN) &
+            0xFFFF;
+        builder.append(" groups=[");
+        String separator = "";
+        for (int slot = 0; slot < FrameLayer.MAX_GROUPS; slot++) {
+            if ((groupMask & (1 << slot)) != 0) {
+                builder.append(separator).append(groupNames[slot] == null ? String.valueOf(slot + 1)
+                                                                          : groupNames[slot]);
+                separator = ", ";
+            }
+        }
+        builder.append(']');
+    }
+
+    /**
      * Writes a selected payload to stdout verbatim, back to back with the rest (§13.1); the decoder on the
      * other end of the pipe delimits it. Everything else goes to stderr meanwhile.
      * @param buffer segment buffer
@@ -421,6 +477,7 @@ public class SbeLogPrinter {
         }
         emitPayload(buffer, nestedOffset, frameEndOffset);
         registerProtocol(buffer, nestedOffset, frameEndOffset);
+        registerGroups(buffer, nestedOffset, frameEndOffset);
         final int nestedSchemaId = sbeHeaderDecoder.getSchemaId(buffer, nestedOffset);
         final int nestedTemplateId = sbeHeaderDecoder.getTemplateId(buffer, nestedOffset);
         final Schema nestedSchema = schemasBySchemaId.get(nestedSchemaId);
@@ -621,6 +678,7 @@ public class SbeLogPrinter {
                               final long currentPosition) {
         emitPayload(buffer, sbePayloadOffset, messageEndOffset);
         registerProtocol(buffer, sbePayloadOffset, messageEndOffset);
+        registerGroups(buffer, sbePayloadOffset, messageEndOffset);
         final int templateId = sbeHeaderDecoder.getTemplateId(buffer, sbePayloadOffset);
         final int schemaId = sbeHeaderDecoder.getSchemaId(buffer, sbePayloadOffset);
         final Schema schema = schemasBySchemaId.get(schemaId);
@@ -652,7 +710,8 @@ public class SbeLogPrinter {
         System.out.println("  --schema <name>  decode only this bundled schema (default: all of " +
                            String.join(", ", BUNDLED_SCHEMAS) + ", each frame matched on its schema id)");
         System.out.println("  --spec <file>    decode against an IR file outside the jar instead");
-        System.out.println("  --stream <id>    dump only the newest recording on that stream");
+        System.out.println(
+            "  --stream <id>    dump only the newest recording on that stream; a queue is 2000 + groupId");
         System.out.println("  --oneline        print each message as a single line of JSON");
         System.out.println("  --list-schemas   list the bundled schema names and exit");
         System.out.println("  -o <payloadId>   write that protocol's payloads to stdout, raw and back to back,");

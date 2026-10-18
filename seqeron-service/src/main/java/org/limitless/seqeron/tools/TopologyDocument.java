@@ -4,13 +4,16 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.transform.stream.StreamSource;
 import javax.xml.validation.SchemaFactory;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
@@ -23,14 +26,17 @@ import org.xml.sax.SAXParseException;
  * before {@link ClusterCtl} publishes a byte: a file that failed half-way through publishing would leave a
  * gateway list the log has already closed.
  */
-public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> applications,
+public record TopologyDocument(List<GroupRow> groups, List<TopologyRow> gateways, List<ApplicationRow> applications,
                                List<ProtocolRow> protocols, SnapshotPolicy snapshots) {
+    /** One group: its {@code groupNames} slot (§7.4). */
+    public record GroupRow(String groupName, int groupId) { }
+
     /** One list row: an elected gateway pair's instance. */
-    public record TopologyRow(String gatewayName, int gatewayId, int gatewaySourceId, int preferenceRank,
+    public record TopologyRow(String gatewayName, int gatewayId, int gatewaySourceId, int preferenceRank, int groupId,
                               boolean snapshot) { }
 
     /** One co-located application: the producer kind that is not elected (§5). */
-    public record ApplicationRow(String applicationName, int sourceId, boolean snapshot) { }
+    public record ApplicationRow(String applicationName, int sourceId, int groupId, boolean snapshot) { }
 
     /** The {@code <snapshots>} element; {@code null} in a document without one, which starts no round. */
     public record SnapshotPolicy(long intervalSeconds) { }
@@ -52,19 +58,25 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
     public static TopologyDocument read(final File file)
         throws IOException, SAXException, ParserConfigurationException {
         final Element root = parser().parse(file).getDocumentElement();
+        final List<GroupRow> groups = new ArrayList<>();
+        final Map<String, Integer> groupIds = new HashMap<>();
+        for (final Element row : childElements(root, "groups", "group")) {
+            groups.add(new GroupRow(row.getAttribute("name"), Integer.parseInt(row.getAttribute("id"))));
+            groupIds.put(row.getAttribute("name"), Integer.parseInt(row.getAttribute("id")));
+        }
+        groups.sort((a, b) -> Integer.compare(a.groupId(), b.groupId()));
         final List<TopologyRow> gateways = new ArrayList<>();
         for (final Element row : childElements(root, "gateways", "gateway")) {
-            gateways.add(new TopologyRow(row.getAttribute("name"),
-                                         Integer.parseInt(row.getAttribute("id")),
+            gateways.add(new TopologyRow(row.getAttribute("name"), Integer.parseInt(row.getAttribute("id")),
                                          Integer.parseInt(row.getAttribute("sourceId")),
                                          Integer.parseInt(row.getAttribute("rank")),
-                                         snapshot(row)));
+                                         groupIds.get(row.getAttribute("group")), snapshot(row)));
         }
         final List<ApplicationRow> applications = new ArrayList<>();
         for (final Element row : childElements(root, "applications", "application")) {
             applications.add(new ApplicationRow(row.getAttribute("name"),
                                                 Integer.parseInt(row.getAttribute("sourceId")),
-                                                snapshot(row)));
+                                                groupIds.get(row.getAttribute("group")), snapshot(row)));
         }
         final List<ProtocolRow> protocols = new ArrayList<>();
         for (final Element row : childElements(root, "protocols", "protocol")) {
@@ -76,7 +88,16 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
         final SnapshotPolicy snapshots = policies.getLength() == 0 ? null
             : new SnapshotPolicy(Long.parseLong(((Element)policies.item(0)).getAttribute("interval")));
         validate(gateways, applications, snapshots);
-        return new TopologyDocument(gateways, applications, protocols, snapshots);
+        return new TopologyDocument(groups, gateways, applications, protocols, snapshots);
+    }
+
+    /** The {@code GroupsRegistered.groupNames} this document declares: group {@code g}'s name in slot g − 1. */
+    public String[] groupNames() {
+        final String[] names = new String[FrameLayer.MAX_GROUPS];
+        for (final GroupRow group : groups) {
+            names[group.groupId() - 1] = group.groupName();
+        }
+        return names;
     }
 
     /** A row's {@code snapshot} attribute; {@code xs:boolean} spells true two ways, and absent is false. */
@@ -143,8 +164,8 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
     /**
      * The checks the XSD cannot make about rows' relations: exactly one rank-0 per gateway {@code sourceId},
      * no §5-reserved {@code sourceId}, no application {@code sourceId} a gateway row claims — which
-     * <b>S-6</b> would otherwise silently refuse frame by frame at run time — one {@code snapshot} value per
-     * gateway {@code sourceId}, and a participating row behind {@code <snapshots>}.
+     * <b>S-6</b> would otherwise silently refuse frame by frame at run time — one {@code snapshot} value and one
+     * group per gateway {@code sourceId}, and a participating row behind {@code <snapshots>}.
      */
     private static void validate(final List<TopologyRow> rows, final List<ApplicationRow> applications,
                                  final SnapshotPolicy snapshots) {
@@ -169,6 +190,10 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
                     throw new IllegalArgumentException("sourceId " + row.gatewaySourceId() + ": " +
                                                        row.gatewayName() + " and " + other.gatewayName() +
                                                        " disagree on snapshot");
+                }
+                if (other.gatewaySourceId() == row.gatewaySourceId() && other.groupId() != row.groupId()) {
+                    throw new IllegalArgumentException("sourceId " + row.gatewaySourceId() + ": " + row.gatewayName() +
+                                                       " and " + other.gatewayName() + " disagree on group");
                 }
             }
             participating |= row.snapshot();

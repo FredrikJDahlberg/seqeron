@@ -8,9 +8,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.tools.TopologyDocument.GroupRow;
 import org.xml.sax.SAXParseException;
 
 /**
@@ -27,10 +29,13 @@ class TopologyDocumentTest {
     @TempDir
     private Path dir;
 
+    /** One group, which every row below names. */
+    private static final String ORDERS = "<group name=\"orders\" id=\"1\"/>";
+
     /** A well-formed pair — two instances of one logical gateway, sharing a sourceId, one of them rank 0. */
     private static final String GATEWAY_PAIR = """
-            <gateway name="GW-A" id="1" sourceId="9" rank="0"/>
-            <gateway name="GW-B" id="2" sourceId="9" rank="1"/>""";
+            <gateway name="GW-A" group="orders" id="1" sourceId="9" rank="0"/>
+            <gateway name="GW-B" group="orders" id="2" sourceId="9" rank="1"/>""";
 
     // ── accepted ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -38,8 +43,8 @@ class TopologyDocumentTest {
     @DisplayName("all three sections are read in document order")
     void readsAllThreeSections() throws Exception {
         final TopologyDocument topology = read(document(GATEWAY_PAIR, """
-                <application name="probe" sourceId="8"/>
-                <application name="basicdata" sourceId="5"/>""", """
+                <application name="probe" group="orders" sourceId="8"/>
+                <application name="basicdata" group="orders" sourceId="5"/>""", """
                 <protocol payloadId="2" version="1" name="order"/>
                 <protocol payloadId="3" version="1" name="session"/>"""));
 
@@ -49,6 +54,30 @@ class TopologyDocumentTest {
         assertEquals(1, topology.gateways().get(1).preferenceRank());
         assertEquals("basicdata", topology.applications().get(1).applicationName());
         assertEquals(3, topology.protocols().get(1).payloadId());
+    }
+
+    @Test
+    @DisplayName("the groups are read in ascending groupId, and each row carries the groupId its group names")
+    void readsTheGroups() throws Exception {
+        final TopologyDocument topology = read(document("""
+                <group name="risk" id="3"/>
+                <group name="orders" id="1"/>""", GATEWAY_PAIR, """
+                <application name="hedger" group="risk" sourceId="5"/>""", null, null));
+
+        assertEquals(List.of(new GroupRow("orders", 1), new GroupRow("risk", 3)), topology.groups());
+        assertEquals(1, topology.gateways().get(1).groupId());
+        assertEquals(3, topology.applications().get(0).groupId());
+        assertEquals("orders", topology.groupNames()[0]);
+        assertNull(topology.groupNames()[1], "an undeclared slot is empty");
+        assertEquals("risk", topology.groupNames()[2]);
+    }
+
+    @Test
+    @DisplayName("a document may declare no gateways: a later load may add only applications")
+    void gatewaysMayBeAbsentOrEmpty() throws Exception {
+        assertTrue(read(document(ORDERS, null, """
+                <application name="probe" group="orders" sourceId="8"/>""", null, null)).gateways().isEmpty());
+        assertTrue(read(document("", null, null)).gateways().isEmpty());
     }
 
     @Test
@@ -65,16 +94,15 @@ class TopologyDocumentTest {
     @DisplayName("snapshot participation and the snapshot policy are read; both default to off")
     void readsSnapshotSettings() throws Exception {
         final TopologyDocument off = read(document(GATEWAY_PAIR, """
-                <application name="probe" sourceId="8"/>""", null));
+                <application name="probe" group="orders" sourceId="8"/>""", null));
         assertFalse(off.gateways().get(0).snapshot());
         assertFalse(off.applications().get(0).snapshot());
         assertNull(off.snapshots(), "no <snapshots>, no rounds");
 
         final TopologyDocument on = read(document("""
-                <gateway name="GW-A" id="1" sourceId="9" rank="0" snapshot="true"/>
-                <gateway name="GW-B" id="2" sourceId="9" rank="1" snapshot="1"/>""", """
-                <application name="probe" sourceId="8" snapshot="true"/>""", null,
-                                                  "<snapshots interval=\"3600\"/>"));
+                <gateway name="GW-A" group="orders" id="1" sourceId="9" rank="0" snapshot="true"/>
+                <gateway name="GW-B" group="orders" id="2" sourceId="9" rank="1" snapshot="1"/>""", """
+                <application name="probe" group="orders" sourceId="8" snapshot="true"/>""", null, "<snapshots interval=\"3600\"/>"));
         assertTrue(on.gateways().get(1).snapshot(), "xs:boolean spells true as 1 too");
         assertTrue(on.applications().get(0).snapshot());
         assertEquals(3600, on.snapshots().intervalSeconds());
@@ -106,25 +134,55 @@ class TopologyDocumentTest {
     }
 
     @Test
-    @DisplayName("an empty gateway list is refused — it elects nobody")
-    void emptyGatewayListIsRefused() {
-        refusedBySchema(document("", null, null));
+    @DisplayName("a document with no group is refused — a log with no group has no queue")
+    void noGroupIsRefused() {
+        refusedBySchema(document(null, GATEWAY_PAIR, null, null, null));
+        refusedBySchema(document("", GATEWAY_PAIR, null, null, null));
+    }
+
+    @Test
+    @DisplayName("a groupId outside 1..16 has no groupMask bit")
+    void groupIdOutOfRangeIsRefused() {
+        refusedBySchema(document("<group name=\"orders\" id=\"0\"/>", GATEWAY_PAIR, null, null, null));
+        refusedBySchema(document("<group name=\"orders\" id=\"17\"/>", GATEWAY_PAIR, null, null, null));
+    }
+
+    @Test
+    @DisplayName("two groups may not share an id or a name")
+    void duplicateGroupIsRefused() {
+        refusedBySchema(document("""
+                <group name="orders" id="1"/>
+                <group name="risk" id="1"/>""", GATEWAY_PAIR, null, null, null));
+        refusedBySchema(document("""
+                <group name="orders" id="1"/>
+                <group name="orders" id="2"/>""", GATEWAY_PAIR, null, null, null));
+    }
+
+    @Test
+    @DisplayName("a row must name a group, and a declared one")
+    void rowWithoutADeclaredGroupIsRefused() {
+        refusedBySchema(document("""
+                <gateway name="GW-A" id="1" sourceId="9" rank="0"/>""", null, null));
+        refusedBySchema(document("""
+                <gateway name="GW-A" group="risk" id="1" sourceId="9" rank="0"/>""", null, null));
+        refusedBySchema(document(GATEWAY_PAIR, """
+                <application name="probe" group="risk" sourceId="8"/>""", null));
     }
 
     @Test
     @DisplayName("a duplicate gatewayId is refused — it would silently drop an instance")
     void duplicateGatewayIdIsRefused() {
         refusedBySchema(document("""
-                <gateway name="GW-A" id="1" sourceId="9" rank="0"/>
-                <gateway name="GW-B" id="1" sourceId="9" rank="1"/>""", null, null));
+                <gateway name="GW-A" group="orders" id="1" sourceId="9" rank="0"/>
+                <gateway name="GW-B" group="orders" id="1" sourceId="9" rank="1"/>""", null, null));
     }
 
     @Test
     @DisplayName("a duplicate gateway name is refused — the name is the launch-time join key")
     void duplicateGatewayNameIsRefused() {
         refusedBySchema(document("""
-                <gateway name="GW-A" id="1" sourceId="9" rank="0"/>
-                <gateway name="GW-A" id="2" sourceId="9" rank="1"/>""", null, null));
+                <gateway name="GW-A" group="orders" id="1" sourceId="9" rank="0"/>
+                <gateway name="GW-A" group="orders" id="2" sourceId="9" rank="1"/>""", null, null));
     }
 
     @Test
@@ -139,29 +197,29 @@ class TopologyDocumentTest {
     @DisplayName("two applications may not share a sourceId")
     void duplicateApplicationSourceIdIsRefused() {
         refusedBySchema(document(GATEWAY_PAIR, """
-                <application name="probe" sourceId="8"/>
-                <application name="other" sourceId="8"/>""", null));
+                <application name="probe" group="orders" sourceId="8"/>
+                <application name="other" group="orders" sourceId="8"/>""", null));
     }
 
     @Test
     @DisplayName("a name longer than the char[32] it encodes into is refused")
     void oversizedNameIsRefused() {
         refusedBySchema(document("""
-                <gateway name="%s" id="1" sourceId="9" rank="0"/>""".formatted("G".repeat(33)), null, null));
+                <gateway name="%s" group="orders" id="1" sourceId="9" rank="0"/>""".formatted("G".repeat(33)), null, null));
     }
 
     @Test
     @DisplayName("a name outside printable US-ASCII is refused")
     void nonAsciiNameIsRefused() {
         refusedBySchema(document("""
-                <gateway name="GW-é" id="1" sourceId="9" rank="0"/>""", null, null));
+                <gateway name="GW-é" group="orders" id="1" sourceId="9" rank="0"/>""", null, null));
     }
 
     @Test
     @DisplayName("a negative sourceId is refused — -1 is the cluster's own")
     void negativeSourceIdIsRefused() {
         refusedBySchema(document("""
-                <gateway name="GW-A" id="1" sourceId="-1" rank="0"/>""", null, null));
+                <gateway name="GW-A" group="orders" id="1" sourceId="-1" rank="0"/>""", null, null));
     }
 
     @Test
@@ -170,10 +228,11 @@ class TopologyDocumentTest {
         refusedBySchema("""
                 <?xml version="1.0" encoding="UTF-8"?>
                 <topology xmlns="http://limitless.org/seqeron/topology/1">
+                  <groups>%s</groups>
                   <protocols><protocol payloadId="2" version="1" name="order"/></protocols>
                   <gateways>%s</gateways>
                 </topology>
-                """.formatted(GATEWAY_PAIR));
+                """.formatted(ORDERS, GATEWAY_PAIR));
     }
 
     @Test
@@ -182,9 +241,10 @@ class TopologyDocumentTest {
         refusedBySchema("""
                 <?xml version="1.0" encoding="UTF-8"?>
                 <topology xmlns="http://example.org/topology">
+                  <groups>%s</groups>
                   <gateways>%s</gateways>
                 </topology>
-                """.formatted(GATEWAY_PAIR));
+                """.formatted(ORDERS, GATEWAY_PAIR));
     }
 
     @Test
@@ -194,9 +254,10 @@ class TopologyDocumentTest {
                 <?xml version="1.0" encoding="UTF-8"?>
                 <!DOCTYPE topology [<!ENTITY x "y">]>
                 <topology xmlns="http://limitless.org/seqeron/topology/1">
+                  <groups>%s</groups>
                   <gateways>%s</gateways>
                 </topology>
-                """.formatted(GATEWAY_PAIR));
+                """.formatted(ORDERS, GATEWAY_PAIR));
     }
 
     @Test
@@ -208,10 +269,11 @@ class TopologyDocumentTest {
                 <topology xmlns="http://limitless.org/seqeron/topology/1"
                           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                           xsi:schemaLocation="http://limitless.org/seqeron/topology/1 lax.xsd">
+                  <groups>%s</groups>
                   <gateways>%s</gateways>
                   <protocols><protocol payloadId="1" version="1" name="core"/></protocols>
                 </topology>
-                """.formatted(GATEWAY_PAIR));
+                """.formatted(ORDERS, GATEWAY_PAIR));
     }
 
     @Test
@@ -227,51 +289,55 @@ class TopologyDocumentTest {
     @DisplayName("a logical gateway with no rank-0 row has no primary")
     void noPrimaryIsRefused() {
         assertRefused(document("""
-                <gateway name="GW-A" id="1" sourceId="9" rank="1"/>
-                <gateway name="GW-B" id="2" sourceId="9" rank="2"/>""", null, null),
-                      "has 0 rank-0 row(s)");
+                <gateway name="GW-A" group="orders" id="1" sourceId="9" rank="1"/>
+                <gateway name="GW-B" group="orders" id="2" sourceId="9" rank="2"/>""", null, null), "has 0 rank-0 row(s)");
     }
 
     @Test
     @DisplayName("a logical gateway with two rank-0 rows has an arbitrary primary")
     void twoPrimariesAreRefused() {
         assertRefused(document("""
-                <gateway name="GW-A" id="1" sourceId="9" rank="0"/>
-                <gateway name="GW-B" id="2" sourceId="9" rank="0"/>""", null, null),
-                      "has 2 rank-0 row(s)");
+                <gateway name="GW-A" group="orders" id="1" sourceId="9" rank="0"/>
+                <gateway name="GW-B" group="orders" id="2" sourceId="9" rank="0"/>""", null, null), "has 2 rank-0 row(s)");
     }
 
     @Test
     @DisplayName("a gateway may not take clusterctl's own sourceId")
     void reservedSourceIdIsRefusedForAGateway() {
         assertRefused(document("""
-                <gateway name="GW-A" id="1" sourceId="2" rank="0"/>""", null, null),
-                      "is reserved for clusterctl's own markers");
+                <gateway name="GW-A" group="orders" id="1" sourceId="2" rank="0"/>""", null, null), "is reserved for clusterctl's own markers");
     }
 
     @Test
     @DisplayName("an application may not take clusterctl's own sourceId either")
     void reservedSourceIdIsRefusedForAnApplication() {
         assertRefused(document(GATEWAY_PAIR, """
-                <application name="probe" sourceId="2"/>""", null),
-                      "is reserved for clusterctl's own markers");
+                <application name="probe" group="orders" sourceId="2"/>""", null), "is reserved for clusterctl's own markers");
     }
 
     @Test
     @DisplayName("an application sharing a listed gateway's sourceId would be dropped frame by frame")
     void applicationSourceIdCollidingWithAGatewayIsRefused() {
         assertRefused(document(GATEWAY_PAIR, """
-                <application name="probe" sourceId="9"/>""", null),
-                      "is gateway GW-A's");
+                <application name="probe" group="orders" sourceId="9"/>""", null), "is gateway GW-A's");
     }
 
     @Test
     @DisplayName("the instances of one logical gateway either all take part in snapshots or none does")
     void gatewayPairDisagreeingOnSnapshotIsRefused() {
         assertRefused(document("""
-                <gateway name="GW-A" id="1" sourceId="9" rank="0" snapshot="true"/>
-                <gateway name="GW-B" id="2" sourceId="9" rank="1"/>""", null, null),
-                      "disagree on snapshot");
+                <gateway name="GW-A" group="orders" id="1" sourceId="9" rank="0" snapshot="true"/>
+                <gateway name="GW-B" group="orders" id="2" sourceId="9" rank="1"/>""", null, null), "disagree on snapshot");
+    }
+
+    @Test
+    @DisplayName("the instances of one logical gateway read one queue")
+    void gatewayPairDisagreeingOnGroupIsRefused() {
+        assertRefused(document("""
+                <group name="orders" id="1"/>
+                <group name="risk" id="2"/>""", """
+                <gateway name="GW-A" group="orders" id="1" sourceId="9" rank="0"/>
+                <gateway name="GW-B" group="risk" id="2" sourceId="9" rank="1"/>""", null, null, null), "disagree on group");
     }
 
     @Test
@@ -283,19 +349,30 @@ class TopologyDocumentTest {
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────────
 
-    /** A document with the given section bodies; a null section is omitted entirely, as the schema allows. */
+    /** A document with {@link #ORDERS} and the given section bodies; a null section is omitted entirely. */
     private static String document(final String gateways, final String applications, final String protocols) {
-        return document(gateways, applications, protocols, null);
+        return document(ORDERS, gateways, applications, protocols, null);
     }
 
     /** The same, followed by {@code snapshots}, the whole element, when it is not null. */
     private static String document(final String gateways, final String applications, final String protocols,
                                    final String snapshots) {
+        return document(ORDERS, gateways, applications, protocols, snapshots);
+    }
+
+    /** A document with the given section bodies, the groups' among them. */
+    private static String document(final String groups, final String gateways, final String applications,
+                                   final String protocols, final String snapshots) {
         final StringBuilder xml = new StringBuilder("""
                 <?xml version="1.0" encoding="UTF-8"?>
                 <topology xmlns="http://limitless.org/seqeron/topology/1">
                 """);
-        xml.append("  <gateways>").append(gateways).append("</gateways>\n");
+        if (groups != null) {
+            xml.append("  <groups>").append(groups).append("</groups>\n");
+        }
+        if (gateways != null) {
+            xml.append("  <gateways>").append(gateways).append("</gateways>\n");
+        }
         if (applications != null) {
             xml.append("  <applications>").append(applications).append("</applications>\n");
         }
