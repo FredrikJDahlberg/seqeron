@@ -17,7 +17,8 @@ namespace Org.Limitless.Seqeron.App;
 /// </summary>
 public class SnapshotTakerTest : IDisposable
 {
-    private static readonly SnapshotHeader Header = new SnapshotHeader(3, 1, null);
+    private static readonly SnapshotHeader Header =
+        new SnapshotHeader(3, 1, new[] { new SnapshotHeader.Group(1, "orders") }, null);
 
     // Encodes Records records of 1000 bytes, each filled with its index, then answers 0.
     private sealed class State : ISnapshotListener
@@ -116,7 +117,7 @@ public class SnapshotTakerTest : IDisposable
         End end = _frames.Ends[0];
         Assert.Equal(7, end.Round);
         Assert.Equal(3, end.RecordCount);
-        Assert.Equal(2018, end.Length);
+        Assert.Equal(2052, end.Length);
         Assert.Equal(5, end.FormatVersion); // the listener's formatVersion
         Assert.Null(StoreOf(1).Open(7));    // not confirmed before its end is sequenced
         Assert.True(taker.OnSnapshotEnd(7, end.RecordCount, end.Length, end.Crc32C), "its own end agrees with it");
@@ -126,7 +127,7 @@ public class SnapshotTakerTest : IDisposable
         Assert.Equal(3, reader.RecordCount);
         Assert.Equal(end.Length, reader.Length);
         Assert.Equal(end.Crc32C, reader.Crc32C);
-        Assert.Equal(70, reader.CutGlobalSeqNo);
+        Assert.Equal(70, reader.CutClusterSeqNo);
         Assert.Equal(70 * 1024, reader.CutPosition);
         Assert.Equal(70_000, reader.CutTimestampNs);
         List<byte[]> records = ReadAll(reader);
@@ -260,7 +261,7 @@ public class SnapshotTakerTest : IDisposable
         var state35 = new SnapshotHeader.GatewayState(
             9, 10, 42, Enumerable.Repeat(new SnapshotHeader.GatewayRow(10, 0, "GW"), 1771).ToList());
         SnapshotTaker taker = Participating();
-        Started(taker, 3, new SnapshotHeader(7, 2, state35), true);
+        Started(taker, 3, new SnapshotHeader(7, 2, Array.Empty<SnapshotHeader.Group>(), state35), true);
         Assert.Equal(0, _state.Serialized); // 1771 rows outgrow a record
         Assert.False(taker.IsPublishing);
         Assert.Null(StoreOf(1).Open(3));
@@ -303,7 +304,7 @@ public class SnapshotTakerTest : IDisposable
         return taker;
     }
 
-    // A round's SnapshotStarted: cut at globalSeqNo round * 10.
+    // A round's SnapshotStarted: cut at clusterSeqNo round * 10.
     private static void Started(SnapshotTaker taker, long round, bool mayPublish)
     {
         Started(taker, round, Header, mayPublish);

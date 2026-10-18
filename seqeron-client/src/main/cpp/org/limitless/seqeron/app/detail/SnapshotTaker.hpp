@@ -87,13 +87,13 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
      * after each record, so the round may take as long as its state needs.
      *
      * @param round          its round
-     * @param cutGlobalSeqNo its globalSeqNo, the cut
+     * @param cutClusterSeqNo its clusterSeqNo, the cut
      * @param cutPosition    where it starts in the recording
      * @param cutTimestampNs its consensus timestamp
      * @param header         the façade's header as of the cut
      * @param mayPublish     whether this instance is the one that publishes at the cut
      */
-    void onSnapshotStarted(const std::int64_t round, const std::int64_t cutGlobalSeqNo, const std::int64_t cutPosition,
+    void onSnapshotStarted(const std::int64_t round, const std::int64_t cutClusterSeqNo, const std::int64_t cutPosition,
                            const std::int64_t cutTimestampNs, const protocol::SnapshotHeader& header,
                            const bool mayPublish)
     {
@@ -107,7 +107,7 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         m_crc = 0;
         m_recordCount = 0;
         m_length = 0;
-        m_store->begin(round, cutGlobalSeqNo, cutPosition, cutTimestampNs);
+        m_store->begin(round, cutClusterSeqNo, cutPosition, cutTimestampNs);
         append(header.encode(m_encoding.data()));
         for (std::int32_t recordIndex = 0;; ++recordIndex)
         {

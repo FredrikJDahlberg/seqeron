@@ -4,7 +4,7 @@ namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
 /// Unit tests for the recovery-deadline verdict a gateway applies while not caught up. No Aeron runtime:
-/// <c>IsCaughtUp</c>/<c>OnCaughtUp</c> and the dispatched globalSeqNo are exactly the three signals a gateway feeds
+/// <c>IsCaughtUp</c>/<c>OnCaughtUp</c> and the dispatched clusterSeqNo are exactly the three signals a gateway feeds
 /// in off <c>ReplayerStreamReceiver</c>. Case for case with <c>RecoveryStallFenceTest.java</c> and
 /// <c>RecoveryStallFenceTest.cpp</c>.
 /// </summary>
@@ -85,7 +85,7 @@ public class RecoveryStallFenceTest
         for (long s = 0; s < 3600; ++s)
         {
             Assert.False(_policy.OnNotCaughtUp(Seconds(s), 1000 + s),
-                         $"second {s}: a recovery advancing its globalSeqNo is converging");
+                         $"second {s}: a recovery advancing its clusterSeqNo is converging");
         }
     }
 

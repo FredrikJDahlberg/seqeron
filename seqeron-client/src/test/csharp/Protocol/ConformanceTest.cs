@@ -21,6 +21,7 @@ public class ConformanceTest
     private const int SourceId = Frames.SourceId;
     private const int ConnectionId = Frames.ConnectionId;
     private const long SessionId = Frames.SessionId;
+    private const int GroupMask = 0b101;
 
     private readonly SequencedFrameDecoder _view = new SequencedFrameDecoder();
 
@@ -29,10 +30,10 @@ public class ConformanceTest
     [Fact]
     public void IngressCompositesAreThePrefixOfTheirSequencedCounterparts()
     {
-        Assert.Equal(18, Frame.UnsequencedHeader.Size);
-        Assert.Equal(18, Frame.UnsequencedSystemHeader.Size);
-        Assert.Equal(34, Frame.SequencedHeader.Size);
-        Assert.Equal(34, Frame.SequencedSystemHeader.Size);
+        Assert.Equal(20, Frame.UnsequencedHeader.Size);
+        Assert.Equal(20, Frame.UnsequencedSystemHeader.Size);
+        Assert.Equal(44, Frame.SequencedHeader.Size);
+        Assert.Equal(44, Frame.SequencedSystemHeader.Size);
 
         byte[] unsequenced = new byte[64], unsequencedSystem = new byte[64];
         byte[] sequenced = new byte[64], sequencedSystem = new byte[64];
@@ -43,6 +44,7 @@ public class ConformanceTest
         a.ConnectionId = ConnectionId;
         a.SessionId = SessionId;
         a.PayloadId = 2;
+        a.GroupMask = 0x8001;
 
         var b = new Frame.UnsequencedSystemHeader();
         b.Wrap(new DirectBuffer(unsequencedSystem), 0, 0);
@@ -50,10 +52,11 @@ public class ConformanceTest
         b.ConnectionId = ConnectionId;
         b.SessionId = SessionId;
         b.SystemEventType = 2;
+        b.GroupMask = 0x8001;
 
         // The field at offset 16 is a payloadId on one and a systemEventType on the other; written to the same
-        // bits, the two composites are the same 18 bytes.
-        Assert.Equal(unsequenced[..18], unsequencedSystem[..18]);
+        // bits, the two composites are the same 20 bytes.
+        Assert.Equal(unsequenced[..20], unsequencedSystem[..20]);
 
         var c = new Frame.SequencedHeader();
         c.Wrap(new DirectBuffer(sequenced), 0, 0);
@@ -61,8 +64,10 @@ public class ConformanceTest
         c.ConnectionId = ConnectionId;
         c.SessionId = SessionId;
         c.PayloadId = 2;
-        c.GlobalSeqNo = 9;
+        c.GroupMask = 0x8001;
+        c.ClusterSeqNo = 9;
         c.Timestamp = Frames.Timestamp;
+        c.GroupSeqNo = 4;
 
         var d = new Frame.SequencedSystemHeader();
         d.Wrap(new DirectBuffer(sequencedSystem), 0, 0);
@@ -70,12 +75,14 @@ public class ConformanceTest
         d.ConnectionId = ConnectionId;
         d.SessionId = SessionId;
         d.SystemEventType = 2;
-        d.GlobalSeqNo = 9;
+        d.GroupMask = 0x8001;
+        d.ClusterSeqNo = 9;
         d.Timestamp = Frames.Timestamp;
+        d.GroupSeqNo = 4;
 
-        Assert.Equal(sequenced[..34], sequencedSystem[..34]);
-        Assert.Equal(unsequenced[..18], sequenced[..18]); // the copy-18 of §9.5
-        Assert.Equal(unsequencedSystem[..18], sequencedSystem[..18]);
+        Assert.Equal(sequenced[..44], sequencedSystem[..44]);
+        Assert.Equal(unsequenced[..20], sequenced[..20]); // the copy-20 of §9.5, offsets 16 and 18 included
+        Assert.Equal(unsequencedSystem[..20], sequencedSystem[..20]);
     }
 
     [Fact]
@@ -91,8 +98,10 @@ public class ConformanceTest
         header.ConnectionId = 0x05060708;
         header.SessionId = 0x1112131415161718;
         header.PayloadId = 0x2122;
-        header.GlobalSeqNo = 0x3132333435363738;
+        header.GroupMask = 0x2324;
+        header.ClusterSeqNo = 0x3132333435363738;
         header.Timestamp = 0x4142434445464748;
+        header.GroupSeqNo = 0x5152535455565758;
         AssertSection41(bytes, 0x2122, sequenced: true);
 
         bytes = new byte[64];
@@ -102,8 +111,10 @@ public class ConformanceTest
         system.ConnectionId = 0x05060708;
         system.SessionId = 0x1112131415161718;
         system.SystemEventType = 0x2122;
-        system.GlobalSeqNo = 0x3132333435363738;
+        system.GroupMask = 0x2324;
+        system.ClusterSeqNo = 0x3132333435363738;
         system.Timestamp = 0x4142434445464748;
+        system.GroupSeqNo = 0x5152535455565758;
         AssertSection41(bytes, 0x2122, sequenced: true);
 
         bytes = new byte[64];
@@ -113,6 +124,7 @@ public class ConformanceTest
         ingress.ConnectionId = 0x05060708;
         ingress.SessionId = 0x1112131415161718;
         ingress.PayloadId = 0x2122;
+        ingress.GroupMask = 0x2324;
         AssertSection41(bytes, 0x2122, sequenced: false);
 
         bytes = new byte[64];
@@ -122,6 +134,7 @@ public class ConformanceTest
         ingressSystem.ConnectionId = 0x05060708;
         ingressSystem.SessionId = 0x1112131415161718;
         ingressSystem.SystemEventType = 0x2122;
+        ingressSystem.GroupMask = 0x2324;
         AssertSection41(bytes, 0x2122, sequenced: false);
     }
 
@@ -133,17 +146,18 @@ public class ConformanceTest
         Assert.Equal(2, Frame.SequencedSystem.BodyHeaderSize);
 
         // Fixed overhead: MessageHeader + the header composite + the length prefix.
-        Assert.Equal(28, FrameLayer.MinIngressLength); // ingress, both families
-        Assert.Equal(44, Frame.MessageHeader.Size + Frame.SequencedHeader.Size + Frame.Sequenced.PayloadHeaderSize);
+        Assert.Equal(30, FrameLayer.MinIngressLength); // ingress, both families
+        Assert.Equal(54, Frame.MessageHeader.Size + Frame.SequencedHeader.Size + Frame.Sequenced.PayloadHeaderSize);
 
         // A ClusterHeartbeat is a template of its own: no length prefix and no payload at all.
-        Assert.Equal(42, Frames.ClusterHeartbeat(1).Length);   // 8 + 34, the cheapest frame in the system
-        Assert.Equal(50, Frames.SnapshotStarted(1, 1).Length); // 8 + 34 + the round
-        Assert.Equal(50, Frames.SessionClosed(1, 1).Length);   // 8 + 34 + the session
+        Assert.Equal(52, Frames.ClusterHeartbeat(1).Length);   // 8 + 44, the cheapest frame in the system
+        Assert.Equal(60, Frames.SnapshotStarted(1, 1).Length); // 8 + 44 + the round
+        Assert.Equal(60, Frames.SessionClosed(1, 1).Length);   // 8 + 44 + the session
 
         // §12's ceiling, as a frame on the wire.
-        Assert.Equal(44 + FrameLayer.MaxPayloadLength, Frames.Payload(1, FrameLayer.MaxPayloadLength).Length);
-        Assert.Equal(8912, FrameLayer.MaxIngressLength);
+        Assert.Equal(54 + FrameLayer.MaxPayloadLength, Frames.Payload(1, FrameLayer.MaxPayloadLength).Length);
+        Assert.Equal(8928, 54 + FrameLayer.MaxPayloadLength); // the largest sequenced frame
+        Assert.Equal(8904, FrameLayer.MaxIngressLength);
     }
 
     // ── Row 3. Every system message decodes to what it was built with (§7) ────────
@@ -277,16 +291,16 @@ public class ConformanceTest
         var payload = new UnsafeBuffer(new byte[FrameLayer.MaxPayloadLength + 1]);
 
         Assert.Equal(FrameLayer.MaxIngressLength, encoder.WrapPayload(frame, SourceId, ConnectionId, SessionId, 2,
-                                                                      payload, FrameLayer.MaxPayloadLength));
+                                                                      GroupMask, payload, FrameLayer.MaxPayloadLength));
 
         var untouched = new UnsafeBuffer(new byte[FrameLayer.MaxIngressLength + 16]);
-        Assert.Equal(SystemFrame.Refused, encoder.WrapPayload(untouched, SourceId, ConnectionId, SessionId, 2, payload,
-                                                              FrameLayer.MaxPayloadLength + 1));
+        Assert.Equal(SystemFrame.Refused, encoder.WrapPayload(untouched, SourceId, ConnectionId, SessionId, 2,
+                                                              GroupMask, payload, FrameLayer.MaxPayloadLength + 1));
         Assert.All(untouched.ByteArray, b => Assert.Equal(0, b)); // nothing was encoded
 
         // Local and permanent, and the producer survives it: the very next well-formed frame encodes.
         Assert.Equal(FrameLayer.MinIngressLength + 8,
-                     encoder.WrapPayload(frame, SourceId, ConnectionId, SessionId, 2, payload, 8));
+                     encoder.WrapPayload(frame, SourceId, ConnectionId, SessionId, 2, GroupMask, payload, 8));
     }
 
     [Fact]
@@ -312,9 +326,12 @@ public class ConformanceTest
         var frame = new UnsafeBuffer(new byte[256]);
         var body = new UnsafeBuffer(new byte[64]);
 
-        Assert.Equal(SystemFrame.Refused, encoder.WrapPayload(frame, -1, ConnectionId, SessionId, 2, body, 8));
-        Assert.Equal(SystemFrame.Refused, encoder.WrapPayload(frame, SourceId, ConnectionId, SessionId, 0, body, 8));
-        Assert.Equal(SystemFrame.Refused, encoder.WrapPayload(frame, SourceId, ConnectionId, SessionId, 1, body, 8));
+        Assert.Equal(SystemFrame.Refused,
+                     encoder.WrapPayload(frame, -1, ConnectionId, SessionId, 2, GroupMask, body, 8));
+        Assert.Equal(SystemFrame.Refused,
+                     encoder.WrapPayload(frame, SourceId, ConnectionId, SessionId, 0, GroupMask, body, 8));
+        Assert.Equal(SystemFrame.Refused,
+                     encoder.WrapPayload(frame, SourceId, ConnectionId, SessionId, 1, GroupMask, body, 8));
 
         Assert.Equal(SystemFrame.Refused, encoder.Wrap(frame, -1, ConnectionId, SessionId, SystemFrame.ClusterStarted,
                                                        body, Frame.ClusterStarted.BlockLength));
@@ -337,25 +354,25 @@ public class ConformanceTest
         // What WrapPayload and Wrap put on the wire, byte by byte against §4: the frame the sequencer validates.
         var encoder = new SystemFrame();
         var buffer = new UnsafeBuffer(new byte[64]);
-        int length =
-            encoder.WrapPayload(buffer, SourceId, ConnectionId, SessionId, 2, new UnsafeBuffer(Frames.Filler(5)), 5);
+        int length = encoder.WrapPayload(buffer, SourceId, ConnectionId, SessionId, 2, GroupMask,
+                                         new UnsafeBuffer(Frames.Filler(5)), 5);
         byte[] frame = buffer.ByteArray[..length];
         Assert.Equal(FrameLayer.MinIngressLength + 5, length);
-        AssertIngressFrame(frame, Frame.Unsequenced.TemplateId, 2, Frames.Filler(5));
+        AssertIngressFrame(frame, Frame.Unsequenced.TemplateId, 2, GroupMask, Frames.Filler(5));
 
         var clusterStarted = new byte[Frame.ClusterStarted.BlockLength];
         BinaryPrimitives.WriteInt64LittleEndian(clusterStarted, 0x0102030405060708);
         length = encoder.Wrap(buffer, SourceId, ConnectionId, SessionId, SystemFrame.ClusterStarted,
                               new UnsafeBuffer(clusterStarted), clusterStarted.Length);
         AssertIngressFrame(buffer.ByteArray[..length], Frame.UnsequencedSystem.TemplateId, SystemFrame.ClusterStarted,
-                           clusterStarted);
+                           0, clusterStarted);
     }
 
     [Fact]
     public void AnExpandableFrameGrowsToTheFrame()
     {
         IMutableDirectBuffer frame = new ExpandableArrayBuffer(16);
-        int length = new SystemFrame().WrapPayload(frame, SourceId, ConnectionId, SessionId, 2,
+        int length = new SystemFrame().WrapPayload(frame, SourceId, ConnectionId, SessionId, 2, GroupMask,
                                                    new UnsafeBuffer(new byte[1000]), 1000);
         Assert.Equal(FrameLayer.MinIngressLength + 1000, length);
         Assert.True(frame.Capacity >= length);
@@ -375,7 +392,7 @@ public class ConformanceTest
             Assert.False(_view.IsSystem);
             Assert.Equal(2, _view.PayloadId);
             Assert.Equal(payloadLength, _view.PayloadLength);
-            Assert.Equal(44 + payloadLength, frame.Length); // 44 + the payload (§4.2)
+            Assert.Equal(54 + payloadLength, frame.Length); // 54 + the payload (§4.2)
         }
     }
 
@@ -384,8 +401,8 @@ public class ConformanceTest
     [Fact]
     public void UnknownPayloadsAndEventsAreReadableSoContinuityHolds()
     {
-        // globalSeqNo sits at 18 on all seven sequenced messages (F-3), so the continuity read is branch-free over
-        // frames the consumer comprehends none of. A frame dropped here is a globalSeqNo missing from that read,
+        // clusterSeqNo sits at 20 on all seven sequenced messages (F-3), so the continuity read is branch-free over
+        // frames the consumer comprehends none of. A frame dropped here is a clusterSeqNo missing from that read,
         // which reads as a gap that is not there.
         var body = new byte[64];
         var registered = new Frame.PayloadIdRegistered();
@@ -406,8 +423,8 @@ public class ConformanceTest
         long expected = 1;
         foreach (byte[] frame in queue)
         {
-            Assert.True(Wrap(frame), $"frame {expected} is unreadable, so P-3 would lose its globalSeqNo");
-            Assert.Equal(expected, _view.GlobalSeqNo);
+            Assert.True(Wrap(frame), $"frame {expected} is unreadable, so P-3 would lose its clusterSeqNo");
+            Assert.Equal(expected, _view.ClusterSeqNo);
             expected++;
         }
 
@@ -415,7 +432,7 @@ public class ConformanceTest
         byte[] unallocated = Frames.Payload(77, 0, payloadId: 4095);
         Assert.True(Wrap(unallocated), "an empty payload under an unallocated payloadId is still a frame");
         Assert.Equal(4095, _view.PayloadId);
-        Assert.Equal(77, _view.GlobalSeqNo);
+        Assert.Equal(77, _view.ClusterSeqNo);
         Assert.Equal(0, _view.TemplateId); // no inner declaration, so nothing can dispatch on it (P-1)
     }
 
@@ -438,16 +455,18 @@ public class ConformanceTest
         Assert.Equal(0x05060708, BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(4)));
         Assert.Equal(0x1112131415161718, BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(8)));
         Assert.Equal(atSixteen, BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(16)));
+        Assert.Equal(0x2324, BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(18)));
         if (sequenced)
         {
-            Assert.Equal(0x3132333435363738, BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(18)));
-            Assert.Equal(0x4142434445464748, BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(26)));
+            Assert.Equal(0x3132333435363738, BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(20)));
+            Assert.Equal(0x4142434445464748, BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(28)));
+            Assert.Equal(0x5152535455565758, BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(36)));
         }
     }
 
-    private static void AssertIngressFrame(byte[] frame, int templateId, int atSixteen, byte[] payload)
+    private static void AssertIngressFrame(byte[] frame, int templateId, int atSixteen, int groupMask, byte[] payload)
     {
-        Assert.Equal(18, BinaryPrimitives.ReadUInt16LittleEndian(frame.AsSpan(0))); // blockLength, §9.2 condition 4
+        Assert.Equal(20, BinaryPrimitives.ReadUInt16LittleEndian(frame.AsSpan(0))); // blockLength, §9.2 condition 4
         Assert.Equal(templateId, BinaryPrimitives.ReadUInt16LittleEndian(frame.AsSpan(2)));
         Assert.Equal(210, BinaryPrimitives.ReadUInt16LittleEndian(frame.AsSpan(4)));
         Assert.Equal(0, BinaryPrimitives.ReadUInt16LittleEndian(frame.AsSpan(6)));
@@ -455,8 +474,9 @@ public class ConformanceTest
         Assert.Equal(ConnectionId, BinaryPrimitives.ReadInt32LittleEndian(frame.AsSpan(12)));
         Assert.Equal(SessionId, BinaryPrimitives.ReadInt64LittleEndian(frame.AsSpan(16)));
         Assert.Equal(atSixteen, BinaryPrimitives.ReadUInt16LittleEndian(frame.AsSpan(24)));
-        Assert.Equal(payload.Length, BinaryPrimitives.ReadUInt16LittleEndian(frame.AsSpan(26)));
-        Assert.Equal(payload, frame[28..]);
+        Assert.Equal(groupMask, BinaryPrimitives.ReadUInt16LittleEndian(frame.AsSpan(26)));
+        Assert.Equal(payload.Length, BinaryPrimitives.ReadUInt16LittleEndian(frame.AsSpan(28)));
+        Assert.Equal(payload, frame[30..]);
         Assert.Equal(FrameLayer.MinIngressLength + payload.Length, frame.Length); // §9.2 condition 5
     }
 }

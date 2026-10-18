@@ -30,7 +30,7 @@ cluster copies through unopened; what it means is the business of the producers 
       ▼
   ┌─ cluster member ─────────────────────────────────────────────────┐
   │                                                                  │
-  │  Aeron Cluster ──▶ Sequencer ──▶ queue (aeron:ipc, stream 205) ────┼──▶ consumers on this host:
+  │  Aeron Cluster ──▶ Sequencer ──▶ a queue per group (aeron:ipc) ──┼──▶ consumers on this host:
   │  (Raft log)                       │                              │      live, untethered
   │      ▲                            ▼                              │
   │      │                      Aeron Archive ──▶ Replayer ──────────┼──▶ consumers on this host:
@@ -45,25 +45,26 @@ A deployment is a cluster of **members** — one for development, three or more,
 production — each running one JVM: the Aeron Cluster consensus
 module, the sequencer, an embedded media driver, an Aeron Archive and a Replayer. Clients run in their own
 processes beside a member and attach to its media driver. A **gateway host** is a host that runs clients
-but no member; its own Replayer relays a member's queue onto a local one, so its clients see exactly what
+but no member; its own Replayer relays a member's queues onto local ones, so its clients see exactly what
 they would see on a member.
 
 ### The cluster member
 
 - **`Sequencer`** is the replicated state machine. It validates each committed ingress message, stamps it
-  with the next `globalSeqNo` and the Raft consensus timestamp, and synthesizes the messages the cluster
+  with the next `clusterSeqNo` and the Raft consensus timestamp, and synthesizes the messages the cluster
   owns. It has no Aeron dependency and no I/O; it is unit-tested directly.
 - **`SequencerService`** is the Aeron Cluster adapter. It decides when to call the sequencer and publishes
   what comes back, and holds no replicated state of its own.
-- **The queue** is a node-local `aeron:ipc` publication (stream 205) carrying every sequenced message. Every
-  member publishes its own, leader and follower alike, and since every member applies the same committed
-  log in the same order, every queue is byte-identical, message for message.
-- **The archive** records the queue. Each member therefore holds a complete copy of history, written
-  locally, with no cross-node replication and no leader-only recording. The queue is created once and
-  survives leadership changes, so a member's recording is one continuous run across every leader it has
-  seen.
-- **The Replayer** serves history out of that recording to the clients on its host: a cold start from
-  `globalSeqNo` 1, or a resume after a gap. It is off the live path, and nothing reads the archive except
+- **The queues** are node-local `aeron:ipc` publications, one per group (stream 2000 + `groupId`). A queue
+  carries every system message and the application messages addressed to its group. Every member publishes
+  its own, leader and follower alike, and since every member applies the same committed log in the same
+  order, each queue is byte-identical across members, message for message.
+- **The archive** records the queues. Each member therefore holds a complete copy of each, written
+  locally, with no cross-node replication and no leader-only recording. A queue is created once, when the
+  first topology load activates the groups, and survives leadership changes, so a member's recording of it
+  is one continuous run across every leader it has seen.
+- **The Replayer** serves history out of those recordings to the clients on its host: a cold start from
+  `groupSeqNo` 1, or a resume after a gap. It is off the live path, and nothing reads the archive except
   through it.
 
 ### The client tier
@@ -73,7 +74,7 @@ All three speak the same protocol.
 
 - **`ReplayerStreamReceiver`** follows the stream. It asks the Replayer for history, switches to the live
   queue once caught up, detects a gap on the queue and resumes over it, and delivers every message once, in
-  `globalSeqNo` order.
+  `clusterSeqNo` order.
 - **`ClusterStreamSender`** and **`IngressPublisher`** submit: a cluster session over IPC when the
   producer shares a host with the leader, over UDP otherwise.
 - **`PendingSends`** confirms ingress on the queue and resends what a failover lost.
@@ -88,13 +89,13 @@ All three speak the same protocol.
 2. The leader appends the message to the Raft log and replicates it. The entry commits once a majority of
    members hold it.
 3. Every member applies the committed entry. `Sequencer` validates the message against the ten ingress
-   conditions of spec §9.2, copies its 18-byte header, appends `globalSeqNo` and the consensus timestamp,
+   conditions of spec §9.2, copies its 18-byte header, appends `clusterSeqNo` and the consensus timestamp,
    and republishes it as a `Sequenced` message on the member's queue. The payload is copied, never decoded or
    re-encoded.
 4. The queue offer is reliable: it retries until the message is published, since a dropped message would leave
    a permanent hole. Only the archive's recording can hold it back, as the queue's one tethered subscriber.
 5. The archive records the message.
-6. Each client on the host reads the message off the queue, checks that its `globalSeqNo` is the next one,
+6. Each client on the host reads the message off the queue, checks that its `clusterSeqNo` is the next one,
    and dispatches it. A consumer that falls behind is dropped by the media driver rather than slowing
    the queue, and heals by replay.
 7. The producer, which also follows its own queue, sees its message arrive and stops tracking it. Only now
@@ -122,7 +123,7 @@ Everything on the wire is one SBE schema (210), in two families sharing one head
 | 4 | `connectionId` — the producer's connection, or −1 | ✓ | ✓ |
 | 8 | `sessionId` — the cluster session it arrived on | ✓ | ✓ (set by the sequencer) |
 | 16 | `payloadId` or `systemEventType` | ✓ | ✓ |
-| 18 | `globalSeqNo` | | ✓ |
+| 18 | `clusterSeqNo` | | ✓ |
 | 26 | `timestamp` — Raft consensus time, epoch ns | | ✓ |
 
 Every field sits at the same offset in every template, so a consumer tracks continuity without branching
@@ -162,7 +163,7 @@ every connection its predecessor held from the `ConnectionOpened` and `Connectio
 A co-located application runs one replica per member. Nothing elects it: `LeadershipChanged` already
 names the leader, and only the replica on the leader's host publishes. Every replica reads the same
 stream and so holds the same state, including which requests are outstanding. When leadership moves,
-the new leader's replica dispatches every request still outstanding, in `globalSeqNo` order. A request
+the new leader's replica dispatches every request still outstanding, in `clusterSeqNo` order. A request
 is discharged only by its sequenced reply, so work is neither lost nor answered twice by design; across a
 failover it is delivered at least once, and a reply that is a pure function of the request can be
 de-duplicated by its key.
@@ -183,7 +184,7 @@ sent them; authentication belongs at the system's external edges.
 
 | failure | what happens | recovery |
 | --- | --- | --- |
-| leader lost | Aeron Cluster elects a new leader; the sequencer emits `LeadershipChanged` | the stream continues at the next `globalSeqNo`; producers resend what the old leader had not committed |
+| leader lost | Aeron Cluster elects a new leader; the sequencer emits `LeadershipChanged` | the stream continues at the next `clusterSeqNo`; producers resend what the old leader had not committed |
 | member lost | the others keep quorum | the member restarts and replays the full log, rebuilding its recording |
 | a member's archive stops recording | the member terminates (exit 70) rather than sequence history it cannot keep | as for a lost member |
 | a member's log is truncated below what it applied (an Aeron Cluster 1.53.2 fault) | the member terminates (exit 70) rather than go on from state the log no longer has | as for a lost member |
@@ -192,8 +193,8 @@ sent them; authentication belongs at the system's external edges.
 | gateway instance fails | its cluster session closes | the sequencer designates the standby |
 | gateway can no longer trust its view | a fence: session lost, queue or recovery stalled, ingress or snapshot mismatch | the instance releases its session, so the standby takes over, and exits |
 
-The member's own recovery is always the same operation: replay the log from `globalSeqNo` 1. All state
-downstream of the log — `globalSeqNo`, the gateway list, which instance is active — is
+The member's own recovery is always the same operation: replay the log from `clusterSeqNo` 1. All state
+downstream of the log — `clusterSeqNo`, the gateway list, which instance is active — is
 a function of it, with no separate persistence and no separate recovery procedure.
 
 **Durability is replication, not fsync.** A message is committed once a majority of members have written it to

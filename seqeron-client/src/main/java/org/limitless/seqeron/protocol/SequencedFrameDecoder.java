@@ -36,8 +36,10 @@ public class SequencedFrameDecoder {
     private int systemEventType;
     private int sourceId;
     private int connectionId;
+    private int groupMask;
     private long sourceSessionId;
-    private long globalSeqNo;
+    private long clusterSeqNo;
+    private long groupSeqNo;
     private long clusterTimestampNs;
     private int templateId;
     private int blockLength;
@@ -90,8 +92,9 @@ public class SequencedFrameDecoder {
         frameHeader.wrap(source, blockOffset);
         payloadId = frameHeader.payloadId();
         systemEventType = 0;
-        readIdentity(frameHeader.sourceId(), frameHeader.connectionId(), frameHeader.sessionId(),
-                     frameHeader.globalSeqNo(), frameHeader.timestamp());
+        readIdentity(frameHeader.sourceId(), frameHeader.connectionId(), frameHeader.groupMask(),
+                     frameHeader.sessionId(), frameHeader.clusterSeqNo(), frameHeader.timestamp(),
+                     frameHeader.groupSeqNo());
 
         payloadLength = source.getShort(prefixOffset, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
         payloadOffset = prefixOffset + SequencedDecoder.payloadHeaderLength();
@@ -149,17 +152,21 @@ public class SequencedFrameDecoder {
         templateId = 0;
         blockLength = 0;
         version = 0;
-        readIdentity(systemHeader.sourceId(), systemHeader.connectionId(), systemHeader.sessionId(),
-                     systemHeader.globalSeqNo(), systemHeader.timestamp());
+        readIdentity(systemHeader.sourceId(), systemHeader.connectionId(), systemHeader.groupMask(),
+                     systemHeader.sessionId(), systemHeader.clusterSeqNo(), systemHeader.timestamp(),
+                     systemHeader.groupSeqNo());
     }
 
-    private void readIdentity(final int frameSourceId, final int frameConnectionId, final long frameSessionId,
-                              final long frameGlobalSeqNo, final long frameTimestamp) {
+    private void readIdentity(final int frameSourceId, final int frameConnectionId, final int frameGroupMask,
+                              final long frameSessionId, final long frameClusterSeqNo, final long frameTimestamp,
+                              final long frameGroupSeqNo) {
         sourceId = frameSourceId;
         connectionId = frameConnectionId;
+        groupMask = frameGroupMask;
         sourceSessionId = frameSessionId;
-        globalSeqNo = frameGlobalSeqNo;
+        clusterSeqNo = frameClusterSeqNo;
         clusterTimestampNs = frameTimestamp;
+        groupSeqNo = frameGroupSeqNo;
     }
 
     /** Whether this frame is one of the six system templates; if so {@link #payloadId()} means nothing. */
@@ -187,14 +194,24 @@ public class SequencedFrameDecoder {
         return connectionId;
     }
 
+    /** The groups whose queues carry the frame ({@code header.groupMask}); 0 on a system frame (§7.4). */
+    public int groupMask() {
+        return groupMask;
+    }
+
     /** Cluster session the frame was submitted on ({@code header.sessionId}), as the sequencer stamped it. */
     public long sourceSessionId() {
         return sourceSessionId;
     }
 
-    /** Cluster-wide monotone sequence number; increments by exactly one per frame. */
-    public long globalSeqNo() {
-        return globalSeqNo;
+    /** Cluster-wide monotone sequence number; along one queue it increases, but not by one (F-6). */
+    public long clusterSeqNo() {
+        return clusterSeqNo;
+    }
+
+    /** This frame's place on its queue: 1 for the queue's first frame, increasing by exactly one per frame. */
+    public long groupSeqNo() {
+        return groupSeqNo;
     }
 
     /** Cluster consensus time (epoch ns) at which the frame was committed ({@code header.timestamp}). */

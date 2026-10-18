@@ -53,6 +53,7 @@ constexpr std::int32_t SOURCE_ID = 7;
 constexpr std::int32_t CONNECTION_ID = 42;
 constexpr std::int64_t SESSION_ID = 0x5EE51000LL;
 constexpr std::int64_t TIMESTAMP = 1700000000000LL;
+constexpr std::uint16_t GROUP_MASK = 0b101;
 
 // ── Fixture: the frame messages, built here ───────────────────────────────────
 //
@@ -62,7 +63,7 @@ constexpr std::int64_t TIMESTAMP = 1700000000000LL;
 
 // One SequencedSystem frame. `fill` writes the payload and returns its length.
 template<typename Fill>
-std::vector<std::uint8_t> systemFrame(std::int64_t globalSeqNo, std::uint16_t systemEventType, Fill&& fill)
+std::vector<std::uint8_t> systemFrame(std::int64_t clusterSeqNo, std::uint16_t systemEventType, Fill&& fill)
 {
     std::array<char, 256> body{};
     const std::uint16_t bodyLength = fill(body.data(), body.size());
@@ -75,7 +76,7 @@ std::vector<std::uint8_t> systemFrame(std::int64_t globalSeqNo, std::uint16_t sy
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .systemEventType(systemEventType)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(TIMESTAMP);
     frame.putBody(body.data(), bodyLength);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
@@ -84,7 +85,7 @@ std::vector<std::uint8_t> systemFrame(std::int64_t globalSeqNo, std::uint16_t sy
 
 // One of the five the sequencer synthesizes: its own template, fields inline, -1 identity (F-4).
 template<typename Encoder, typename Fill>
-std::vector<std::uint8_t> synthesizedFrame(std::int64_t globalSeqNo, std::uint16_t systemEventType, Fill&& fill)
+std::vector<std::uint8_t> synthesizedFrame(std::int64_t clusterSeqNo, std::uint16_t systemEventType, Fill&& fill)
 {
     std::vector<std::uint8_t> out(128, 0);
     Encoder frame;
@@ -94,7 +95,7 @@ std::vector<std::uint8_t> synthesizedFrame(std::int64_t globalSeqNo, std::uint16
         .connectionId(-1)
         .sessionId(-1)
         .systemEventType(systemEventType)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(TIMESTAMP);
     fill(frame);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
@@ -102,7 +103,7 @@ std::vector<std::uint8_t> synthesizedFrame(std::int64_t globalSeqNo, std::uint16
 }
 
 // One application frame carrying `payloadLength` bytes the cluster tier never opens (S-2).
-std::vector<std::uint8_t> payloadFrame(std::int64_t globalSeqNo, std::uint16_t payloadId, std::size_t payloadLength)
+std::vector<std::uint8_t> payloadFrame(std::int64_t clusterSeqNo, std::uint16_t payloadId, std::size_t payloadLength)
 {
     std::vector<char> payload(payloadLength);
     for (std::size_t i = 0; i < payloadLength; ++i)
@@ -118,7 +119,7 @@ std::vector<std::uint8_t> payloadFrame(std::int64_t globalSeqNo, std::uint16_t p
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .payloadId(payloadId)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(TIMESTAMP);
     frame.putPayload(payload.data(), static_cast<std::uint16_t>(payloadLength));
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
@@ -134,24 +135,24 @@ protocol::FrameView viewOf(const std::vector<std::uint8_t>& frame)
 
 TEST(Conformance, IngressCompositesAreThePrefixOfTheirSequencedCounterparts)
 {
-    EXPECT_EQ(18U, frm::UnsequencedHeader::encodedLength());
-    EXPECT_EQ(18U, frm::UnsequencedSystemHeader::encodedLength());
-    EXPECT_EQ(34U, frm::SequencedHeader::encodedLength());
-    EXPECT_EQ(34U, frm::SequencedSystemHeader::encodedLength());
+    EXPECT_EQ(20U, frm::UnsequencedHeader::encodedLength());
+    EXPECT_EQ(20U, frm::UnsequencedSystemHeader::encodedLength());
+    EXPECT_EQ(44U, frm::SequencedHeader::encodedLength());
+    EXPECT_EQ(44U, frm::SequencedSystemHeader::encodedLength());
 
     alignas(16) std::array<std::uint8_t, 64> unsequenced{};
     frm::UnsequencedHeader a;
     a.wrap(reinterpret_cast<char*>(unsequenced.data()), 0, 0, unsequenced.size());
-    a.sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(2);
+    a.sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(2).groupMask(0x8001);
 
     alignas(16) std::array<std::uint8_t, 64> unsequencedSystem{};
     frm::UnsequencedSystemHeader b;
     b.wrap(reinterpret_cast<char*>(unsequencedSystem.data()), 0, 0, unsequencedSystem.size());
-    b.sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).systemEventType(2);
+    b.sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).systemEventType(2).groupMask(0x8001);
 
     // The field at offset 16 is a payloadId on one and a systemEventType on the other; written to the
-    // same bits, the two composites are the same 18 bytes.
-    EXPECT_EQ(0, std::memcmp(unsequenced.data(), unsequencedSystem.data(), 18));
+    // same bits, the two composites are the same 20 bytes.
+    EXPECT_EQ(0, std::memcmp(unsequenced.data(), unsequencedSystem.data(), 20));
 
     alignas(16) std::array<std::uint8_t, 64> sequenced{};
     frm::SequencedHeader c;
@@ -160,8 +161,10 @@ TEST(Conformance, IngressCompositesAreThePrefixOfTheirSequencedCounterparts)
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .payloadId(2)
-        .globalSeqNo(9)
-        .timestamp(TIMESTAMP);
+        .groupMask(0x8001)
+        .clusterSeqNo(9)
+        .timestamp(TIMESTAMP)
+        .groupSeqNo(4);
 
     alignas(16) std::array<std::uint8_t, 64> sequencedSystem{};
     frm::SequencedSystemHeader d;
@@ -170,12 +173,15 @@ TEST(Conformance, IngressCompositesAreThePrefixOfTheirSequencedCounterparts)
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .systemEventType(2)
-        .globalSeqNo(9)
-        .timestamp(TIMESTAMP);
+        .groupMask(0x8001)
+        .clusterSeqNo(9)
+        .timestamp(TIMESTAMP)
+        .groupSeqNo(4);
 
-    EXPECT_EQ(0, std::memcmp(sequenced.data(), sequencedSystem.data(), 34));
-    EXPECT_EQ(0, std::memcmp(unsequenced.data(), sequenced.data(), 18)) << "the copy-18 of §9.5";
-    EXPECT_EQ(0, std::memcmp(unsequencedSystem.data(), sequencedSystem.data(), 18));
+    EXPECT_EQ(0, std::memcmp(sequenced.data(), sequencedSystem.data(), 44));
+    EXPECT_EQ(0, std::memcmp(unsequenced.data(), sequenced.data(), 20))
+        << "the copy-20 of §9.5, offsets 16 and 18 included";
+    EXPECT_EQ(0, std::memcmp(unsequencedSystem.data(), sequencedSystem.data(), 20));
 }
 
 TEST(Conformance, EveryFrameLayerFieldSitsAtTheOffsetSection41Gives)
@@ -187,25 +193,31 @@ TEST(Conformance, EveryFrameLayerFieldSitsAtTheOffsetSection41Gives)
     EXPECT_EQ(4U, frm::UnsequencedHeader::connectionIdEncodingOffset());
     EXPECT_EQ(8U, frm::UnsequencedHeader::sessionIdEncodingOffset());
     EXPECT_EQ(16U, frm::UnsequencedHeader::payloadIdEncodingOffset());
+    EXPECT_EQ(18U, frm::UnsequencedHeader::groupMaskEncodingOffset());
 
     EXPECT_EQ(0U, frm::UnsequencedSystemHeader::sourceIdEncodingOffset());
     EXPECT_EQ(4U, frm::UnsequencedSystemHeader::connectionIdEncodingOffset());
     EXPECT_EQ(8U, frm::UnsequencedSystemHeader::sessionIdEncodingOffset());
     EXPECT_EQ(16U, frm::UnsequencedSystemHeader::systemEventTypeEncodingOffset());
+    EXPECT_EQ(18U, frm::UnsequencedSystemHeader::groupMaskEncodingOffset());
 
     EXPECT_EQ(0U, frm::SequencedHeader::sourceIdEncodingOffset());
     EXPECT_EQ(4U, frm::SequencedHeader::connectionIdEncodingOffset());
     EXPECT_EQ(8U, frm::SequencedHeader::sessionIdEncodingOffset());
     EXPECT_EQ(16U, frm::SequencedHeader::payloadIdEncodingOffset());
-    EXPECT_EQ(18U, frm::SequencedHeader::globalSeqNoEncodingOffset());
-    EXPECT_EQ(26U, frm::SequencedHeader::timestampEncodingOffset());
+    EXPECT_EQ(18U, frm::SequencedHeader::groupMaskEncodingOffset());
+    EXPECT_EQ(20U, frm::SequencedHeader::clusterSeqNoEncodingOffset());
+    EXPECT_EQ(28U, frm::SequencedHeader::timestampEncodingOffset());
+    EXPECT_EQ(36U, frm::SequencedHeader::groupSeqNoEncodingOffset());
 
     EXPECT_EQ(0U, frm::SequencedSystemHeader::sourceIdEncodingOffset());
     EXPECT_EQ(4U, frm::SequencedSystemHeader::connectionIdEncodingOffset());
     EXPECT_EQ(8U, frm::SequencedSystemHeader::sessionIdEncodingOffset());
     EXPECT_EQ(16U, frm::SequencedSystemHeader::systemEventTypeEncodingOffset());
-    EXPECT_EQ(18U, frm::SequencedSystemHeader::globalSeqNoEncodingOffset());
-    EXPECT_EQ(26U, frm::SequencedSystemHeader::timestampEncodingOffset());
+    EXPECT_EQ(18U, frm::SequencedSystemHeader::groupMaskEncodingOffset());
+    EXPECT_EQ(20U, frm::SequencedSystemHeader::clusterSeqNoEncodingOffset());
+    EXPECT_EQ(28U, frm::SequencedSystemHeader::timestampEncodingOffset());
+    EXPECT_EQ(36U, frm::SequencedSystemHeader::groupSeqNoEncodingOffset());
 }
 
 TEST(Conformance, FrameSizesAreSection42sTable)
@@ -215,21 +227,22 @@ TEST(Conformance, FrameSizesAreSection42sTable)
     EXPECT_EQ(2U, frm::SequencedSystem::bodyHeaderLength());
 
     // Fixed overhead: MessageHeader + the header composite + the length prefix.
-    EXPECT_EQ(28U, protocol::MIN_INGRESS_LENGTH) << "ingress, both families";
-    EXPECT_EQ(44U, frm::MessageHeader::encodedLength() + frm::SequencedHeader::encodedLength() +
+    EXPECT_EQ(30U, protocol::MIN_INGRESS_LENGTH) << "ingress, both families";
+    EXPECT_EQ(54U, frm::MessageHeader::encodedLength() + frm::SequencedHeader::encodedLength() +
                        frm::Sequenced::payloadHeaderLength())
         << "sequenced, both families";
 
     // A ClusterHeartbeat is a template of its own: no length prefix and no payload at all.
-    EXPECT_EQ(42U, synthesizedFrame<frm::ClusterHeartbeat>(1, protocol::CLUSTER_HEARTBEAT, [](auto&) {}).size())
-        << "8 + 34, the cheapest frame in the system";
-    EXPECT_EQ(50U, synthesizedFrame<frm::SnapshotStarted>(1, protocol::SNAPSHOT_STARTED, [](auto&) {}).size())
-        << "8 + 34 + the round";
-    EXPECT_EQ(50U, synthesizedFrame<frm::SessionClosed>(1, protocol::SESSION_CLOSED, [](auto&) {}).size())
-        << "8 + 34 + the session";
+    EXPECT_EQ(52U, synthesizedFrame<frm::ClusterHeartbeat>(1, protocol::CLUSTER_HEARTBEAT, [](auto&) {}).size())
+        << "8 + 44, the cheapest frame in the system";
+    EXPECT_EQ(60U, synthesizedFrame<frm::SnapshotStarted>(1, protocol::SNAPSHOT_STARTED, [](auto&) {}).size())
+        << "8 + 44 + the round";
+    EXPECT_EQ(60U, synthesizedFrame<frm::SessionClosed>(1, protocol::SESSION_CLOSED, [](auto&) {}).size())
+        << "8 + 44 + the session";
 
     // §12's ceiling, as a frame on the wire.
-    EXPECT_EQ(44U + protocol::MAX_PAYLOAD_LENGTH, payloadFrame(1, 2, protocol::MAX_PAYLOAD_LENGTH).size());
+    EXPECT_EQ(8928U, 54U + protocol::MAX_PAYLOAD_LENGTH) << "the largest sequenced frame";
+    EXPECT_EQ(54U + protocol::MAX_PAYLOAD_LENGTH, payloadFrame(1, 2, protocol::MAX_PAYLOAD_LENGTH).size());
 }
 
 // ── Row 3. Every system message decodes to what it was built with (§7) ────────
@@ -416,7 +429,7 @@ TEST_F(ConnectedSender, PublishPayloadAdmitsTheCeilingAndRefusesOneMore)
                                       'x');
     EXPECT_EQ(protocol::Publish::Published,
               client::publishPayload<frm::ConnectionOpened>(
-                  m_sender, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
+                  m_sender, SOURCE_ID, CONNECTION_ID, 2, GROUP_MASK, [&](frm::ConnectionOpened& encoder) {
                       encoder.putConnectionData(atCeiling.data(), static_cast<std::uint16_t>(atCeiling.size()));
                   }));
     ASSERT_EQ(1U, m_ingress->m_offered.size());
@@ -424,14 +437,14 @@ TEST_F(ConnectedSender, PublishPayloadAdmitsTheCeilingAndRefusesOneMore)
     const std::vector<char> overCeiling(atCeiling.size() + 1, 'x');
     EXPECT_EQ(protocol::Publish::Refused,
               client::publishPayload<frm::ConnectionOpened>(
-                  m_sender, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
+                  m_sender, SOURCE_ID, CONNECTION_ID, 2, GROUP_MASK, [&](frm::ConnectionOpened& encoder) {
                       encoder.putConnectionData(overCeiling.data(), static_cast<std::uint16_t>(overCeiling.size()));
                   }));
     EXPECT_EQ(1U, m_ingress->m_offered.size()) << "nothing was offered to any transport";
 
     // Local and permanent, and the producer survives it: the very next well-formed publish succeeds.
     EXPECT_EQ(protocol::Publish::Published, client::publishPayload<frm::ClusterStarted>(
-                                                m_sender, SOURCE_ID, CONNECTION_ID, 2,
+                                                m_sender, SOURCE_ID, CONNECTION_ID, 2, GROUP_MASK,
                                                 [](frm::ClusterStarted& encoder) { encoder.correlationId(1); }));
     EXPECT_EQ(2U, m_ingress->m_offered.size());
 }
@@ -475,7 +488,12 @@ TEST_F(ConnectedSender, PublishedFramesAreTheHeaderThenThePrefixedPayload)
     std::vector<std::uint8_t> expectedPayload(protocol::MIN_INGRESS_LENGTH + payloadLength);
     frm::Unsequenced unsequenced;
     unsequenced.wrapAndApplyHeader(reinterpret_cast<char*>(expectedPayload.data()), 0, expectedPayload.size());
-    unsequenced.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(2);
+    unsequenced.header()
+        .sourceId(SOURCE_ID)
+        .connectionId(CONNECTION_ID)
+        .sessionId(SESSION_ID)
+        .payloadId(2)
+        .groupMask(GROUP_MASK);
     unsequenced.putPayload(payload.data(), payloadLength);
 
     std::array<char, 256> body{};
@@ -494,7 +512,7 @@ TEST_F(ConnectedSender, PublishedFramesAreTheHeaderThenThePrefixedPayload)
     unsequencedSystem.putBody(body.data(), bodyLength);
 
     EXPECT_EQ(protocol::Publish::Published,
-              client::publishPayload<frm::ConnectionOpened>(m_sender, SOURCE_ID, CONNECTION_ID, 2, fill));
+              client::publishPayload<frm::ConnectionOpened>(m_sender, SOURCE_ID, CONNECTION_ID, 2, GROUP_MASK, fill));
     EXPECT_EQ(protocol::Publish::Published, client::publishSystem<frm::ConnectionOpened>(
                                                 m_sender, SOURCE_ID, CONNECTION_ID, protocol::CONNECTION_OPENED, fill));
     ASSERT_EQ(2U, m_ingress->m_offered.size());
@@ -542,8 +560,9 @@ auto correlationOne = [](frm::ClusterStarted& encoder) { encoder.correlationId(1
 TEST_F(ConnectedSender, TrackedPublishRecordsThePlacedFrame)
 {
     FakeTracker tracker;
-    EXPECT_EQ(protocol::Publish::Published, client::publishPayload<frm::ClusterStarted>(
-                                                m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
+    EXPECT_EQ(protocol::Publish::Published,
+              client::publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, GROUP_MASK,
+                                                          correlationOne));
     ASSERT_EQ(1U, tracker.m_tracked.size());
     ASSERT_EQ(1U, m_ingress->m_offered.size());
     EXPECT_EQ(m_ingress->m_offered[0].size() - cluster::sbe::MessageHeader::encodedLength() -
@@ -557,8 +576,9 @@ TEST_F(ConnectedSender, HoldingOrFullTrackerDeclinesWithoutSending)
 {
     FakeTracker tracker;
     tracker.m_holding = true;
-    EXPECT_EQ(protocol::Publish::Declined, client::publishPayload<frm::ClusterStarted>(
-                                               m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
+    EXPECT_EQ(protocol::Publish::Declined,
+              client::publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, GROUP_MASK,
+                                                          correlationOne));
     tracker.m_holding = false;
     tracker.m_full = true;
     EXPECT_EQ(protocol::Publish::Declined,
@@ -572,8 +592,9 @@ TEST_F(ConnectedSender, TransportDeclineIsNotTracked)
 {
     FakeTracker tracker;
     m_sender.close(); // no session: send() refuses
-    EXPECT_EQ(protocol::Publish::Declined, client::publishPayload<frm::ClusterStarted>(
-                                               m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
+    EXPECT_EQ(protocol::Publish::Declined,
+              client::publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, GROUP_MASK,
+                                                          correlationOne));
     EXPECT_TRUE(tracker.m_tracked.empty());
 }
 
@@ -584,7 +605,7 @@ TEST_F(ConnectedSender, RefusalComesBeforeTheHold)
     const std::vector<char> overCeiling(protocol::MAX_PAYLOAD_LENGTH, 'x');
     EXPECT_EQ(protocol::Publish::Refused,
               client::publishPayload<frm::ConnectionOpened>(
-                  m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
+                  m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, GROUP_MASK, [&](frm::ConnectionOpened& encoder) {
                       encoder.putConnectionData(overCeiling.data(), static_cast<std::uint16_t>(overCeiling.size()));
                   }));
 }
@@ -593,11 +614,11 @@ TEST_F(ConnectedSender, FramesTheSequencerWouldRejectAreRefused)
 {
     // §9.2 conditions 6 to 9: what a producer can check without the sequencer's state.
     EXPECT_EQ(protocol::Publish::Refused,
-              client::publishPayload<frm::ClusterStarted>(m_sender, -1, CONNECTION_ID, 2, correlationOne));
-    EXPECT_EQ(protocol::Publish::Refused,
-              client::publishPayload<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID, 0, correlationOne));
-    EXPECT_EQ(protocol::Publish::Refused,
-              client::publishPayload<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID, 1, correlationOne));
+              client::publishPayload<frm::ClusterStarted>(m_sender, -1, CONNECTION_ID, 2, GROUP_MASK, correlationOne));
+    EXPECT_EQ(protocol::Publish::Refused, client::publishPayload<frm::ClusterStarted>(
+                                              m_sender, SOURCE_ID, CONNECTION_ID, 0, GROUP_MASK, correlationOne));
+    EXPECT_EQ(protocol::Publish::Refused, client::publishPayload<frm::ClusterStarted>(
+                                              m_sender, SOURCE_ID, CONNECTION_ID, 1, GROUP_MASK, correlationOne));
     EXPECT_EQ(protocol::Publish::Refused,
               client::publishSystem<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID,
                                                          protocol::LEADERSHIP_CHANGED, correlationOne));
@@ -629,7 +650,7 @@ TEST(Conformance, TheBoundaryPayloadSizesCrossIntact)
         EXPECT_FALSE(view.system);
         EXPECT_EQ(2, view.payloadId);
         EXPECT_EQ(payloadLength, view.payloadLength);
-        EXPECT_EQ(44U + payloadLength, frame.size()) << "44 + the payload (§4.2)";
+        EXPECT_EQ(54U + payloadLength, frame.size()) << "54 + the payload (§4.2)";
     }
 }
 
@@ -637,9 +658,9 @@ TEST(Conformance, TheBoundaryPayloadSizesCrossIntact)
 
 TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
 {
-    // globalSeqNo sits at 18 on all seven sequenced messages (F-3), so the continuity read is branch-free
+    // clusterSeqNo sits at 18 on all seven sequenced messages (F-3), so the continuity read is branch-free
     // over frames the consumer comprehends none of. Every one of these must come back valid: a frame
-    // dropped here is a globalSeqNo missing from that read, which reads as a gap that is not there.
+    // dropped here is a clusterSeqNo missing from that read, which reads as a gap that is not there.
     std::vector<std::vector<std::uint8_t>> queue;
     queue.push_back(payloadFrame(1, 4095, 8));
     queue.push_back(systemFrame(2, protocol::PAYLOAD_ID_REGISTERED, [](char* body, std::size_t cap) {
@@ -663,8 +684,8 @@ TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
     for (const auto& frame : queue)
     {
         const auto view = viewOf(frame);
-        EXPECT_TRUE(view.valid) << "frame " << expected << " is unreadable, so P-3 would lose its globalSeqNo";
-        EXPECT_EQ(expected, view.globalSeqNo);
+        EXPECT_TRUE(view.valid) << "frame " << expected << " is unreadable, so P-3 would lose its clusterSeqNo";
+        EXPECT_EQ(expected, view.clusterSeqNo);
         ++expected;
     }
 
@@ -677,7 +698,7 @@ TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .payloadId(4095)
-        .globalSeqNo(77)
+        .clusterSeqNo(77)
         .timestamp(TIMESTAMP);
     frame.putPayload(nullptr, 0);
     const auto length = frm::MessageHeader::encodedLength() + frame.encodedLength();
@@ -685,7 +706,7 @@ TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
     const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()), length);
     ASSERT_TRUE(view.valid) << "an empty payload under an unallocated payloadId is still a frame";
     EXPECT_EQ(4095, view.payloadId);
-    EXPECT_EQ(77, view.globalSeqNo);
+    EXPECT_EQ(77, view.clusterSeqNo);
     EXPECT_EQ(0U, view.templateId) << "no inner declaration, so nothing can dispatch on it (P-1)";
 }
 

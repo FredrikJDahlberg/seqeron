@@ -56,6 +56,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     private Aeron aeron;
     private Integer memberId;
+    private int groupId;
 
     /** The id the Replayer addresses this receiver's replies to, drawn from the driver at start; -1 before. */
     private long replyId = -1;
@@ -107,21 +108,25 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     }
 
     /**
-     * Subscribes the queue and control streams, opens the request publication and the convergence counter,
-     * and requests the cold-start replay from the recording's start, or the snapshot to restore first.
+     * Subscribes the queue of {@code groupId} and the control stream, opens the request publication and the
+     * convergence counter, and requests the cold-start replay from the recording's start, or the snapshot to
+     * restore first.
      * @param aeron    client sharing the co-located node's media driver
      * @param memberId this app's node, to label the counter
+     * @param groupId  the group whose queue to read: a consumer names its own, a façade passes the one the
+     *                 Replayer resolved (spec R-6)
      */
-    public void start(final Aeron aeron, final int memberId) {
+    public void start(final Aeron aeron, final int memberId, final int groupId) {
         this.aeron = aeron;
         this.memberId = memberId;
+        this.groupId = groupId;
         replyId = aeron.nextCorrelationId();
-        Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, memberId, "clientId %d requests replays as client %d",
-                    clientId, replyId);
+        Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, memberId,
+                    "clientId %d reads group %d's queue and requests replays as client %d", clientId, groupId, replyId);
         recoveryStalledCounter = SeqeronCounters.addAppCounter(
             aeron, SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + memberId + " client=" + clientId, memberId, clientId);
-        queueSubscription = aeron.addSubscription(QUEUE_CONSUMER_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
+        queueSubscription = aeron.addSubscription(QUEUE_CONSUMER_CHANNEL, FrameLayer.queueStreamId(groupId));
         controlSubscription = aeron.addSubscription(CONTROL_CHANNEL, ReplayProtocol.CONTROL_STREAM_ID);
         requestPublication = aeron.addPublication(ReplayProtocol.IPC_CHANNEL, ReplayProtocol.REQUEST_STREAM_ID);
         recovery.start();
@@ -177,11 +182,11 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     }
 
     /**
-     * Highest globalSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its own
+     * Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its own
      * recovery progress by.
      */
-    public long lastGlobalSeqNo() {
-        return recovery.lastGlobalSeqNo();
+    public long lastClusterSeqNo() {
+        return recovery.lastClusterSeqNo();
     }
 
     /**
@@ -261,9 +266,10 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                 return; // Replayer not up yet; the resend timer retries
             }
             replayRequest.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
-                         .clientId(replyId)
-                         .requestId(requestId)
-                         .fromPosition(fromPosition);
+                .clientId(replyId)
+                .requestId(requestId)
+                .fromPosition(fromPosition)
+                .queueId(groupId);
             requestPublication.offer(requestBuffer, 0,
                                      MessageHeaderEncoder.ENCODED_LENGTH + replayRequest.encodedLength());
         }

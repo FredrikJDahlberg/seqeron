@@ -28,10 +28,16 @@ std::string zeros(const std::size_t count)
     return std::string(count * 2, '0');
 }
 
-const std::string APPLICATION_HEADER = "010012000000070000000000000002000000";
-const std::string GATEWAY_HEADER = "01006a000000070000000000000002000000090000000a0000002a0000000200" +
-                                   std::string("0a0000000047572d41") + zeros(28) + "0b0000000147572d42" + zeros(28);
-constexpr std::uint32_t APPLICATION_SNAPSHOT_CRC = 0x6c24f56bU;
+// Groups 1 "orders" and 3 "risk".
+const std::vector<SnapshotGroup> GROUPS{ { 1, "orders" }, { 3, "risk" } };
+const std::string GROUPS_BYTES = "02" + std::string("016f7264657273") + zeros(26) + "037269736b" + zeros(28);
+const std::string APPLICATION_HEADER = "020055000000070000000000000002000000" + GROUPS_BYTES;
+const std::string GATEWAY_HEADER = "0200ad000000070000000000000002000000" + GROUPS_BYTES +
+                                   "090000000a0000002a0000000200" + "0a0000000047572d41" + zeros(28) +
+                                   "0b0000000147572d42" + zeros(28);
+// A version 1 application header, cut from a log before groups.
+const std::string VERSION_1_HEADER = "010012000000070000000000000002000000";
+constexpr std::uint32_t APPLICATION_SNAPSHOT_CRC = 0x8a4aa58fU;
 
 std::vector<std::uint8_t> body()
 {
@@ -45,7 +51,7 @@ std::vector<std::uint8_t> body()
 
 SnapshotHeader gatewayHeader()
 {
-    return SnapshotHeader{ 7, 2, SnapshotGatewayState{ 9, 10, 42, { { 10, 0, "GW-A" }, { 11, 1, "GW-B" } } } };
+    return SnapshotHeader{ 7, 2, GROUPS, SnapshotGatewayState{ 9, 10, 42, { { 10, 0, "GW-A" }, { 11, 1, "GW-B" } } } };
 }
 
 std::vector<std::uint8_t> encode(const SnapshotHeader& header)
@@ -57,7 +63,7 @@ std::vector<std::uint8_t> encode(const SnapshotHeader& header)
 
 std::vector<std::uint8_t> snapshot()
 {
-    std::vector<std::uint8_t> bytes = encode(SnapshotHeader{ 7, 2, std::nullopt });
+    std::vector<std::uint8_t> bytes = encode(SnapshotHeader{ 7, 2, GROUPS, std::nullopt });
     const std::vector<std::uint8_t> tail = body();
     bytes.insert(bytes.end(), tail.begin(), tail.end());
     return bytes;
@@ -120,7 +126,7 @@ TEST(SnapshotFormat, TheCrcInstructionMatchesTheTableAtEveryLengthAlignmentAndSe
 
 TEST(SnapshotFormat, HeadersEncodeToTheGoldenBytes)
 {
-    const SnapshotHeader application{ 7, 2, std::nullopt };
+    const SnapshotHeader application{ 7, 2, GROUPS, std::nullopt };
     EXPECT_EQ(hex(APPLICATION_HEADER), encode(application));
     EXPECT_EQ(hex(GATEWAY_HEADER), encode(gatewayHeader()));
 
@@ -135,14 +141,22 @@ TEST(SnapshotFormat, ForeignOrShortHeadersDoNotDecode)
 {
     std::vector<std::uint8_t> gateway = encode(gatewayHeader());
     EXPECT_FALSE(SnapshotHeader::decode(gateway.data(), gateway.size() - 1)) << "truncated";
-    EXPECT_FALSE(SnapshotHeader::decode(gateway.data(), 17)) << "shorter than any header";
+    EXPECT_FALSE(SnapshotHeader::decode(gateway.data(), 18)) << "shorter than any header";
 
-    gateway[0] = 2;
-    EXPECT_EQ(2, SnapshotHeader::version(gateway.data(), gateway.size()));
+    const std::vector<std::uint8_t> version1 = hex(VERSION_1_HEADER);
+    EXPECT_EQ(1, SnapshotHeader::version(version1.data(), version1.size()));
+    EXPECT_FALSE(SnapshotHeader::decode(version1.data(), version1.size())) << "cut before groups";
+
+    gateway[0] = 3;
+    EXPECT_EQ(3, SnapshotHeader::version(gateway.data(), gateway.size()));
     EXPECT_FALSE(SnapshotHeader::decode(gateway.data(), gateway.size())) << "a later headerVersion";
 
+    std::vector<std::uint8_t> groups = encode(SnapshotHeader{ 7, 2, GROUPS, std::nullopt });
+    groups[18] = 3;
+    EXPECT_FALSE(SnapshotHeader::decode(groups.data(), groups.size())) << "groupCount disagrees with length";
+
     std::vector<std::uint8_t> rows = encode(gatewayHeader());
-    rows[30] = 3;
+    rows[85 + 12] = 3;
     EXPECT_FALSE(SnapshotHeader::decode(rows.data(), rows.size())) << "rowCount disagrees with length";
 }
 

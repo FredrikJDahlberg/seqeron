@@ -11,13 +11,14 @@ using SbeBuffer = Org.SbeTool.Sbe.Dll.DirectBuffer;
 namespace Org.Limitless.Seqeron.Replayer.Client;
 
 /// <summary>
-/// The state machine of <c>ReplayerStreamReceiver</c>. A cold start walks the node's active recording from its
-/// start, which holds the whole log; catch-up is detected by position (<c>Replaying.catchUpPosition</c>); a gap by
-/// globalSeqNo, repaired by resuming the active recording at the last dispatched frame.
+/// The state machine of <c>ReplayerStreamReceiver</c>. A cold start walks the node's active recording of its queue
+/// from its start, which holds the whole queue; catch-up is detected by position (<c>Replaying.catchUpPosition</c>);
+/// a gap by groupSeqNo (spec F-6), repaired by resuming the active recording at the last dispatched frame.
+/// De-duplication and a resume's anchor go by clusterSeqNo, which increases along a queue but jumps (spec P-3).
 /// <para>The replay-to-live seam is closed by the queue itself: the untethered queue is polled every duty cycle, so
 /// frames beyond the current hole are retained and drained once contiguous. While <see cref="IsRecovering"/> a
-/// non-contiguous queue frame is expected rather than a new gap, and it may not set the globalSeqNo baseline before
-/// the walk has: a cold start would otherwise adopt a mid-stream baseline.</para>
+/// non-contiguous queue frame is expected rather than a new gap, and it may not set the baseline before the walk
+/// has: a cold start would otherwise adopt a mid-stream baseline.</para>
 /// <para><see cref="IsCaughtUp"/> is cleared on a live-queue gap and re-established once contiguous: consumers gate
 /// real decisions on it. Single-threaded: every method runs on the one duty-cycle thread.</para>
 /// <para>Given a snapshot store (<see cref="RestoreFrom"/>), a cold start first restores the newest snapshot it holds
@@ -80,13 +81,16 @@ internal sealed class ReplayerRecovery
     private long _lastReplayPosition = -1;
     private long _lastReplayProgressMs;
 
-    private long _lastGlobalSeqNo;
+    private long _lastClusterSeqNo;
+
+    // groupSeqNo of the last dispatched frame, 0 before the first: the queue's continuity.
+    private long _lastGroupSeqNo;
 
     // Where the last dispatched frame starts in the recording; RequestResume's anchor.
     private long _lastFramePosition;
 
-    // globalSeqNo a resume replay must open at, or 0 if not resuming.
-    private long _resumeAnchorGlobalSeqNo;
+    // clusterSeqNo a resume replay must open at, or 0 if not resuming.
+    private long _resumeAnchorClusterSeqNo;
 
     // Report a hole in replayed history once per episode, not per frame.
     private bool _replayGapLogged;
@@ -99,7 +103,7 @@ internal sealed class ReplayerRecovery
     private readonly Stack<RetainBlock> _retainPool = new Stack<RetainBlock>();
     private RetainBlock _retainTail;
     private int _retainReadOffset;
-    private long _retainTailGlobalSeqNo;
+    private long _retainTailClusterSeqNo;
     private int _retainFrameCount;
     private long _retainBytes;
 
@@ -123,6 +127,9 @@ internal sealed class ReplayerRecovery
 
     // The chosen snapshot's round.
     private long _snapshotRound;
+
+    // groupSeqNo of the frame at the chosen snapshot's cut, read off the replay that found it.
+    private long _cutGroupSeqNo;
 
     // The header of the restore in progress, null before its record 0.
     private SnapshotHeader _restoredHeader;
@@ -186,7 +193,7 @@ internal sealed class ReplayerRecovery
     /// <param name="receiveNs">when the frame arrived, so a consumer's delivery-latency stats measure the queue rather
     /// than the drain of the retained FIFO</param>
     /// <param name="fromReplay">whether the frame arrived on a replay image rather than the live queue</param>
-    /// <exception cref="InvalidOperationException">if the first frame observed is not globalSeqNo 1</exception>
+    /// <exception cref="InvalidOperationException">if the first frame observed is not clusterSeqNo 1</exception>
     public void OnFrame(IDirectBuffer buffer, int offset, int length, long framePosition, long receiveNs,
                         bool fromReplay)
     {
@@ -194,41 +201,43 @@ internal sealed class ReplayerRecovery
         {
             return;
         }
-        long globalSeqNo = _event.GlobalSeqNo;
+        long clusterSeqNo = _event.ClusterSeqNo;
+        long groupSeqNo = _event.GroupSeqNo;
 
         // First frame off a resume replay: it must be the frame whose position requested. Positions follow from the
         // frames, and the recording changes only with the node's driver, so a mismatch is a fault.
-        if (fromReplay && _resumeAnchorGlobalSeqNo != 0)
+        if (fromReplay && _resumeAnchorClusterSeqNo != 0)
         {
-            long anchor = _resumeAnchorGlobalSeqNo;
-            _resumeAnchorGlobalSeqNo = 0;
+            long anchor = _resumeAnchorClusterSeqNo;
+            _resumeAnchorClusterSeqNo = 0;
             if (_checkingCut)
             {
-                OnCutReplayed(globalSeqNo == anchor && _event.ClusterTimestampNs == _reader.CutTimestampNs);
+                _cutGroupSeqNo = groupSeqNo;
+                OnCutReplayed(clusterSeqNo == anchor && _event.ClusterTimestampNs == _reader.CutTimestampNs);
                 return;
             }
-            if (globalSeqNo != anchor)
+            if (clusterSeqNo != anchor)
             {
-                Fail($"resume replay at position {_requestFromPosition} opened at globalSeqNo={globalSeqNo}, " +
+                Fail($"resume replay at position {_requestFromPosition} opened at clusterSeqNo={clusterSeqNo}, " +
                      $"expected {anchor}");
                 return;
             }
         }
-        if (_lastGlobalSeqNo != 0)
+        if (_lastGroupSeqNo != 0)
         {
-            if (globalSeqNo <= _lastGlobalSeqNo)
+            if (clusterSeqNo <= _lastClusterSeqNo)
             {
                 return;
             }
-            if (globalSeqNo > _lastGlobalSeqNo + 1)
+            if (groupSeqNo > _lastGroupSeqNo + 1)
             {
                 if (!fromReplay && !IsRecovering)
                 {
                     Logger.Log(
                         Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                         Logger.CoreEventCode.QueueGap, _actions.MemberId,
-                        "queue gap: expected globalSeqNo={0} got {1} — resuming the recording at globalSeqNo={2}",
-                        _lastGlobalSeqNo + 1, globalSeqNo, _lastGlobalSeqNo);
+                        "queue gap: expected groupSeqNo={0} got {1} — resuming the recording at clusterSeqNo={2}",
+                        _lastGroupSeqNo + 1, groupSeqNo, _lastClusterSeqNo);
                     // No longer following live: consumers gate real decisions on IsCaughtUp, and it must not hold
                     // again until the stream goes contiguous.
                     _caughtUp = false;
@@ -236,37 +245,37 @@ internal sealed class ReplayerRecovery
                 }
                 if (!fromReplay)
                 {
-                    RetainFrame(globalSeqNo, buffer, offset, length, framePosition, receiveNs);
+                    RetainFrame(clusterSeqNo, groupSeqNo, buffer, offset, length, framePosition, receiveNs);
                 }
                 else if (!_replayGapLogged)
                 {
                     _replayGapLogged = true;
                     Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                                Logger.CoreEventCode.QueueGap, _actions.MemberId,
-                               "gap in REPLAYED history: expected globalSeqNo={0} got {1} — this node's recording " +
+                               "gap in REPLAYED history: expected groupSeqNo={0} got {1} — this node's recording " +
                                    "does not cover the hole; recovery cannot converge until it does",
-                               _lastGlobalSeqNo + 1, globalSeqNo);
+                               _lastGroupSeqNo + 1, groupSeqNo);
                 }
                 return;
             }
         }
-        else if (globalSeqNo != 1)
+        else if (groupSeqNo != 1)
         {
             if (!fromReplay && IsRecovering)
             {
-                RetainFrame(globalSeqNo, buffer, offset, length, framePosition, receiveNs);
+                RetainFrame(clusterSeqNo, groupSeqNo, buffer, offset, length, framePosition, receiveNs);
                 return;
             }
             Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.FirstFrameNotOne,
                          _actions.MemberId,
-                         "FATAL: first frame observed has globalSeqNo={0}, expected 1 — this node's recording does " +
-                             "not reach the start of the log",
-                         globalSeqNo);
+                         "FATAL: first frame observed has groupSeqNo={0}, expected 1 — this node's recording does " +
+                             "not reach the start of the queue",
+                         groupSeqNo);
             throw new InvalidOperationException(
-                $"first frame observed has globalSeqNo={globalSeqNo}, expected 1 — this node's recording does not " +
-                "reach the start of the log");
+                $"first frame observed has groupSeqNo={groupSeqNo}, expected 1 — this node's recording does not " +
+                "reach the start of the queue");
         }
-        DispatchFrame(buffer, offset, length, globalSeqNo, framePosition, receiveNs, fromReplay);
+        DispatchFrame(buffer, offset, length, clusterSeqNo, framePosition, receiveNs, fromReplay);
         DrainRetained();
     }
 
@@ -406,10 +415,10 @@ internal sealed class ReplayerRecovery
         _recoveryStallReported = true;
         Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.RecoveryStalled,
                      _actions.MemberId,
-                     "recovery has dispatched nothing for >{0}ms: lastGlobalSeqNo={1} fromPosition={2} " +
+                     "recovery has dispatched nothing for >{0}ms: lastClusterSeqNo={1} fromPosition={2} " +
                          "awaitingReplay={3} replaySession={4} checkingCut={5} restoring={6} — holding; check this " +
                          "node's Replayer and its recording",
-                     RecoveryProgressTimeoutMs, _lastGlobalSeqNo, _requestFromPosition, Text(_awaitingReplay),
+                     RecoveryProgressTimeoutMs, _lastClusterSeqNo, _requestFromPosition, Text(_awaitingReplay),
                      _replaySessionId, Text(_checkingCut), Text(_restoring));
         _actions.RecoveryStalled(true);
         return true;
@@ -419,9 +428,9 @@ internal sealed class ReplayerRecovery
     /// seam.</summary>
     public bool IsCaughtUp => _caughtUp;
 
-    /// <summary>Highest globalSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its own
+    /// <summary>Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its own
     /// recovery progress by.</summary>
-    public long LastGlobalSeqNo => _lastGlobalSeqNo;
+    public long LastClusterSeqNo => _lastClusterSeqNo;
 
     /// <summary>memberId of the current leader per the last <c>LeadershipChanged</c> processed, or -1 until one is
     /// seen. A replica emits iff its own node is this leader.</summary>
@@ -469,7 +478,7 @@ internal sealed class ReplayerRecovery
     {
         if (fromPosition == ReplayProtocol.FromStart)
         {
-            _resumeAnchorGlobalSeqNo = 0; // a walk supersedes any resume in flight
+            _resumeAnchorClusterSeqNo = 0; // a walk supersedes any resume in flight
         }
         _requestFromPosition = fromPosition;
         _awaitingReplay = true;
@@ -488,7 +497,7 @@ internal sealed class ReplayerRecovery
     private void RequestResume()
     {
         RequestReplay(_lastFramePosition);
-        _resumeAnchorGlobalSeqNo = _lastGlobalSeqNo;
+        _resumeAnchorClusterSeqNo = _lastClusterSeqNo;
     }
 
     /// <summary>Opens the newest snapshot file below <paramref name="belowRound"/> and replays the recording from its
@@ -525,7 +534,7 @@ internal sealed class ReplayerRecovery
     {
         _checkingCut = true;
         RequestReplay(_reader.CutPosition);
-        _resumeAnchorGlobalSeqNo = _reader.CutGlobalSeqNo;
+        _resumeAnchorClusterSeqNo = _reader.CutClusterSeqNo;
     }
 
     /// <summary>The replay from the cut opened: on the round's <c>SnapshotStarted</c>, the file's records are read;
@@ -540,9 +549,9 @@ internal sealed class ReplayerRecovery
         {
             Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                        Logger.CoreEventCode.SnapshotStoreFailed, _actions.MemberId,
-                       "round {0}'s cut, globalSeqNo={1} at position {2}, is not in this node's recording; trying an " +
-                           "older snapshot",
-                       _snapshotRound, _reader.CutGlobalSeqNo, _reader.CutPosition);
+                       "round {0}'s cut, clusterSeqNo={1} at position {2}, is not in this node's recording; trying " +
+                           "an older snapshot",
+                       _snapshotRound, _reader.CutClusterSeqNo, _reader.CutPosition);
             ChooseBelow(_snapshotRound);
             return;
         }
@@ -550,8 +559,8 @@ internal sealed class ReplayerRecovery
         _restoreRecordIndex = 0;
         _restoredHeader = null;
         Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, _actions.MemberId,
-                    "restoring round {0}, cut at globalSeqNo={1} position={2}", _snapshotRound, _reader.CutGlobalSeqNo,
-                    _reader.CutPosition);
+                    "restoring round {0}, cut at clusterSeqNo={1} position={2}", _snapshotRound,
+                    _reader.CutClusterSeqNo, _reader.CutPosition);
     }
 
     /// <summary>The next records of the restore, at most <see cref="MaxRestoreRecordsPerCycle"/>. They match the end
@@ -606,15 +615,16 @@ internal sealed class ReplayerRecovery
     private void CompleteRestore()
     {
         _restoring = false;
-        _lastGlobalSeqNo = _reader.CutGlobalSeqNo;
+        _lastClusterSeqNo = _reader.CutClusterSeqNo;
+        _lastGroupSeqNo = _cutGroupSeqNo;
         _lastFramePosition = _reader.CutPosition;
         CloseReader();
         _currentLeaderMemberId = _restoredHeader.LeaderMemberId;
         Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, _actions.MemberId,
-                    "restored round {0}; resuming after globalSeqNo={1}", _snapshotRound, _lastGlobalSeqNo);
+                    "restored round {0}; resuming after clusterSeqNo={1}", _snapshotRound, _lastClusterSeqNo);
         if (_onLeadershipChanged != null && _restoredHeader.LeadershipTermId >= 0)
         {
-            _onLeadershipChanged(_currentLeaderMemberId, _restoredHeader.LeadershipTermId, _lastGlobalSeqNo);
+            _onLeadershipChanged(_currentLeaderMemberId, _restoredHeader.LeadershipTermId, _lastClusterSeqNo);
         }
         RequestResume();
     }
@@ -665,7 +675,7 @@ internal sealed class ReplayerRecovery
             if (_requestFromPosition != ReplayProtocol.FromStart)
             {
                 Fail($"the Replayer refused a resume at position {_requestFromPosition} above " +
-                     $"globalSeqNo={_lastGlobalSeqNo}");
+                     $"clusterSeqNo={_lastClusterSeqNo}");
                 return;
             }
             _replaySessionId = -1; // the recording holds nothing yet: follow the live queue
@@ -718,7 +728,7 @@ internal sealed class ReplayerRecovery
     }
 
     /// <summary>Everything past the contiguity check; also the path a drained retained frame takes.</summary>
-    private void DispatchFrame(IDirectBuffer buffer, int offset, int length, long globalSeqNo, long framePosition,
+    private void DispatchFrame(IDirectBuffer buffer, int offset, int length, long clusterSeqNo, long framePosition,
                                long receiveNs, bool fromReplay)
     {
         _noProgressSinceMs = 0;
@@ -729,7 +739,8 @@ internal sealed class ReplayerRecovery
         }
         _event.Wrap(buffer, offset, length);
 
-        _lastGlobalSeqNo = globalSeqNo;
+        _lastClusterSeqNo = clusterSeqNo;
+        _lastGroupSeqNo = _event.GroupSeqNo;
         _replayGapLogged = false;
         _lastFramePosition = framePosition;
         if (!fromReplay && !_caughtUp && !_retainOverflowed)
@@ -744,7 +755,7 @@ internal sealed class ReplayerRecovery
             _currentLeaderMemberId = _leadershipChanged.NewLeaderMemberId;
             if (_onLeadershipChanged != null)
             {
-                _onLeadershipChanged(_currentLeaderMemberId, _leadershipChanged.LeadershipTermId, globalSeqNo);
+                _onLeadershipChanged(_currentLeaderMemberId, _leadershipChanged.LeadershipTermId, clusterSeqNo);
                 return;
             }
         }
@@ -754,11 +765,11 @@ internal sealed class ReplayerRecovery
 
     /// <summary>
     /// Keeps a live queue frame from beyond the current hole; one not kept is gone. Bounded and lossy past the bound
-    /// (overflow falls back to a resume). A plain FIFO: one image delivers globalSeqNo in order, so only an exact
+    /// (overflow falls back to a resume). A plain FIFO: one image delivers clusterSeqNo in order, so only an exact
     /// redelivery needs checking.
     /// </summary>
-    private void RetainFrame(long globalSeqNo, IDirectBuffer buffer, int offset, int length, long framePosition,
-                             long receiveNs)
+    private void RetainFrame(long clusterSeqNo, long groupSeqNo, IDirectBuffer buffer, int offset, int length,
+                             long framePosition, long receiveNs)
     {
         int recordSize = RetainBlock.RecordHeaderLength + length;
         if (_retainFrameCount >= MaxRetainedFrames || (_retainBytes + length) > MaxRetainedBytes ||
@@ -770,13 +781,13 @@ internal sealed class ReplayerRecovery
                 _retainOverflowLogged = true;
                 Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                            Logger.CoreEventCode.QueueGap, _actions.MemberId,
-                           "retained-frame buffer full at globalSeqNo={0} ({1} frames, {2} bytes) — dropping " +
+                           "retained-frame buffer full at clusterSeqNo={0} ({1} frames, {2} bytes) — dropping " +
                                "ahead-of-hole frames; recovery resumes at the last dispatched frame",
-                           globalSeqNo, _retainFrameCount, _retainBytes);
+                           clusterSeqNo, _retainFrameCount, _retainBytes);
             }
             return;
         }
-        if (_retainFrameCount > 0 && globalSeqNo <= _retainTailGlobalSeqNo)
+        if (_retainFrameCount > 0 && clusterSeqNo <= _retainTailClusterSeqNo)
         {
             return; // already retained (the queue redelivered it): keep the first copy
         }
@@ -786,15 +797,16 @@ internal sealed class ReplayerRecovery
             _retained.Enqueue(_retainTail);
         }
         RetainBlock tail = _retainTail;
-        tail.Buffer.PutLong(tail.Used, globalSeqNo);
-        tail.Buffer.PutLong(tail.Used + sizeof(long), framePosition);
-        tail.Buffer.PutLong(tail.Used + 2 * sizeof(long), receiveNs);
-        tail.Buffer.PutInt(tail.Used + 3 * sizeof(long), length);
+        tail.Buffer.PutLong(tail.Used, groupSeqNo);
+        tail.Buffer.PutLong(tail.Used + sizeof(long), clusterSeqNo);
+        tail.Buffer.PutLong(tail.Used + 2 * sizeof(long), framePosition);
+        tail.Buffer.PutLong(tail.Used + 3 * sizeof(long), receiveNs);
+        tail.Buffer.PutInt(tail.Used + 4 * sizeof(long), length);
         tail.Buffer.PutBytes(tail.Used + RetainBlock.RecordHeaderLength, buffer, offset, length);
         tail.Used += recordSize;
         ++_retainFrameCount;
         _retainBytes += length;
-        _retainTailGlobalSeqNo = globalSeqNo;
+        _retainTailClusterSeqNo = clusterSeqNo;
     }
 
     /// <summary>Dispatches every retained frame now contiguous, dropping any the replay covered, and recycles
@@ -803,19 +815,19 @@ internal sealed class ReplayerRecovery
     {
         // Exits when the FIFO runs dry, or on a hole below the oldest retained frame.
         RetainBlock front = FrontRetained();
-        while (front != null && front.Buffer.GetLong(_retainReadOffset) <= _lastGlobalSeqNo + 1)
+        while (front != null && front.Buffer.GetLong(_retainReadOffset) <= _lastGroupSeqNo + 1)
         {
-            long globalSeqNo = front.Buffer.GetLong(_retainReadOffset);
-            long position = front.Buffer.GetLong(_retainReadOffset + sizeof(long));
-            long receiveNs = front.Buffer.GetLong(_retainReadOffset + 2 * sizeof(long));
-            int length = front.Buffer.GetInt(_retainReadOffset + 3 * sizeof(long));
+            long clusterSeqNo = front.Buffer.GetLong(_retainReadOffset + sizeof(long));
+            long position = front.Buffer.GetLong(_retainReadOffset + 2 * sizeof(long));
+            long receiveNs = front.Buffer.GetLong(_retainReadOffset + 3 * sizeof(long));
+            int length = front.Buffer.GetInt(_retainReadOffset + 4 * sizeof(long));
             int payloadOffset = _retainReadOffset + RetainBlock.RecordHeaderLength;
             _retainReadOffset += RetainBlock.RecordHeaderLength + length;
             --_retainFrameCount;
             _retainBytes -= length;
-            if (globalSeqNo > _lastGlobalSeqNo) // otherwise the replay already covered it
+            if (clusterSeqNo > _lastClusterSeqNo) // otherwise the replay already covered it
             {
-                DispatchFrame(front.Buffer, payloadOffset, length, globalSeqNo, position, receiveNs, false);
+                DispatchFrame(front.Buffer, payloadOffset, length, clusterSeqNo, position, receiveNs, false);
             }
             front = FrontRetained();
         }
@@ -897,8 +909,8 @@ internal sealed class ReplayerRecovery
     {
         public const int Size = 16 * 1024;
 
-        // globalSeqNo, position, receiveNs, length: the per-record framing within a block.
-        public const int RecordHeaderLength = 3 * sizeof(long) + sizeof(int);
+        // groupSeqNo, clusterSeqNo, position, receiveNs, length: the per-record framing within a block.
+        public const int RecordHeaderLength = 4 * sizeof(long) + sizeof(int);
 
         // Pinned for as long as it is pooled, so on the pinned heap rather than fragmenting the young one.
         public readonly UnsafeBuffer Buffer = new UnsafeBuffer(GC.AllocateArray<byte>(Size, true));

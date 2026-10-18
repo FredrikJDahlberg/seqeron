@@ -10,11 +10,11 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// One co-located application from the topology file (§5). Applications are not elected,                               so the row has no instance id, rank or countdown. Labelling only; the sequencer                               does not decode it
+    /// One co-located application from the topology file (§5). Applications are not elected,                               so the row has no instance id, rank or countdown. The sequencer reads only its                               group (S-8)
     /// </summary>
     public sealed partial class ApplicationRegistered
     {
-        public const ushort BlockLength = (ushort)37;
+        public const ushort BlockLength = (ushort)38;
         public const ushort TemplateId = (ushort)25;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;
@@ -294,6 +294,49 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         }
 
 
+        public const int GroupIdId = 20059;
+        public const int GroupIdSinceVersion = 0;
+        public const int GroupIdDeprecated = 0;
+        public bool GroupIdInActingVersion()
+        {
+            return _actingVersion >= GroupIdSinceVersion;
+        }
+
+        public const int GroupIdOffset = 37;
+
+        public static string GroupIdMetaAttribute(MetaAttribute metaAttribute)
+        {
+            switch (metaAttribute)
+            {
+                case MetaAttribute.Epoch: return "";
+                case MetaAttribute.TimeUnit: return "";
+                case MetaAttribute.SemanticType: return "";
+                case MetaAttribute.Presence: return "required";
+            }
+
+            return "";
+        }
+
+        public const byte GroupIdNullValue = (byte)255;
+        public const byte GroupIdMinValue = (byte)0;
+        public const byte GroupIdMaxValue = (byte)254;
+
+        /// <summary>
+        /// The group whose queue the replicas read (A-8), fixed for the source's life (S-8)
+        /// </summary>
+        public byte GroupId
+        {
+            get
+            {
+                return _buffer.Uint8Get(_offset + 37);
+            }
+            set
+            {
+                _buffer.Uint8Put(_offset + 37, value);
+            }
+        }
+
+
         public override string ToString()
         {
             var sb = new StringBuilder(100);
@@ -345,6 +388,9 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             builder.Append('|');
             builder.Append("Snapshot=");
             builder.Append(this.Snapshot);
+            builder.Append('|');
+            builder.Append("GroupId=");
+            builder.Append(this.GroupId);
 
             this.Limit = originalLimit;
 

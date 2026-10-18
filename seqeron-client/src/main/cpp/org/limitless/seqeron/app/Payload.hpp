@@ -34,10 +34,16 @@ Payload makePayload(const protocol::SequencedEvent& event);
 class Payload
 {
   public:
-    // Cluster-wide monotone sequence number; increments by exactly one per frame.
-    [[nodiscard]] std::int64_t globalSeqNo() const noexcept
+    // Cluster-wide monotone sequence number; along this queue it increases, but not by one (spec F-6).
+    [[nodiscard]] std::int64_t clusterSeqNo() const noexcept
     {
-        return m_event.globalSeqNo;
+        return m_event.clusterSeqNo;
+    }
+
+    // This frame's place on this instance's queue, increasing by exactly one per frame.
+    [[nodiscard]] std::int64_t groupSeqNo() const noexcept
+    {
+        return m_event.groupSeqNo;
     }
 
     // The producer that submitted this frame (spec §5).
@@ -50,6 +56,12 @@ class Payload
     [[nodiscard]] std::int32_t connectionId() const noexcept
     {
         return m_event.connectionId;
+    }
+
+    // The groups whose queues carry it; a reply to it takes this mask (spec A-2, A-9).
+    [[nodiscard]] std::uint16_t groupMask() const noexcept
+    {
+        return m_event.groupMask;
     }
 
     // The cluster session it was submitted on; a gateway pair shares its sourceId but not this.

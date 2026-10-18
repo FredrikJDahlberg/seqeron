@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.aeron.Publication;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.agrona.ExpandableArrayBuffer;
@@ -21,6 +23,8 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
+import org.limitless.seqeron.sbe.replay.QueueRequestEncoder;
+import org.limitless.seqeron.sbe.replay.QueueResolvedDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
@@ -42,15 +46,23 @@ class ReplayerServiceTest {
     private static final long CLIENT = 7;
     private static final long OTHER_CLIENT = 8;
     private static final long FROM_START = ReplayProtocol.FROM_START;
+    private static final int GROUP_ID = FakeReplayer.GROUP_ID;
+    private static final int OTHER_GROUP_ID = 2;
 
-    /** One decoded control reply. {@code catchUpPosition} is unset on non-Replaying replies. */
-    private record Reply(int templateId, long clientId, long requestId, long replaySessionId, long catchUpPosition) { }
+    /**
+     * One decoded control reply. {@code catchUpPosition} is unset on non-Replaying replies, and {@code queueId} on
+     * all but QueueResolved.
+     */
+    private record
+        Reply(int templateId, long clientId, long requestId, long replaySessionId, long catchUpPosition, int queueId) {
+    }
 
     private final List<Logger.LoggerEvent> events = new ArrayList<>();
     private final AtomicInteger fatalCount = new AtomicInteger();
     private final MutableDirectBuffer encodeBuffer = new ExpandableArrayBuffer(128);
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
 
+    private final Queue<byte[]> topologyRows = new ConcurrentLinkedQueue<>();
     private FakeReplayer fakeReplayer;
     private ReplayerService replayerService;
 
@@ -58,8 +70,15 @@ class ReplayerServiceTest {
     void setUp() {
         Logger.install(events::add);
         fakeReplayer = new FakeReplayer();
-        replayerService =
-            new ReplayerService(fakeReplayer, MEMBER_ID, NoOpIdleStrategy.INSTANCE, fatalCount::incrementAndGet);
+        serve(QueueResolver.EVERY_GROUP, new TopologyLoad().groups(GROUP_ID, "group-1"));
+    }
+
+    /** Replaces the service with one relaying {@code relayedGroups}, handed {@code load}'s rows. */
+    private void serve(final int relayedGroups, final TopologyLoad load) {
+        topologyRows.clear();
+        topologyRows.addAll(load.rows());
+        replayerService = new ReplayerService(fakeReplayer, MEMBER_ID, NoOpIdleStrategy.INSTANCE, topologyRows,
+                                              relayedGroups, fatalCount::incrementAndGet);
     }
 
     @AfterEach
@@ -360,9 +379,21 @@ class ReplayerServiceTest {
 
     @Test
     void anArchiveThatClosedTheControlSessionTakesTheDutyCycleDownLoudly() {
-        fakeReplayer.closeArchiveSession("not connected");
+        fakeReplayer.closeArchiveSession();
 
         assertThrows(IllegalStateException.class, () -> replayerService.poll());
+    }
+
+    @Test
+    void anErrorAnsweringOneRequestIsCountedAndTheDutyCycleRunsOn() {
+        // A replay whose client left before it connected is answered with an error, and the session stays open.
+        fakeReplayer.answerArchiveRequestWithError("no connection established for replayChannel=aeron:ipc");
+
+        replayerService.poll();
+        replayerService.poll();
+
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
+        assertEquals(0, fatalCount.get());
     }
 
     // ── Slots ───────────────────────────────────────────────────────────────────
@@ -527,6 +558,134 @@ class ReplayerServiceTest {
         assertTrue(loggedOnce(Logger.CoreEventCode.ReplayDutyCycleFailure));
     }
 
+    // ── Queues (R-5) ────────────────────────────────────────────────────────────
+
+    @Test
+    void nothingIsListedOrServedBeforeTheGroupTableArrives() {
+        serve(QueueResolver.EVERY_GROUP, new TopologyLoad());
+        fakeReplayer.addRecording(6, 0, true, 4096); // a previous run's, say: no group is active yet
+
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, request(CLIENT, 1, FROM_START).templateId());
+        replayerService.poll();
+
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
+        assertEquals(0, fakeReplayer.listings(), "until activation a node has no queue to list");
+    }
+
+    @Test
+    void readinessWaitsForEveryServedQueuesRecording() {
+        serve(QueueResolver.EVERY_GROUP, new TopologyLoad().groups(GROUP_ID, "a", OTHER_GROUP_ID, "b"));
+        fakeReplayer.addRecording(GROUP_ID, 6, 0, true, 4096);
+        replayerService.poll();
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
+
+        fakeReplayer.addRecording(OTHER_GROUP_ID, 7, 0, true, 2048);
+        makeReady();
+    }
+
+    @Test
+    void eachQueueIsReplayedFromItsOwnRecording() {
+        serve(QueueResolver.EVERY_GROUP, new TopologyLoad().groups(GROUP_ID, "a", OTHER_GROUP_ID, "b"));
+        fakeReplayer.addRecording(GROUP_ID, 6, 0, true, 4096);
+        fakeReplayer.addRecording(OTHER_GROUP_ID, 7, 0, true, 2048);
+        makeReady();
+
+        assertEquals(2048, request(CLIENT, 1, FROM_START, OTHER_GROUP_ID).catchUpPosition());
+        assertEquals(7, lastClientReplay().recordingId());
+        assertEquals(4096, request(OTHER_CLIENT, 1, FROM_START, GROUP_ID).catchUpPosition());
+        assertEquals(6, lastClientReplay().recordingId());
+    }
+
+    @Test
+    void aRequestForAQueueThisNodeDoesNotServeIsHeld() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+
+        for (final int queueId : new int[] { 0, OTHER_GROUP_ID, 17 }) {
+            assertEquals(ReplayPendingDecoder.TEMPLATE_ID, request(CLIENT, queueId, FROM_START, queueId).templateId(),
+                         "queue " + queueId);
+        }
+        assertTrue(noClientReplayStarted());
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID),
+                     "the client's resend is the retry");
+    }
+
+    @Test
+    void whileAnyQueueRecordingIsBehindASecondReplayWaits() {
+        serve(QueueResolver.EVERY_GROUP, new TopologyLoad().groups(GROUP_ID, "a", OTHER_GROUP_ID, "b"));
+        fakeReplayer.addRecording(GROUP_ID, 6, 0, true, 4096);
+        fakeReplayer.addRecording(OTHER_GROUP_ID, 7, 0, true, 2048);
+        makeReady();
+        final long window = FakeReplayer.TERM_BUFFER_LENGTH / 2;
+        fakeReplayer.queueBacklog(OTHER_GROUP_ID, new Replayer.QueueBacklog(window / 4 + 1, window));
+
+        assertEquals(ReplayingDecoder.TEMPLATE_ID, request(CLIENT, 1, FROM_START, GROUP_ID).templateId());
+
+        // The lagging recorder shares the disk with every replay, whichever queue it is of.
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, request(OTHER_CLIENT, 1, FROM_START, GROUP_ID).templateId());
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID));
+    }
+
+    // ── Queue resolution (R-6) ──────────────────────────────────────────────────
+
+    @Test
+    void aQueueRequestResolvesAGatewayAnApplicationOrTheDefaultQueueAndHoldsNoSlot() {
+        serve(QueueResolver.EVERY_GROUP,
+              new TopologyLoad().groups(3, "pricing", 5, "risk").gatewayRow(5, 9, "GW-A", 5).applicationRow(16, 3));
+
+        assertEquals(5, queueRequest(CLIENT, 1, ReplayProtocol.NO_SOURCE_ID, "GW-A").queueId());
+        assertEquals(3, queueRequest(CLIENT, 2, 16, "").queueId());
+        assertEquals(3, queueRequest(CLIENT, 3, ReplayProtocol.NO_SOURCE_ID, "").queueId(), "the lowest active group");
+        assertEquals(QueueResolvedDecoder.TEMPLATE_ID, lastReply().templateId());
+        assertEquals(3, lastReply().requestId());
+
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID));
+    }
+
+    @Test
+    void aQueueRequestBeforeItsRowIsHeldAndLoggedOnceThenResolved() {
+        final TopologyLoad load = new TopologyLoad().groups(GROUP_ID, "a", OTHER_GROUP_ID, "b");
+        serve(QueueResolver.EVERY_GROUP, load);
+
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID,
+                     queueRequest(CLIENT, 1, ReplayProtocol.NO_SOURCE_ID, "GW-A").templateId());
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID,
+                     queueRequest(CLIENT, 2, ReplayProtocol.NO_SOURCE_ID, "GW-A").templateId());
+        assertTrue(loggedOnce(Logger.CoreEventCode.QueueUnresolved), "one line per source, not one per resend");
+
+        final int handedOver = load.rows().size();
+        load.gatewayRow(5, 9, "GW-A", OTHER_GROUP_ID);
+        topologyRows.addAll(load.rows().subList(handedOver, load.rows().size()));
+
+        assertEquals(OTHER_GROUP_ID, queueRequest(CLIENT, 3, ReplayProtocol.NO_SOURCE_ID, "GW-A").queueId());
+    }
+
+    @Test
+    void aGatewayHostHoldsAndLogsARequestForAGroupItDoesNotRelay() {
+        serve(0b10,
+              new TopologyLoad()
+                  .groups(GROUP_ID, "a", OTHER_GROUP_ID, "b")
+                  .gatewayRow(5, 9, "GW-A", GROUP_ID)
+                  .gatewayRow(6, 10, "GW-B", OTHER_GROUP_ID));
+
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID,
+                     queueRequest(CLIENT, 1, ReplayProtocol.NO_SOURCE_ID, "GW-A").templateId());
+        assertTrue(loggedOnce(Logger.CoreEventCode.QueueUnresolved));
+        assertEquals(OTHER_GROUP_ID, queueRequest(CLIENT, 2, ReplayProtocol.NO_SOURCE_ID, "GW-B").queueId());
+        assertEquals(OTHER_GROUP_ID, queueRequest(CLIENT, 3, ReplayProtocol.NO_SOURCE_ID, "").queueId(),
+                     "the lowest queue the host relays");
+    }
+
+    @Test
+    void aQueueRequestNamingBothAGatewayAndAnApplicationIsLoggedAndNotAnswered() {
+        fakeReplayer.offerRequest(queueRequestBytes(CLIENT, 1, 16, "GW-A"));
+        replayerService.poll();
+
+        assertTrue(fakeReplayer.controlReplies().isEmpty());
+        assertTrue(loggedOnce(Logger.CoreEventCode.QueueUnresolved));
+    }
+
     // ── Fixtures and helpers ────────────────────────────────────────────────────
 
     /** Polls until the node is serving. */
@@ -538,9 +697,21 @@ class ReplayerServiceTest {
                      "fixture failed to make the node ready");
     }
 
-    /** Delivers one ReplayRequest and returns the reply it drew. */
+    /** Delivers one ReplayRequest for {@link #GROUP_ID}'s queue and returns the reply it drew. */
     private Reply request(final long clientId, final long requestId, final long fromPosition) {
-        fakeReplayer.offerRequest(replayRequest(clientId, requestId, fromPosition));
+        return request(clientId, requestId, fromPosition, GROUP_ID);
+    }
+
+    private Reply request(final long clientId, final long requestId, final long fromPosition, final int queueId) {
+        fakeReplayer.offerRequest(replayRequest(clientId, requestId, fromPosition, queueId));
+        replayerService.poll();
+        return lastReply();
+    }
+
+    /** Delivers one QueueRequest and returns the reply it drew. */
+    private Reply queueRequest(final long clientId, final long requestId, final int sourceId,
+                               final String gatewayName) {
+        fakeReplayer.offerRequest(queueRequestBytes(clientId, requestId, sourceId, gatewayName));
         replayerService.poll();
         return lastReply();
     }
@@ -556,12 +727,17 @@ class ReplayerServiceTest {
             final ReplayingDecoder decoder = new ReplayingDecoder();
             decoder.wrap(buffer, offset, header.blockLength(), header.version());
             return new Reply(header.templateId(), decoder.clientId(), decoder.requestId(), decoder.replaySessionId(),
-                             decoder.catchUpPosition());
+                             decoder.catchUpPosition(), 0);
+        }
+        if (header.templateId() == QueueResolvedDecoder.TEMPLATE_ID) {
+            final QueueResolvedDecoder decoder = new QueueResolvedDecoder();
+            decoder.wrap(buffer, offset, header.blockLength(), header.version());
+            return new Reply(header.templateId(), decoder.clientId(), decoder.requestId(), 0, 0, decoder.queueId());
         }
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, header.templateId());
         final ReplayPendingDecoder decoder = new ReplayPendingDecoder();
         decoder.wrap(buffer, offset, header.blockLength(), header.version());
-        return new Reply(header.templateId(), decoder.clientId(), decoder.requestId(), 0, 0);
+        return new Reply(header.templateId(), decoder.clientId(), decoder.requestId(), 0, 0, 0);
     }
 
     /** The most recent replay served to an app. */
@@ -601,11 +777,28 @@ class ReplayerServiceTest {
     // ── Encoders ────────────────────────────────────────────────────────────────
 
     private byte[] replayRequest(final long clientId, final long requestId, final long fromPosition) {
+        return replayRequest(clientId, requestId, fromPosition, GROUP_ID);
+    }
+
+    private byte[] replayRequest(final long clientId, final long requestId, final long fromPosition,
+                                 final int queueId) {
         final ReplayRequestEncoder encoder = new ReplayRequestEncoder();
         encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder)
             .clientId(clientId)
             .requestId(requestId)
-            .fromPosition(fromPosition);
+            .fromPosition(fromPosition)
+            .queueId(queueId);
+        return encoded(encoder.encodedLength());
+    }
+
+    private byte[] queueRequestBytes(final long clientId, final long requestId, final int sourceId,
+                                     final String gatewayName) {
+        final QueueRequestEncoder encoder = new QueueRequestEncoder();
+        encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder)
+            .clientId(clientId)
+            .requestId(requestId)
+            .sourceId(sourceId)
+            .gatewayName(gatewayName);
         return encoded(encoder.encodedLength());
     }
 

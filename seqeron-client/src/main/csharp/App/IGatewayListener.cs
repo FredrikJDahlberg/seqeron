@@ -5,6 +5,10 @@ namespace Org.Limitless.Seqeron.App;
 /// <summary>What a gateway does that <see cref="Gateway"/> cannot do for it.</summary>
 public interface IGatewayListener
 {
+    /// <summary>The log's group table, once, before the first <see cref="OnActivated"/>: what
+    /// <see cref="Gateway.Publish(int, ushort, int, IDirectBuffer, int)"/> takes its masks from.</summary>
+    void OnGroupsResolved(GroupDirectory directory);
+
     /// <summary>This instance has been designated, has announced itself and may now serve: open the edge.</summary>
     /// <param name="firstConnectionId">the id <see cref="Gateway.OpenConnection()"/> will allocate first, resumed
     /// past whatever a predecessor issued — a gateway that numbers its own sessions starts here</param>
@@ -15,7 +19,7 @@ public interface IGatewayListener
     /// designation, and before <see cref="OnFenced"/> when this instance fences while serving.</summary>
     void OnStandby();
 
-    /// <summary>One application payload off this node's queue, in <c>globalSeqNo</c> order.</summary>
+    /// <summary>One application payload off this node's queue, in <c>clusterSeqNo</c> order.</summary>
     void OnSequenced(Payload payload);
 
     /// <summary>This logical gateway took a connection, whichever instance issued it. A consumer that keeps
@@ -28,7 +32,7 @@ public interface IGatewayListener
     void OnConnectionClosed(int connectionId);
 
     /// <summary>Every transition to caught-up, the first included.</summary>
-    void OnCaughtUp(long globalSeqNo);
+    void OnCaughtUp(long clusterSeqNo);
 
     /// <summary>
     /// The cluster clock's tick (spec §7), once a second. It is the one time source that keeps advancing while every

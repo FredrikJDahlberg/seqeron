@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
     /// </summary>
     public sealed partial class Unsequenced
     {
-        public const ushort BlockLength = (ushort)18;
+        public const ushort BlockLength = (ushort)20;
         public const ushort TemplateId = (ushort)100;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;
@@ -137,7 +137,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             return _actingVersion >= PayloadSinceVersion;
         }
 
-        public const int PayloadOffset = 18;
+        public const int PayloadOffset = 20;
 
         public static string PayloadMetaAttribute(MetaAttribute metaAttribute)
         {

@@ -17,6 +17,7 @@
 #include "org_limitless_seqeron_sbe_frame/GatewayActive.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayRegistered.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayStarted.h"
+#include "org_limitless_seqeron_sbe_frame/GroupsRegistered.h"
 #include "org_limitless_seqeron_sbe_frame/LeadershipChanged.h"
 #include "org_limitless_seqeron_sbe_frame/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_frame/PayloadIdRegistered.h"
@@ -42,8 +43,25 @@ namespace org::limitless::seqeron::protocol {
 
 // The queue: the node-local IPC stream every node republishes each sequenced frame on and records. A
 // consumer subscribes untethered (see ReplayerStreamReceiver), the recording is found by stream id alone.
+// Each group's queue is this channel on its own stream, queueStreamId(groupId).
 inline constexpr const char* QUEUE_CHANNEL = "aeron:ipc?alias=seqeron-queue";
-inline constexpr std::int32_t QUEUE_STREAM_ID = 205;
+
+// The width of groupMask: groupIds run 1 to 16.
+inline constexpr std::int32_t MAX_GROUPS = 16;
+
+// Group groupId's queue is stream QUEUE_STREAM_ID_BASE + groupId.
+inline constexpr std::int32_t QUEUE_STREAM_ID_BASE = 2000;
+
+/**
+ * Names the stream of a group's queue.
+ *
+ * @param groupId 1 to MAX_GROUPS
+ * @return the stream id of that group's queue
+ */
+constexpr std::int32_t queueStreamId(const std::int32_t groupId)
+{
+    return QUEUE_STREAM_ID_BASE + groupId;
+}
 
 // Period of the cluster clock: every node emits a ClusterHeartbeat carrying the consensus timestamp, so a
 // consumer has a clock that advances while producers are silent, and a queue watchdog has whole periods to
@@ -56,9 +74,9 @@ inline constexpr std::int64_t CLUSTER_HEARTBEAT_INTERVAL_NS = CLUSTER_HEARTBEAT_
 // This language's compiled-in mirror of spec §12 (the Java one is FrameLayer); a change is a wire change
 // (V-3) and lands in both. Never read from a transport per frame: S-3 forbids checking a node's own MTU.
 
-// An 8960-byte IPC MTU, one jumbo frame, less the 76 bytes of Aeron data header and sequenced envelope, so a
+// An 8960-byte IPC MTU, one jumbo frame, less the 86 bytes of Aeron data header and sequenced envelope, so a
 // queue whose MTU is that large never fragments.
-inline constexpr std::uint16_t MAX_PAYLOAD_LENGTH = 8884;
+inline constexpr std::uint16_t MAX_PAYLOAD_LENGTH = 8874;
 
 // Smallest ingress frame of either family: the framing header, the header composite and the payload's own
 // 2-byte length prefix. Read off the codecs rather than written out, as the Java twin is, so a schema
@@ -67,7 +85,7 @@ inline constexpr std::uint16_t MIN_INGRESS_LENGTH = static_cast<std::uint16_t>(
     sbe::frame::MessageHeader::encodedLength() + sbe::frame::UnsequencedHeader::encodedLength() +
     sbe::frame::Unsequenced::payloadHeaderLength());
 
-// Largest ingress frame: a full payload behind that framing -- 8912 bytes. §9.2 condition 1's ceiling.
+// Largest ingress frame: a full payload behind that framing -- 8904 bytes. §9.2 condition 1's ceiling.
 inline constexpr std::uint16_t MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAYLOAD_LENGTH;
 
 // ── The systemEventType table (doc/seqeron-protocol-spec.md §7) ────────────────
@@ -92,6 +110,7 @@ inline constexpr std::uint16_t SNAPSHOT_END = sbe::frame::SnapshotEnd::sbeTempla
 inline constexpr std::uint16_t SNAPSHOT_POLICY_REGISTERED = sbe::frame::SnapshotPolicyRegistered::sbeTemplateId();
 inline constexpr std::uint16_t SNAPSHOT_STARTED = 30; // synthesis-only
 inline constexpr std::uint16_t SESSION_CLOSED = 31;   // synthesis-only
+inline constexpr std::uint16_t GROUPS_REGISTERED = sbe::frame::GroupsRegistered::sbeTemplateId();
 
 // ingressBlockLength's answer for a systemEventType that may not be submitted.
 inline constexpr std::int32_t NOT_INGRESS_LEGAL = -1;
@@ -131,6 +150,8 @@ constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
             return sbe::frame::SnapshotEnd::sbeBlockLength();
         case SNAPSHOT_POLICY_REGISTERED:
             return sbe::frame::SnapshotPolicyRegistered::sbeBlockLength();
+        case GROUPS_REGISTERED:
+            return sbe::frame::GroupsRegistered::sbeBlockLength();
         default:
             return NOT_INGRESS_LEGAL;
     }
@@ -152,15 +173,17 @@ constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
  */
 struct SequencedEvent
 {
-    std::int64_t globalSeqNo;
+    std::int64_t clusterSeqNo;
+    std::int64_t groupSeqNo;         ///< this frame's place on its queue: 1 for the first, then one per frame (F-6)
     std::int32_t sourceId;           ///< Fixed constant identifying the submitting producer process (header.sourceId)
     std::int32_t connectionId;       ///< Connection id at that producer; routes the reply (header.connectionId)
+    std::uint16_t groupMask;         ///< the groups whose queues carry it (header.groupMask); 0 on a system frame
     std::int64_t sourceSessionId;    ///< Aeron Cluster client session id (header.sessionId)
     std::int64_t clusterTimestampNs; ///< cluster consensus time (epoch ns) when message was committed
     std::int64_t receiveTimeNs;      ///< wall-clock ns at receipt by this client
     bool system;                     ///< true: a system frame, named by systemEventType, and payloadId means nothing
     std::uint16_t payloadId;         ///< which protocol templateId belongs to; 0 on a system frame
-    std::uint16_t systemEventType;   ///< which of §7's seventeen events; 0 on an application frame
+    std::uint16_t systemEventType;   ///< which of §7's eighteen events; 0 on an application frame
     std::uint16_t templateId;        ///< the message's messageHeader templateId; picks the specific decode
     std::uint16_t blockLength;       ///< payload messageHeader blockLength; 0 on a system frame (see decodeSystem)
     std::uint16_t version;           ///< payload messageHeader version; 0 on a system frame
@@ -186,8 +209,10 @@ struct FrameView
     std::uint16_t systemEventType;
     std::int32_t sourceId;
     std::int32_t connectionId;
+    std::uint16_t groupMask;      ///< the groups whose queues carry it (header.groupMask, §7.4)
     std::int64_t sourceSessionId; ///< Aeron Cluster client session id (header.sessionId)
-    std::int64_t globalSeqNo;
+    std::int64_t clusterSeqNo;
+    std::int64_t groupSeqNo;         ///< this frame's place on its queue (header.groupSeqNo, F-6)
     std::int64_t clusterTimestampNs; ///< cluster consensus time (epoch ns) when committed (header.timestamp)
     std::uint16_t templateId;        ///< application family: the payload's own, never the envelope's
     /// The payload's own, to wrap its decoder with; both 0 on any system frame, whose message carries
@@ -202,7 +227,7 @@ struct FrameView
 };
 
 /**
- * Copies the identity every system message carries; the two composites are the same 34 bytes.
+ * Copies the identity every system message carries; the two composites are the same 44 bytes.
  *
  * @param[out] view   the view to fill, marked as a system frame
  * @param header      the frame's system header, already wrapped
@@ -213,8 +238,10 @@ inline void readSystemHeader(FrameView& view, sbe::frame::SequencedSystemHeader&
     view.systemEventType = header.systemEventType();
     view.sourceId = header.sourceId();
     view.connectionId = header.connectionId();
+    view.groupMask = header.groupMask();
     view.sourceSessionId = header.sessionId();
-    view.globalSeqNo = header.globalSeqNo();
+    view.clusterSeqNo = header.clusterSeqNo();
+    view.groupSeqNo = header.groupSeqNo();
     view.clusterTimestampNs = header.timestamp();
 }
 
@@ -259,8 +286,10 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
         view.payloadId = header.payloadId();
         view.sourceId = header.sourceId();
         view.connectionId = header.connectionId();
+        view.groupMask = header.groupMask();
         view.sourceSessionId = header.sessionId();
-        view.globalSeqNo = header.globalSeqNo();
+        view.clusterSeqNo = header.clusterSeqNo();
+        view.groupSeqNo = header.groupSeqNo();
         view.clusterTimestampNs = header.timestamp();
 
         const std::uint64_t payloadLength = sequenced.payloadLength();
@@ -423,7 +452,7 @@ inline std::int64_t frameStartPosition(const aeron::Header& header)
  */
 struct LifecycleEvent
 {
-    std::int64_t globalSeqNo;
+    std::int64_t clusterSeqNo;
     std::int32_t sourceId;           ///< publishing producer process (header.sourceId)
     std::int32_t connectionId;       ///< connection at that producer (header.connectionId)
     std::int64_t sourceSessionId;    ///< Aeron Cluster session the event was submitted on
@@ -458,9 +487,11 @@ Decoder decodeSystem(const LifecycleEvent& event)
 inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t receiveTimeNs,
                                        const std::int64_t position)
 {
-    return SequencedEvent{ .globalSeqNo = view.globalSeqNo,
+    return SequencedEvent{ .clusterSeqNo = view.clusterSeqNo,
+                           .groupSeqNo = view.groupSeqNo,
                            .sourceId = view.sourceId,
                            .connectionId = view.connectionId,
+                           .groupMask = view.groupMask,
                            .sourceSessionId = view.sourceSessionId,
                            .clusterTimestampNs = view.clusterTimestampNs,
                            .receiveTimeNs = receiveTimeNs,
@@ -483,7 +514,7 @@ inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t
  */
 inline LifecycleEvent lifecycleEventOf(const FrameView& view, const std::int64_t receiveTimeNs)
 {
-    return LifecycleEvent{ .globalSeqNo = view.globalSeqNo,
+    return LifecycleEvent{ .clusterSeqNo = view.clusterSeqNo,
                            .sourceId = view.sourceId,
                            .connectionId = view.connectionId,
                            .sourceSessionId = view.sourceSessionId,

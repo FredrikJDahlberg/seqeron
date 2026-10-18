@@ -34,8 +34,8 @@ public final class MetricsExporter {
     private record MetricMeta(String name, String help, String type) { }
 
     private static final Map<Integer, MetricMeta> METRICS_BY_TYPE_ID = Map.ofEntries(
-        Map.entry(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID,
-                  new MetricMeta("seqeron_sequencer_global_seq_no", "Last globalSeqNo emitted on this node's queue.",
+        Map.entry(SeqeronCounters.SEQUENCER_CLUSTER_SEQ_NO_TYPE_ID,
+                  new MetricMeta("seqeron_sequencer_cluster_seq_no", "Last clusterSeqNo emitted on this node's queue.",
                                  "gauge")),
         Map.entry(SeqeronCounters.SEQUENCER_QUEUE_BACKPRESSURE_ALERTS_TYPE_ID,
                   new MetricMeta("seqeron_sequencer_queue_backpressure_alerts_total",

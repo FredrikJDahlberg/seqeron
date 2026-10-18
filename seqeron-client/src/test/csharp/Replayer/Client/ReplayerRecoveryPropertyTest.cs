@@ -15,8 +15,9 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// but it can only reach the interleavings someone thought to write. Here the node's archive, its queue and its
 /// Replayer are simulated, a seeded generator drives faults through them, and the two properties recovery exists to
 /// provide are asserted over whatever comes out.
-/// <para><b>Safety</b>: every dispatched frame is the next globalSeqNo, always, checked on every dispatch so a
-/// violation names the frame that broke it.</para>
+/// <para><b>Safety</b>: every dispatched frame is the queue's next, by groupSeqNo, always, checked on every dispatch
+/// so a violation names the frame that broke it. The queue is one group's, so its clusterSeqNos jump
+/// (<see cref="ClusterSeqNoOf"/>), and the client must track it by groupSeqNo.</para>
 /// <para><b>Liveness</b>: once the faults stop, recovery converges: caught up, at the tip, having dispatched every
 /// frame ever published.</para>
 /// <para><b>Restore</b>: a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut
@@ -57,6 +58,16 @@ public class ReplayerRecoveryPropertyTest : IDisposable
     private readonly TempDirectory _directory = new TempDirectory();
 
     // Every gap logs, and a run makes hundreds: kept out of the build output rather than counted.
+    /// <summary>The clusterSeqNo of the queue's frame <paramref name="groupSeqNo"/>: other groups' frames fall between
+    /// this queue's, so it increases along the queue by two and four in turn. A function of the frame, so it costs no
+    /// draw and every seed makes the same faults as before, and as in the other languages.</summary>
+    /// <param name="groupSeqNo">the frame's place on the queue</param>
+    /// <returns>its clusterSeqNo</returns>
+    internal static long ClusterSeqNoOf(long groupSeqNo)
+    {
+        return 3 * groupSeqNo - groupSeqNo % 2;
+    }
+
     public ReplayerRecoveryPropertyTest()
     {
         Logger.Install(new CallbackLoggerSink(Discard));
@@ -104,10 +115,10 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         // The client's own files, null for a run that restores nothing.
         private readonly SnapshotStore _store;
 
-        // Every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds.
+        // Every frame that is not a heartbeat, by groupSeqNo: the snapshot rounds.
         private readonly Dictionary<long, byte[]> _frames = new Dictionary<long, byte[]>();
 
-        // The state: how many heartbeats, and the sum of their globalSeqNos; restored, then folded.
+        // The state: how many heartbeats, and the sum of their clusterSeqNos; restored, then folded.
         private long _heartbeats;
         private long _heartbeatSum;
         private int _nextRecordIndex;
@@ -120,11 +131,11 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         private long _pendingFromPosition;
         private long _nextSessionId = 1;
 
-        // Next globalSeqNo the open replay will deliver; _replayEndSeqNo < 0 means none is open.
+        // Next groupSeqNo the open replay will deliver; _replayEndSeqNo < 0 means none is open.
         private long _replayCursor;
         private long _replayEndSeqNo = -1;
 
-        // Last globalSeqNo the queue actually delivered: what a redelivery re-offers.
+        // Last groupSeqNo the queue actually delivered: what a redelivery re-offers.
         private long _lastLive;
 
         private long _clockMs = ClockMs;
@@ -147,7 +158,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         public void Execute()
         {
             // History before the client starts. A cold start over an EMPTY archive that then drops the very first
-            // queue frame is the one designed abort (the first frame observed must be globalSeqNo 1) and not a
+            // queue frame is the one designed abort (the first frame observed must be groupSeqNo 1) and not a
             // recovery failure, so the model does not construct it.
             if (_restoring)
             {
@@ -196,18 +207,18 @@ public class ReplayerRecoveryPropertyTest : IDisposable
 
             Assert.True(_client.Fault == null, _tag + ": " + _client.Fault);
             Assert.True(_client.IsCaughtUp, _tag + ": never re-converged after the faults stopped");
-            Assert.True(_tip == _client.LastGlobalSeqNo, _tag + ": converged short of the tip");
+            Assert.True(ClusterSeqNoOf(_tip) == _client.LastClusterSeqNo, _tag + ": converged short of the tip");
             Assert.True(_tip + 1 == _expectedNext, _tag + ": caught up without having dispatched every frame");
             if (_restoring)
             {
                 long count = 0;
                 long sum = 0;
-                for (long globalSeqNo = 1; globalSeqNo <= _tip; ++globalSeqNo)
+                for (long groupSeqNo = 1; groupSeqNo <= _tip; ++groupSeqNo)
                 {
-                    if (!_frames.ContainsKey(globalSeqNo))
+                    if (!_frames.ContainsKey(groupSeqNo))
                     {
                         ++count;
-                        sum += globalSeqNo;
+                        sum += ClusterSeqNoOf(groupSeqNo);
                     }
                 }
                 Assert.True(count == _heartbeats, _tag + ": restored state plus the tail is not the full replay's");
@@ -226,22 +237,33 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 Publish(); // heartbeats 1-5
             }
             byte[] header = RestoreFrames.Header(4, 2);
-            PublishFrame(RestoreFrames.Started(6, 1));
+            PublishFrame(Started(6, 1));
             Publish(); // heartbeat 7
             Publish(); // heartbeat 8
-            PublishFrame(RestoreFrames.Started(Cut, 2));
+            PublishFrame(Started(Cut, 2));
             byte[] count = RestoreFrames.Record(7);
-            byte[] sum = RestoreFrames.Record(1 + 2 + 3 + 4 + 5 + 7 + 8);
-            PublishFrame(RestoreFrames.End(10, OtherSource, 2, FormatVersion, header));
+            byte[] sum =
+                RestoreFrames.Record(ClusterSeqNoOf(1) + ClusterSeqNoOf(2) + ClusterSeqNoOf(3) + ClusterSeqNoOf(4) +
+                                     ClusterSeqNoOf(5) + ClusterSeqNoOf(7) + ClusterSeqNoOf(8));
+            PublishFrame(
+                Frames.OnQueue(RestoreFrames.End(ClusterSeqNoOf(10), OtherSource, 2, FormatVersion, header), 10));
             Publish(); // heartbeat 11
-            PublishFrame(RestoreFrames.End(SnapshotEnd, Source, 2, FormatVersion, header, count, sum));
-            PublishFrame(RestoreFrames.Started(NextCut, 3));
+            PublishFrame(Frames.OnQueue(
+                RestoreFrames.End(ClusterSeqNoOf(SnapshotEnd), Source, 2, FormatVersion, header, count, sum),
+                SnapshotEnd));
+            PublishFrame(Started(NextCut, 3));
             Publish(); // heartbeat 14
 
             // Newest first: confirming a round deletes the older files, and both are to stay.
-            RestoreFrames.Write(_store, 3, NextCut, PositionOf(NextCut - 1), FormatVersion, header,
+            RestoreFrames.Write(_store, 3, ClusterSeqNoOf(NextCut), PositionOf(NextCut - 1), FormatVersion, header,
                                 RestoreFrames.Record(98));
-            RestoreFrames.Write(_store, 2, Cut, PositionOf(Cut), FormatVersion, header, count, sum);
+            RestoreFrames.Write(_store, 2, ClusterSeqNoOf(Cut), PositionOf(Cut), FormatVersion, header, count, sum);
+        }
+
+        // The round's SnapshotStarted as the queue's frame `groupSeqNo`.
+        private static byte[] Started(long groupSeqNo, long round)
+        {
+            return Frames.OnQueue(RestoreFrames.Started(ClusterSeqNoOf(groupSeqNo), round), groupSeqNo);
         }
 
         private void PublishFrame(byte[] frame)
@@ -251,7 +273,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
 
         private bool Converged()
         {
-            return _client.IsCaughtUp && _client.LastGlobalSeqNo == _tip;
+            return _client.IsCaughtUp && _client.LastClusterSeqNo == ClusterSeqNoOf(_tip);
         }
 
         private void ChaosStep()
@@ -262,11 +284,11 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 case 1:
                 case 2:
                 case 3:
-                    long globalSeqNo = Publish();
+                    long groupSeqNo = Publish();
                     // A queue drop is the fault the whole resume path exists for, so it is the common one.
                     if (!Chance(20))
                     {
-                        DeliverQueue(globalSeqNo);
+                        DeliverQueue(groupSeqNo);
                     }
                     break;
                 case 4:
@@ -319,20 +341,20 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             return ++_tip;
         }
 
-        private void DeliverQueue(long globalSeqNo)
+        private void DeliverQueue(long groupSeqNo)
         {
-            _lastLive = globalSeqNo;
-            Deliver(globalSeqNo, false);
+            _lastLive = groupSeqNo;
+            Deliver(groupSeqNo, false);
         }
 
-        private void Deliver(long globalSeqNo, bool fromReplay)
+        private void Deliver(long groupSeqNo, bool fromReplay)
         {
-            if (!_frames.TryGetValue(globalSeqNo, out byte[] frame))
+            if (!_frames.TryGetValue(groupSeqNo, out byte[] frame))
             {
-                frame = Frames.ClusterHeartbeat(globalSeqNo);
+                frame = Frames.OnQueue(Frames.ClusterHeartbeat(ClusterSeqNoOf(groupSeqNo)), groupSeqNo);
             }
             _wire.Wrap(frame);
-            _client.OnFrame(_wire, 0, frame.Length, PositionOf(globalSeqNo), ReceiveNs, fromReplay);
+            _client.OnFrame(_wire, 0, frame.Length, PositionOf(groupSeqNo), ReceiveNs, fromReplay);
         }
 
         // ── the Replayer ───────────────────────────────────────────────────────────────────────────────
@@ -441,14 +463,16 @@ public class ReplayerRecoveryPropertyTest : IDisposable
 
         private void OnSequenced(SequencedEvent sequencedEvent)
         {
-            long globalSeqNo = sequencedEvent.GlobalSeqNo;
-            Assert.True(_expectedNext == globalSeqNo, $"{_tag}: dispatched {globalSeqNo}, expected {_expectedNext}");
-            Assert.True(globalSeqNo <= _tip, _tag + ": dispatched a frame that was never published");
+            long groupSeqNo = sequencedEvent.GroupSeqNo;
+            Assert.True(_expectedNext == groupSeqNo, $"{_tag}: dispatched {groupSeqNo}, expected {_expectedNext}");
+            bool sameFrame = ClusterSeqNoOf(groupSeqNo) == sequencedEvent.ClusterSeqNo;
+            Assert.True(sameFrame, _tag + ": dispatched another frame");
+            Assert.True(groupSeqNo <= _tip, _tag + ": dispatched a frame that was never published");
             ++_expectedNext;
-            if (!_frames.ContainsKey(globalSeqNo))
+            if (!_frames.ContainsKey(groupSeqNo))
             {
                 ++_heartbeats;
-                _heartbeatSum += globalSeqNo;
+                _heartbeatSum += sequencedEvent.ClusterSeqNo;
             }
         }
 
@@ -485,10 +509,10 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             return _rng.Chance(percent);
         }
 
-        // Where frame `globalSeqNo` starts in the active recording: frame 1 at 0.
-        private static long PositionOf(long globalSeqNo)
+        // Where frame `groupSeqNo` starts in the active recording: frame 1 at 0.
+        private static long PositionOf(long groupSeqNo)
         {
-            return (globalSeqNo - 1) * Stride;
+            return (groupSeqNo - 1) * Stride;
         }
     }
 }

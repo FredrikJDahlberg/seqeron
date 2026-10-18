@@ -8,8 +8,8 @@ public delegate void SequencedHandler(SequencedEvent sequencedEvent);
 /// the leader changed with it.</summary>
 /// <param name="newLeaderMemberId">the member leading from this frame onward</param>
 /// <param name="leadershipTermId">the term that begins here</param>
-/// <param name="globalSeqNo">this frame's own sequence number, which counts toward continuity</param>
-public delegate void LeadershipHandler(int newLeaderMemberId, long leadershipTermId, long globalSeqNo);
+/// <param name="clusterSeqNo">this frame's own sequence number, which counts toward continuity</param>
+public delegate void LeadershipHandler(int newLeaderMemberId, long leadershipTermId, long clusterSeqNo);
 
 /// <summary>Fires on every transition to caught-up: when the receiver reaches the live queue, and again after each gap
 /// it heals.</summary>

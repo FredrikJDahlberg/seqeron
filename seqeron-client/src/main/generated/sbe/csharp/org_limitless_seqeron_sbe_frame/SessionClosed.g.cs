@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
     /// </summary>
     public sealed partial class SessionClosed
     {
-        public const ushort BlockLength = (ushort)42;
+        public const ushort BlockLength = (ushort)52;
         public const ushort TemplateId = (ushort)108;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;
@@ -137,7 +137,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             return _actingVersion >= ClusterSessionIdSinceVersion;
         }
 
-        public const int ClusterSessionIdOffset = 34;
+        public const int ClusterSessionIdOffset = 44;
 
         public static string ClusterSessionIdMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -163,11 +163,11 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 34);
+                return _buffer.Int64GetLittleEndian(_offset + 44);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 34, value);
+                _buffer.Int64PutLittleEndian(_offset + 44, value);
             }
         }
 

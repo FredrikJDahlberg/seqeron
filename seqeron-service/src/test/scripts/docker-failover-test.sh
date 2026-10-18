@@ -130,6 +130,13 @@ await_healthy() {  # await_healthy <member> <deadline-secs>
     return 1
 }
 
+# ── topology: the cluster refuses everything before its groups are active ─────────────────────────
+await_leader "$(deadline 120)" > /dev/null || { echo "no initial leader emerged"; exit 1; }
+docker cp "${REPO_ROOT}/seqeron-service/src/test/resources/topology-test-groups.xml" node-0:/tmp/topology.xml \
+    > /dev/null
+docker exec node-0 clusterctl load-topology /tmp/topology.xml > "${LOG_DIR}/load-topology.log" 2>&1 ||
+    { echo "load-topology failed — see ${LOG_DIR}/load-topology.log"; exit 1; }
+
 # ── observers: one long-lived replica per node, the continuity witnesses ───────────────────────────
 start_observer() {
     local m="$1"
@@ -251,7 +258,7 @@ PASS=1
 
 for m in 0 1 2; do
     n="$(delivered_of "${m}")"; n="${n:-0}"
-    reconverged=$(grep -c "re-converged at globalSeqNo" "${LOG_DIR}/observer-${m}.log" 2>/dev/null)
+    reconverged=$(grep -c "re-converged at clusterSeqNo" "${LOG_DIR}/observer-${m}.log" 2>/dev/null)
     echo "observer node-${m}                : ${n} frames in order, ${reconverged} re-convergence(s)"
     [[ "${n}" -ge "${MIN_DELIVERED}" ]] \
         || { echo "FAIL: observer on node-${m} delivered ${n} < ${MIN_DELIVERED} frames"; PASS=0; }

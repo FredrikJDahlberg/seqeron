@@ -31,21 +31,22 @@ public sealed class IngressPublisher
     /// Wraps one application payload in an <c>Unsequenced</c> frame and offers it.
     /// <para>Two header fields are not parameters: the frame's template, and the cluster session, which is the
     /// sender's. What varies is <c>sourceId</c> — for a reply, the requester's rather than this process's own —
-    /// <c>connectionId</c>, <c>payloadId</c>, and the payload.</para>
+    /// <c>connectionId</c>, <c>payloadId</c>, <c>groupMask</c>, and the payload.</para>
     /// </summary>
     /// <param name="sender">the session to offer it on</param>
     /// <param name="sourceId">the producer the frame is on behalf of</param>
     /// <param name="connectionId">the connection it belongs to, or -1 for a producer-scoped one</param>
     /// <param name="payloadId">which protocol the payload speaks</param>
+    /// <param name="groupMask">the groups whose queues the frame reaches, the producer's own included</param>
     /// <param name="payload">the payload's bytes, whatever encoding they carry: the tier copies them through
     /// unopened, so an SBE payload includes its own 8-byte <c>MessageHeader</c> and a raw one no framing at
     /// all</param>
     /// <param name="payloadLength">bytes of <paramref name="payload"/> from offset 0</param>
-    public Publish PublishPayload(IIngressSender sender, int sourceId, int connectionId, int payloadId,
+    public Publish PublishPayload(IIngressSender sender, int sourceId, int connectionId, int payloadId, int groupMask,
                                   IDirectBuffer payload, int payloadLength)
     {
-        int length = _envelope.WrapPayload(_frame, sourceId, connectionId, sender.ClusterSessionId, payloadId, payload,
-                                           payloadLength);
+        int length = _envelope.WrapPayload(_frame, sourceId, connectionId, sender.ClusterSessionId, payloadId,
+                                           groupMask, payload, payloadLength);
         return Offer(sender, length);
     }
 

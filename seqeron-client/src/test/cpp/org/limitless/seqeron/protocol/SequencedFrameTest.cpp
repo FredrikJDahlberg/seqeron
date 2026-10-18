@@ -34,6 +34,7 @@ constexpr std::int32_t CONNECTION_ID = 42;
 constexpr std::int64_t SESSION_ID = 0x5EE51000LL;
 constexpr std::int64_t TIMESTAMP = 1700000000000LL;
 constexpr std::uint16_t PAYLOAD_ID = 2;
+constexpr std::uint16_t GROUP_MASK = 5;
 
 // Offsets inside the outer MessageHeader.
 constexpr std::uint64_t TEMPLATE_ID_OFFSET = 2;
@@ -52,7 +53,7 @@ std::vector<char> filler(std::size_t length)
     return bytes;
 }
 
-std::vector<char> payloadFrame(std::int64_t globalSeqNo, std::uint16_t payloadLength)
+std::vector<char> payloadFrame(std::int64_t clusterSeqNo, std::uint16_t payloadLength)
 {
     const std::vector<char> payload = filler(payloadLength);
     std::vector<char> out(payloadLength + 64, 0);
@@ -63,14 +64,16 @@ std::vector<char> payloadFrame(std::int64_t globalSeqNo, std::uint16_t payloadLe
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .payloadId(PAYLOAD_ID)
-        .globalSeqNo(globalSeqNo)
-        .timestamp(TIMESTAMP);
+        .groupMask(GROUP_MASK)
+        .clusterSeqNo(clusterSeqNo)
+        .timestamp(TIMESTAMP)
+        .groupSeqNo(clusterSeqNo + 100);
     frame.putPayload(payload.data(), payloadLength);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
 }
 
-std::vector<char> systemFrame(std::int64_t globalSeqNo, std::uint16_t systemEventType, std::uint16_t bodyLength)
+std::vector<char> systemFrame(std::int64_t clusterSeqNo, std::uint16_t systemEventType, std::uint16_t bodyLength)
 {
     const std::vector<char> body = filler(bodyLength);
     std::vector<char> out(bodyLength + 64, 0);
@@ -81,14 +84,14 @@ std::vector<char> systemFrame(std::int64_t globalSeqNo, std::uint16_t systemEven
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .systemEventType(systemEventType)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(TIMESTAMP);
     frame.putBody(body.data(), bodyLength);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
 }
 
-std::vector<char> clusterHeartbeatFrame(std::int64_t globalSeqNo)
+std::vector<char> clusterHeartbeatFrame(std::int64_t clusterSeqNo)
 {
     std::vector<char> out(128, 0);
     frm::ClusterHeartbeat frame;
@@ -98,8 +101,9 @@ std::vector<char> clusterHeartbeatFrame(std::int64_t globalSeqNo)
         .connectionId(-1)
         .sessionId(-1)
         .systemEventType(CLUSTER_HEARTBEAT)
-        .globalSeqNo(globalSeqNo)
-        .timestamp(TIMESTAMP);
+        .clusterSeqNo(clusterSeqNo)
+        .timestamp(TIMESTAMP)
+        .groupSeqNo(clusterSeqNo + 100);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
 }
@@ -190,7 +194,7 @@ TEST(SequencedFrame, SynthesizedFrameCutInsideItsHeader)
     {
         const std::vector<char> fragment = cut(frame, length);
         EXPECT_FALSE(unwrapFrame(fragment.data(), length).valid)
-            << "globalSeqNo is not readable at " << length << " bytes, so P-3 cannot count";
+            << "clusterSeqNo is not readable at " << length << " bytes, so P-3 cannot count";
     }
     EXPECT_TRUE(unwrapFrame(frame.data(), frame.size()).valid);
 }
@@ -238,6 +242,21 @@ TEST(SequencedFrame, ASystemFrameDeclaresNoBlockLengthOrVersion)
         EXPECT_EQ(0, view.blockLength);
         EXPECT_EQ(0, view.version);
     }
+}
+
+TEST(SequencedFrame, GroupMaskAndGroupSeqNo)
+{
+    const std::vector<char> payload = payloadFrame(9, 8);
+    FrameView view = unwrapFrame(payload.data(), payload.size());
+    ASSERT_TRUE(view.valid);
+    EXPECT_EQ(GROUP_MASK, view.groupMask);
+    EXPECT_EQ(9 + 100, view.groupSeqNo);
+
+    const std::vector<char> heartbeat = clusterHeartbeatFrame(10);
+    view = unwrapFrame(heartbeat.data(), heartbeat.size());
+    ASSERT_TRUE(view.valid);
+    EXPECT_EQ(0, view.groupMask) << "a system frame addresses no group";
+    EXPECT_EQ(10 + 100, view.groupSeqNo);
 }
 
 } // namespace

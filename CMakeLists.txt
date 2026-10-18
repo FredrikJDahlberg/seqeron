@@ -295,11 +295,13 @@ if(SEQERON_BUILD_TESTS)
     add_executable(core_tests
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/AppFacadeTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/GatewayLifecycleTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/GroupResolutionTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/LeaderGateTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkPropertyTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/RecoveryStallFenceTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/SnapshotTakerTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/QueueResolutionTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/QueueStallFenceTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterCodecTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/PendingSendsTest.cpp

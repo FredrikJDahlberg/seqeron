@@ -18,6 +18,11 @@
 # The caller launches, waits for and stops those itself, after this script prints READY; core names no
 # process it does not start. READY then means the cluster is up, not that any consumer is caught up.
 #
+# The cluster refuses everything before its groups are active (doc/seqeron-protocol-spec.md §7.4), so the
+# topology goes first: SEQERON_TOPOLOGY names the file to load once the members run. Without it, the probe
+# followers' cluster loads topology-test-groups.xml, and one started with SEQERON_NO_CONSUMERS=1 loads
+# nothing: its caller loads its own topology after READY.
+#
 # Uses a dedicated baseDir (seqeron-seq3 under the temp dir) so it doesn't collide
 # with single-node dev state left behind by start-cluster.sh.
 #
@@ -98,6 +103,19 @@ for SEQ_LOG in "${SEQ_LOGS[@]}"; do
 done
 echo "[start-three-node-cluster.sh] All 3 cluster members are running"
 
+TOPOLOGY="${SEQERON_TOPOLOGY:-}"
+if [[ -z "${TOPOLOGY}" && "${NO_CONSUMERS}" != "1" ]]; then
+    TOPOLOGY="${SCRIPT_DIR}/../resources/topology-test-groups.xml"
+fi
+if [[ -n "${TOPOLOGY}" ]]; then
+    echo "[start-three-node-cluster.sh] Loading ${TOPOLOGY}"
+    "${MAIN_SCRIPTS}/clusterctl.sh" load-topology "${TOPOLOGY}" > "${LOG_DIR}/load-topology.log" 2>&1 || {
+        echo "ERROR: clusterctl load-topology failed — see ${LOG_DIR}/load-topology.log" >&2
+        kill "${SEQ_PIDS[@]}" 2>/dev/null
+        exit 1
+    }
+fi
+
 # A consumer replica on every node. Each attaches to its own member's media driver (seqeron-seq-aeron-<m>):
 # the member's Replayer serves replay of that node's queue recording over aeron:ipc, and the replica reads
 # the queue directly for live, so whichever member is elected leader has one already
@@ -108,8 +126,10 @@ APP_LOGS=()
 for m in 0 1 2; do
     suffix="-${m}" latency=()
     if [[ "${m}" == 0 ]]; then suffix="" latency=(-Dprobe.latencyStats=true); fi
-    wait_for_log "${SEQ_LOGS[$m]}" "serving replay" 30 ||
-        echo "[start-three-node-cluster.sh] WARN: member ${m}'s Replayer not serving after 30s — starting the consumer anyway" >&2
+    if [[ -n "${TOPOLOGY}" ]]; then
+        wait_for_log "${SEQ_LOGS[$m]}" "serving replay" 30 ||
+            echo "[start-three-node-cluster.sh] WARN: member ${m}'s Replayer not serving after 30s — starting the consumer anyway" >&2
+    fi
     if [[ "${NO_CONSUMERS}" != "1" ]]; then
         ALOG="${LOG_DIR}/ClusterProbe${suffix}.log"
         echo "[start-three-node-cluster.sh] Starting ClusterProbe follower (replica on member ${m}) → ${ALOG}"

@@ -9,7 +9,7 @@
 namespace org::limitless::seqeron::app {
 
 // Leader-only request/reply work tracked across a failover. Outstanding is replicated (sequenced request to
-// sequenced reply); dispatched is local. Emission is at-least-once, so key on the request's globalSeqNo. The
+// sequenced reply); dispatched is local. Emission is at-least-once, so key on the request's clusterSeqNo. The
 // Java twin is app/OutstandingWork.java, which carries the rationale; keep the two in step.
 template<typename Work, typename Key = std::int64_t>
 class OutstandingWork
@@ -19,7 +19,7 @@ class OutstandingWork
      * Records a request seen on the sequenced stream, on every replica. Idempotent on the key, keeping its
      * position.
      *
-     * @param key  the request's key, normally its globalSeqNo
+     * @param key  the request's key, normally its clusterSeqNo
      * @param work what dispatching it takes
      */
     void onRequest(const Key& key, Work work)

@@ -27,14 +27,14 @@ To run a node and a first consumer and producer, start with [Getting Started](do
 Features
 --------
 
-- **Sequence numbering and timestamping.** Every message gets a cluster-wide `globalSeqNo`, advancing by
+- **Sequence numbering and timestamping.** Every message gets a cluster-wide `clusterSeqNo`, advancing by
   exactly one per message with no gaps or reuse, and the Raft consensus timestamp in nanoseconds. A 1 Hz
   `ClusterHeartbeat` gives every consumer the same clock, which keeps advancing while producers are silent.
 - **Replication.** The order is decided by Raft consensus: a message is sequenced once a majority of members
   hold it. Every member then republishes the sequenced stream onto a node-local queue that its own Aeron
   Archive records, so each member holds a complete, identical copy of history without copying it from a peer.
 - **Fault tolerance.** The cluster survives the loss of a minority of its members, and a new leader resumes at
-  the next `globalSeqNo`. Producers confirm their messages on the stream and resend what a failover lost, so
+  the next `clusterSeqNo`. Producers confirm their messages on the stream and resend what a failover lost, so
   each is sequenced exactly once, in order. Edge producers run as active/hot-standby pairs that the cluster
   elects and hands over, and a member that can no longer record its history stops rather than keep a gap.
 - **Determinism.** Every decision the cluster makes is a function of the log alone: the order, the clock,
@@ -43,7 +43,7 @@ Features
 - **Replay and snapshots.** A client recovers by replaying the log, never by state transfer. A Replayer on
   each host serves cold starts and gaps from the local recording, while consumers read the live stream
   untethered, so a slow consumer is dropped and heals by replay instead of holding up the cluster. To restart
-  from a known point rather than `globalSeqNo` 1, a client takes snapshots of its own state: at each round's
+  from a known point rather than `clusterSeqNo` 1, a client takes snapshots of its own state: at each round's
   cut in the log every instance writes its state to a local file, and the log carries a digest every
   instance checks its file against. The API hides all of it: an application supplies only a listener that
   writes and reads its records, and a directory; the façade takes, confirms and restores the snapshots, and
@@ -68,7 +68,7 @@ Limitations
 
 - **No cluster snapshots.** Cluster node snapshots are not yet implemented
   ([design](doc/snapshot.md#10-cluster-snapshots)). A node's recovery is a full replay of the Raft log from
-  `globalSeqNo` 1. 
+  `clusterSeqNo` 1. 
 - **No authentication or encryption.** Anyone who reaches the cluster's ports can submit messages, operator
   events included, and read or delete recordings. Run it inside a trusted network.
 - **seqeron protocol changes are not rolling.** seqeron's own protocol — the message envelope and system

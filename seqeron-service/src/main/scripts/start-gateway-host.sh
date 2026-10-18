@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # start-gateway-host.sh — make this host, which runs no cluster member, one that clients can run on.
 #
-# Starts ReplayerServer in gateway-host mode: its own media driver and archive, and a relay that copies a
-# member's queue onto this host's own over UDP, moving to the next member when that one is lost. Gateways,
+# Starts ReplayerServer in gateway-host mode: its own media driver and archive, and a relay per group that
+# copies a member's queue of that group onto this host's own over UDP, moving to the next member when that
+# one is lost. Gateways,
 # consumers and ClusterProbe on this host then attach to its Aeron directory exactly as they would on a
 # member, and submit over UDP ingress.
 #
 # Config:
+#   SEQERON_GROUPS             the groupIds whose queues this host relays, comma-separated: every group an
+#                              instance on this host reads (required)
 #   SEQERON_NODE_ID            this host's node id, one no member uses (3 suits a three-member cluster); names its
 #                              Aeron directory, seqeron-seq-aeron-<id>, and archive  (default 3)
 #   SEQERON_HOSTS              every member's host, in member-id order; ReplayerServer and every client on
@@ -42,6 +45,11 @@ seqeron_require_jar
 JAR="${SEQERON_JAR}"
 JAVA_OPTS=("${SEQERON_SERVER_JAVA_OPTS[@]}")
 
+RELAYED_GROUPS="${SEQERON_GROUPS:-}"
+if [[ -z "${RELAYED_GROUPS}" ]]; then
+    echo "ERROR: SEQERON_GROUPS is required: the groupIds whose queues this host relays" >&2
+    exit 2
+fi
 NODE_ID="${SEQERON_NODE_ID:-3}"
 ENDPOINTS="${SEQERON_ARCHIVE_ENDPOINTS:-}"
 if [[ -z "${ENDPOINTS}" && -z "${SEQERON_HOSTS:-}" ]]; then
@@ -57,6 +65,7 @@ mkdir -p "${LOG_DIR}"
 echo "[gateway-host.sh] Starting ReplayerServer (gateway host, node ${NODE_ID}) → ${LOG}"
 java "${JAVA_OPTS[@]}" \
     -Dreplayer.memberId="${NODE_ID}" \
+    -Dreplayer.groups="${RELAYED_GROUPS}" \
     ${ENDPOINTS:+-Dreplayer.archiveEndpoints="${ENDPOINTS}"} \
     -Dreplayer.host="${HOST}" \
     -Dreplayer.baseDir="${BASE_DIR}" \

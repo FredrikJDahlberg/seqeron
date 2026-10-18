@@ -14,16 +14,31 @@ namespace Org.Limitless.Seqeron.Protocol;
 /// </summary>
 public class SnapshotFormatTest
 {
-    // An application's header: term 7, leader 2.
-    private const string ApplicationHeader = "010012000000070000000000000002000000";
+    // Groups 1 "orders" and 3 "risk".
+    private static readonly SnapshotHeader.Group[] Groups = { new SnapshotHeader.Group(1, "orders"),
+                                                              new SnapshotHeader.Group(3, "risk") };
 
-    // A gateway's header: term 7, leader 2, source 9, active 10, highest connection 42, rows GW-A and GW-B.
-    private static readonly string GatewayHeader = "01006a000000070000000000000002000000090000000a0000002a0000000200" +
-                                                   "0a0000000047572d41" + string.Concat(Enumerable.Repeat("00", 28)) +
-                                                   "0b0000000147572d42" + string.Concat(Enumerable.Repeat("00", 28));
+    // Groups as a header carries them.
+    private static readonly string GroupsBytes = "02" + "016f7264657273" + Zeros(26) + "037269736b" + Zeros(28);
+
+    // An application's header: term 7, leader 2, Groups.
+    private static readonly string ApplicationHeader = "020055000000070000000000000002000000" + GroupsBytes;
+
+    // A gateway's: the same, then source 9, active 10, highest connection 42, rows GW-A and GW-B.
+    private static readonly string GatewayHeader = "0200ad000000070000000000000002000000" + GroupsBytes +
+                                                   "090000000a0000002a0000000200" + "0a0000000047572d41" + Zeros(28) +
+                                                   "0b0000000147572d42" + Zeros(28);
+
+    // A version 1 application header, cut from a log before groups.
+    private const string Version1Header = "010012000000070000000000000002000000";
 
     // CRC-32C of ApplicationHeader followed by Body().
-    private const uint ApplicationSnapshotCrc = 0x6c24f56b;
+    private const uint ApplicationSnapshotCrc = 0x8a4aa58f;
+
+    private static string Zeros(int count)
+    {
+        return string.Concat(Enumerable.Repeat("00", count));
+    }
 
     // A 3000-byte body; any split of it into records gives the same CRC.
     private static byte[] Body()
@@ -39,7 +54,7 @@ public class SnapshotFormatTest
     private static SnapshotHeader GatewayHeaderValue()
     {
         return new SnapshotHeader(
-            7, 2,
+            7, 2, Groups,
             new SnapshotHeader.GatewayState(
                 9, 10, 42,
                 new[] { new SnapshotHeader.GatewayRow(10, 0, "GW-A"), new SnapshotHeader.GatewayRow(11, 1, "GW-B") }));
@@ -70,7 +85,7 @@ public class SnapshotFormatTest
     [Fact(DisplayName = "both headers encode to the shared golden bytes and decode back")]
     public void HeadersEncodeToTheGoldenBytes()
     {
-        var application = new SnapshotHeader(7, 2, null);
+        var application = new SnapshotHeader(7, 2, Groups, null);
         Assert.Equal(Convert.FromHexString(ApplicationHeader), Encode(application));
         Assert.Equal(Convert.FromHexString(GatewayHeader), Encode(GatewayHeaderValue()));
 
@@ -86,21 +101,29 @@ public class SnapshotFormatTest
     {
         byte[] gateway = Encode(GatewayHeaderValue());
         Assert.Null(SnapshotHeader.Decode(new UnsafeBuffer(gateway), 0, gateway.Length - 1));
-        Assert.Null(SnapshotHeader.Decode(new UnsafeBuffer(gateway), 0, 17));
+        Assert.Null(SnapshotHeader.Decode(new UnsafeBuffer(gateway), 0, 18));
 
-        gateway[0] = 2;
-        Assert.Equal(2, SnapshotHeader.Version(new UnsafeBuffer(gateway), 0, gateway.Length));
+        byte[] version1 = Convert.FromHexString(Version1Header);
+        Assert.Equal(1, SnapshotHeader.Version(new UnsafeBuffer(version1), 0, version1.Length));
+        Assert.Null(SnapshotHeader.Decode(new UnsafeBuffer(version1), 0, version1.Length)); // cut before groups
+
+        gateway[0] = 3;
+        Assert.Equal(3, SnapshotHeader.Version(new UnsafeBuffer(gateway), 0, gateway.Length));
         Assert.Null(SnapshotHeader.Decode(new UnsafeBuffer(gateway), 0, gateway.Length));
 
+        byte[] groups = Encode(new SnapshotHeader(7, 2, Groups, null));
+        groups[18] = 3;
+        Assert.Null(SnapshotHeader.Decode(new UnsafeBuffer(groups), 0, groups.Length)); // groupCount disagrees
+
         byte[] rows = Encode(GatewayHeaderValue());
-        rows[30] = 3;
+        rows[85 + 12] = 3;
         Assert.Null(SnapshotHeader.Decode(new UnsafeBuffer(rows), 0, rows.Length));
     }
 
     private static byte[] Snapshot()
     {
         IMutableDirectBuffer buffer = new ExpandableArrayBuffer();
-        int headerLength = new SnapshotHeader(7, 2, null).Encode(buffer, 0);
+        int headerLength = new SnapshotHeader(7, 2, Groups, null).Encode(buffer, 0);
         buffer.PutBytes(headerLength, Body());
         var snapshot = new byte[headerLength + 3000];
         buffer.GetBytes(0, snapshot);

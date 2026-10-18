@@ -79,23 +79,25 @@ inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, cons
 }
 
 /**
- * Looks up the cluster stream recording on an already-connected archive, preferring the
+ * Looks up the recording of a group's queue on an already-connected archive, preferring the
  * active (live) recording over any stopped one; among stopped recordings prefers the
  * largest stop position (holds the most committed data).
  *
  * @param archive              a connected archive client to search
- * @param[out] recordingId    recording id of the cluster stream found on the archive
+ * @param groupId              the group whose queue to look for
+ * @param[out] recordingId    recording id of the queue found on the archive
  * @param[out] catchUpPosition recording position to replay/catch up to
- * @return false if the archive holds no QUEUE_STREAM_ID recording at all (leaving both
+ * @return false if the archive holds no recording of that queue at all (leaving both
  *         out-parameters untouched).
  */
 inline bool findClusterStreamRecording(const std::shared_ptr<aeron::archive::client::AeronArchive>& archive,
-                                       std::int64_t& recordingId, std::int64_t& catchUpPosition)
+                                       const std::int32_t groupId, std::int64_t& recordingId,
+                                       std::int64_t& catchUpPosition)
 {
     std::int64_t activeId = -1;
     std::int64_t stoppedId = -1;
     std::int64_t stoppedPosition = std::numeric_limits<std::int64_t>::min();
-    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", protocol::QUEUE_STREAM_ID,
+    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", protocol::queueStreamId(groupId),
                                   [&](aeron::archive::client::RecordingDescriptor& recording) {
                                       if (recording.m_stopPosition == aeron::archive::client::NULL_POSITION)
                                       {
@@ -152,18 +154,17 @@ inline std::string pollArchiveSession(const std::shared_ptr<aeron::archive::clie
 
 /**
  * Connects to each candidate archive endpoint in turn until one both connects
- * and holds a recording of the sequenced stream (matched by QUEUE_STREAM_ID
- * alone). Every member records its own node-local queue, so any reachable
- * member's archive holds a full copy; trying more than one endpoint is just
- * defense in depth against an individual member being down or still starting up
- * (its recording not yet active). This connects to a remote archive over UDP
- * control and replays over a UDP replay channel — the recording's aeron:ipc
- * source is irrelevant to replay.
+ * and holds a recording of a group's queue (matched by its stream id alone). Every member records its own node-local
+ * queue, so any reachable member's archive holds a full copy; trying more than one endpoint is just defense in depth
+ * against an individual member being down or still starting up (its recording not yet active). This connects to a
+ * remote archive over UDP control and replays over a UDP replay channel — the recording's aeron:ipc source is
+ * irrelevant to replay.
  *
  * @param aeron                the client the archive connection is made on
  * @param controlEndpoints     candidate archive control endpoints, "host:port", tried in order
  * @param controlStreamId      the archives' control request stream id
  * @param controlResponseChannel this client's own channel for the archive's control responses
+ * @param groupId              the group whose queue to look for
  * @param logPrefix            prepended to every log line and to the exception message
  * @param[out] recordingId    recording id of the sequenced stream found on the
  *                            connected archive
@@ -174,7 +175,8 @@ inline std::string pollArchiveSession(const std::shared_ptr<aeron::archive::clie
  */
 inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWithClusterStream(
     std::shared_ptr<aeron::Aeron> aeron, const std::vector<std::string>& controlEndpoints, std::int32_t controlStreamId,
-    const char* controlResponseChannel, const char* logPrefix, std::int64_t& recordingId, std::int64_t& catchUpPosition)
+    const char* controlResponseChannel, const std::int32_t groupId, const char* logPrefix, std::int64_t& recordingId,
+    std::int64_t& catchUpPosition)
 {
     std::string lastError = "no candidate endpoints given";
     for (const auto& endpoint : controlEndpoints)
@@ -197,7 +199,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
             continue;
         }
 
-        if (!findClusterStreamRecording(archive, recordingId, catchUpPosition))
+        if (!findClusterStreamRecording(archive, groupId, recordingId, catchUpPosition))
         {
             util::Logger::info(util::component::ClusterStreamClient,
                                "%s Connected to %s but it has no cluster stream recording"
@@ -229,6 +231,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
  *
  * @param aeron                the client the archive connection is made on
  * @param controlStreamId      the local archive's control request stream id
+ * @param groupId              the group whose queue to look for
  * @param logPrefix            prepended to the log line and to the exception message
  * @param[out] recordingId    recording id of the cluster stream found on the local archive
  * @param[out] catchUpPosition recording position to replay/catch up to
@@ -236,11 +239,9 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
  * @throws std::runtime_error if the local archive can't be reached, or holds no cluster
  *         stream recording at all.
  */
-inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive(std::shared_ptr<aeron::Aeron> aeron,
-                                                                                 std::int32_t controlStreamId,
-                                                                                 const char* logPrefix,
-                                                                                 std::int64_t& recordingId,
-                                                                                 std::int64_t& catchUpPosition)
+inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive(
+    std::shared_ptr<aeron::Aeron> aeron, std::int32_t controlStreamId, const std::int32_t groupId,
+    const char* logPrefix, std::int64_t& recordingId, std::int64_t& catchUpPosition)
 {
     aeron::archive::client::Context archiveCtx;
     archiveCtx.aeron(aeron)
@@ -249,7 +250,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive
         .controlResponseChannel(protocol::ARCHIVE_CONTROL_CHANNEL);
     auto archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
 
-    if (!findClusterStreamRecording(archive, recordingId, catchUpPosition))
+    if (!findClusterStreamRecording(archive, groupId, recordingId, catchUpPosition))
     {
         throw std::runtime_error(std::string(logPrefix) + " Co-located archive has no cluster stream recording");
     }
@@ -271,7 +272,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive
  *   2. Call start(aeron, archive, recordingId, catchUpPosition, replayChannel).
  *   3. Call poll() in a duty-cycle loop.
  *
- * Every recording a node holds starts at globalSeqNo 1, so that one recording is the whole log. It is
+ * Every recording a node holds of a queue starts at groupSeqNo 1, so that one recording is the whole queue. It is
  * replayed with NULL_LENGTH, so it follows the recording's growth once caught up: the same image delivers
  * history and then the live feed, with no subscription switch.
  *
@@ -291,9 +292,9 @@ class ClusterStreamClient
     /**
      * Creates a client that has not started.
      *
-     * @param onSequenced    every frame but the connection lifecycle pair, in globalSeqNo order
-     * @param onConnected    each ConnectionOpened; empty drops them, leaving a hole in globalSeqNo
-     * @param onDisconnected each ConnectionClosed; empty drops them, leaving a hole in globalSeqNo
+     * @param onSequenced    every frame but the connection lifecycle pair, in clusterSeqNo order
+     * @param onConnected    each ConnectionOpened; empty drops them, leaving a hole in groupSeqNo
+     * @param onDisconnected each ConnectionClosed; empty drops them, leaving a hole in groupSeqNo
      * @param onCaughtUp     once the replay reaches its catch-up position
      * @param onReplayEnded  the replay image closed before its catch-up position
      */

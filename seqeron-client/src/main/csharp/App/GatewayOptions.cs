@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Org.Limitless.Seqeron.Protocol;
 
 namespace Org.Limitless.Seqeron.App;
@@ -9,12 +11,16 @@ public sealed class GatewayOptions
     /// <summary>The <c>GatewayRegistered</c> row name this instance joins on.</summary>
     public required string GatewayName { get; init; }
 
+    /// <summary>The names of the groups this gateway publishes to besides its own; one the log's group table lacks
+    /// fences it with <see cref="ClusterError.GroupUnknown"/>.</summary>
+    public IReadOnlyList<string> AddressedGroups { get; init; } = Array.Empty<string>();
+
     /// <summary>The logical gateway's <c>sourceId</c>, the one its rows declare. Required with a
     /// <see cref="SnapshotListener"/>, whose snapshot counter it labels.</summary>
     public int SourceId { get; init; } = Gateway.Unresolved;
 
     /// <summary>What serializes this instance's state for snapshot rounds and restores it on start; without one it
-    /// takes part in none, whatever its rows say, and recovers from <c>globalSeqNo</c> 1.</summary>
+    /// takes part in none, whatever its rows say, and recovers from <c>clusterSeqNo</c> 1.</summary>
     public ISnapshotListener SnapshotListener { get; init; }
 
     /// <summary>Where this instance keeps its snapshots, one file per round; required with a

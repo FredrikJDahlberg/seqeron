@@ -10,11 +10,11 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// The cluster clock, synthesized once a second from a cluster timer. No payload: the frame's timestamp and globalSeqNo are the message (42 bytes)
+    /// The cluster clock, synthesized once a second from a cluster timer. No payload: the frame's timestamp and clusterSeqNo are the message (52 bytes)
     /// </summary>
     public sealed partial class ClusterHeartbeat
     {
-        public const ushort BlockLength = (ushort)34;
+        public const ushort BlockLength = (ushort)44;
         public const ushort TemplateId = (ushort)104;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;

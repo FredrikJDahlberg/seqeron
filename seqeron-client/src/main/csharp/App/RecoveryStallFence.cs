@@ -5,7 +5,7 @@ namespace Org.Limitless.Seqeron.App;
 /// caught up at least once. It covers the state a queue-silence watchdog cannot, because that watchdog is gated on
 /// <c>IsCaughtUp</c>: a recovery that never converges would otherwise keep an active gateway serving behind a view
 /// of the log frozen at a hole it cannot close.
-/// <para><b>Progress, not elapsed recovery.</b> A converging re-walk always advances the <c>globalSeqNo</c> it has
+/// <para><b>Progress, not elapsed recovery.</b> A converging re-walk always advances the <c>clusterSeqNo</c> it has
 /// dispatched and a non-converging one never does, so timing elapsed recovery would fence the very path a recovery
 /// takes. It never arms before the first catch-up: a cold start replays the whole log (no snapshots) and has no
 /// useful time bound.</para>
@@ -23,7 +23,7 @@ internal sealed class RecoveryStallFence
     private long _recoveryStartMs;
 
     // The dispatched frontier at the last observation; only meaningful while an episode is timed.
-    private long _lastGlobalSeqNo;
+    private long _lastClusterSeqNo;
 
     /// <summary>A fence with no episode timed yet.</summary>
     /// <param name="deadlineMs">how long recovery may dispatch nothing, once caught up before, before it is
@@ -45,18 +45,18 @@ internal sealed class RecoveryStallFence
     /// frontier advanced, only re-anchors the clock — the deadline is always measured from the last sign of
     /// progress.</summary>
     /// <param name="nowMs">monotonic clock reading</param>
-    /// <param name="globalSeqNo">the highest globalSeqNo dispatched so far</param>
+    /// <param name="clusterSeqNo">the highest clusterSeqNo dispatched so far</param>
     /// <returns>true once recovery has dispatched nothing for at least the deadline, on an instance that has been
     /// caught up before; always false for a cold start</returns>
-    public bool OnNotCaughtUp(long nowMs, long globalSeqNo)
+    public bool OnNotCaughtUp(long nowMs, long clusterSeqNo)
     {
         if (!_everCaughtUp)
         {
             return false;
         }
-        if (_recoveryStartMs == 0 || globalSeqNo != _lastGlobalSeqNo)
+        if (_recoveryStartMs == 0 || clusterSeqNo != _lastClusterSeqNo)
         {
-            _lastGlobalSeqNo = globalSeqNo;
+            _lastClusterSeqNo = clusterSeqNo;
             _recoveryStartMs = nowMs;
             return false;
         }

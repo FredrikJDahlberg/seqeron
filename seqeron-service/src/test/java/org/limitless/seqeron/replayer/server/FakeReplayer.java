@@ -36,10 +36,15 @@ final class FakeReplayer implements Replayer {
     /** One {@code startReplay} the service asked for. */
     record StartedReplay(long recordingId, long position, long length, int streamId, long replaySessionId) { }
 
-    private final List<Replayer.RecordingSpan> recordings = new ArrayList<>();
+    /** The group whose queue {@link #addRecording(long, long, boolean, long)} records. */
+    static final int GROUP_ID = 1;
+
+    private record GroupRecording(int groupId, Replayer.RecordingSpan span) { }
+
+    private final List<GroupRecording> recordings = new ArrayList<>();
     private final Map<Long, Long> recordingPositions = new HashMap<>();
     private final Map<Long, Long> stopPositions = new HashMap<>();
-    private Replayer.QueueBacklog queueBacklog;
+    private final Map<Integer, Replayer.QueueBacklog> queueBacklogs = new HashMap<>();
 
     private final List<StartedReplay> startedReplays = new ArrayList<>();
     private final List<Long> stoppedReplays = new ArrayList<>();
@@ -47,6 +52,7 @@ final class FakeReplayer implements Replayer {
     private RuntimeException replayFailure;
     private RuntimeException archiveFailure;
     private String archiveSessionError;
+    private String archiveRequestError;
     private int archivePolls;
     private int listings;
     private int replayAttempts;
@@ -68,9 +74,16 @@ final class FakeReplayer implements Replayer {
 
     // ── Scripting the node ──────────────────────────────────────────────────────
 
-    /** Adds one queue recording. A negative tip means the archive cannot say where it ends. */
+    /** Adds one recording of {@link #GROUP_ID}'s queue. A negative tip means the archive cannot say where it ends. */
     void addRecording(final long recordingId, final long startPosition, final boolean active, final long tip) {
-        recordings.add(new Replayer.RecordingSpan(recordingId, startPosition, active, TERM_BUFFER_LENGTH));
+        addRecording(GROUP_ID, recordingId, startPosition, active, tip);
+    }
+
+    /** Adds one recording of {@code groupId}'s queue. */
+    void addRecording(final int groupId, final long recordingId, final long startPosition, final boolean active,
+                      final long tip) {
+        recordings.add(new GroupRecording(
+            groupId, new Replayer.RecordingSpan(recordingId, startPosition, active, TERM_BUFFER_LENGTH)));
         if (active) {
             recordingPositions.put(recordingId, tip);
         } else {
@@ -81,10 +94,12 @@ final class FakeReplayer implements Replayer {
     /** Marks a recording stopped, as an operator repairing an unclean shutdown's leftover does. */
     void stopRecording(final long recordingId) {
         recordings.replaceAll(
-            span
-            -> span.recordingId() == recordingId
-                ? new Replayer.RecordingSpan(recordingId, span.startPosition(), false, span.termBufferLength())
-                : span);
+            recording
+            -> recording.span().recordingId() == recordingId
+                ? new GroupRecording(recording.groupId(),
+                                     new Replayer.RecordingSpan(recordingId, recording.span().startPosition(), false,
+                                                                recording.span().termBufferLength()))
+                : recording);
         final Long tip = recordingPositions.remove(recordingId);
         if (tip != null) {
             stopPositions.put(recordingId, tip);
@@ -109,11 +124,16 @@ final class FakeReplayer implements Replayer {
     }
 
     /**
-     * What the counters say the active recording trails the queue by; {@code null}, the default, is no queue
-     * publication found.
+     * What the counters say {@link #GROUP_ID}'s active recording trails its queue by; {@code null}, the default, is
+     * no queue publication found.
      */
     void queueBacklog(final Replayer.QueueBacklog backlog) {
-        queueBacklog = backlog;
+        queueBacklog(GROUP_ID, backlog);
+    }
+
+    /** The same, for {@code groupId}'s queue. */
+    void queueBacklog(final int groupId, final Replayer.QueueBacklog backlog) {
+        queueBacklogs.put(groupId, backlog);
     }
 
     /** Makes every subsequent {@code startReplay} throw, as an archive that will not serve a replay does. */
@@ -138,9 +158,14 @@ final class FakeReplayer implements Replayer {
         archiveFailure = null;
     }
 
-    /** Makes every subsequent {@code pollArchive} report {@code error}, as a session the archive closed does. */
-    void closeArchiveSession(final String error) {
-        archiveSessionError = error;
+    /** Makes every subsequent {@code pollArchive} report the session closed, as a session the archive closed does. */
+    void closeArchiveSession() {
+        archiveSessionError = ARCHIVE_SESSION_CLOSED;
+    }
+
+    /** Makes the next {@code pollArchive} report {@code error}, as the archive answering one request does. */
+    void answerArchiveRequestWithError(final String error) {
+        archiveRequestError = error;
     }
 
     /** How many times the archive's queue recordings were listed. */
@@ -197,10 +222,13 @@ final class FakeReplayer implements Replayer {
     // ── Replayer ─────────────────────────────────────────────────────
 
     @Override
-    public List<Replayer.RecordingSpan> listQueueRecordings() {
+    public List<Replayer.RecordingSpan> listQueueRecordings(final int groupId) {
         ++listings;
         throwIfArchiveDown();
-        return new ArrayList<>(recordings);
+        return recordings.stream()
+            .filter(recording -> recording.groupId() == groupId)
+            .map(GroupRecording::span)
+            .toList();
     }
 
     @Override
@@ -216,8 +244,8 @@ final class FakeReplayer implements Replayer {
     }
 
     @Override
-    public Replayer.QueueBacklog queueBacklog(final Replayer.RecordingSpan span) {
-        return queueBacklog;
+    public Replayer.QueueBacklog queueBacklog(final int groupId, final Replayer.RecordingSpan span) {
+        return queueBacklogs.get(groupId);
     }
 
     @Override
@@ -240,7 +268,9 @@ final class FakeReplayer implements Replayer {
     @Override
     public String pollArchive() {
         ++archivePolls;
-        return archiveSessionError;
+        final String requestError = archiveRequestError;
+        archiveRequestError = null;
+        return archiveSessionError != null ? archiveSessionError : requestError;
     }
 
     @Override

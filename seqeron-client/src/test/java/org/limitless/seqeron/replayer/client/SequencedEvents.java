@@ -42,7 +42,7 @@ public final class SequencedEvents {
         final SessionClosedEncoder closed = new SessionClosedEncoder();
         closed.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         closed.header().sourceId(-1).connectionId(-1).sessionId(-1).systemEventType(SystemFrame.SESSION_CLOSED)
-            .globalSeqNo(0).timestamp(0);
+            .clusterSeqNo(0).timestamp(0);
         closed.clusterSessionId(clusterSessionId);
         final SequencedEvent event = new SequencedEvent();
         if (!event.wrap(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + closed.encodedLength())) {
@@ -57,7 +57,7 @@ public final class SequencedEvents {
         final SequencedEncoder sequenced = new SequencedEncoder();
         sequenced.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         sequenced.header().sourceId(0).connectionId(0).sessionId(sourceSessionId).payloadId(payloadId)
-            .globalSeqNo(0).timestamp(0);
+            .clusterSeqNo(0).timestamp(0);
         sequenced.putPayload(body, offset, length);
         return MessageHeaderEncoder.ENCODED_LENGTH + sequenced.encodedLength();
     }
@@ -68,7 +68,7 @@ public final class SequencedEvents {
         final SequencedSystemEncoder sequenced = new SequencedSystemEncoder();
         sequenced.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         sequenced.header().sourceId(0).connectionId(0).sessionId(sourceSessionId).systemEventType(systemEventType)
-            .globalSeqNo(0).timestamp(0);
+            .clusterSeqNo(0).timestamp(0);
         sequenced.putBody(body, offset, length);
         return MessageHeaderEncoder.ENCODED_LENGTH + sequenced.encodedLength();
     }

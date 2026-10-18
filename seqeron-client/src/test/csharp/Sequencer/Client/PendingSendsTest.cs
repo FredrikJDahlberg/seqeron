@@ -411,7 +411,7 @@ public class PendingSendsTest
     private void Send(long session, long term, int n)
     {
         _body.PutInt(0, n);
-        _pending.Track(_frame, _envelope.WrapPayload(_frame, 1, 2, session, PayloadId, _body, sizeof(int)), session,
+        _pending.Track(_frame, _envelope.WrapPayload(_frame, 1, 2, session, PayloadId, 1, _body, sizeof(int)), session,
                        term);
     }
 

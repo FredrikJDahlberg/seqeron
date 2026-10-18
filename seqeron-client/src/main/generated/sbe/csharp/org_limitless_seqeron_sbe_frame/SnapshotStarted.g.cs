@@ -10,11 +10,11 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// Starts a snapshot round: every participating source serializes its state as of this                               frame's globalSeqNo, the round's cut (doc/snapshot.md §3)
+    /// Starts a snapshot round: every participating source serializes its state as of this                               frame's clusterSeqNo, the round's cut (doc/snapshot.md §3)
     /// </summary>
     public sealed partial class SnapshotStarted
     {
-        public const ushort BlockLength = (ushort)42;
+        public const ushort BlockLength = (ushort)52;
         public const ushort TemplateId = (ushort)107;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;
@@ -137,7 +137,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             return _actingVersion >= RoundSinceVersion;
         }
 
-        public const int RoundOffset = 34;
+        public const int RoundOffset = 44;
 
         public static string RoundMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -163,11 +163,11 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 34);
+                return _buffer.Int64GetLittleEndian(_offset + 44);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 34, value);
+                _buffer.Int64PutLittleEndian(_offset + 44, value);
             }
         }
 

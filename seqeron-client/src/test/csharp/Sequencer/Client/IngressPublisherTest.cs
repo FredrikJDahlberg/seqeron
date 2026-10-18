@@ -24,6 +24,7 @@ public class IngressPublisherTest
     private const int ConnectionId = 7;
     private const long SessionId = 4242;
     private const int PayloadId = 6;
+    private const int GroupMask = 0b101;
 
     // Records what it was handed, and answers whatever the test told it to.
     private sealed class FakeSender : IIngressSender
@@ -97,7 +98,7 @@ public class IngressPublisherTest
     {
         UnsafeBuffer body = Payload(16);
         Assert.Equal(Publish.Published,
-                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, body, 16));
+                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask, body, 16));
         Assert.Equal(1, _sender.Calls);
 
         var sent = new SbeBuffer(_sender.Sent);
@@ -108,6 +109,7 @@ public class IngressPublisherTest
         Assert.Equal(ConnectionId, _unsequenced.Header.ConnectionId);
         Assert.Equal(SessionId, _unsequenced.Header.SessionId); // the sender's session, not the caller's
         Assert.Equal(PayloadId, _unsequenced.Header.PayloadId);
+        Assert.Equal(GroupMask, _unsequenced.Header.GroupMask);
 
         var carried = new byte[16];
         Assert.Equal(16, _unsequenced.PayloadLength());
@@ -122,8 +124,8 @@ public class IngressPublisherTest
     public void OversizeBodyIsRefusedWithoutTouchingTheSender()
     {
         int tooLong = FrameLayer.MaxPayloadLength + 1;
-        Assert.Equal(Publish.Refused,
-                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, Payload(tooLong), tooLong));
+        Assert.Equal(Publish.Refused, _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask,
+                                                                Payload(tooLong), tooLong));
         Assert.True(_sender.Calls == 0, "a Refused publish must not reach the transport");
     }
 
@@ -131,8 +133,8 @@ public class IngressPublisherTest
     public void MaximumBodyIsAdmitted()
     {
         int atLimit = FrameLayer.MaxPayloadLength;
-        Assert.Equal(Publish.Published,
-                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, Payload(atLimit), atLimit));
+        Assert.Equal(Publish.Published, _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask,
+                                                                  Payload(atLimit), atLimit));
     }
 
     [Fact(DisplayName = "a transport that will not take the frame is Declined, which a caller may retry")]
@@ -140,7 +142,7 @@ public class IngressPublisherTest
     {
         _sender.Accept = false;
         Assert.Equal(Publish.Declined,
-                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, Payload(8), 8));
+                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask, Payload(8), 8));
         Assert.Equal(1, _sender.Calls);
     }
 
@@ -166,10 +168,10 @@ public class IngressPublisherTest
     public void BufferIsReusedAcrossPublishes()
     {
         Assert.Equal(Publish.Published,
-                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, Payload(64), 64));
+                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask, Payload(64), 64));
         int longFrame = _sender.Length;
         Assert.Equal(Publish.Published,
-                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, Payload(8), 8));
+                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask, Payload(8), 8));
         Assert.True(_sender.Length < longFrame, "the second frame is shorter than the first");
     }
 
@@ -177,7 +179,7 @@ public class IngressPublisherTest
     public void TrackedPublishRecordsThePlacedFrame()
     {
         Assert.Equal(Publish.Published,
-                     _tracked.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, Payload(8), 8));
+                     _tracked.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask, Payload(8), 8));
         Assert.Equal(new List<TrackedFrame> { new TrackedFrame(_sender.Length, SessionId, 1) }, _tracker.Tracked);
     }
 
@@ -186,7 +188,7 @@ public class IngressPublisherTest
     {
         _tracker.Holding = true;
         Assert.Equal(Publish.Declined,
-                     _tracked.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, Payload(8), 8));
+                     _tracked.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask, Payload(8), 8));
         _tracker.Holding = false;
         _tracker.Full = true;
         Assert.Equal(Publish.Declined, _tracked.PublishSystem(_sender, SourceId, ConnectionId,
@@ -200,7 +202,7 @@ public class IngressPublisherTest
     {
         _sender.Accept = false;
         Assert.Equal(Publish.Declined,
-                     _tracked.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, Payload(8), 8));
+                     _tracked.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask, Payload(8), 8));
         Assert.Empty(_tracker.Tracked);
     }
 
@@ -209,16 +211,19 @@ public class IngressPublisherTest
     {
         _tracker.Holding = true;
         int tooLong = FrameLayer.MaxPayloadLength + 1;
-        Assert.Equal(Publish.Refused,
-                     _tracked.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, Payload(tooLong), tooLong));
+        Assert.Equal(Publish.Refused, _tracked.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask,
+                                                              Payload(tooLong), tooLong));
     }
 
     [Fact(DisplayName = "a frame the sequencer would reject (§9.2 conditions 6-9) is Refused locally, nothing offered")]
     public void FramesTheSequencerWouldRejectAreRefused()
     {
-        Assert.Equal(Publish.Refused, _publisher.PublishPayload(_sender, -1, ConnectionId, PayloadId, Payload(8), 8));
-        Assert.Equal(Publish.Refused, _publisher.PublishPayload(_sender, SourceId, ConnectionId, 0, Payload(8), 8));
-        Assert.Equal(Publish.Refused, _publisher.PublishPayload(_sender, SourceId, ConnectionId, 1, Payload(8), 8));
+        Assert.Equal(Publish.Refused,
+                     _publisher.PublishPayload(_sender, -1, ConnectionId, PayloadId, GroupMask, Payload(8), 8));
+        Assert.Equal(Publish.Refused,
+                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, 0, GroupMask, Payload(8), 8));
+        Assert.Equal(Publish.Refused,
+                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, 1, GroupMask, Payload(8), 8));
         Assert.Equal(Publish.Refused, _publisher.PublishSystem(_sender, SourceId, ConnectionId,
                                                                SystemFrame.LeadershipChanged, Payload(8), 8));
         Assert.Equal(Publish.Refused, _publisher.PublishSystem(_sender, SourceId, ConnectionId,

@@ -25,7 +25,8 @@ import org.limitless.seqeron.replayer.client.SnapshotStore;
 
 /** A façade's side of snapshot rounds (doc/snapshot.md §4), driven through its {@code Actions} seam. */
 class SnapshotTakerTest {
-    private static final SnapshotHeader HEADER = new SnapshotHeader(3, 1, null);
+    private static final SnapshotHeader HEADER =
+        new SnapshotHeader(3, 1, List.of(new SnapshotHeader.Group(1, "orders")), null);
 
     /** Encodes {@code records} records of 1000 bytes, each filled with its index, then answers 0. */
     private static final class State implements SnapshotListener {
@@ -93,7 +94,7 @@ class SnapshotTakerTest {
         return taker;
     }
 
-    /** Round {@code round}'s {@code SnapshotStarted}: cut at globalSeqNo {@code round * 10}. */
+    /** Round {@code round}'s {@code SnapshotStarted}: cut at clusterSeqNo {@code round * 10}. */
     private static void started(final SnapshotTaker taker, final long round, final boolean mayPublish) {
         started(taker, round, HEADER, mayPublish);
     }
@@ -154,7 +155,7 @@ class SnapshotTakerTest {
         final long[] end = frames.ends.get(0);
         assertEquals(7, end[0]);
         assertEquals(3, end[1]);
-        assertEquals(2018, end[2]);
+        assertEquals(2052, end[2]);
         assertEquals(5, end[4], "the listener's formatVersion");
         assertNull(storeOf(1).open(7), "not confirmed before its end is sequenced");
         assertTrue(taker.onSnapshotEnd(7, (int)end[1], end[2], end[3]), "its own end agrees with it");
@@ -164,7 +165,7 @@ class SnapshotTakerTest {
         assertEquals(3, reader.recordCount());
         assertEquals(end[2], reader.length());
         assertEquals(end[3], reader.crc32c());
-        assertEquals(70, reader.cutGlobalSeqNo());
+        assertEquals(70, reader.cutClusterSeqNo());
         assertEquals(70 * 1024, reader.cutPosition());
         assertEquals(70_000, reader.cutTimestampNs());
         final List<byte[]> records = readAll(reader);
@@ -292,7 +293,7 @@ class SnapshotTakerTest {
         final SnapshotHeader.GatewayState state35 = new SnapshotHeader.GatewayState(
             9, 10, 42, Collections.nCopies(1771, new SnapshotHeader.GatewayRow(10, 0, "GW")));
         final SnapshotTaker taker = participating();
-        started(taker, 3, new SnapshotHeader(7, 2, state35), true);
+        started(taker, 3, new SnapshotHeader(7, 2, List.of(), state35), true);
         assertEquals(0, state.serialized, "1771 rows outgrow a record");
         assertFalse(taker.isPublishing());
         assertNull(storeOf(1).open(3));

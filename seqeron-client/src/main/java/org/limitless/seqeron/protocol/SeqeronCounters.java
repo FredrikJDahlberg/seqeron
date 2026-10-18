@@ -17,8 +17,8 @@ public final class SeqeronCounters {
     /** Last type id of the sequencer's block. */
     public static final int SEQUENCER_TYPE_ID_MAX = 5099;
 
-    /** Mirrors {@code Sequencer.globalSeqNo()} — the last globalSeqNo emitted on this node's queue. */
-    public static final int SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID = 5000;
+    /** Mirrors {@code Sequencer.clusterSeqNo()} — the last clusterSeqNo emitted on this node's queue. */
+    public static final int SEQUENCER_CLUSTER_SEQ_NO_TYPE_ID = 5000;
 
     /** Count of times the queue-emit back-pressure alert threshold has fired. */
     public static final int SEQUENCER_QUEUE_BACKPRESSURE_ALERTS_TYPE_ID = 5001;

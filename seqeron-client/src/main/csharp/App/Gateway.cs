@@ -24,7 +24,7 @@ namespace Org.Limitless.Seqeron.App;
 /// header carrying the pair's election state, and the active one then submits the round's <c>SnapshotEnd</c>. An
 /// instance whose snapshot differs from the one sequenced is fenced with <see cref="ClusterError.SnapshotDiverged"/>.
 /// On start, an instance given a listener restores the newest snapshot of its own that the log confirms and resumes
-/// after its cut, or replays from <c>globalSeqNo</c> 1 without one; one it cannot restore is fenced with
+/// after its cut, or replays from <c>clusterSeqNo</c> 1 without one; one it cannot restore is fenced with
 /// <see cref="ClusterError.SnapshotUnrestorable"/>.</para>
 /// <para>Single-threaded: every member belongs to the caller's one duty-cycle thread, which calls
 /// <see cref="DoWork"/> each iteration. <c>Gateway.java</c> and <c>app/Gateway.hpp</c> are its twins; keep the three
@@ -121,7 +121,8 @@ public sealed class Gateway : IDisposable
         SnapshotStore store = options.SnapshotListener == null ? null : new SnapshotStore(options.SnapshotDirectory);
         _snapshots = new SnapshotTaker(options.SnapshotListener, store, KeepAlive);
         _session = new Session(options.ClientId, options.PendingCapacity, options.QueueStallTimeoutMs,
-                               options.RecoveryStallTimeoutMs, new SessionDispatch(this));
+                               options.RecoveryStallTimeoutMs, ReplayProtocol.NoSourceId, options.GatewayName,
+                               options.AddressedGroups, new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _lifecycle.GatewaySourceId);
         if (store != null)
         {
@@ -236,7 +237,7 @@ public sealed class Gateway : IDisposable
         _lifecycleBacklog.Add(new Lifecycle(connectionId, SystemFrame.ConnectionClosed, NoConnectionData));
     }
 
-    /// <summary>Submits one application payload on a connection, stamped with this gateway's
+    /// <summary>Submits one application payload on a connection to this gateway's own group, stamped with its
     /// <c>sourceId</c>.</summary>
     /// <param name="connectionId">the connection it belongs to</param>
     /// <param name="payloadId">which protocol the payload speaks</param>
@@ -246,22 +247,40 @@ public sealed class Gateway : IDisposable
     /// has not landed yet — retry it; <c>Refused</c> is permanent</returns>
     public Publish Publish(int connectionId, int payloadId, IDirectBuffer payload, int length)
     {
-        if (_unopened.Contains(connectionId))
-        {
-            return Protocol.Publish.Declined;
-        }
-        return _session.PublishPayload(_lifecycle.GatewaySourceId, connectionId, payloadId, payload, length);
+        return Publish(connectionId, 0, payloadId, payload, length);
     }
 
     /// <summary>The same from a span, copied once into a buffer this instance owns.</summary>
     public Publish Publish(int connectionId, int payloadId, ReadOnlySpan<byte> payload)
+    {
+        return Publish(connectionId, 0, payloadId, payload);
+    }
+
+    /// <summary>The same to the groups <paramref name="groupMask"/> names as well as its own.</summary>
+    /// <param name="connectionId">the connection it belongs to</param>
+    /// <param name="groupMask">bits from the <see cref="GroupDirectory"/>; one the table lacks is
+    /// <c>Refused</c></param>
+    /// <param name="payloadId">which protocol the payload speaks</param>
+    /// <param name="payload">the payload's bytes from offset 0, its own <c>MessageHeader</c> included</param>
+    /// <param name="length">bytes of <paramref name="payload"/></param>
+    public Publish Publish(int connectionId, ushort groupMask, int payloadId, IDirectBuffer payload, int length)
+    {
+        if (_unopened.Contains(connectionId))
+        {
+            return Protocol.Publish.Declined;
+        }
+        return _session.PublishPayload(_lifecycle.GatewaySourceId, connectionId, groupMask, payloadId, payload, length);
+    }
+
+    /// <summary>The same from a span, copied once into a buffer this instance owns.</summary>
+    public Publish Publish(int connectionId, ushort groupMask, int payloadId, ReadOnlySpan<byte> payload)
     {
         // A payload too long to stage is left out: ingress refuses it on its length before reading a byte.
         if (payload.Length <= _staging.Length)
         {
             payload.CopyTo(_staging);
         }
-        return Publish(connectionId, payloadId, _stagingBuffer, payload.Length);
+        return Publish(connectionId, groupMask, payloadId, _stagingBuffer, payload.Length);
     }
 
     /// <summary>Whether the last <c>GatewayActive</c> for this pair named this instance.</summary>
@@ -280,7 +299,7 @@ public sealed class Gateway : IDisposable
 
     public bool IsCaughtUp => _session.IsCaughtUp;
 
-    public long LastGlobalSeqNo => _session.LastGlobalSeqNo;
+    public long LastClusterSeqNo => _session.LastClusterSeqNo;
 
     /// <summary>Closes the cluster session and the queue. The Aeron client is the caller's and is left open.</summary>
     public void Dispose()
@@ -360,7 +379,7 @@ public sealed class Gateway : IDisposable
     // What this instance derives from the frames before a cut, for the round it starts (§6).
     private SnapshotHeader CurrentSnapshotHeader()
     {
-        return new SnapshotHeader(_session.LeadershipTermId, _session.CurrentLeaderMemberId,
+        return new SnapshotHeader(_session.LeadershipTermId, _session.CurrentLeaderMemberId, _session.GroupTable,
                                   new SnapshotHeader.GatewayState(_lifecycle.GatewaySourceId,
                                                                   _lifecycle.ActiveGatewayId, _highestConnectionId,
                                                                   _lifecycle.PairRows()));
@@ -501,7 +520,7 @@ public sealed class Gateway : IDisposable
                     Wrap(sequencedEvent);
                     _snapshotStarted.WrapForDecode(_view, 0, Frame.SnapshotStarted.BlockLength,
                                                    Frame.SnapshotStarted.SchemaVersion);
-                    g._snapshots.OnSnapshotStarted(_snapshotStarted.Round, sequencedEvent.GlobalSeqNo,
+                    g._snapshots.OnSnapshotStarted(_snapshotStarted.Round, sequencedEvent.ClusterSeqNo,
                                                    sequencedEvent.Position, sequencedEvent.ClusterTimestampNs,
                                                    g.CurrentSnapshotHeader(), g._lifecycle.IsAnnounced);
                     break;
@@ -517,8 +536,8 @@ public sealed class Gateway : IDisposable
                                                     _snapshotEnd.Crc32c))
                     {
                         g._session.Fence(ClusterError.SnapshotDiverged,
-                                         "round " + _snapshotEnd.Round + "'s sequenced snapshot at globalSeqNo " +
-                                             sequencedEvent.GlobalSeqNo + " differs from this instance's");
+                                         "round " + _snapshotEnd.Round + "'s sequenced snapshot at clusterSeqNo " +
+                                             sequencedEvent.ClusterSeqNo + " differs from this instance's");
                     }
                     break;
                 default:
@@ -537,10 +556,15 @@ public sealed class Gateway : IDisposable
             _gateway._listener.OnSequenced(payload);
         }
 
-        public void OnCaughtUp(long globalSeqNo)
+        public void OnGroupsResolved(GroupDirectory directory)
+        {
+            _gateway._listener.OnGroupsResolved(directory);
+        }
+
+        public void OnCaughtUp(long clusterSeqNo)
         {
             _gateway._lifecycle.OnCaughtUp();
-            _gateway._listener.OnCaughtUp(globalSeqNo);
+            _gateway._listener.OnCaughtUp(clusterSeqNo);
         }
 
         public void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs)

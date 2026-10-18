@@ -17,8 +17,8 @@ namespace org::limitless::seqeron::protocol {
 inline constexpr std::int32_t SEQUENCER_TYPE_ID_MIN = 5000;
 inline constexpr std::int32_t SEQUENCER_TYPE_ID_MAX = 5099;
 
-// The last globalSeqNo emitted on this node's queue.
-inline constexpr std::int32_t SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID = 5000;
+// The last clusterSeqNo emitted on this node's queue.
+inline constexpr std::int32_t SEQUENCER_CLUSTER_SEQ_NO_TYPE_ID = 5000;
 // Count of times the queue-emit back-pressure alert threshold has fired.
 inline constexpr std::int32_t SEQUENCER_QUEUE_BACKPRESSURE_ALERTS_TYPE_ID = 5001;
 // Count of malformed ingress messages the sequencer skipped.

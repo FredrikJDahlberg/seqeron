@@ -74,12 +74,12 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     /// session is kept alive after each record, so the round may take as long as its state needs.
     /// </summary>
     /// <param name="startedRound">its <c>round</c></param>
-    /// <param name="cutGlobalSeqNo">its <c>globalSeqNo</c>, the cut</param>
+    /// <param name="cutClusterSeqNo">its <c>clusterSeqNo</c>, the cut</param>
     /// <param name="cutPosition">where it starts in the recording</param>
     /// <param name="cutTimestampNs">its consensus timestamp</param>
     /// <param name="header">the façade's header as of the cut</param>
     /// <param name="mayPublish">whether this instance is the one that publishes at the cut</param>
-    internal void OnSnapshotStarted(long startedRound, long cutGlobalSeqNo, long cutPosition, long cutTimestampNs,
+    internal void OnSnapshotStarted(long startedRound, long cutClusterSeqNo, long cutPosition, long cutTimestampNs,
                                     SnapshotHeader header, bool mayPublish)
     {
         _publishing = false;
@@ -92,7 +92,7 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
         _crc = 0;
         _recordCount = 0;
         _length = 0;
-        _store.Begin(_round, cutGlobalSeqNo, cutPosition, cutTimestampNs);
+        _store.Begin(_round, cutClusterSeqNo, cutPosition, cutTimestampNs);
         Append(header.Encode(_encoding, 0));
         for (int recordIndex = 0;; recordIndex++)
         {

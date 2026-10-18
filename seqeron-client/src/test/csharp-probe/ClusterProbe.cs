@@ -3,12 +3,15 @@ using System.Collections.Generic;
 using System.Linq;
 using Adaptive.Aeron;
 using Adaptive.Aeron.Exceptions;
+using Adaptive.Aeron.LogBuffer;
 using Adaptive.Agrona;
 using Adaptive.Agrona.Concurrent;
 using Org.Limitless.Seqeron.Protocol;
 using Org.Limitless.Seqeron.Replayer.Client;
 using Org.Limitless.Seqeron.Sequencer.Client;
 using Org.Limitless.Seqeron.Util;
+using Replay = Org.Limitless.Seqeron.Sbe.Replay;
+using SbeBuffer = Org.SbeTool.Sbe.Dll.DirectBuffer;
 
 namespace Org.Limitless.Seqeron.Tools;
 
@@ -22,9 +25,10 @@ namespace Org.Limitless.Seqeron.Tools;
 /// its own queue showed 1..count exactly once, in order. <c>--colocated</c> connects through the member's IPC ingress
 /// first, falling back to UDP.</item>
 /// <item><c>follow</c>: cold-starts a <see cref="ReplayerStreamReceiver"/>, follows the queue live for
-/// <c>--live-seconds</c> after catching up, and exits 0 iff it dispatched every frame from <c>globalSeqNo</c> 1 with
+/// <c>--live-seconds</c> after catching up, and exits 0 iff it dispatched every frame from <c>groupSeqNo</c> 1 with
 /// no gap.</item>
 /// </list>
+/// Both read the queue of <c>--group</c>, or else the default queue (spec §3.1), and address their frames to it.
 /// <c>ProbeMarker</c> is encoded by hand: sbe-probe.xml (schema 214) generates no C# codecs.
 /// </summary>
 public static class ClusterProbe
@@ -32,6 +36,10 @@ public static class ClusterProbe
     private const int ProbePayloadId = 5;
     private const int ProbeSourceId = 8;
     private const int NoConnection = -1;
+
+    private const string ControlChannel = ReplayProtocol.IpcChannel + "|tether=false";
+    private const int QueueRequestLength = Replay.MessageHeader.Size + Replay.QueueRequest.BlockLength;
+    private const long QueueRequestResendMs = 500;
 
     // ProbeMarker's MessageHeader, then seqNo uint64, then filler as uint16-length var data.
     private const int ProbeMarkerTemplateId = 1;
@@ -85,6 +93,7 @@ public static class ClusterProbe
         var idle = new YieldingIdleStrategy();
 
         using Aeron aeron = Connect(options);
+        int groupId = GroupId(aeron, options);
         using var sender = new ClusterStreamSender();
         using var receiver = new ReplayerStreamReceiver(
             options.ClientId,
@@ -96,8 +105,8 @@ public static class ClusterProbe
                 }
                 own.OnSequenced(sequencedEvent);
             },
-            (leader, term, globalSeqNo) => pending.OnLeadershipChanged(term), () => caughtUp = true);
-        receiver.Start(aeron, options.MemberId);
+            (leader, term, clusterSeqNo) => pending.OnLeadershipChanged(term), () => caughtUp = true);
+        receiver.Start(aeron, options.MemberId, groupId);
         while (!caughtUp)
         {
             idle.Idle(receiver.Poll());
@@ -147,7 +156,7 @@ public static class ClusterProbe
             if (next <= count && nowTicks >= nextSendTicks)
             {
                 Publish outcome = publisher.PublishPayload(sender, ProbeSourceId, NoConnection, ProbePayloadId,
-                                                           marker.Encode(next), ProbeMarkerLength);
+                                                           GroupMask(groupId), marker.Encode(next), ProbeMarkerLength);
                 if (outcome == Publish.Refused)
                 {
                     throw new InvalidOperationException("a ProbeMarker the sequencer would reject");
@@ -188,16 +197,16 @@ public static class ClusterProbe
         receiver = new ReplayerStreamReceiver(options.ClientId,
                                               sequencedEvent =>
                                               {
-                                                  long globalSeqNo = sequencedEvent.GlobalSeqNo;
+                                                  long groupSeqNo = sequencedEvent.GroupSeqNo;
                                                   if (first == 0)
                                                   {
-                                                      first = globalSeqNo;
+                                                      first = groupSeqNo;
                                                   }
-                                                  else if (globalSeqNo != last + 1)
+                                                  else if (groupSeqNo != last + 1)
                                                   {
                                                       gaps++;
                                                   }
-                                                  last = globalSeqNo;
+                                                  last = groupSeqNo;
                                               },
                                               null,
                                               () =>
@@ -205,14 +214,13 @@ public static class ClusterProbe
                                                   if (!caughtUp)
                                                   {
                                                       Logger.Info(Logger.CoreComponent.ClusterProbe, options.MemberId,
-                                                                  "Caught up at globalSeqNo {0} — following live",
-                                                                  receiver.LastGlobalSeqNo);
+                                                                  "Caught up at groupSeqNo {0} — following live", last);
                                                   }
                                                   caughtUp = true;
                                               });
         using (receiver)
         {
-            receiver.Start(aeron, options.MemberId);
+            receiver.Start(aeron, options.MemberId, GroupId(aeron, options));
             Logger.Info(Logger.CoreComponent.ClusterProbe, options.MemberId,
                         "Following the node queue — replaying history via the Replayer, then live");
             long deadlineMs = long.MaxValue;
@@ -227,8 +235,8 @@ public static class ClusterProbe
         }
         bool exact = first == 1 && gaps == 0 && caughtUp;
         Logger.Info(Logger.CoreComponent.ClusterProbe, options.MemberId,
-                    "follow: {0} — dispatched globalSeqNo {1} to {2}, gaps {3}",
-                    exact ? "CONTIGUOUS" : "NOT CONTIGUOUS", first, last, gaps);
+                    "follow: {0} — dispatched groupSeqNo {1} to {2}, gaps {3}", exact ? "CONTIGUOUS" : "NOT CONTIGUOUS",
+                    first, last, gaps);
         return exact ? 0 : 1;
     }
 
@@ -236,6 +244,74 @@ public static class ClusterProbe
     {
         string aeronDir = options.String("aeron-dir", PortLayout.AeronDir(options.MemberId));
         return Aeron.Connect(new Aeron.Context().AeronDirectoryName(aeronDir));
+    }
+
+    // --group, or else the default queue's group, which the node's Replayer names in answer to a QueueRequest naming
+    // no source (R-6); waits until it does.
+    private static int GroupId(Aeron aeron, Options options)
+    {
+        int configured = options.Int("group", 0);
+        if (configured != 0)
+        {
+            return configured;
+        }
+        long clientId = aeron.NextCorrelationId();
+        long requestId = 0;
+        int resolved = 0;
+        var header = new Replay.MessageHeader();
+        var answer = new Replay.QueueResolved();
+        var view = new SbeBuffer();
+        FragmentHandler onControl = (buffer, offset, length, _) =>
+        {
+            if (length < Replay.MessageHeader.Size)
+            {
+                return;
+            }
+            SbeBuffers.Wrap(view, buffer, offset, length);
+            header.Wrap(view, 0, Replay.MessageHeader.SbeSchemaVersion);
+            if (header.SchemaId != Replay.MessageHeader.SbeSchemaId ||
+                header.TemplateId != Replay.QueueResolved.TemplateId ||
+                Replay.MessageHeader.Size + header.BlockLength > length)
+            {
+                return;
+            }
+            answer.WrapForDecode(view, Replay.MessageHeader.Size, header.BlockLength, header.Version);
+            if (answer.ClientId == clientId && answer.RequestId == requestId)
+            {
+                resolved = answer.QueueId;
+            }
+        };
+        var requestBuffer = new UnsafeBuffer(GC.AllocateArray<byte>(QueueRequestLength, true));
+        var requestView = new SbeBuffer();
+        SbeBuffers.Wrap(requestView, requestBuffer, 0, QueueRequestLength);
+        var request = new Replay.QueueRequest();
+        var idle = new YieldingIdleStrategy();
+        using Subscription control = aeron.AddSubscription(ControlChannel, ReplayProtocol.ControlStreamId);
+        using Publication requests = aeron.AddPublication(ReplayProtocol.IpcChannel, ReplayProtocol.RequestStreamId);
+        long lastRequestMs = Clocks.MonotonicMs() - QueueRequestResendMs;
+        while (resolved == 0)
+        {
+            if (requests.IsConnected && Clocks.MonotonicMs() - lastRequestMs >= QueueRequestResendMs)
+            {
+                request.WrapForEncodeAndApplyHeader(requestView, 0, new Replay.MessageHeader());
+                request.ClientId = clientId;
+                request.RequestId = ++requestId;
+                request.SourceId = ReplayProtocol.NoSourceId;
+                request.SetGatewayName("");
+                requests.Offer(requestBuffer, 0, Replay.MessageHeader.Size + request.Size);
+                lastRequestMs = Clocks.MonotonicMs();
+            }
+            idle.Idle(control.Poll(onControl, 10));
+        }
+        Logger.Info(Logger.CoreComponent.ClusterProbe, options.MemberId, "reads group {0}'s queue, the default",
+                    resolved);
+        return resolved;
+    }
+
+    // The probe is in no group: its frames address the queue it reads.
+    private static int GroupMask(int groupId)
+    {
+        return 1 << (groupId - 1);
     }
 
     // This client's own egress endpoint, on an ephemeral port of its member's host.
@@ -248,10 +324,10 @@ public static class ClusterProbe
 
     private static int Usage()
     {
-        Console.Error.WriteLine(
-            "usage: Seqeron.ClusterProbe confirm|follow --member <id> --client-id <id> [--aeron-dir <dir>]\n" +
-            "         confirm: [--count <n>] [--pacing-micros <us>] [--untracked] [--colocated]\n" +
-            "         follow:  [--live-seconds <s>]");
+        Console.Error.WriteLine("usage: Seqeron.ClusterProbe confirm|follow --member <id> --client-id <id> " +
+                                "[--aeron-dir <dir>] [--group <id>]\n" +
+                                "         confirm: [--count <n>] [--pacing-micros <us>] [--untracked] [--colocated]\n" +
+                                "         follow:  [--live-seconds <s>]");
         return 1;
     }
 

@@ -6,9 +6,11 @@
 // archive, its queue and its Replayer are simulated, a seeded generator drives faults through them, and the
 // two properties recovery exists to provide are asserted over whatever comes out.
 //
-// Safety   — every dispatched frame is the next globalSeqNo, always. No gap, no duplicate, no reordering,
-//            at any point in any run. This is the invariant the whole walk/resume/retain machinery is for,
-//            and it is checked on every dispatch, so a violation names the frame that broke it.
+// Safety   — every dispatched frame is the queue's next, by groupSeqNo, always. No gap, no duplicate, no
+//            reordering, at any point in any run. This is the invariant the whole walk/resume/retain machinery
+//            is for, and it is checked on every dispatch, so a violation names the frame that broke it. The
+//            queue is one group's, so its clusterSeqNos jump (clusterSeqNoOf), and the client must track it by
+//            groupSeqNo.
 // Liveness — once the faults stop, recovery converges: caught up, at the tip, having dispatched every frame
 //            ever published. A state machine can hold the safety property by dispatching nothing, so
 //            without this one the suite would pass on a client that gave up.
@@ -77,6 +79,14 @@ constexpr std::uint32_t FORMAT_VERSION = 1;
 
 namespace rf = restore_frames;
 
+// The clusterSeqNo of the queue's frame groupSeqNo: other groups' frames fall between this queue's, so it increases
+// along the queue by two and four in turn. A function of the frame, so it costs no draw and every seed makes the same
+// faults as before, and as in the other languages.
+constexpr std::int64_t clusterSeqNoOf(const std::int64_t groupSeqNo)
+{
+    return 3 * groupSeqNo - groupSeqNo % 2;
+}
+
 // Every gap logs, and a run makes hundreds — kept out of the test output rather than counted. RAII so a run
 // that fails out early still restores the default sink.
 struct SilentLoggerSink final : diag::LoggerSink
@@ -95,10 +105,11 @@ struct SilentLoggerSink final : diag::LoggerSink
     {}
 };
 
-// One frame carrying a ClusterHeartbeat — the cheapest well-formed frame there is, and the same one the
+// The queue's frame groupSeqNo, a ClusterHeartbeat — the cheapest well-formed frame there is, and the same one the
 // named suite uses.
-std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
+std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t groupSeqNo)
 {
+    const std::int64_t clusterSeqNo = clusterSeqNoOf(groupSeqNo);
     std::vector<std::uint8_t> buf(256, 0);
     frm::ClusterHeartbeat frame;
     frame.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
@@ -107,10 +118,17 @@ std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
         .connectionId(0)
         .sessionId(0)
         .systemEventType(protocol::CLUSTER_HEARTBEAT)
-        .globalSeqNo(globalSeqNo)
-        .timestamp(globalSeqNo * 1000);
+        .clusterSeqNo(clusterSeqNo)
+        .timestamp(clusterSeqNo * 1000)
+        .groupSeqNo(groupSeqNo);
     buf.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return buf;
+}
+
+// The round's SnapshotStarted as the queue's frame groupSeqNo.
+rf::Bytes started(const std::int64_t groupSeqNo, const std::int64_t round)
+{
+    return rf::started(clusterSeqNoOf(groupSeqNo), groupSeqNo, round, clusterSeqNoOf(groupSeqNo) * 1000);
 }
 
 std::vector<std::uint8_t> encodeReplaying(const std::int64_t requestId, const std::int64_t replaySessionId,
@@ -152,7 +170,7 @@ struct Simulation final
     void execute()
     {
         // History before the client starts. A cold start over an EMPTY archive that then drops the very
-        // first queue frame is the one designed abort — the first frame observed must be globalSeqNo 1 — and
+        // first queue frame is the one designed abort — the first frame observed must be groupSeqNo 1 — and
         // not a recovery failure, so the model does not construct it.
         if (restoring)
         {
@@ -200,18 +218,18 @@ struct Simulation final
 
         EXPECT_FALSE(recovery.fault().has_value()) << tag << ": " << recovery.fault().value_or("");
         EXPECT_TRUE(recovery.isCaughtUp()) << tag << ": never re-converged after the faults stopped";
-        EXPECT_EQ(tip, recovery.lastGlobalSeqNo()) << tag << ": converged short of the tip";
+        EXPECT_EQ(clusterSeqNoOf(tip), recovery.lastClusterSeqNo()) << tag << ": converged short of the tip";
         EXPECT_EQ(tip + 1, expectedNext) << tag << ": caught up without having dispatched every frame";
         if (restoring)
         {
             std::int64_t count = 0;
             std::int64_t sum = 0;
-            for (std::int64_t globalSeqNo = 1; globalSeqNo <= tip; ++globalSeqNo)
+            for (std::int64_t groupSeqNo = 1; groupSeqNo <= tip; ++groupSeqNo)
             {
-                if (!frames.contains(globalSeqNo))
+                if (!frames.contains(groupSeqNo))
                 {
                     ++count;
-                    sum += globalSeqNo;
+                    sum += clusterSeqNoOf(groupSeqNo);
                 }
             }
             EXPECT_EQ(count, heartbeats) << tag << ": restored state plus the tail is not the full replay's";
@@ -231,21 +249,24 @@ struct Simulation final
             publish(); // heartbeats 1-5
         }
         const rf::Bytes header = rf::header(4, 2);
-        publishFrame(rf::started(6, 1));
+        publishFrame(started(6, 1));
         publish(); // heartbeat 7
         publish(); // heartbeat 8
-        publishFrame(rf::started(CUT, 2));
+        publishFrame(started(CUT, 2));
         const rf::Bytes count = rf::record(7);
-        const rf::Bytes sum = rf::record(1 + 2 + 3 + 4 + 5 + 7 + 8);
-        publishFrame(rf::end(10, OTHER_SOURCE, 2, FORMAT_VERSION, { header }));
+        const rf::Bytes sum = rf::record(clusterSeqNoOf(1) + clusterSeqNoOf(2) + clusterSeqNoOf(3) + clusterSeqNoOf(4) +
+                                         clusterSeqNoOf(5) + clusterSeqNoOf(7) + clusterSeqNoOf(8));
+        publishFrame(rf::end(clusterSeqNoOf(10), 10, OTHER_SOURCE, 2, FORMAT_VERSION, { header }));
         publish(); // heartbeat 11
-        publishFrame(rf::end(SNAPSHOT_END, SOURCE, 2, FORMAT_VERSION, { header, count, sum }));
-        publishFrame(rf::started(NEXT_CUT, 3));
+        publishFrame(
+            rf::end(clusterSeqNoOf(SNAPSHOT_END), SNAPSHOT_END, SOURCE, 2, FORMAT_VERSION, { header, count, sum }));
+        publishFrame(started(NEXT_CUT, 3));
         publish(); // heartbeat 14
 
         // Newest first: confirming a round deletes the older files, and both are to stay.
-        rf::write(store, 3, NEXT_CUT, positionOf(NEXT_CUT - 1), FORMAT_VERSION, { header, rf::record(98) });
-        rf::write(store, 2, CUT, positionOf(CUT), FORMAT_VERSION, { header, count, sum });
+        rf::write(store, 3, clusterSeqNoOf(NEXT_CUT), positionOf(NEXT_CUT - 1), FORMAT_VERSION,
+                  { header, rf::record(98) });
+        rf::write(store, 2, clusterSeqNoOf(CUT), positionOf(CUT), FORMAT_VERSION, { header, count, sum });
     }
 
     void publishFrame(rf::Bytes frame)
@@ -253,23 +274,23 @@ struct Simulation final
         frames.emplace(publish(), std::move(frame));
     }
 
-    // Where frame globalSeqNo starts in the active recording: frame 1 at 0.
-    static std::int64_t positionOf(const std::int64_t globalSeqNo)
+    // Where frame groupSeqNo starts in the active recording: frame 1 at 0.
+    static std::int64_t positionOf(const std::int64_t groupSeqNo)
     {
-        return (globalSeqNo - 1) * STRIDE;
+        return (groupSeqNo - 1) * STRIDE;
     }
 
-    void deliver(const std::int64_t globalSeqNo, const bool fromReplay)
+    void deliver(const std::int64_t groupSeqNo, const bool fromReplay)
     {
-        const auto special = frames.find(globalSeqNo);
-        rf::Bytes buf = special != frames.end() ? special->second : encodeHeartbeat(globalSeqNo);
-        recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), positionOf(globalSeqNo), /*receiveNs=*/0,
+        const auto special = frames.find(groupSeqNo);
+        rf::Bytes buf = special != frames.end() ? special->second : encodeHeartbeat(groupSeqNo);
+        recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), positionOf(groupSeqNo), /*receiveNs=*/0,
                          fromReplay);
     }
 
     bool converged() const
     {
-        return recovery.isCaughtUp() && recovery.lastGlobalSeqNo() == tip;
+        return recovery.isCaughtUp() && recovery.lastClusterSeqNo() == clusterSeqNoOf(tip);
     }
 
     void chaosStep()
@@ -280,11 +301,11 @@ struct Simulation final
             case 1:
             case 2:
             case 3: {
-                const std::int64_t globalSeqNo = publish();
+                const std::int64_t groupSeqNo = publish();
                 // A queue drop is the fault the whole resume path exists for, so it is the common one.
                 if (!chance(20))
                 {
-                    deliverQueue(globalSeqNo);
+                    deliverQueue(groupSeqNo);
                 }
                 break;
             }
@@ -338,10 +359,10 @@ struct Simulation final
         return ++tip;
     }
 
-    void deliverQueue(const std::int64_t globalSeqNo)
+    void deliverQueue(const std::int64_t groupSeqNo)
     {
-        lastLive = globalSeqNo;
-        deliver(globalSeqNo, /*fromReplay=*/false);
+        lastLive = groupSeqNo;
+        deliver(groupSeqNo, /*fromReplay=*/false);
     }
 
     // ── the Replayer ──────────────────────────────────────────────────────────────────────────────────
@@ -448,17 +469,18 @@ struct Simulation final
 
     void onSequenced(const SequencedEvent& event)
     {
-        if (event.globalSeqNo != expectedNext || event.globalSeqNo > tip)
+        if (event.groupSeqNo != expectedNext || event.clusterSeqNo != clusterSeqNoOf(expectedNext) ||
+            event.groupSeqNo > tip)
         {
             broken = true; // stops the run rather than reporting the same break once per remaining frame
-            ADD_FAILURE() << tag << ": dispatched globalSeqNo " << event.globalSeqNo << ", expected " << expectedNext
+            ADD_FAILURE() << tag << ": dispatched groupSeqNo " << event.groupSeqNo << ", expected " << expectedNext
                           << " (tip " << tip << ")";
         }
-        expectedNext = event.globalSeqNo + 1;
-        if (!frames.contains(event.globalSeqNo))
+        expectedNext = event.groupSeqNo + 1;
+        if (!frames.contains(event.groupSeqNo))
         {
             ++heartbeats;
-            heartbeatSum += event.globalSeqNo;
+            heartbeatSum += event.clusterSeqNo;
         }
     }
 
@@ -508,10 +530,10 @@ struct Simulation final
     helpers::TempDirectory directory;
     SnapshotStore store{ directory.path() };
 
-    // every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds
+    // every frame that is not a heartbeat, by groupSeqNo: the snapshot rounds
     std::map<std::int64_t, rf::Bytes> frames;
 
-    // the state: how many heartbeats, and the sum of their globalSeqNos — restored, then folded
+    // the state: how many heartbeats, and the sum of their clusterSeqNos — restored, then folded
     std::int64_t heartbeats = 0;
     std::int64_t heartbeatSum = 0;
     std::int32_t nextRecordIndex = 0;
@@ -524,11 +546,11 @@ struct Simulation final
     std::int64_t pendingFromPosition = 0;
     std::int64_t nextSessionId = 1;
 
-    // next globalSeqNo the open replay will deliver; replayEndSeqNo < 0 means none is open
+    // next groupSeqNo the open replay will deliver; replayEndSeqNo < 0 means none is open
     std::int64_t replayCursor = 0;
     std::int64_t replayEndSeqNo = -1;
 
-    std::int64_t lastLive = 0; // last globalSeqNo the queue delivered — what a redelivery re-offers
+    std::int64_t lastLive = 0; // last groupSeqNo the queue delivered — what a redelivery re-offers
     std::int64_t clockMs = CLOCK_MS;
     bool chaos = true;
     bool broken = false;

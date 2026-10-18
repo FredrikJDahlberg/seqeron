@@ -40,6 +40,7 @@ class SequencedFrameDecoderTest {
     private static final int CONNECTION_ID = 42;
     private static final long SESSION_ID = 0x5EE5_1000L;
     private static final long TIMESTAMP = 1_700_000_000_000_000_000L;
+    private static final int GROUP_MASK = 5;
 
     /** Offsets inside the outer {@code MessageHeader}. */
     private static final int TEMPLATE_ID_OFFSET = 2;
@@ -127,7 +128,7 @@ class SequencedFrameDecoderTest {
         final int headerEnd = MessageHeaderEncoder.ENCODED_LENGTH + SequencedSystemHeaderDecoder.ENCODED_LENGTH;
         for (int length = MessageHeaderEncoder.ENCODED_LENGTH; length < headerEnd; length++) {
             assertFalse(wrap(Arrays.copyOf(frame, length)),
-                        "globalSeqNo is not readable at " + length + " bytes, so P-3 cannot count");
+                        "clusterSeqNo is not readable at " + length + " bytes, so P-3 cannot count");
         }
         assertTrue(wrap(frame));
     }
@@ -169,6 +170,18 @@ class SequencedFrameDecoderTest {
         }
     }
 
+    @Test
+    @DisplayName("a frame's groupMask and groupSeqNo are read off its header")
+    void groupMaskAndGroupSeqNo() {
+        assertTrue(wrap(payloadFrame(9, 8)));
+        assertEquals(GROUP_MASK, view.groupMask());
+        assertEquals(9 + 100, view.groupSeqNo());
+
+        assertTrue(wrap(clusterHeartbeatFrame(10)));
+        assertEquals(0, view.groupMask(), "a system frame addresses no group");
+        assertEquals(10 + 100, view.groupSeqNo());
+    }
+
     /** Java only: {@code unwrapFrame} takes a pointer, so its caller does the offsetting. */
     @Test
     @DisplayName("the bounds are taken from the fragment, not from the buffer behind it")
@@ -198,32 +211,45 @@ class SequencedFrameDecoderTest {
         return cases;
     }
 
-    private static byte[] payloadFrame(final long globalSeqNo, final int payloadLength) {
+    private static byte[] payloadFrame(final long clusterSeqNo, final int payloadLength) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(payloadLength + 64);
         final SequencedEncoder encoder = new SequencedEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(PAYLOAD_ID)
-            .globalSeqNo(globalSeqNo).timestamp(TIMESTAMP);
+        encoder.header()
+            .sourceId(SOURCE_ID)
+            .connectionId(CONNECTION_ID)
+            .sessionId(SESSION_ID)
+            .payloadId(PAYLOAD_ID)
+            .groupMask(GROUP_MASK)
+            .clusterSeqNo(clusterSeqNo)
+            .timestamp(TIMESTAMP)
+            .groupSeqNo(clusterSeqNo + 100);
         encoder.putPayload(new UnsafeBuffer(filler(payloadLength)), 0, payloadLength);
         return copy(frame, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    private static byte[] systemFrame(final long globalSeqNo, final int systemEventType, final int bodyLength) {
+    private static byte[] systemFrame(final long clusterSeqNo, final int systemEventType, final int bodyLength) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(bodyLength + 64);
         final SequencedSystemEncoder encoder = new SequencedSystemEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID)
-            .systemEventType(systemEventType).globalSeqNo(globalSeqNo).timestamp(TIMESTAMP);
+            .systemEventType(systemEventType).clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
         encoder.putBody(new UnsafeBuffer(filler(bodyLength)), 0, bodyLength);
         return copy(frame, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    private static byte[] clusterHeartbeatFrame(final long globalSeqNo) {
+    private static byte[] clusterHeartbeatFrame(final long clusterSeqNo) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(64);
         final ClusterHeartbeatEncoder encoder = new ClusterHeartbeatEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(-1).connectionId(-1).sessionId(-1)
-            .systemEventType(SystemFrame.CLUSTER_HEARTBEAT).globalSeqNo(globalSeqNo).timestamp(TIMESTAMP);
+        encoder.header()
+            .sourceId(-1)
+            .connectionId(-1)
+            .sessionId(-1)
+            .systemEventType(SystemFrame.CLUSTER_HEARTBEAT)
+            .clusterSeqNo(clusterSeqNo)
+            .timestamp(TIMESTAMP)
+            .groupSeqNo(clusterSeqNo + 100);
         return copy(frame, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 

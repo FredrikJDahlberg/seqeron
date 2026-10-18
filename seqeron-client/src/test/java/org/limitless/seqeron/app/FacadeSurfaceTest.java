@@ -31,9 +31,8 @@ import org.limitless.seqeron.protocol.Publish;
  */
 class FacadeSurfaceTest {
     /** The front door: these types and their public nested types are what a consumer sees. */
-    private static final Class<?>[] FACADES = {
-        Gateway.class, Application.class, Payload.class, ClusterError.class, SnapshotListener.class
-    };
+    private static final Class<?>[] FACADES = { Gateway.class,      Application.class,      Payload.class,
+                                                ClusterError.class, SnapshotListener.class, GroupDirectory.class };
 
     @Test
     @DisplayName("no façade signature names a type a consumer cannot, or should not, reach")

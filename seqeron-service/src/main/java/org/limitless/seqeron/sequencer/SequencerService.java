@@ -13,6 +13,7 @@ import io.aeron.cluster.service.ClusteredService;
 import io.aeron.logbuffer.Header;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Queue;
 import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
@@ -20,23 +21,21 @@ import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.replayer.server.NodeDriver;
-import org.limitless.seqeron.util.Clocks;
+import org.limitless.seqeron.replayer.server.QueueResolver;
 import org.limitless.seqeron.util.Logger;
 
 /**
  * The Aeron adapter over {@link Sequencer}: it decides when to call the state machine and publishes what
- * comes back on this node's queue, which the co-located archive records. It holds no replicated state.
+ * comes back on this node's queues, one per group, which the co-located archive records. It holds no
+ * replicated state.
  *
- * <p>Every node publishes and records its own queue; the queue publication and its recording are created once
- * in {@link #onStart} and span every leader tenure.
+ * <p>Every node publishes and records its own queues; each queue's publication and recording are created once,
+ * when the log activates the groups (§7.4), and span every leader tenure.
  *
  * <p>Snapshots are refused ({@link #onTakeSnapshot} throws, {@link #onStart} rejects a snapshot image):
  * recovery is always full-log replay, which is what keeps each node's recording complete.
  */
 public final class SequencerService implements ClusteredService {
-    /** How long {@link #onStart} waits for the archive to start recording the queue before refusing to start. */
-    private static final long QUEUE_RECORDING_START_TIMEOUT_MS = 5_000;
-
     /** Set at launch to enable the test-only fault below; unset in production. */
     private static final String FAULT_INJECTION_ENV = "SEQERON_FAULT_INJECTION";
 
@@ -59,20 +58,28 @@ public final class SequencerService implements ClusteredService {
     /** The co-located archive's client settings; {@link #onStart} supplies the cluster's Aeron client. */
     private final AeronArchive.Context archiveContext;
 
+    /** Where a copy of each topology row on the default queue goes, for the co-located replayer. */
+    private final Queue<byte[]> topologyRows;
+
+    /** The lowest active group, whose queue carries every topology row; 0 before activation. */
+    private int defaultGroupId;
+
     // Aeron runtime
     private Cluster cluster;
-    private ExclusivePublication queuePub;
     private AeronArchive aeronArchive;
     private CountersReader counters;
 
-    // Queue recording liveness
-    private int queueRecordingCounterId = CountersReader.NULL_COUNTER_ID;
-    private long queueRecordingId = RecordingPos.NULL_RECORDING_ID;
+    // Each group's queue, slot groupId - 1; null until activation opens it.
+    private final ExclusivePublication[] queuePubs = new ExclusivePublication[FrameLayer.MAX_GROUPS];
+
+    // Queue recording liveness, slot groupId - 1
+    private final int[] queueRecordingCounterIds = new int[FrameLayer.MAX_GROUPS];
+    private final long[] queueRecordingIds = new long[FrameLayer.MAX_GROUPS];
     /** Test-only fault trigger; null unless fault injection is enabled. See {@link #injectQueueRecordingFault}. */
     private Path queueFaultTrigger;
 
     // Operator counters
-    private Counter globalSeqNoCounter;
+    private Counter clusterSeqNoCounter;
     private Counter queueBackPressureAlertCounter;
     private Counter queueStalledCounter;
     private Counter rejectedIngressCounter;
@@ -87,14 +94,33 @@ public final class SequencerService implements ClusteredService {
     /**
      * @param memberId       this node's cluster memberId
      * @param archiveContext the co-located archive's client settings; this service owns it
+     * @param topologyRows   receives a copy of each topology row the default queue carries, which the co-located
+     *                       replayer resolves instances' queues from (spec R-6)
      * @param fatalHandler   run once, from a cluster callback, when this node can no longer record its own
      *                       queue. Must not block: it signals a shutdown and returns.
      */
     public SequencerService(final int memberId, final AeronArchive.Context archiveContext,
-                            final Runnable fatalHandler) {
-        this.sequencer = new Sequencer(memberId, queue::emit);
+                            final Queue<byte[]> topologyRows, final Runnable fatalHandler) {
+        this.sequencer = new Sequencer(memberId, new Sequencer.FrameSink() {
+            @Override
+            public void activate(final int[] groupIds) {
+                defaultGroupId = groupIds[0];
+                queue.activate(groupIds);
+            }
+
+            @Override
+            public void publish(final int groupId, final DirectBuffer buffer, final int length) {
+                queue.emit(groupId, buffer, length);
+                if (groupId == defaultGroupId && QueueResolver.isTopologyRow(buffer, 0, length)) {
+                    final byte[] row = new byte[length];
+                    buffer.getBytes(0, row);
+                    topologyRows.add(row);
+                }
+            }
+        });
         this.memberId = memberId;
         this.archiveContext = archiveContext;
+        this.topologyRows = topologyRows;
         this.fatalHandler = fatalHandler;
     }
 
@@ -108,8 +134,8 @@ public final class SequencerService implements ClusteredService {
         // Refused before anything is acquired, so nothing is left behind.
         if (snapshotImage != null) {
             throw refuseStart("[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
-                              + "globalSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster directory "
-                              + "so the log replays in full.");
+                              + "clusterSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster "
+                              + "directory so the log replays in full.");
         }
 
         this.cluster = cluster;
@@ -120,40 +146,10 @@ public final class SequencerService implements ClusteredService {
 
         try {
             aeronArchive = AeronArchive.connect(archiveContext.aeron(cluster.context().aeron()));
-            queuePub =
-                cluster.context().aeron().addExclusivePublication(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
-            aeronArchive.startRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID, SourceLocation.LOCAL);
-            if (!awaitQueueRecordingActive()) {
-                throw new IllegalStateException("the co-located archive did not start recording the queue within " +
-                                                QUEUE_RECORDING_START_TIMEOUT_MS + "ms");
-            }
         } catch (final RuntimeException ex) {
-            CloseHelper.quietCloseAll(aeronArchive, queuePub);
-            throw refuseStart("[SequencerService] Refusing to start, the queue cannot be recorded: " + ex);
+            throw refuseStart("[SequencerService] Refusing to start, the co-located archive is unreachable: " + ex);
         }
         createCounters();
-    }
-
-    /**
-     * Blocks until the archive's recording has attached to the queue publication, and keeps its counter for
-     * {@link QueuePublisher#checkRecordingAlive}.
-     * @return whether the recording attached before the deadline; the caller refuses the start if not
-     */
-
-    private boolean awaitQueueRecordingActive() {
-        final long archiveId = aeronArchive.archiveId();
-        final long deadlineMs = Clocks.monotonicMs() + QUEUE_RECORDING_START_TIMEOUT_MS;
-        int counterId;
-        while ((counterId = RecordingPos.findCounterIdBySession(counters, queuePub.sessionId(), archiveId)) ==
-               CountersReader.NULL_COUNTER_ID) {
-            if (Clocks.monotonicMs() >= deadlineMs) {
-                return false;
-            }
-            cluster.idleStrategy().idle();
-        }
-        queueRecordingCounterId = counterId;
-        queueRecordingId = RecordingPos.getRecordingId(counters, counterId);
-        return true;
     }
 
     /**
@@ -169,7 +165,7 @@ public final class SequencerService implements ClusteredService {
 
     /** Creates this node's operator counters. */
     private void createCounters() {
-        globalSeqNoCounter = counter(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, "globalSeqNo");
+        clusterSeqNoCounter = counter(SeqeronCounters.SEQUENCER_CLUSTER_SEQ_NO_TYPE_ID, "clusterSeqNo");
         queueBackPressureAlertCounter =
             counter(SeqeronCounters.SEQUENCER_QUEUE_BACKPRESSURE_ALERTS_TYPE_ID, "queueBackPressureAlerts");
         queueStalledCounter = counter(SeqeronCounters.SEQUENCER_QUEUE_STALLED_TYPE_ID, "queueStalled");
@@ -239,8 +235,8 @@ public final class SequencerService implements ClusteredService {
         if (session == null) {
             rejectedIngressCounter.increment();
             Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.MalformedIngressMessage,
-                         memberId, "skipping ingress message with no client session (globalSeqNo stays %d)",
-                         sequencer.globalSeqNo());
+                         memberId, "skipping ingress message with no client session (clusterSeqNo stays %d)",
+                         sequencer.clusterSeqNo());
             return;
         }
         if (sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp)) {
@@ -270,17 +266,23 @@ public final class SequencerService implements ClusteredService {
 
     /**
      * Test-only fault injection for chaos-runner.sh, inert unless {@link #FAULT_INJECTION_ENV} is set:
-     * touching {@code <clusterDir>/queue-stall-fault} stops this node's queue recording, the one way to provoke
-     * {@link QueuePublisher#checkRecordingAlive} from outside the JVM. One-shot per process.
+     * touching {@code <clusterDir>/queue-stall-fault} stops the recording of this node's lowest queue, the one
+     * way to provoke {@link QueuePublisher#checkRecordingAlive} from outside the JVM. One-shot per process, and
+     * waits for activation, before which there is no queue.
      */
     private void injectQueueRecordingFault() {
         if (queueFaultTrigger == null || !Files.exists(queueFaultTrigger)) {
             return;
         }
-        queueFaultTrigger = null;
-        Logger.info(Logger.CoreComponent.SequencerService, memberId,
-                    "fault injection: stopping this node's queue recording");
-        aeronArchive.stopRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
+        for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+            if (queuePubs[groupId - 1] != null) {
+                queueFaultTrigger = null;
+                Logger.info(Logger.CoreComponent.SequencerService, memberId,
+                            "fault injection: stopping the recording of group %d's queue", groupId);
+                aeronArchive.stopRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.queueStreamId(groupId));
+                return;
+            }
+        }
     }
 
     /** Re-arms the cluster clock one heartbeat ahead; see {@link QueuePublisher#scheduleHeartbeat}. */
@@ -295,7 +297,7 @@ public final class SequencerService implements ClusteredService {
     @Override
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
         throw new UnsupportedOperationException(
-            "[SequencerService] Snapshots are not supported: recovery is full-log replay from globalSeqNo 1, "
+            "[SequencerService] Snapshots are not supported: recovery is full-log replay from clusterSeqNo 1, "
             + "which is what keeps each node's queue recording complete. Stop the cluster with clusterctl "
             + "shutdown (ABORT), not a SNAPSHOT/SHUTDOWN toggle.");
     }
@@ -351,13 +353,14 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onTerminate(final Cluster cluster) {
-        CloseHelper.quietCloseAll(aeronArchive, queuePub);
+        CloseHelper.quietCloseAll(queuePubs);
+        CloseHelper.quietClose(aeronArchive);
         closeCounters();
     }
 
     /** Closes the operator counters; a node whose start was refused created none. */
     private void closeCounters() {
-        CloseHelper.quietCloseAll(globalSeqNoCounter, queueBackPressureAlertCounter, queueStalledCounter,
+        CloseHelper.quietCloseAll(clusterSeqNoCounter, queueBackPressureAlertCounter, queueStalledCounter,
                                   rejectedIngressCounter, leadershipChangeCounter, currentLeaderMemberIdCounter,
                                   lastHeartbeatTimestampCounter, gatewayPromotionCounter, gatewayPromotionFailedCounter,
                                   bootstrapActivatedCounter, messagesSequencedCounter);
@@ -365,7 +368,7 @@ public final class SequencerService implements ClusteredService {
 
     /** Mirrors the sequencer's state onto the operator counters after a callback. */
     private void updateCounters() {
-        globalSeqNoCounter.set(sequencer.globalSeqNo());
+        clusterSeqNoCounter.set(sequencer.clusterSeqNo());
         gatewayPromotionCounter.set(sequencer.gatewayPromotionCount());
         gatewayPromotionFailedCounter.set(sequencer.gatewayPromotionFailedCount());
         bootstrapActivatedCounter.set(sequencer.bootstrapActivationEmitted() ? 1 : 0);
@@ -374,8 +377,28 @@ public final class SequencerService implements ClusteredService {
     /** The Aeron half of {@link QueuePublisher}: calls through to the runtime, no decisions. */
     private final class QueueActions implements QueuePublisher.Actions {
         @Override
-        public long offerFrame(final DirectBuffer buffer, final int length) {
-            return queuePub.offer(buffer, 0, length);
+        public void openQueue(final int groupId) {
+            final int streamId = FrameLayer.queueStreamId(groupId);
+            queuePubs[groupId - 1] =
+                cluster.context().aeron().addExclusivePublication(FrameLayer.QUEUE_CHANNEL, streamId);
+            aeronArchive.startRecording(FrameLayer.QUEUE_CHANNEL, streamId, SourceLocation.LOCAL);
+        }
+
+        @Override
+        public boolean attachRecording(final int groupId) {
+            final int counterId = RecordingPos.findCounterIdBySession(
+                counters, queuePubs[groupId - 1].sessionId(), aeronArchive.archiveId());
+            if (counterId == CountersReader.NULL_COUNTER_ID) {
+                return false;
+            }
+            queueRecordingCounterIds[groupId - 1] = counterId;
+            queueRecordingIds[groupId - 1] = RecordingPos.getRecordingId(counters, counterId);
+            return true;
+        }
+
+        @Override
+        public long offerFrame(final int groupId, final DirectBuffer buffer, final int length) {
+            return queuePubs[groupId - 1].offer(buffer, 0, length);
         }
 
         @Override
@@ -400,18 +423,18 @@ public final class SequencerService implements ClusteredService {
         }
 
         @Override
-        public boolean recordingActive() {
-            return RecordingPos.isActive(counters, queueRecordingCounterId, queueRecordingId);
+        public boolean recordingActive(final int groupId) {
+            return RecordingPos.isActive(counters, queueRecordingCounterIds[groupId - 1], queueRecordingIds[groupId - 1]);
         }
 
         @Override
-        public long recordedPosition() {
-            return counters.getCounterValue(queueRecordingCounterId);
+        public long recordedPosition(final int groupId) {
+            return counters.getCounterValue(queueRecordingCounterIds[groupId - 1]);
         }
 
         @Override
-        public long recordingId() {
-            return queueRecordingId;
+        public long recordingId(final int groupId) {
+            return queueRecordingIds[groupId - 1];
         }
 
         @Override
@@ -440,8 +463,8 @@ public final class SequencerService implements ClusteredService {
         }
 
         @Override
-        public long globalSeqNo() {
-            return sequencer.globalSeqNo();
+        public long clusterSeqNo() {
+            return sequencer.clusterSeqNo();
         }
     }
 }

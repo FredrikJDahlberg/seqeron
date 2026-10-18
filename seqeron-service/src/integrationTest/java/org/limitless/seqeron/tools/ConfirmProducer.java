@@ -26,6 +26,10 @@ final class ConfirmProducer implements AutoCloseable {
     static final long DRAIN_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(15);
 
     private static final int CLIENT_ID = 9;
+
+    /** The queue it confirms on, the in-process cluster's one group's. */
+    private static final int GROUP_ID = InProcessCluster.GROUP_ID;
+    private static final int GROUP_MASK = 1 << (GROUP_ID - 1);
     private static final int NO_ID = -1;
     private static final byte[] NO_FILLER = new byte[0];
 
@@ -39,7 +43,7 @@ final class ConfirmProducer implements AutoCloseable {
     private final ProbeMarkerDecoder decoder = new ProbeMarkerDecoder();
     private final LongArrayList seqNos = new LongArrayList();
     private volatile int lastLeader = InProcessCluster.NO_MEMBER;
-    private long lastGlobalSeqNo;
+    private long lastClusterSeqNo;
     private boolean caughtUp;
     private long next = 1;
     private long nextSendNs;
@@ -55,7 +59,7 @@ final class ConfirmProducer implements AutoCloseable {
             pending.onLeadershipChanged(leadershipTermId);
             lastLeader = leaderMemberId;
         }, () -> caughtUp = true);
-        receiver.start(aeron, memberId);
+        receiver.start(aeron, memberId, GROUP_ID);
         while (!caughtUp) {
             receiver.poll();
             Tests.yield();
@@ -73,7 +77,7 @@ final class ConfirmProducer implements AutoCloseable {
             decoder.wrap(event.buffer(), event.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH,
                          event.blockLength(), event.version());
             seqNos.addLong(decoder.seqNo());
-            lastGlobalSeqNo = event.globalSeqNo();
+            lastClusterSeqNo = event.clusterSeqNo();
         }
     }
 
@@ -95,7 +99,7 @@ final class ConfirmProducer implements AutoCloseable {
         final int resentNow = pending.resendMissing(sender);
         resent += resentNow;
         if (next <= count && !pending.isHolding() && !pending.isFull() && now >= nextSendNs) {
-            final int length = marker.encode(next, NO_ID, ClusterProbe.PROBE_SOURCE_ID, NO_FILLER);
+            final int length = marker.encode(next, NO_ID, ClusterProbe.PROBE_SOURCE_ID, GROUP_MASK, NO_FILLER);
             if (sender.send(marker.frame(), length)) {
                 pending.track(marker.frame(), length, sender.clusterSessionId(), sender.leadershipTermId());
                 next++;
@@ -140,9 +144,9 @@ final class ConfirmProducer implements AutoCloseable {
         return lastLeader;
     }
 
-    /** The globalSeqNo of the newest own frame the queue showed. */
-    long lastGlobalSeqNo() {
-        return lastGlobalSeqNo;
+    /** The clusterSeqNo of the newest own frame the queue showed. */
+    long lastClusterSeqNo() {
+        return lastClusterSeqNo;
     }
 
     /** The queue showed seqNo 1..count, each once, in order. */

@@ -5,7 +5,7 @@ namespace Org.Limitless.Seqeron.App;
 /// The heartbeat is the one frame that keeps arriving while every producer is silent, so its absence — and nothing
 /// else — separates a quiet deployment from a queue this process has stopped seeing.
 /// <para><b>Armed by catching up, and re-armed by each re-convergence.</b> A cold start replays history, from
-/// <c>globalSeqNo</c> 1 or a snapshot's cut, and a re-walk dispatches history rather than live frames; neither has
+/// <c>clusterSeqNo</c> 1 or a snapshot's cut, and a re-walk dispatches history rather than live frames; neither has
 /// a heartbeat cadence to measure, so timing either would fence the very path recovery takes.
 /// <see cref="RecoveryStallFence"/> is the fence covering that side.</para>
 /// <para>Single-threaded, like every block here. <c>QueueStallFence.java</c> and <c>app/detail/QueueStallFence.hpp</c>

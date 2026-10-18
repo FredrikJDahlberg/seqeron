@@ -3,7 +3,7 @@
  *
  * <p>{@link org.limitless.seqeron.replayer.client.ReplayerStreamReceiver} is the entry point. It replays
  * this node's history through the co-located Replayer, switches to the live queue once caught up, heals gaps
- * by itself, and delivers every frame once in {@code globalSeqNo} order to the three handlers
+ * by itself, and delivers every frame once in {@code clusterSeqNo} order to the three handlers
  * ({@link org.limitless.seqeron.replayer.client.SequencedHandler},
  * {@link org.limitless.seqeron.replayer.client.LeadershipHandler},
  * {@link org.limitless.seqeron.replayer.client.CaughtUpHandler}), each frame as a

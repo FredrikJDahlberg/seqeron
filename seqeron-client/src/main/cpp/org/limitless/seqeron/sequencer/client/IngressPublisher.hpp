@@ -83,14 +83,15 @@ inline void putPayloadLength(std::uint8_t* const frame, const std::uint16_t leng
  * @param sourceId      the producer's sourceId; for a reply, the requester's
  * @param connectionId  the connection the payload belongs to, or -1 for none
  * @param payloadId     the payload's protocol; neither 0 nor the retired 1
+ * @param groupMask     the groups whose queues the frame reaches, the producer's own included (spec §7.4)
  * @param payload       the payload's first byte, its own messageHeader included
  * @param payloadLength the payload's length, at most MAX_PAYLOAD_LENGTH
  * @return Published; Refused, permanently, for an illegal sourceId, payloadId or length; Declined otherwise
  */
 [[nodiscard]] inline protocol::Publish publishPayload(ClusterStreamSender& sender, IngressTracker* tracker,
                                                       const std::int32_t sourceId, const std::int32_t connectionId,
-                                                      const std::uint16_t payloadId, const std::uint8_t* payload,
-                                                      const std::uint16_t payloadLength)
+                                                      const std::uint16_t payloadId, const std::uint16_t groupMask,
+                                                      const std::uint8_t* payload, const std::uint16_t payloadLength)
 {
     // §9.2 conditions 6 and 7, as above.
     if (sourceId == -1 || payloadId == 0 || payloadId == 1 || payloadLength > protocol::MAX_PAYLOAD_LENGTH)
@@ -104,7 +105,8 @@ inline void putPayloadLength(std::uint8_t* const frame, const std::uint16_t leng
         .sourceId(sourceId)
         .connectionId(connectionId)
         .sessionId(sender.clusterSessionId())
-        .payloadId(payloadId);
+        .payloadId(payloadId)
+        .groupMask(groupMask);
     frame.putPayload(reinterpret_cast<const char*>(payload), payloadLength);
     const auto length = static_cast<std::uint16_t>(sbe::frame::MessageHeader::encodedLength() + frame.encodedLength());
     return offerFrame(sender, tracker, buffer, length);
@@ -120,13 +122,15 @@ inline void putPayloadLength(std::uint8_t* const frame, const std::uint16_t leng
  * @param sourceId     the producer's sourceId; for a reply, the requester's
  * @param connectionId the connection the payload belongs to, or -1 for none
  * @param payloadId    the payload's protocol; neither 0 nor the retired 1
+ * @param groupMask    the groups whose queues the frame reaches, the producer's own included (spec §7.4)
  * @param fill         called with the encoder, its own messageHeader already applied, to stamp the fields
  * @return Published; Refused, permanently, for an illegal sourceId or payloadId; Declined otherwise
  */
 template<typename Encoder, typename Fill>
 [[nodiscard]] protocol::Publish publishPayload(ClusterStreamSender& sender, IngressTracker* tracker,
                                                const std::int32_t sourceId, const std::int32_t connectionId,
-                                               const std::uint16_t payloadId, Fill&& fill)
+                                               const std::uint16_t payloadId, const std::uint16_t groupMask,
+                                               Fill&& fill)
 {
     // §9.2 conditions 6 and 7: sourceId -1 is the cluster's own (F-4), payloadId 0 names no protocol, and 1
     // is core's retired id.
@@ -141,7 +145,8 @@ template<typename Encoder, typename Fill>
         .sourceId(sourceId)
         .connectionId(connectionId)
         .sessionId(sender.clusterSessionId())
-        .payloadId(payloadId);
+        .payloadId(payloadId)
+        .groupMask(groupMask);
     Encoder encoder;
     encoder.wrapAndApplyHeader(reinterpret_cast<char*>(buffer), protocol::MIN_INGRESS_LENGTH, detail::FRAME_BUFFER_LEN);
     std::forward<Fill>(fill)(encoder);
@@ -163,15 +168,17 @@ template<typename Encoder, typename Fill>
  * @param sourceId     the producer's sourceId; for a reply, the requester's
  * @param connectionId the connection the payload belongs to, or -1 for none
  * @param payloadId    the payload's protocol; neither 0 nor the retired 1
+ * @param groupMask    the groups whose queues the frame reaches, the producer's own included (spec §7.4)
  * @param fill         called with the encoder, its own messageHeader already applied, to stamp the fields
  * @return Published; Refused, permanently, for an illegal sourceId or payloadId; Declined otherwise
  */
 template<typename Encoder, typename Fill>
 [[nodiscard]] protocol::Publish publishPayload(ClusterStreamSender& sender, const std::int32_t sourceId,
                                                const std::int32_t connectionId, const std::uint16_t payloadId,
-                                               Fill&& fill)
+                                               const std::uint16_t groupMask, Fill&& fill)
 {
-    return publishPayload<Encoder>(sender, nullptr, sourceId, connectionId, payloadId, std::forward<Fill>(fill));
+    return publishPayload<Encoder>(sender, nullptr, sourceId, connectionId, payloadId, groupMask,
+                                   std::forward<Fill>(fill));
 }
 
 /**
@@ -207,7 +214,8 @@ template<typename Encoder, typename Fill>
         .sourceId(sourceId)
         .connectionId(connectionId)
         .sessionId(sender.clusterSessionId())
-        .systemEventType(systemEventType);
+        .systemEventType(systemEventType)
+        .groupMask(0);
     Encoder encoder;
     encoder.wrapForEncode(reinterpret_cast<char*>(buffer), protocol::MIN_INGRESS_LENGTH, detail::FRAME_BUFFER_LEN);
     std::forward<Fill>(fill)(encoder);

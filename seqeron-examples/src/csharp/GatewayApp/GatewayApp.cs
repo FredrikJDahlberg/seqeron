@@ -117,6 +117,11 @@ public sealed class GatewayApp : IGatewayListener
         _running = false;
     }
 
+    // Publishes to its own group alone; one that addresses others takes their masks from here.
+    public void OnGroupsResolved(GroupDirectory directory)
+    {
+    }
+
     // Designated: open the edge. A real gateway binds its listen socket here; false would be retried.
     public bool OnActivated(int firstConnectionId)
     {
@@ -134,7 +139,7 @@ public sealed class GatewayApp : IGatewayListener
         _pingSentTicks = 0;
     }
 
-    // Every application payload on this node's queue, in globalSeqNo order, history and live alike.
+    // Every application payload on this node's queue, in clusterSeqNo order, history and live alike.
     public void OnSequenced(Payload payload)
     {
         if (_pingSentTicks != 0 && payload.ConnectionId == _connectionId && payload.PayloadId == PingPayloadId &&
@@ -142,7 +147,7 @@ public sealed class GatewayApp : IGatewayListener
             payload.Buffer.GetLong(payload.PayloadOffset, ByteOrder.LittleEndian) == _pingSentTicks)
         {
             long roundTripUs = (long)Stopwatch.GetElapsedTime(_pingSentTicks).TotalMicroseconds;
-            Console.WriteLine($"{payload.GlobalSeqNo} ping echoed on connection {payload.ConnectionId}, " +
+            Console.WriteLine($"{payload.ClusterSeqNo} ping echoed on connection {payload.ConnectionId}, " +
                               $"round trip {roundTripUs}us");
         }
     }
@@ -160,9 +165,9 @@ public sealed class GatewayApp : IGatewayListener
         Console.WriteLine($"# connection {connectionId} closed");
     }
 
-    public void OnCaughtUp(long globalSeqNo)
+    public void OnCaughtUp(long clusterSeqNo)
     {
-        Console.WriteLine($"# caught up at {globalSeqNo} — following the queue live");
+        Console.WriteLine($"# caught up at {clusterSeqNo} — following the queue live");
     }
 
     public void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs)

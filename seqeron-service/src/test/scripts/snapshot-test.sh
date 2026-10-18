@@ -204,10 +204,13 @@ rm -rf "$BASE_DIR" "$SNAPSHOT_DIR" "$(seqeron_aeron_dir 0)" "$(seqeron_aeron_dir
 # ── 0. The cluster and the topology ───────────────────────────────────────────────
 for m in 0 1 2; do start_seq "$m"; done
 for m in 0 1 2; do
-  wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" "$NODE_START_TIMEOUT_SECS" || { log "member $m not up"; exit 1; }
+  wait_for_log "$LOG_DIR/seq-$m.log" "Running" "$NODE_START_TIMEOUT_SECS" || { log "member $m not up"; exit 1; }
 done
 seqeron-service/src/main/scripts/clusterctl.sh load-topology "$TOPOLOGY" > "$LOG_DIR/load-topology.log" 2>&1 \
   || { log "load-topology failed (see $LOG_DIR/load-topology.log)"; exit 1; }
+for m in 0 1 2; do
+  wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" "$NODE_START_TIMEOUT_SECS" || { log "member $m not serving"; exit 1; }
+done
 log "cluster up, topology loaded: GW-T-A on member 0, GW-T-B on member 1, rounds every 2 s"
 for m in 0 1 2; do start_app "$m"; done
 log "TestApplication up on every member"

@@ -21,6 +21,9 @@ static_assert(!std::is_constructible_v<Payload, const protocol::SequencedEvent&>
 // Records what the façade asked of its consumer; none of it fires before start().
 struct StubListener
 {
+    void onGroupsResolved(const GroupDirectory&)
+    {}
+
     bool onActivated(std::int32_t)
     {
         return true;
@@ -60,6 +63,7 @@ static_assert(GatewayListener<StubListener> && ApplicationListener<StubListener>
 // Everything a co-located application needs, and none of a gateway's election or connection callbacks.
 struct ColocatedOnlyListener
 {
+    void onGroupsResolved(const GroupDirectory&);
     void onLeadershipChanged(bool);
     void onSequenced(const Payload&);
     void onCaughtUp(std::int64_t);
@@ -85,7 +89,7 @@ TEST(ApplicationFacade, ShutGateDeclinesAndLeadsNothing)
     EXPECT_FALSE(app.isLeading()) << "no LeadershipChanged has named this member yet";
     EXPECT_FALSE(app.canPublish()) << "a shut gate publishes nothing whatever ingress is doing";
     EXPECT_EQ(3, app.sourceId());
-    EXPECT_EQ(0, app.lastGlobalSeqNo()) << "nothing has been dispatched";
+    EXPECT_EQ(0, app.lastClusterSeqNo()) << "nothing has been dispatched";
 }
 
 TEST(GatewayFacade, UndesignatedInstanceServesNothing)
@@ -112,11 +116,11 @@ TEST(Facade, ListenerMayOwnItsFacade)
 TEST(Facade, MakePayloadViewsTheEvent)
 {
     const protocol::SequencedEvent event{
-        .globalSeqNo = 7, .sourceId = 12, .connectionId = 4, .payloadId = 6, .templateId = 2
+        .clusterSeqNo = 7, .sourceId = 12, .connectionId = 4, .payloadId = 6, .templateId = 2
     };
     const Payload payload = detail::makePayload(event);
 
-    EXPECT_EQ(7, payload.globalSeqNo());
+    EXPECT_EQ(7, payload.clusterSeqNo());
     EXPECT_EQ(12, payload.sourceId());
     EXPECT_EQ(4, payload.connectionId());
     EXPECT_EQ(6, payload.payloadId());

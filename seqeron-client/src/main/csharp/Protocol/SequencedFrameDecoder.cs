@@ -78,8 +78,8 @@ public class SequencedFrameDecoder
         _frameHeader.Wrap(_view, BlockOffset, Frame.Sequenced.SchemaVersion);
         PayloadId = _frameHeader.PayloadId;
         SystemEventType = 0;
-        ReadIdentity(_frameHeader.SourceId, _frameHeader.ConnectionId, _frameHeader.SessionId, _frameHeader.GlobalSeqNo,
-                     _frameHeader.Timestamp);
+        ReadIdentity(_frameHeader.SourceId, _frameHeader.ConnectionId, _frameHeader.GroupMask, _frameHeader.SessionId,
+                     _frameHeader.ClusterSeqNo, _frameHeader.Timestamp, _frameHeader.GroupSeqNo);
 
         PayloadLength = source.GetShort(offset + prefixOffset, ByteOrder.LittleEndian) & 0xFFFF;
         int payloadStart = prefixOffset + Frame.Sequenced.PayloadHeaderSize;
@@ -143,17 +143,21 @@ public class SequencedFrameDecoder
         TemplateId = 0;
         BlockLength = 0;
         Version = 0;
-        ReadIdentity(_systemHeader.SourceId, _systemHeader.ConnectionId, _systemHeader.SessionId,
-                     _systemHeader.GlobalSeqNo, _systemHeader.Timestamp);
+        ReadIdentity(_systemHeader.SourceId, _systemHeader.ConnectionId, _systemHeader.GroupMask,
+                     _systemHeader.SessionId, _systemHeader.ClusterSeqNo, _systemHeader.Timestamp,
+                     _systemHeader.GroupSeqNo);
     }
 
-    private void ReadIdentity(int sourceId, int connectionId, long sessionId, long globalSeqNo, long timestamp)
+    private void ReadIdentity(int sourceId, int connectionId, int groupMask, long sessionId, long clusterSeqNo,
+                              long timestamp, long groupSeqNo)
     {
         SourceId = sourceId;
         ConnectionId = connectionId;
+        GroupMask = groupMask;
         SourceSessionId = sessionId;
-        GlobalSeqNo = globalSeqNo;
+        ClusterSeqNo = clusterSeqNo;
         ClusterTimestampNs = timestamp;
+        GroupSeqNo = groupSeqNo;
     }
 
     /// <summary>Whether this frame is one of the system messages; if so <see cref="PayloadId"/> means
@@ -173,12 +177,20 @@ public class SequencedFrameDecoder
     /// <summary>Connection at that producer (<c>header.connectionId</c>); routes the reply.</summary>
     public int ConnectionId { get; private set; }
 
+    /// <summary>The groups whose queues carry the frame (<c>header.groupMask</c>); 0 on a system frame
+    /// (§7.4).</summary>
+    public int GroupMask { get; private set; }
+
     /// <summary>Cluster session the frame was submitted on (<c>header.sessionId</c>), as the sequencer stamped
     /// it.</summary>
     public long SourceSessionId { get; private set; }
 
-    /// <summary>Cluster-wide monotone sequence number; increments by exactly one per frame.</summary>
-    public long GlobalSeqNo { get; private set; }
+    /// <summary>Cluster-wide monotone sequence number; along one queue it increases, but not by one (F-6).</summary>
+    public long ClusterSeqNo { get; private set; }
+
+    /// <summary>This frame's place on its queue: 1 for the queue's first frame, increasing by exactly one per
+    /// frame.</summary>
+    public long GroupSeqNo { get; private set; }
 
     /// <summary>Cluster consensus time (epoch ns) at which the frame was committed
     /// (<c>header.timestamp</c>).</summary>

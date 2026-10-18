@@ -59,7 +59,7 @@ TEST(FrameCodec, ConnectionClosedRoundTripsInsideASequencedSystemFrame)
         .connectionId(7)
         .sessionId(100)
         .systemEventType(protocol::CONNECTION_CLOSED)
-        .globalSeqNo(42)
+        .clusterSeqNo(42)
         .timestamp(1700000000000LL);
     frame.putBody(reinterpret_cast<const char*>(body.data()), bodyLength);
 
@@ -72,7 +72,7 @@ TEST(FrameCodec, ConnectionClosedRoundTripsInsideASequencedSystemFrame)
     EXPECT_EQ(99, view.sourceId);
     EXPECT_EQ(7, view.connectionId);
     EXPECT_EQ(100, view.sourceSessionId);
-    EXPECT_EQ(42, view.globalSeqNo);
+    EXPECT_EQ(42, view.clusterSeqNo);
     EXPECT_EQ(1700000000000LL, view.clusterTimestampNs);
     EXPECT_EQ(bodyLength, view.payloadLength);
 }
@@ -90,7 +90,7 @@ TEST(FrameCodec, ApplicationPayloadRoundTripsInsideASequencedFrame)
     alignas(16) std::array<std::uint8_t, 128> buffer{};
     frm::Sequenced frame;
     frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
-    frame.header().sourceId(3).connectionId(9).sessionId(11).payloadId(3).globalSeqNo(7).timestamp(1234);
+    frame.header().sourceId(3).connectionId(9).sessionId(11).payloadId(3).clusterSeqNo(7).timestamp(1234);
     frame.putPayload(reinterpret_cast<const char*>(payload.data()), payloadLength);
 
     const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
@@ -106,7 +106,7 @@ TEST(FrameCodec, ApplicationPayloadRoundTripsInsideASequencedFrame)
 
 TEST(FrameCodec, ClusterHeartbeatCarriesItsFieldsInline)
 {
-    // One of the three the sequencer synthesizes: a template of its own, no payload at all, and 42 bytes —
+    // One of the three the sequencer synthesizes: a template of its own, no payload at all, and 52 bytes —
     // the cheapest frame in the system.
     alignas(16) std::array<std::uint8_t, 128> buffer{};
     frm::ClusterHeartbeat frame;
@@ -116,16 +116,16 @@ TEST(FrameCodec, ClusterHeartbeatCarriesItsFieldsInline)
         .connectionId(-1)
         .sessionId(-1)
         .systemEventType(protocol::CLUSTER_HEARTBEAT)
-        .globalSeqNo(5)
+        .clusterSeqNo(5)
         .timestamp(1700000000001LL);
     const auto length = frm::MessageHeader::encodedLength() + frame.encodedLength();
-    EXPECT_EQ(42U, length);
+    EXPECT_EQ(52U, length);
 
     const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()), length);
     ASSERT_TRUE(view.valid);
     EXPECT_TRUE(view.system);
     EXPECT_EQ(protocol::CLUSTER_HEARTBEAT, view.systemEventType);
     EXPECT_EQ(-1, view.sourceId);
-    EXPECT_EQ(5, view.globalSeqNo);
+    EXPECT_EQ(5, view.clusterSeqNo);
     EXPECT_EQ(1700000000001LL, view.clusterTimestampNs);
 }

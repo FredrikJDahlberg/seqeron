@@ -121,7 +121,7 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(42);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(52);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(108);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(210);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
@@ -179,7 +179,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(42);
+        return static_cast<std::uint16_t>(52);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -385,7 +385,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t clusterSessionIdEncodingOffset() SBE_NOEXCEPT
     {
-        return 34;
+        return 44;
     }
 
     static SBE_CONSTEXPR std::int64_t clusterSessionIdNullValue() SBE_NOEXCEPT
@@ -411,14 +411,14 @@ public:
     SBE_NODISCARD std::int64_t clusterSessionId() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 34, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 44, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     SessionClosed &clusterSessionId(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 34, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 44, &val, sizeof(std::int64_t));
         return *this;
     }
 

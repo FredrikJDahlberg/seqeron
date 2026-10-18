@@ -72,7 +72,7 @@ class CommittedEntryLossTest {
     void aCommittedEntrySurvivesAFollowerRestartAndALeaderCut() {
         loseACommittedEntry();
 
-        QueueRecordings.assertOneLog(cluster.archives(), nextGlobalSeqNo(cluster.awaitLeader()));
+        QueueRecordings.assertOneLog(cluster.archives(), nextClusterSeqNo(cluster.awaitLeader()));
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");
     }
@@ -91,7 +91,7 @@ class CommittedEntryLossTest {
             await(() -> isCaughtUp(truncated, restartCommitPosition));
         }
 
-        QueueRecordings.assertActiveOneLog(cluster.archives(), nextGlobalSeqNo(cluster.awaitLeader()));
+        QueueRecordings.assertActiveOneLog(cluster.archives(), nextClusterSeqNo(cluster.awaitLeader()));
         for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
             assertTrue(m == truncated || !cluster.fatal(m), "member " + m + " raised a fatal");
         }
@@ -167,21 +167,22 @@ class CommittedEntryLossTest {
         }
     }
 
-    /** The globalSeqNo of the next frame member {@code m}'s queue shows. */
-    private long nextGlobalSeqNo(final int m) {
+    /** The clusterSeqNo of the next frame member {@code m}'s queue shows. */
+    private long nextClusterSeqNo(final int m) {
         final SequencedFrameDecoder frame = new SequencedFrameDecoder();
-        final MutableLong globalSeqNo = new MutableLong();
+        final MutableLong clusterSeqNo = new MutableLong();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(m)));
-             Subscription queue = aeron.addSubscription(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID)) {
-            while (globalSeqNo.get() == 0) {
+             Subscription queue =
+                 aeron.addSubscription(FrameLayer.QUEUE_CHANNEL, FrameLayer.queueStreamId(InProcessCluster.GROUP_ID))) {
+            while (clusterSeqNo.get() == 0) {
                 queue.poll((buffer, offset, length, header) -> {
                     if (frame.wrap(buffer, offset, length)) {
-                        globalSeqNo.set(frame.globalSeqNo());
+                        clusterSeqNo.set(frame.clusterSeqNo());
                     }
                 }, 1);
                 Tests.yield();
             }
         }
-        return globalSeqNo.get();
+        return clusterSeqNo.get();
     }
 }

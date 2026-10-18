@@ -35,12 +35,12 @@ A new build of a stateful application meets its protocol in three places:
 
 | data | where it comes from | read by the new build when |
 | --- | --- | --- |
-| **history** | the log, from `globalSeqNo` 1 or from a snapshot's cut | it recovers |
+| **history** | the log, from `clusterSeqNo` 1 or from a snapshot's cut | it recovers |
 | **state** | its own snapshot files ([`snapshot.md`](snapshot.md)) | it restores |
 | **in-flight messages** | the live queue, from producers not yet upgraded | it runs alongside older builds |
 
 Each needs a different answer. Today the application answers all three alone, and since the log is never
-truncated, a consumer that recovers from `globalSeqNo` 1 must read every payload version ever recorded.
+truncated, a consumer that recovers from `clusterSeqNo` 1 must read every payload version ever recorded.
 
 A versioned encoding is the prerequisite for any of it, and handles most changes by itself (§4). A payload's
 `MessageHeader` already carries its schema `version`, which `Payload.version()` exposes; an unversioned or
@@ -79,7 +79,7 @@ begins with a `MessageHeader` — and the application's schema defines the messa
 
 ### 3.2 Constraints
 
-**Snapshots are required cluster-wide.** If any stateful client may recover from `globalSeqNo` 1, the
+**Snapshots are required cluster-wide.** If any stateful client may recover from `clusterSeqNo` 1, the
 bound is gone for that client. Today participation is per topology row (`snapshot="true"`) and optional, a
 read-only consumer has no snapshot of its own, and a restore that finds no usable file replays the log from
 the start ([`snapshot.md`](snapshot.md) §7). Making the bound hold needs cluster snapshots
@@ -99,7 +99,7 @@ With both, the compatibility window is exact: **the snapshot schema versions of 
 the payload versions published since `F`** — about four rounds.
 
 **The cost.** Truncating at `F` gives up a property seqeron has today: every member holds the complete
-history from `globalSeqNo` 1, and any consumer can rebuild from it. A deployment that must retain history
+history from `clusterSeqNo` 1, and any consumer can rebuild from it. A deployment that must retain history
 beyond `F`, for audit or regulation, takes it from an export of the archive.
 
 ## 4. Encoding evolution
@@ -203,7 +203,7 @@ Application.builder()   // Gateway.builder() alike
   alone, so one upcaster serves a payload and a snapshot record of the same schema.
 - **Chained one step at a time** (N−2 → N−1 → N): each release adds one small step and leaves the older ones
   as they are. A message is translated until no upcaster matches its version.
-- **Preserves the delivery.** For a payload, `globalSeqNo`, `sourceId`, `connectionId`, `clusterTimestampNs`,
+- **Preserves the delivery.** For a payload, `clusterSeqNo`, `sourceId`, `connectionId`, `clusterTimestampNs`,
   `receiveTimeNs` and `position()` are the original message's; the body and `version` are the translation's.
 - **Deterministic.** An upcaster is part of the consumer's state machine, so it is a pure function of the
   message, like a reply under spec **A-3**.
@@ -240,7 +240,7 @@ what may happen and gating every instance on a completeness edge there.
    - A producer's façade refuses to publish a version above the active one, reading it from the payload's
      own `MessageHeader` as `Payload.version()` does. The cluster still opens no payload.
    - A consumer acts on the new version from that frame on, not from its deployment, so every instance of
-     a source switches at the same `globalSeqNo`; one that acted on a new field while another instance of
+     a source switches at the same `clusterSeqNo`; one that acted on a new field while another instance of
      its source ignored it would diverge and be fenced at the next round (spec **A-7**). The frame is the
      cutover marker of §7.2 step 3.
    - An instance announcing a version below the active one cannot read what the log already holds, and is
@@ -289,6 +289,9 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
 ### 7.1 A source and a `payloadId` of its own
 
 - **`N` is a new source**: its own `sourceId` and topology row, one replica per member as `O` has.
+- **`N` is in one of the active groups.** The groups are fixed by the first topology load (spec **S-8**):
+  adding, removing or renaming one, or moving a source to another, needs every archive purged. Adding
+  groups to a running cluster is proposed (spec §7.4).
 - **v2 has its own `payloadId`**, with a `PayloadIdRegistered` row. A consumer that does not know it skips
   it (spec **P-1**), so `O`'s consumers ignore `N` unchanged. Under `O`'s `payloadId` with a higher schema
   version, they would decode it too, since **P-4** checks only the `schemaId`, and act on two replies to
@@ -301,7 +304,7 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
 ### 7.2 Steps
 
 1. **Add `N`.** It reads the requests `O` reads and publishes v2 replies, so every request has two
-   replies. `N` builds its state by replaying from `globalSeqNo` 1, which means decoding every request
+   replies. `N` builds its state by replaying from `clusterSeqNo` 1, which means decoding every request
    version in the log. Proposed: `N` restores `O`'s newest confirmed snapshot instead, upcasting its records
    (§3.1, §5), and takes part in rounds under its own `sourceId` from then on. A snapshot server
    ([`snapshot.md`](snapshot.md) §11) serves `O`'s snapshot on any host.
@@ -327,7 +330,7 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
    meanwhile: `O` would skip a v2 request (**P-1**), and its replies would stop matching `N`'s with no error
    to show it.
 5. **Drop v1.** Consumers keep reading v1 replies, and `N` v1 requests, while any recovery can reach the
-   history before the marker. A restore with no usable snapshot replays from `globalSeqNo` 1
+   history before the marker. A restore with no usable snapshot replays from `clusterSeqNo` 1
    ([`snapshot.md`](snapshot.md) §7), so that lasts until cluster snapshots' floor `F` passes the marker
    (§3.2), and without cluster snapshots it lasts indefinitely.
 
@@ -352,6 +355,8 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
 | a schema checker enforcing §4.1's rules | proposed (§4.1) |
 | consumers-first enforced by the cluster: announced versions and an activation frame | proposed (§5.4): a schema 210 change |
 | a new source beside the old: its own `sourceId`, `payloadId` and rows, loaded into a running cluster | implemented (§7.1) |
+| groups: a queue per group, fixed by the first topology load | proposed (spec §3.1, §7.4) |
+| groups added to a running cluster by a later topology load | proposed, a second step (spec §7.4) |
 | a source restoring another source's snapshot | proposed (§7.2 step 1) |
 | a reply comparator | proposed (§7.2 step 2) |
 | a cutover marker convention | proposed (§7.2 step 3): application-level; a system event for it could join the next schema 210 change, which purges anyway (spec **V-3**) |

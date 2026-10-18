@@ -10,13 +10,13 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// Application frame header on the queue: the ingress header, plus globalSeqNo and timestamp
+    /// Application frame header on the queue: the ingress header, plus clusterSeqNo, timestamp and groupSeqNo
     /// </summary>
     public sealed partial class SequencedHeader
     {
         public const ushort SbeSchemaId = (ushort)210;
         public const ushort SbeSchemaVersion = (ushort)0;
-        public const int Size = 34;
+        public const int Size = 44;
 
         private DirectBuffer _buffer;
         private int _offset;
@@ -110,22 +110,42 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         }
 
 
-        public const long GlobalSeqNoNullValue = -9223372036854775808L;
-        public const long GlobalSeqNoMinValue = -9223372036854775807L;
-        public const long GlobalSeqNoMaxValue = 9223372036854775807L;
+        public const ushort GroupMaskNullValue = (ushort)65535;
+        public const ushort GroupMaskMinValue = (ushort)0;
+        public const ushort GroupMaskMaxValue = (ushort)65534;
 
         /// <summary>
-        /// Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4)
+        /// Copied from ingress
         /// </summary>
-        public long GlobalSeqNo
+        public ushort GroupMask
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 18);
+                return _buffer.Uint16GetLittleEndian(_offset + 18);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 18, value);
+                _buffer.Uint16PutLittleEndian(_offset + 18, value);
+            }
+        }
+
+
+        public const long ClusterSeqNoNullValue = -9223372036854775808L;
+        public const long ClusterSeqNoMinValue = -9223372036854775807L;
+        public const long ClusterSeqNoMaxValue = 9223372036854775807L;
+
+        /// <summary>
+        /// Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4). It jumps along a queue
+        /// </summary>
+        public long ClusterSeqNo
+        {
+            get
+            {
+                return _buffer.Int64GetLittleEndian(_offset + 20);
+            }
+            set
+            {
+                _buffer.Int64PutLittleEndian(_offset + 20, value);
             }
         }
 
@@ -141,11 +161,31 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 26);
+                return _buffer.Int64GetLittleEndian(_offset + 28);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 26, value);
+                _buffer.Int64PutLittleEndian(_offset + 28, value);
+            }
+        }
+
+
+        public const long GroupSeqNoNullValue = -9223372036854775808L;
+        public const long GroupSeqNoMinValue = -9223372036854775807L;
+        public const long GroupSeqNoMaxValue = 9223372036854775807L;
+
+        /// <summary>
+        /// This queue's own sequence number: 1 for its first frame, then +1 per frame on it (F-6)
+        /// </summary>
+        public long GroupSeqNo
+        {
+            get
+            {
+                return _buffer.Int64GetLittleEndian(_offset + 36);
+            }
+            set
+            {
+                _buffer.Int64PutLittleEndian(_offset + 36, value);
             }
         }
 
@@ -177,11 +217,17 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             builder.Append("PayloadId=");
             builder.Append(this.PayloadId);
             builder.Append('|');
-            builder.Append("GlobalSeqNo=");
-            builder.Append(this.GlobalSeqNo);
+            builder.Append("GroupMask=");
+            builder.Append(this.GroupMask);
+            builder.Append('|');
+            builder.Append("ClusterSeqNo=");
+            builder.Append(this.ClusterSeqNo);
             builder.Append('|');
             builder.Append("Timestamp=");
             builder.Append(this.Timestamp);
+            builder.Append('|');
+            builder.Append("GroupSeqNo=");
+            builder.Append(this.GroupSeqNo);
             builder.Append(')');
 
         }

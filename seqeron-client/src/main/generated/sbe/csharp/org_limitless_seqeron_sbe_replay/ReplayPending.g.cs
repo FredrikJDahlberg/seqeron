@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Replay
 {
     /// <summary>
-    /// All MAX_CONCURRENT_REPLAYS slots are busy. The client waits at its gap, without                               advancing past it, until a later Replaying arrives
+    /// Not now: no slot is free, the replayer is not ready, the recording has not reached                               fromPosition yet, or the queue a QueueRequest asks for is not known yet. The client                               waits at its gap, without advancing past it, and resends
     /// </summary>
     public sealed partial class ReplayPending
     {

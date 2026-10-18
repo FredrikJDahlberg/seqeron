@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The gateway pair src/cpp/GatewayApp.cpp and src/java/example/GatewayApp.java run. Load it once, into a cluster that has not bootstrapped
+    The gateway pair src/cpp/GatewayApp.cpp and src/java/example/GatewayApp.java run, and the Java and C++
+    co-located applications. Load it once, into a cluster that has not bootstrapped
     another list (the bootstrap GatewayActive latches once per cluster lifetime):
 
       seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology.xml
@@ -11,20 +12,33 @@
 -->
 <topology xmlns="http://limitless.org/seqeron/topology/1">
 
+    <!-- The examples' groups: the gateway pairs read one queue, the co-located applications another.
+         topology.xml and topology-csharp.xml declare the same ones, so they load into one cluster
+         (spec S-8). -->
+    <groups>
+        <group name="gateways" id="1"/>
+        <group name="applications" id="2"/>
+    </groups>
+
     <!-- sourceId 13, allocated in doc/seqeron-protocol-spec.md §5. gatewayIds 12 and 13, after
          TestGateway's 10 and 11, so the two pairs can share one cluster. -->
     <gateways>
-        <gateway name="GW-EX-A" id="12" sourceId="13" rank="0"
+        <gateway name="GW-EX-A" id="12" sourceId="13" rank="0" group="gateways"
                  description="seqeron-examples gateway_app"/>
-        <gateway name="GW-EX-B" id="13" sourceId="13" rank="1"
+        <gateway name="GW-EX-B" id="13" sourceId="13" rank="1" group="gateways"
                  description="seqeron-examples gateway_app standby"/>
     </gateways>
 
-    <!-- SnapshotApp, Java and C++: sourceIds 14 and 15 (spec §5), taking part in snapshot rounds. -->
+    <!-- ColocatedApp, Java and C++: sourceIds 11 and 12; SnapshotApp, Java and C++: 14 and 15, taking part
+         in snapshot rounds (spec §5). -->
     <applications>
-        <application name="SNAP-EX-J" sourceId="14" snapshot="true"
+        <application name="COLO-EX-J" sourceId="11" group="applications"
+                     description="seqeron-examples ColocatedApp.java"/>
+        <application name="COLO-EX-C" sourceId="12" group="applications"
+                     description="seqeron-examples colocated_app"/>
+        <application name="SNAP-EX-J" sourceId="14" group="applications" snapshot="true"
                      description="seqeron-examples SnapshotApp.java"/>
-        <application name="SNAP-EX-C" sourceId="15" snapshot="true"
+        <application name="SNAP-EX-C" sourceId="15" group="applications" snapshot="true"
                      description="seqeron-examples snapshot_app"/>
     </applications>
 

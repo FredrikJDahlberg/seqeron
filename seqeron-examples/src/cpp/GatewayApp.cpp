@@ -66,6 +66,10 @@ void onSignal(int)
 // The edge: what a gateway does that the façade cannot do for it. Here, one simulated client.
 struct Edge
 {
+    // Publishes to its own group alone; one that addresses others takes their masks from here.
+    void onGroupsResolved(const app::GroupDirectory&)
+    {}
+
     // Designated: open the edge. A real gateway binds its listen socket here; false would be retried.
     bool onActivated(const std::int32_t firstConnectionId)
     {
@@ -83,7 +87,7 @@ struct Edge
         pingSentNs = 0;
     }
 
-    // Every application payload on this node's queue, in globalSeqNo order, history and live alike.
+    // Every application payload on this node's queue, in clusterSeqNo order, history and live alike.
     void onSequenced(const app::Payload& payload)
     {
         std::int64_t sentNs = 0;
@@ -95,7 +99,7 @@ struct Edge
         if (sentNs != 0 && sentNs == pingSentNs)
         {
             std::printf("%lld ping echoed on connection %d, round trip %lldus\n",
-                        static_cast<long long>(payload.globalSeqNo()), payload.connectionId(),
+                        static_cast<long long>(payload.clusterSeqNo()), payload.connectionId(),
                         static_cast<long long>((nowNs() - pingSentNs) / 1000));
         }
     }
@@ -112,9 +116,9 @@ struct Edge
         std::printf("# connection %d closed\n", id);
     }
 
-    void onCaughtUp(const std::int64_t globalSeqNo)
+    void onCaughtUp(const std::int64_t clusterSeqNo)
     {
-        std::printf("# caught up at %lld — following the queue live\n", static_cast<long long>(globalSeqNo));
+        std::printf("# caught up at %lld — following the queue live\n", static_cast<long long>(clusterSeqNo));
     }
 
     void onClusterHeartbeat(std::int64_t, std::int64_t)

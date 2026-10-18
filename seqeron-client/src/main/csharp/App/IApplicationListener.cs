@@ -3,6 +3,11 @@ namespace Org.Limitless.Seqeron.App;
 /// <summary>What an application does that <see cref="Application"/> cannot do for it.</summary>
 public interface IApplicationListener
 {
+    /// <summary>The log's group table, once, before the gate first opens: what
+    /// <see cref="Application.Publish(ushort, int, Adaptive.Agrona.IDirectBuffer, int)"/> takes its masks
+    /// from.</summary>
+    void OnGroupsResolved(GroupDirectory directory);
+
     /// <summary>
     /// The leader gate crossed an edge: true when this replica may do leader-only work — caught up, and its own node
     /// leads, or off the cluster caught up alone — false when it may not. <b>Every leadership change closes an open
@@ -12,11 +17,11 @@ public interface IApplicationListener
     /// </summary>
     void OnLeadershipChanged(bool leading);
 
-    /// <summary>One application payload off this node's queue, in <c>globalSeqNo</c> order.</summary>
+    /// <summary>One application payload off this node's queue, in <c>clusterSeqNo</c> order.</summary>
     void OnSequenced(Payload payload);
 
     /// <summary>Every transition to caught-up, the first included.</summary>
-    void OnCaughtUp(long globalSeqNo);
+    void OnCaughtUp(long clusterSeqNo);
 
     /// <summary>
     /// The cluster clock's tick (spec §7), once a second. It is the one time source that keeps advancing while every

@@ -116,8 +116,9 @@ a member or cutting its UDP for up to 1.5 s, the leader or a follower as the rou
 come out exact and every member must be up at the end. A failure prints its seed, and
 `./gradlew :seqeron-service:integrationTest -Pseed=<n>` replays the rounds' draws, though not the threads'
 timing. Both tests then read every queue recording on every member, and on the host, straight off its archive,
-since a client's `ReplayerRecovery` would hide a repeated frame or replay over a gap: each must hold globalSeqNo 1
-onwards once each, in order, and the same frame wherever two hold the same globalSeqNo.
+since a client's `ReplayerRecovery` would hide a repeated frame or replay over a gap: each must hold groupSeqNo 1
+onwards once each, in order, and the same frame wherever two hold the same groupSeqNo. `InProcessCluster` activates
+its one group before a test starts, since the cluster sequences nothing before it.
 
 `CommittedEntryLossTest` scripts a fault sequence under which Aeron Cluster 1.53.2 loses a committed entry: a
 follower restarts while the leader waits on a member that cannot copy the log, truncates the entries it
@@ -160,23 +161,33 @@ WSL1 distribution that has a JDK 21. The thirteenth, `cpp-client-test.sh`, drive
 | `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |
 | `snapshot-test.sh` | Application snapshots against a live 3-node cluster: the `TestGateway` pair and a `TestApplication` replica per member take part in rounds every 2 s, and the script restarts the standby, fails over onto the restored instance, brings the other back as a hot standby that restores, starts a round with `clusterctl request-snapshot`, restarts a follower's replica, and kills the cluster leader. Every restore must reach the state the log implies and no instance may diverge from a sequenced round. Needs `./gradlew uberJar compileTestJava` |
 | `docker-failover-test.sh` | Multi-round containerized failover soak — the `docker/compose.yml` port of `failover-test.sh`. `ROUNDS` (15) kills under continuous `ProbeMarker` load, restoring the killed member between them, so each rejoin replays a Raft log that grew under the previous rounds. Asserts every round is a genuine leadership change, that a long-lived observer on each surviving node keeps delivering in order across all of them, and that a cold-start probe replays the whole multi-tenure history at the end. Needs Docker and `./gradlew operatorDist`; `ROUNDS=3` for a quick local run. CI runs it as `failover.yml` |
-| `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `globalSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, and a `GatewayApp` pair handed over when its active instance is killed. Rerun on every Aeron upgrade (spec V-1); CI runs it in `chaos.yml` on every pull request. Needs the .NET SDK (`DOTNET` names one off the `PATH`) |
+| `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `groupSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, and a `GatewayApp` pair handed over when its active instance is killed. Rerun on every Aeron upgrade (spec V-1); CI runs it in `chaos.yml` on every pull request. Needs the .NET SDK (`DOTNET` names one off the `PATH`) |
 | `csharp-windows-test.sh` | The C# client on Windows, where it is deployed, against a member on Linux, on one host: the member in WSL1, which shares Windows' network stack, and on Windows a gateway host with the C# probe and examples beside it. UDP ingress through `PendingSends`, a cold start through the gateway host, and the C# gateway pair handed over. One member, because three cannot hold Raft's heartbeats under WSL1's system-call translation; the leader kill is `csharp-client-test.sh`'s. Runs in Git Bash; CI runs it in `windows.yml` |
-| `cpp-client-test.sh` | The C++ client tier against a live 3-node cluster: `cluster_probe` runs the same phases as the C# probe — UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `globalSeqNo` 1 — then the C++ examples, built as an outside consumer builds them: `follow_stream`, `colocated_app`, a `gateway_app` pair handed over when its active instance is killed, and a `snapshot_app` restart that restores from a round it confirmed. Builds the probe and the examples in one tree, so Aeron once: `SEQERON_EXAMPLES_BUILD` (default `seqeron-examples/cmake-build-e2e`), configured with `SEQERON_BUILD_TESTS=ON`, and as Release only if it does not exist; CI runs it in `chaos.yml` on every pull request |
+| `cpp-client-test.sh` | The C++ client tier against a live 3-node cluster: `cluster_probe` runs the same phases as the C# probe — UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `groupSeqNo` 1 — then the C++ examples, built as an outside consumer builds them: `follow_stream`, `colocated_app`, a `gateway_app` pair handed over when its active instance is killed, and a `snapshot_app` restart that restores from a round it confirmed. Builds the probe and the examples in one tree, so Aeron once: `SEQERON_EXAMPLES_BUILD` (default `seqeron-examples/cmake-build-e2e`), configured with `SEQERON_BUILD_TESTS=ON`, and as Release only if it does not exist; CI runs it in `chaos.yml` on every pull request |
 | `replay-bench.sh <preload> [load-during]` | How fast a cold replica replays recorded history to caught-up; prints archive size, elapsed seconds and MB/s |
 
 `failover.yml` also runs the faults none of these scripts can produce — partitions that leave clients
 connected, one link cut and no other, lost NAKs or retransmits, delay and duplication, dropped ballots — and a
-leader starved of CPU, against the same `docker/compose.yml` cluster. They are
-[faulteron](https://github.com/FredrikJDahlberg/faulteron)'s tests, an eBPF injector in its own repository, run
-from a pinned commit. To run them locally, on Linux or in a Docker VM, check it out beside this repository and run
-its `test/seqeron-*.sh` after `./gradlew operatorDist`.
+leader starved of CPU, against the same `docker/compose.yml` cluster. The tests are under
+`seqeron-service/src/test/scripts/faulteron`, and drive [faulteron](https://github.com/FredrikJDahlberg/faulteron),
+an eBPF injector in its own repository, which `failover.yml` checks out at a pinned commit. To run them locally, on
+Linux or in a Docker VM, check faulteron out beside this repository (or name it with `FAULTERON_DIR`) and run them
+after `./gradlew operatorDist`. Each loads `topology-test-groups.xml` once the cluster is up.
+
+| test | what it asserts |
+| --- | --- |
+| `partition-leader-test.sh` | the leader, cut off from its peers while a `ClusterProbe confirm` producer streams through it, dropped packets; the majority elected a new leader; the old one rejoined as a follower; the PendingSends producer saw every frame once |
+| `asymmetric-partition-test.sh` | with only the link between the leader and one follower cut (`--peer`), the cut-off follower, which stands for election, does not depose the leader; a producer on the other follower stays exact; the follower catches up once healed |
+| `unrepaired-follower-test.sh` | with 5% of one follower's log DATA dropped and its NAKs (`REPAIR=nak`, the default) or the leader's retransmissions to it (`REPAIR=retransmit`) gone, the follower falls behind with no election: a ping through its queue passes before the fault, times out under it, and passes after the heal; a producer on the other follower stays exact |
+| `jittery-leader-test.sh` | with the leader's cluster and ingress traffic delayed 20–50 ms and 10% duplicated, under the 200 ms leader heartbeat timeout, no election runs, every member's queue answers a ping, and a producer on a follower stays exact. `DELAY_MS=250 JITTER_MS=0` takes the delay past the timeout, a run expected to fail |
+| `throttled-leader-test.sh` | with the leader's container capped at 0.05 CPUs (`docker update --cpus`), the cluster replaces it, a producer on a follower stays exact, and the old leader rejoins and catches up once its CPU is back. The fault is the harness's, not faulteron's: `aeron:ipc` never reaches an interface. `CPUS=0.5` is a cap the leader keeps up under, a run expected to fail |
+| `mute-voter-test.sh` | with one follower's RequestVote and Vote messages dropped and the leader then killed, the fault is invisible until the kill, the two survivors elect no leader while it holds and one as soon as it heals, the killed member rejoins, and a producer on the muted follower stays exact. The hold stays under `ClusterStreamSender`'s 5 s new-leader timeout, past which the producer's session closes |
 
 ## Examples
 
 `seqeron-examples` holds the smallest clients there are, one per language in `src/java`, `src/cpp` and
 `src/csharp`, and the same flow in each: replay a node's history through that node's co-located Replayer,
-switch to the live queue on catching up, and print every frame in `globalSeqNo` order. Each produces as well
+switch to the live queue on catching up, and print every frame in `clusterSeqNo` order. Each produces as well
 as consumes — a `ConnectionOpened` announcing itself, then one ping payload a second whose echo it reads
 back off its own queue — so both families are covered in both directions. Each is a **separate build**,
 sharing that one source tree: the Java one resolves `org.limitless:seqeron` — the client tier alone, no

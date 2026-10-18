@@ -79,18 +79,19 @@ jobs:
   # peers while its clients stay connected, one link cut and no other, a follower whose loss repair is gone, a slow
   # and duplicating link, a member whose ballots are dropped, and a leader starved of CPU. faulteron
   # (github.com/FredrikJDahlberg/faulteron) injects them with eBPF from privileged containers, which this VM's
-  # daemon runs as it is.
+  # daemon runs as it is. The tests are this repo's, under seqeron-service/src/test/scripts/faulteron; faulteron is the
+  # tool they drive.
   network-faults:
     name: network faults (faulteron)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      SEQERON_DIR: ${{ github.workspace }}
+      FAULTERON_DIR: ${{ github.workspace }}/faulteron
       TIMEOUT_SCALE: '3'
     steps:
       - uses: actions/checkout@v7
 
-      # Pinned, so a faulteron change reaches this workflow only when this line moves.
+      # The tool, pinned, so a faulteron change reaches this workflow only when this line moves.
       - uses: actions/checkout@v7
         with:
           repository: FredrikJDahlberg/faulteron
@@ -124,39 +125,39 @@ jobs:
       # Each test below runs whatever the one before it did, so one run reports them all.
       - name: Leader partitioned from its peers
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: faulteron/test/seqeron-partition-leader.sh
+        run: seqeron-service/src/test/scripts/faulteron/partition-leader-test.sh
 
       - name: Asymmetric partition
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: faulteron/test/seqeron-asymmetric-partition.sh
+        run: seqeron-service/src/test/scripts/faulteron/asymmetric-partition-test.sh
 
       - name: Follower without NAKs
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: faulteron/test/seqeron-unrepaired-follower.sh
+        run: seqeron-service/src/test/scripts/faulteron/unrepaired-follower-test.sh
         env:
           REPAIR: nak
 
       - name: Follower without retransmits
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: faulteron/test/seqeron-unrepaired-follower.sh
+        run: seqeron-service/src/test/scripts/faulteron/unrepaired-follower-test.sh
         env:
           REPAIR: retransmit
 
       - name: Slow, duplicating leader links
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: faulteron/test/seqeron-jittery-leader.sh
+        run: seqeron-service/src/test/scripts/faulteron/jittery-leader-test.sh
 
       - name: Mute voter
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: faulteron/test/seqeron-mute-voter.sh
+        run: seqeron-service/src/test/scripts/faulteron/mute-voter-test.sh
 
       - name: Leader starved of CPU
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: faulteron/test/seqeron-throttled-leader.sh
+        run: seqeron-service/src/test/scripts/faulteron/throttled-leader-test.sh
 
       - name: Upload faulteron logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: network-fault-logs
-          path: faulteron/logs/
+          path: logs/faulteron/

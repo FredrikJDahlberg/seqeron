@@ -136,7 +136,7 @@ public:
         m_offset(offset),
         m_actingVersion(actingVersion)
     {
-        if (SBE_BOUNDS_CHECK_EXPECT(((m_offset + 18) > m_bufferLength), false))
+        if (SBE_BOUNDS_CHECK_EXPECT(((m_offset + 20) > m_bufferLength), false))
         {
             throw std::runtime_error("buffer too short for flyweight [E107]");
         }
@@ -168,7 +168,7 @@ public:
         m_offset = offset;
         m_actingVersion = actingVersion;
 
-        if (SBE_BOUNDS_CHECK_EXPECT(((m_offset + 18) > m_bufferLength), false))
+        if (SBE_BOUNDS_CHECK_EXPECT(((m_offset + 20) > m_bufferLength), false))
         {
             throw std::runtime_error("buffer too short for flyweight [E107]");
         }
@@ -178,7 +178,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t encodedLength() SBE_NOEXCEPT
     {
-        return 18;
+        return 20;
     }
 
     SBE_NODISCARD std::uint64_t offset() const SBE_NOEXCEPT
@@ -468,6 +468,69 @@ public:
         return *this;
     }
 
+    SBE_NODISCARD static const char *groupMaskMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t groupMaskId() SBE_NOEXCEPT
+    {
+        return -1;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t groupMaskSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool groupMaskInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t groupMaskEncodingOffset() SBE_NOEXCEPT
+    {
+        return 18;
+    }
+
+    static SBE_CONSTEXPR std::uint16_t groupMaskNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT16;
+    }
+
+    static SBE_CONSTEXPR std::uint16_t groupMaskMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint16_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint16_t groupMaskMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint16_t>(65534);
+    }
+
+    static SBE_CONSTEXPR std::size_t groupMaskEncodingLength() SBE_NOEXCEPT
+    {
+        return 2;
+    }
+
+    SBE_NODISCARD std::uint16_t groupMask() const SBE_NOEXCEPT
+    {
+        std::uint16_t val;
+        std::memcpy(&val, m_buffer + m_offset + 18, sizeof(std::uint16_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_16(val);
+    }
+
+    UnsequencedSystemHeader &groupMask(const std::uint16_t value) SBE_NOEXCEPT
+    {
+        std::uint16_t val = SBE_LITTLE_ENDIAN_ENCODE_16(value);
+        std::memcpy(m_buffer + m_offset + 18, &val, sizeof(std::uint16_t));
+        return *this;
+    }
+
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
     std::basic_ostream<CharT, Traits> &builder, UnsequencedSystemHeader &writer)
@@ -487,6 +550,10 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << ", ";
     builder << R"("systemEventType": )";
     builder << +writer.systemEventType();
+
+    builder << ", ";
+    builder << R"("groupMask": )";
+    builder << +writer.groupMask();
 
     builder << '}';
 

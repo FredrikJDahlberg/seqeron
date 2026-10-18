@@ -117,7 +117,7 @@ struct Ledger final : app::SnapshotListener
         {
             ++rejected;
         }
-        std::printf("%lld transfer %lld from %d to %d %s", static_cast<long long>(payload.globalSeqNo()),
+        std::printf("%lld transfer %lld from %d to %d %s", static_cast<long long>(payload.clusterSeqNo()),
                     static_cast<long long>(transfer.amount), transfer.from, transfer.to, ok ? "applied" : "rejected");
         printBalances();
     }
@@ -165,16 +165,19 @@ struct Ledger final : app::SnapshotListener
         }
     }
 
+    void onGroupsResolved(const app::GroupDirectory&) const
+    {}
+
     void onLeadershipChanged(const bool leading) const
     {
         std::puts(leading ? "# leading — submitting transfers" : "# not leading — silent");
     }
 
     // Transfers move money and never make it, so the total is the opening one whatever was restored.
-    void onCaughtUp(const std::int64_t globalSeqNo) const
+    void onCaughtUp(const std::int64_t clusterSeqNo) const
     {
         std::printf("# caught up at %lld — %lld transfers, %lld rejected, total %lld\n",
-                    static_cast<long long>(globalSeqNo), static_cast<long long>(applied),
+                    static_cast<long long>(clusterSeqNo), static_cast<long long>(applied),
                     static_cast<long long>(rejected),
                     static_cast<long long>(std::accumulate(balances.begin(), balances.end(), std::int64_t{ 0 })));
     }

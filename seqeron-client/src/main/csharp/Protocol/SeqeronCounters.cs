@@ -19,8 +19,8 @@ public static class SeqeronCounters
     /// <summary>Last type id of the sequencer's block.</summary>
     public const int SequencerTypeIdMax = 5099;
 
-    /// <summary>The last globalSeqNo emitted on this node's queue.</summary>
-    public const int SequencerGlobalSeqNoTypeId = 5000;
+    /// <summary>The last clusterSeqNo emitted on this node's queue.</summary>
+    public const int SequencerClusterSeqNoTypeId = 5000;
 
     /// <summary>Count of times the queue-emit back-pressure alert threshold has fired.</summary>
     public const int SequencerQueueBackpressureAlertsTypeId = 5001;

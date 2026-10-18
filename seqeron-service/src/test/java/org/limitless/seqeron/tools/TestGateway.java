@@ -22,6 +22,7 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Gateway;
+import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.protocol.Publish;
@@ -348,6 +349,11 @@ public final class TestGateway {
     /** The edge: what {@link Gateway} cannot do for a gateway that owns a socket. */
     private final class GateListener implements Gateway.Listener {
         @Override
+        public void onGroupsResolved(final GroupDirectory directory) {
+            // It publishes to its own group alone, so it addresses no other.
+        }
+
+        @Override
         public boolean onActivated(final int firstConnectionId) {
             try {
                 acceptor = ServerSocketChannel.open();
@@ -400,9 +406,9 @@ public final class TestGateway {
 
         /** The one line the harnesses wait on before they may drive this instance. */
         @Override
-        public void onCaughtUp(final long globalSeqNo) {
-            log("Caught up — following live at globalSeqNo %d, %d connection(s) open, %d marker(s) sequenced",
-                globalSeqNo, openConnections.size(), sequencedMarkers);
+        public void onCaughtUp(final long clusterSeqNo) {
+            log("Caught up — following live at clusterSeqNo %d, %d connection(s) open, %d marker(s) sequenced",
+                clusterSeqNo, openConnections.size(), sequencedMarkers);
         }
 
         @Override

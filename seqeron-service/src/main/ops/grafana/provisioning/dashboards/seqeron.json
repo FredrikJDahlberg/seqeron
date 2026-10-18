@@ -85,12 +85,12 @@
     },
     {
       "id": 6,
-      "title": "Global seq no",
+      "title": "Cluster seq no",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
       "targets": [
-        { "refId": "A", "expr": "seqeron_sequencer_global_seq_no", "legendFormat": "member {{member}}" }
+        { "refId": "A", "expr": "seqeron_sequencer_cluster_seq_no", "legendFormat": "member {{member}}" }
       ],
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }

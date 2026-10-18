@@ -4,7 +4,7 @@ namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
 /// Leader-only request/reply work tracked across a failover. Every replica feeds it the same
-/// <c>globalSeqNo</c>-ordered stream, so all replicas hold the same outstanding set.
+/// <c>clusterSeqNo</c>-ordered stream, so all replicas hold the same outstanding set.
 /// <list type="bullet">
 /// <item><b>Outstanding is replicated:</b> a request is outstanding from its sequenced request
 /// (<see cref="OnRequest"/>) until its sequenced reply (<see cref="OnReply"/>).</item>
@@ -12,9 +12,9 @@ namespace Org.Limitless.Seqeron.App;
 /// <see cref="OnReplyNotEmitted"/>. Only the leader dispatches.</item>
 /// </list>
 /// <para>Emission is at-least-once: a reply lost in an election is dispatched again by the next leader. Key on the
-/// request's <c>globalSeqNo</c> and make the reply a pure function of the request, so a re-emission is identical to
+/// request's <c>clusterSeqNo</c> and make the reply a pure function of the request, so a re-emission is identical to
 /// the one it may duplicate and consumers can drop it.</para>
-/// <para>Dispatch runs in request order, which is <c>globalSeqNo</c> order, so emission order is the same on every
+/// <para>Dispatch runs in request order, which is <c>clusterSeqNo</c> order, so emission order is the same on every
 /// replica. <c>OutstandingWork.java</c> and <c>app/OutstandingWork.hpp</c> are its twins; keep the three in
 /// step.</para>
 /// </summary>

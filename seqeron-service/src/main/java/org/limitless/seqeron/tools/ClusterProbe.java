@@ -60,6 +60,8 @@ import org.limitless.seqeron.util.Logger;
  *   probe.egressHost        — hostname the leader sends this client's egress to; default this member's
  *                             entry in {@code SEQERON_HOSTS}, else localhost, which fails when the leader
  *                             is on another host
+ *   probe.group             — the group whose queue the probe reads and whose bit its frames carry; default
+ *                             the default queue (spec §3.1), which the node's Replayer names
  *   probe.clientId          — follow, confirm: this replica's client id, its counters' label; default 9
  *   probe.count             — submit, confirm: frames to send; default 1000
  *   probe.fillerBytes       — submit, confirm: bytes of filler per frame; default 0
@@ -85,6 +87,9 @@ public final class ClusterProbe {
     static final byte[] NO_FILLER = new byte[0];
 
     private static final int MEMBER_ID = Integer.getInteger("probe.memberId", 0);
+
+    /** {@code probe.group}, or 0 for the default queue. */
+    private static final int CONFIGURED_GROUP_ID = Integer.getInteger("probe.group", 0);
 
     /** The duty-cycle idle strategy {@code follow} and {@code TestGateway} poll with. */
     static final String IDLE_STRATEGY_PROPERTY = "probe.idleStrategy";
@@ -176,11 +181,12 @@ public final class ClusterProbe {
         final int fillerBytes = Integer.getInteger("probe.fillerBytes", 0);
         final long pacingMicros = Long.getLong("probe.pacingMicros", 0L);
         try (AeronCluster cluster = connectCluster()) {
+            final int groupMask = groupMask(groupId(cluster.context().aeron(), CONNECT_TIMEOUT_NS));
             final MarkerEncoder marker = new MarkerEncoder();
             final byte[] filler = new byte[fillerBytes];
             Arrays.fill(filler, (byte)'x');
             for (long seqNo = 1; seqNo <= count; seqNo++) {
-                offer(cluster, marker.frame(), marker.encode(seqNo, NO_ID, PROBE_SOURCE_ID, filler));
+                offer(cluster, marker.frame(), marker.encode(seqNo, NO_ID, PROBE_SOURCE_ID, groupMask, filler));
                 pause(pacingMicros);
             }
             Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
@@ -203,12 +209,13 @@ public final class ClusterProbe {
         // Distinctive, so a concurrent flood's 1..count cannot be mistaken for this frame's echo.
         final long seqNo = System.currentTimeMillis();
         try (AeronCluster cluster = connectCluster()) {
-            final Subscription queue = awaitQueue(cluster);
+            final int groupId = groupId(cluster.context().aeron(), CONNECT_TIMEOUT_NS);
+            final Subscription queue = awaitQueue(cluster, groupId);
             if (queue == null) {
                 return 1;
             }
             final MarkerEncoder marker = new MarkerEncoder();
-            offer(cluster, marker.frame(), marker.encode(seqNo, NO_ID, PROBE_SOURCE_ID, NO_FILLER));
+            offer(cluster, marker.frame(), marker.encode(seqNo, NO_ID, PROBE_SOURCE_ID, groupMask(groupId), NO_FILLER));
 
             final EchoHandler handler = new EchoHandler(seqNo);
             final FragmentAssembler assembler = new FragmentAssembler(handler);
@@ -225,8 +232,8 @@ public final class ClusterProbe {
                              TimeUnit.NANOSECONDS.toSeconds(ECHO_TIMEOUT_NS));
                 return 1;
             }
-            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "ping seqNo %d echoed at globalSeqNo %d",
-                        seqNo, handler.globalSeqNo);
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "ping seqNo %d echoed at clusterSeqNo %d",
+                        seqNo, handler.clusterSeqNo);
             return 0;
         } catch (final RuntimeException ex) {
             Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
@@ -269,11 +276,13 @@ public final class ClusterProbe {
          * frame. The payload carries its own {@code MessageHeader}, as every payload does.
          * @param connectionId the connection this frame belongs to, or -1 for a producer-scoped one
          * @param sourceId     the producer stamping it
+         * @param groupMask    the groups it addresses
          * @return the frame's length in bytes
          */
-        int encode(final long seqNo, final int connectionId, final int sourceId, final byte[] filler) {
+        int encode(final long seqNo, final int connectionId, final int sourceId, final int groupMask,
+                   final byte[] filler) {
             final int payloadLength = encodePayload(seqNo, filler);
-            final int length = envelope.wrapPayload(frame, sourceId, connectionId, NO_ID, PROBE_PAYLOAD_ID,
+            final int length = envelope.wrapPayload(frame, sourceId, connectionId, NO_ID, PROBE_PAYLOAD_ID, groupMask,
                                                     payload, payloadLength);
             if (length == SystemFrame.REFUSED) {
                 throw new IllegalArgumentException(
@@ -289,7 +298,7 @@ public final class ClusterProbe {
         private final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final ProbeMarkerDecoder decoder = new ProbeMarkerDecoder();
         private boolean found;
-        private long globalSeqNo;
+        private long clusterSeqNo;
 
         private EchoHandler(final long seqNo) {
             this.seqNo = seqNo;
@@ -307,7 +316,7 @@ public final class ClusterProbe {
                          view.blockLength(), view.version());
             if (decoder.seqNo() == seqNo) {
                 found = true;
-                globalSeqNo = view.globalSeqNo();
+                clusterSeqNo = view.clusterSeqNo();
             }
         }
     }
@@ -331,14 +340,15 @@ public final class ClusterProbe {
         final AtomicBoolean caughtUp = new AtomicBoolean();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR));
              ClusterStreamSender sender = new ClusterStreamSender()) {
+            final int groupId = groupId(aeron, Long.MAX_VALUE);
             final ReplayerStreamReceiver receiver = new ReplayerStreamReceiver(clientId, event -> {
                 if (tracked) {
                     pending.onSequenced(event);
                 }
                 own.onSequenced(event);
-            }, (leaderMemberId, leadershipTermId, globalSeqNo) -> pending.onLeadershipChanged(leadershipTermId),
+            }, (leaderMemberId, leadershipTermId, clusterSeqNo) -> pending.onLeadershipChanged(leadershipTermId),
                 () -> caughtUp.set(true));
-            receiver.start(aeron, MEMBER_ID);
+            receiver.start(aeron, MEMBER_ID, groupId);
             final IdleStrategy idle = new YieldingIdleStrategy();
             while (!caughtUp.get()) {
                 idle.idle(receiver.poll());
@@ -373,7 +383,7 @@ public final class ClusterProbe {
                 }
                 final boolean gated = tracked && (pending.isHolding() || pending.isFull());
                 if (next <= count && !gated && now >= nextSendNs) {
-                    final int length = marker.encode(next, NO_ID, PROBE_SOURCE_ID, filler);
+                    final int length = marker.encode(next, NO_ID, PROBE_SOURCE_ID, groupMask(groupId), filler);
                     if (sender.send(marker.frame(), length)) {
                         own.sessions.add(sender.clusterSessionId());
                         if (tracked) {
@@ -474,13 +484,13 @@ public final class ClusterProbe {
             if (announcedLive.compareAndSet(false, true)) {
                 Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "Caught up — following live");
             } else {
-                Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "re-converged at globalSeqNo %d",
-                            self.get().lastGlobalSeqNo());
+                Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "re-converged at clusterSeqNo %d",
+                            self.get().lastClusterSeqNo());
             }
         }, queueFaults);
         self.set(receiver);
         stats.receiver = receiver;
-        receiver.start(aeron, MEMBER_ID);
+        receiver.start(aeron, MEMBER_ID, groupId(aeron, Long.MAX_VALUE));
         Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                     "Following the node queue — replaying history via the Replayer, then live");
 
@@ -603,17 +613,40 @@ public final class ClusterProbe {
             .newLeaderTimeoutNs(NEW_LEADER_TIMEOUT_NS));
     }
 
-    /** Subscribes this node's queue, untethered, and waits for it to connect. */
-    private static Subscription awaitQueue(final AeronCluster cluster) {
+    /**
+     * {@code probe.group}, or else the default queue's group, waiting for the Replayer to name one.
+     * @throws IllegalStateException if it names none within {@code timeoutNs}
+     */
+    private static int groupId(final Aeron aeron, final long timeoutNs) {
+        if (CONFIGURED_GROUP_ID != 0) {
+            return CONFIGURED_GROUP_ID;
+        }
+        final int groupId = DefaultQueue.resolve(aeron, timeoutNs, true);
+        if (groupId <= DefaultQueue.NOT_ACTIVE) {
+            throw new IllegalStateException(groupId == DefaultQueue.NOT_ACTIVE
+                                                ? "no group is active: no topology loaded"
+                                                : "no Replayer answered on " + AERON_DIR);
+        }
+        Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "reads group %d's queue, the default", groupId);
+        return groupId;
+    }
+
+    /** The probe is in no group: its frames address the queue it reads. */
+    private static int groupMask(final int groupId) {
+        return 1 << (groupId - 1);
+    }
+
+    /** Subscribes this node's queue of {@code groupId}, untethered, and waits for it to connect. */
+    private static Subscription awaitQueue(final AeronCluster cluster, final int groupId) {
         final Subscription queue = cluster.context().aeron().addSubscription(
-            ReplayerStreamReceiver.QUEUE_CONSUMER_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
+            ReplayerStreamReceiver.QUEUE_CONSUMER_CHANNEL, FrameLayer.queueStreamId(groupId));
         final IdleStrategy idle = new YieldingIdleStrategy();
         final long deadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!queue.isConnected()) {
             if (System.nanoTime() >= deadline) {
                 Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
                              "queue (aeron:ipc/%d) not available — co-located with a SequencerServer?",
-                             FrameLayer.QUEUE_STREAM_ID);
+                             FrameLayer.queueStreamId(groupId));
                 return null;
             }
             cluster.pollEgress();

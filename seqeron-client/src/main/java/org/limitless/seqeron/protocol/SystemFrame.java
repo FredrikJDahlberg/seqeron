@@ -10,6 +10,7 @@ import org.limitless.seqeron.sbe.frame.ConnectionOpenedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayActivationRequestedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayStartedEncoder;
+import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
@@ -99,6 +100,9 @@ public final class SystemFrame {
     /** Synthesis-only; {@code SessionClosedEncoder.TEMPLATE_ID} is the frame's, not this. */
     public static final int SESSION_CLOSED = 31;
 
+    /** The topology file's group table; the first activates the groups. */
+    public static final int GROUPS_REGISTERED = GroupsRegisteredEncoder.TEMPLATE_ID;
+
     /**
      * The compiled {@code BLOCK_LENGTH} of the event {@code systemEventType} names, or {@link
      * #NOT_INGRESS_LEGAL} if it is unallocated or synthesis-only: §9.2 conditions 8 and 9 in one lookup.
@@ -117,6 +121,7 @@ public final class SystemFrame {
             case SystemFrame.SNAPSHOT_REQUESTED -> SnapshotRequestedEncoder.BLOCK_LENGTH;
             case SystemFrame.SNAPSHOT_END -> SnapshotEndEncoder.BLOCK_LENGTH;
             case SystemFrame.SNAPSHOT_POLICY_REGISTERED -> SnapshotPolicyRegisteredEncoder.BLOCK_LENGTH;
+            case SystemFrame.GROUPS_REGISTERED -> GroupsRegisteredEncoder.BLOCK_LENGTH;
             default -> NOT_INGRESS_LEGAL;
         };
     }
@@ -153,7 +158,7 @@ public final class SystemFrame {
         }
         systemEncoder.wrapAndApplyHeader(frame, 0, headerEncoder);
         systemEncoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(sessionId)
-            .systemEventType(systemEventType);
+            .systemEventType(systemEventType).groupMask(0);
         systemEncoder.putBody(body, 0, bodyLength);
         return MessageHeaderEncoder.ENCODED_LENGTH + systemEncoder.encodedLength();
     }
@@ -166,21 +171,22 @@ public final class SystemFrame {
      * @param connectionId  the connection this frame belongs to, or -1 for a producer-scoped one
      * @param sessionId     this process's cluster session; advisory, the sequencer overwrites it
      * @param payloadId     names the payload's decoder namespace and encoding; 0 and 1 are invalid on the wire
+     * @param groupMask     the groups whose queues the frame reaches, the producer's own included (§7.4)
      * @param payload       the payload, its own 8-byte {@code MessageHeader} included
      * @param payloadLength bytes of {@code payload} to carry
      * @return the frame's length in bytes, or {@link #REFUSED} if {@code payloadLength} is above
      *     {@link FrameLayer#MAX_PAYLOAD_LENGTH} or the frame breaks §9.2 condition 6 or 7
      */
     public int wrapPayload(final MutableDirectBuffer frame, final int sourceId, final int connectionId,
-                           final long sessionId, final int payloadId, final DirectBuffer payload,
-                           final int payloadLength) {
+                           final long sessionId, final int payloadId, final int groupMask,
+                           final DirectBuffer payload, final int payloadLength) {
         if (payloadLength > FrameLayer.MAX_PAYLOAD_LENGTH || sourceId == CLUSTER_SOURCE_ID || payloadId == 0 ||
             payloadId == RETIRED_CORE_PAYLOAD_ID) {
             return REFUSED;
         }
         payloadEncoder.wrapAndApplyHeader(frame, 0, headerEncoder);
         payloadEncoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(sessionId)
-            .payloadId(payloadId);
+            .payloadId(payloadId).groupMask(groupMask);
         payloadEncoder.putPayload(payload, 0, payloadLength);
         return MessageHeaderEncoder.ENCODED_LENGTH + payloadEncoder.encodedLength();
     }

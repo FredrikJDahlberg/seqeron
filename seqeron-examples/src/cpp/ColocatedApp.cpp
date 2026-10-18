@@ -75,6 +75,10 @@ bool isOwnPing(const app::Payload& payload)
 // What an application does that the façade cannot do for it — the whole of it, for this example.
 struct PingListener
 {
+    // Publishes to its own group alone; one that addresses others takes their masks from here.
+    void onGroupsResolved(const app::GroupDirectory&) const
+    {}
+
     // The whole election, for the producer kind nothing elects. False is also where a replica keeping
     // outstanding work calls OutstandingWork::onNotLeader(): every leadership change shuts an open gate, and
     // a payload submitted during the election may have gone with it.
@@ -83,27 +87,27 @@ struct PingListener
         std::puts(leading ? "# leading — publishing" : "# not leading — silent");
     }
 
-    // Every application payload on this node's queue, in globalSeqNo order, history and live alike — every
+    // Every application payload on this node's queue, in clusterSeqNo order, history and live alike — every
     // replica sees the same ones and so holds the same state. System frames never arrive here; the façade
     // acts on them and reports only what an application has a decision to make about.
     void onSequenced(const app::Payload& payload) const
     {
         if (isOwnPing(payload))
         {
-            std::printf("%lld ping echoed, round trip %lldus\n", static_cast<long long>(payload.globalSeqNo()),
+            std::printf("%lld ping echoed, round trip %lldus\n", static_cast<long long>(payload.clusterSeqNo()),
                         static_cast<long long>((nowNs() - pingSentNs) / 1000));
         }
         else
         {
-            std::printf("%lld sourceId=%d payloadId=%u length=%llu\n", static_cast<long long>(payload.globalSeqNo()),
+            std::printf("%lld sourceId=%d payloadId=%u length=%llu\n", static_cast<long long>(payload.clusterSeqNo()),
                         payload.sourceId(), payload.payloadId(),
                         static_cast<unsigned long long>(payload.payloadLength()));
         }
     }
 
-    void onCaughtUp(const std::int64_t globalSeqNo) const
+    void onCaughtUp(const std::int64_t clusterSeqNo) const
     {
-        std::printf("# caught up at %lld — following the queue live\n", static_cast<long long>(globalSeqNo));
+        std::printf("# caught up at %lld — following the queue live\n", static_cast<long long>(clusterSeqNo));
     }
 
     // The cluster clock, once a second: the one time source that keeps advancing while every producer is

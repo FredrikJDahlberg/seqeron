@@ -18,4 +18,7 @@ inline constexpr std::int64_t REPLAYER_FROM_START = -1;
 // Replaying.replaySessionId sentinel: "nothing to replay, you are at the tip — follow the live queue".
 inline constexpr std::int64_t REPLAYER_NO_REPLAY_NEEDED = -1;
 
+// QueueRequest.sourceId naming no application.
+inline constexpr std::int32_t REPLAYER_NO_SOURCE_ID = -1;
+
 } // namespace org::limitless::seqeron::protocol

@@ -2,7 +2,7 @@
 
 The smallest client of seqeron there is, once per language and the same flow in each: it replays a node's
 history through that node's co-located `ReplayerService`, switches to the live queue when it catches up, and
-prints every frame in `globalSeqNo` order. Each also produces, in both families: one `ConnectionOpened`
+prints every frame in `clusterSeqNo` order. Each also produces, in both families: one `ConnectionOpened`
 system event announcing itself, then one `ping` payload a second at cluster ingress, whose echo comes back
 through the same consumer — so the round trip is measured over the real path.
 
@@ -35,8 +35,9 @@ fails on one (`checkFacadeOnly`), and so does the C++ configure step, the way se
 `FacadeSurfaceTest` makes the same check from the inside.
 
 It is a **co-located application** — the producer kind nothing elects, one replica per node, publishing
-only while its own node leads — which is why it needs no topology document and no `clusterctl` step:
-`LeadershipChanged` already picks the replica that submits. `FollowStream` stays as it is, deliberately:
+only while its own node leads — which is why it needs no election: `LeadershipChanged` already picks the
+replica that submits. It still needs its row in `topology.xml` (`sourceId` 11 in Java, 12 in C++, 17 in C#,
+in `topology-csharp.xml`), which names the group whose queue it reads. `FollowStream` stays as it is, deliberately:
 it is what a consumer writing its own duty cycle programs against, in either language.
 
 ## An elected gateway
@@ -46,8 +47,10 @@ cluster elects. It is written against `app.Gateway` alone, under the same import
 `ColocatedApp`. Where a real gateway would open a socket, it takes one simulated client connection when
 designated and pings the cluster on that connection once a second.
 
-A gateway needs what a co-located application does not: a topology row naming it. `topology.xml` is that
-list, the pair `GW-EX-A`/`GW-EX-B` on `sourceId` 13. Load it once, into a cluster that has not loaded
+A gateway needs what a co-located application does not: an election, which its topology rows drive.
+`topology.xml` lists the pair `GW-EX-A`/`GW-EX-B` on `sourceId` 13. Its groups are `gateways`, which the pair
+reads, and `applications`, which the co-located examples read; `topology-csharp.xml` declares the same two, so
+both load into one cluster. Load it once, into a cluster that has not loaded
 another list. The cluster designates only the first list it sees; into one that has, designate an
 instance with `clusterctl.sh activate 12` instead. The Java and C++ examples run the same pair, so either
 instance may be either language. `cpp-client-test.sh` in `seqeron-service/src/test/scripts` runs the C++
@@ -72,7 +75,7 @@ cluster, and the pair through a handover.
 
 `SnapshotApp` is a co-located application with state worth keeping: a ledger of eight accounts that open
 with 1000 each. The leading replica submits a random transfer once a second (`payloadId` 7: `from` int32,
-`to` int32, `amount` int64, no schema), and every replica applies each one in `globalSeqNo` order, rejecting
+`to` int32, `amount` int64, no schema), and every replica applies each one in `clusterSeqNo` order, rejecting
 a transfer that would overdraw its source account. Whether a transfer applies depends on every transfer
 before it, so a replica cannot rebuild its balances from part of the log: it needs all of it, or a snapshot
 of the state at a known point in it and the frames after that point. Like `ColocatedApp`, it is written
@@ -81,7 +84,7 @@ against `app` alone and its imports and includes are checked the same way.
 **How a snapshot is taken** (`doc/snapshot.md` in the seqeron repo is the full mechanism):
 
 1. The sequencer starts a round by sequencing `SnapshotStarted`, every `interval` seconds of cluster time or
-   on `clusterctl.sh request-snapshot`. Its `globalSeqNo`, `R`, is the round's cut.
+   on `clusterctl.sh request-snapshot`. Its `clusterSeqNo`, `R`, is the round's cut.
 2. Every replica dispatching that frame, live or replayed, serializes its state as of `R` before it
    dispatches `R + 1`. The façade writes its own header as record 0, then calls the listener's `onSnapshot`
    with a 65535-byte buffer and an increasing `recordIndex` until it returns 0. Each record goes straight into
@@ -96,7 +99,7 @@ against `app` alone and its imports and includes are checked the same way.
 **How it is restored.** A replica given a `SnapshotListener` starts by asking its node's Replayer for the
 `SnapshotEnd` of the newest round it holds a file for, and checks the file against it. On a match it calls
 `onRestore` with each record in order, then resumes the queue at `R + 1`. A file the log does not confirm, or
-that does not match its end, is passed over for an older one; with none left, it replays from `globalSeqNo` 1
+that does not match its end, is passed over for an older one; with none left, it replays from `clusterSeqNo` 1
 as any other replica does. A file whose records are damaged, or whose `formatVersion` the build does not
 support, fences it with `SNAPSHOT_UNRESTORABLE`.
 
@@ -134,9 +137,11 @@ supplying its own installed Aeron:
 ## Run them
 
 Every command runs in the seqeron repo root, and both examples can follow one node at the same time.
-Start a node first, in another shell:
+Start a node first, in another shell, with the examples' topology, since the cluster sequences nothing before
+its groups are active. Its gateway pair is designated at once, and trades the role every 5 s until an instance
+runs:
 
-    ./seqeron-service/src/main/scripts/start-cluster.sh
+    SEQERON_TOPOLOGY=seqeron-examples/topology.xml ./seqeron-service/src/main/scripts/start-cluster.sh
 
 Java, the low-level one and then the façade one — either may run alone, and both may run at once:
 
@@ -160,9 +165,8 @@ would otherwise serve instead:
     dotnet run --project seqeron-examples/src/csharp/FollowStream
     dotnet run --project seqeron-examples/src/csharp/ColocatedApp
 
-The gateway pair, after loading its list — stop the first and the second takes over:
+The gateway pair, whose list the node loaded — stop the first and the second takes over:
 
-    ./seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology.xml
     SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-A ./seqeron-examples/cmake-build-release/gateway_app
     SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-B ./seqeron-examples/cmake-build-release/gateway_app
 
@@ -188,13 +192,13 @@ The first CMake configure fetches and builds Aeron from source, which is what `a
 whole repo costs. GoogleTest is not fetched — that is seqeron's test dependency, not part of what it
 exports.
 
-Output is one line per frame — `globalSeqNo`, then the decoded system event, or the application
-`payloadId` and template for a payload it has no decoder for:
+`FollowStream` reads group 1's queue, the gateways'. Output is one line per frame — `clusterSeqNo`, then the
+decoded system event, or the application `payloadId` and template for a payload it has no decoder for:
 
     # following member 0 via /var/folders/…/seqeron-seq-aeron-0
     1 leader=member 0 term 0
-    2 ClusterHeartbeat cluster clock 1789911942118284000ns
-    3 ClusterHeartbeat cluster clock 1789911943118604000ns
+    4 system eventType=32
+    5 ClusterHeartbeat cluster clock 1789911942118284000ns
     …
     # caught up — following the queue live
     231 ConnectionOpened connection=1 label=14 bytes
@@ -202,8 +206,11 @@ Output is one line per frame — `globalSeqNo`, then the decoded system event, o
     234 ping echoed, round trip 6415us
     …
 
-`globalSeqNo` 1 is always a `LeadershipChanged`, and it reaches the leadership callback rather than
-`onSequenced`. The heartbeat is the cluster clock at 1 Hz, so the lines between the pings are it. The C++
+A queue's first frame is the most recent `LeadershipChanged` before its group was activated, and it reaches
+the leadership callback rather than `onSequenced`; the second is the `GroupsRegistered` (event 32) that
+activated it. `clusterSeqNo` increases along the queue but not by one: the frames before activation are on no
+queue, and an application frame is only on the queues of the groups it addresses. The example checks the
+queue's own count, `groupSeqNo`, for a gap. The heartbeat is the cluster clock at 1 Hz, so the lines between the pings are it. The C++
 half prints its connection line from a `LifecycleEvent` — `ConnectionOpened connection=1 sourceId=10`,
 identity without the payload (see the callback bullet below).
 
@@ -258,7 +265,7 @@ C# reads the C++ variables bar `SEQERON_EXAMPLE_EGRESS_PORT` — its egress is e
   `MAX_PAYLOAD_LENGTH` — local, permanent, nothing was offered) or `Declined` (the transport's answer, and
   the one worth retrying). The ping retries a `Declined` by simply sending the next second's.
 - **The producer does not wait for its own frame.** `ping` submits and returns; the echo arrives in
-  `onSequenced` in `globalSeqNo` order like everything else, which is what a real producer that is also a
+  `onSequenced` in `clusterSeqNo` order like everything else, which is what a real producer that is also a
   consumer looks like.
 - **A fragment handler must not throw.** `Image::poll` advances the subscriber position regardless of what
   a handler raises, so the gap is recorded and the duty cycle raises it.
@@ -272,7 +279,7 @@ C# reads the C++ variables bar `SEQERON_EXAMPLE_EGRESS_PORT` — its egress is e
   identity and its payload, which `decodeSystem` reads `connectionData` from as it does in `onSequenced`.
   Java delivers both events to `onSequenced` like any other system frame, and so does C++ for a callback
   passed as `{}`.
-- **`LeadershipChanged` has its own callback,** and `globalSeqNo` 1 is always one. With that callback
+- **`LeadershipChanged` has its own callback,** and `clusterSeqNo` 1 is always one. With that callback
   `null` (Java) or `{}` (C++), it reaches `onSequenced` instead.
 - **A send that succeeds is not a frame sequenced.** Nothing confirms ingress on egress, and a leader
   failover silently loses whatever the old leader had not committed. The ping lives with that — the next

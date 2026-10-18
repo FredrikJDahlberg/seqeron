@@ -4,7 +4,8 @@ using Frame = Org.Limitless.Seqeron.Sbe.Frame;
 
 namespace Org.Limitless.Seqeron.Protocol;
 
-// Sequenced frames as the sequencer writes them onto the queue, built with the generated encoders.
+// Sequenced frames as the sequencer writes them onto the queue, built with the generated encoders. Each is on a queue
+// that carries every frame, so its groupSeqNo is its clusterSeqNo; OnQueue moves it onto one that does not.
 internal static class Frames
 {
     public const int SourceId = 7;
@@ -13,7 +14,7 @@ internal static class Frames
     public const long Timestamp = 1_700_000_000_000_000_000L;
 
     // One application frame carrying `payloadLength` bytes the cluster tier never opens (S-2).
-    public static byte[] Payload(long globalSeqNo, int payloadLength, int payloadId = 2)
+    public static byte[] Payload(long clusterSeqNo, int payloadLength, int payloadId = 2)
     {
         var bytes = new byte[payloadLength + 64];
         var encoder = new Frame.Sequenced();
@@ -23,20 +24,21 @@ internal static class Frames
         header.ConnectionId = ConnectionId;
         header.SessionId = SessionId;
         header.PayloadId = (ushort)payloadId;
-        header.GlobalSeqNo = globalSeqNo;
+        header.ClusterSeqNo = clusterSeqNo;
         header.Timestamp = Timestamp;
+        header.GroupSeqNo = clusterSeqNo;
         encoder.SetPayload(Filler(payloadLength));
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
 
     // One SequencedSystem frame whose payload is `bodyLength` filler bytes.
-    public static byte[] SystemEvent(long globalSeqNo, int systemEventType, int bodyLength)
+    public static byte[] SystemEvent(long clusterSeqNo, int systemEventType, int bodyLength)
     {
-        return SystemEvent(globalSeqNo, systemEventType, Filler(bodyLength));
+        return SystemEvent(clusterSeqNo, systemEventType, Filler(bodyLength));
     }
 
     // One SequencedSystem frame around an encoded body.
-    public static byte[] SystemEvent(long globalSeqNo, int systemEventType, ReadOnlySpan<byte> body)
+    public static byte[] SystemEvent(long clusterSeqNo, int systemEventType, ReadOnlySpan<byte> body)
     {
         var bytes = new byte[body.Length + 64];
         var encoder = new Frame.SequencedSystem();
@@ -46,61 +48,71 @@ internal static class Frames
         header.ConnectionId = ConnectionId;
         header.SessionId = SessionId;
         header.SystemEventType = (ushort)systemEventType;
-        header.GlobalSeqNo = globalSeqNo;
+        header.ClusterSeqNo = clusterSeqNo;
         header.Timestamp = Timestamp;
+        header.GroupSeqNo = clusterSeqNo;
         encoder.SetBody(body);
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
 
     // The five the sequencer synthesizes: their own templates, fields inline, -1 identity (F-4).
-    public static byte[] ClusterHeartbeat(long globalSeqNo)
+    public static byte[] ClusterHeartbeat(long clusterSeqNo)
     {
         var bytes = new byte[128];
         var encoder = new Frame.ClusterHeartbeat();
         encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Frame.MessageHeader());
-        Synthesized(encoder.Header, globalSeqNo, SystemFrame.ClusterHeartbeat);
+        Synthesized(encoder.Header, clusterSeqNo, SystemFrame.ClusterHeartbeat);
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
 
-    public static byte[] LeadershipChanged(long globalSeqNo, int newLeaderMemberId, long leadershipTermId)
+    public static byte[] LeadershipChanged(long clusterSeqNo, int newLeaderMemberId, long leadershipTermId)
     {
         var bytes = new byte[128];
         var encoder = new Frame.LeadershipChanged();
         encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Frame.MessageHeader());
-        Synthesized(encoder.Header, globalSeqNo, SystemFrame.LeadershipChanged);
+        Synthesized(encoder.Header, clusterSeqNo, SystemFrame.LeadershipChanged);
         encoder.NewLeaderMemberId = newLeaderMemberId;
         encoder.LeadershipTermId = leadershipTermId;
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
 
-    public static byte[] GatewayActive(long globalSeqNo, int gatewayId)
+    public static byte[] GatewayActive(long clusterSeqNo, int gatewayId)
     {
         var bytes = new byte[128];
         var encoder = new Frame.GatewayActive();
         encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Frame.MessageHeader());
-        Synthesized(encoder.Header, globalSeqNo, SystemFrame.GatewayActive);
+        Synthesized(encoder.Header, clusterSeqNo, SystemFrame.GatewayActive);
         encoder.GatewayId = gatewayId;
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
 
-    public static byte[] SnapshotStarted(long globalSeqNo, long round)
+    public static byte[] SnapshotStarted(long clusterSeqNo, long round)
     {
         var bytes = new byte[128];
         var encoder = new Frame.SnapshotStarted();
         encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Frame.MessageHeader());
-        Synthesized(encoder.Header, globalSeqNo, SystemFrame.SnapshotStarted);
+        Synthesized(encoder.Header, clusterSeqNo, SystemFrame.SnapshotStarted);
         encoder.Round = round;
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
 
-    public static byte[] SessionClosed(long globalSeqNo, long clusterSessionId)
+    public static byte[] SessionClosed(long clusterSeqNo, long clusterSessionId)
     {
         var bytes = new byte[128];
         var encoder = new Frame.SessionClosed();
         encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Frame.MessageHeader());
-        Synthesized(encoder.Header, globalSeqNo, SystemFrame.SessionClosed);
+        Synthesized(encoder.Header, clusterSeqNo, SystemFrame.SessionClosed);
         encoder.ClusterSessionId = clusterSessionId;
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
+    }
+
+    // The same frame at groupSeqNo on its queue. The two families' header composites are byte-identical (F-3).
+    public static byte[] OnQueue(byte[] frame, long groupSeqNo)
+    {
+        var header = new Frame.SequencedSystemHeader();
+        header.Wrap(new DirectBuffer(frame), Frame.MessageHeader.Size, Frame.MessageHeader.SbeSchemaVersion);
+        header.GroupSeqNo = groupSeqNo;
+        return frame;
     }
 
     public static byte[] Filler(int length)
@@ -113,13 +125,14 @@ internal static class Frames
         return bytes;
     }
 
-    private static void Synthesized(Frame.SequencedSystemHeader header, long globalSeqNo, int systemEventType)
+    private static void Synthesized(Frame.SequencedSystemHeader header, long clusterSeqNo, int systemEventType)
     {
         header.SourceId = -1;
         header.ConnectionId = -1;
         header.SessionId = -1;
         header.SystemEventType = (ushort)systemEventType;
-        header.GlobalSeqNo = globalSeqNo;
+        header.ClusterSeqNo = clusterSeqNo;
         header.Timestamp = Timestamp;
+        header.GroupSeqNo = clusterSeqNo;
     }
 }

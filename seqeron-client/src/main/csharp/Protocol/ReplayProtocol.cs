@@ -12,10 +12,10 @@ public static class ReplayProtocol
     /// replay).</summary>
     public const int ReplayStreamId = 201;
 
-    /// <summary>Apps to ReplayerService: <c>ReplayRequest</c>.</summary>
+    /// <summary>Apps to ReplayerService: <c>ReplayRequest</c> / <c>QueueRequest</c>.</summary>
     public const int RequestStreamId = 202;
 
-    /// <summary>ReplayerService to apps: <c>Replaying</c> / <c>ReplayPending</c>.</summary>
+    /// <summary>ReplayerService to apps: <c>Replaying</c> / <c>ReplayPending</c> / <c>QueueResolved</c>.</summary>
     public const int ControlStreamId = 203;
 
     /// <summary><c>ReplayRequest.fromPosition</c> asking for the active recording from its start.</summary>
@@ -23,4 +23,7 @@ public static class ReplayProtocol
 
     /// <summary>Answer to a resume request the Replayer refuses, or one that needs no replay at all.</summary>
     public const long NoReplayNeeded = Aeron.NULL_VALUE;
+
+    /// <summary><c>QueueRequest.sourceId</c> naming no application.</summary>
+    public const int NoSourceId = -1;
 }

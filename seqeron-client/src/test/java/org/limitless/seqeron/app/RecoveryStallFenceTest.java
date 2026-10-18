@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for the recovery-deadline verdict a gateway applies while not caught up. No Aeron runtime:
- * {@code isCaughtUp()}/{@code onCaughtUp()} and the dispatched globalSeqNo are exactly the three signals a
+ * {@code isCaughtUp()}/{@code onCaughtUp()} and the dispatched clusterSeqNo are exactly the three signals a
  * gateway feeds in off {@code ReplayerStreamReceiver}. Case for case with {@code RecoveryStallFenceTest.cpp}.
  */
 class RecoveryStallFenceTest {
@@ -83,7 +83,7 @@ class RecoveryStallFenceTest {
 
         for (long s = 0; s < 3600; ++s) {
             assertFalse(policy.onNotCaughtUp(seconds(s), 1000 + s),
-                        "second " + s + ": a recovery advancing its globalSeqNo is converging");
+                        "second " + s + ": a recovery advancing its clusterSeqNo is converging");
         }
     }
 

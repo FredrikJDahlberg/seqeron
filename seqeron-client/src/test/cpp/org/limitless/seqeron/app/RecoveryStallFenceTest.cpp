@@ -1,5 +1,5 @@
 // Unit tests for the recovery-deadline verdict a gateway applies while not caught up. No Aeron runtime:
-// isCaughtUp()/onCaughtUp() and the dispatched globalSeqNo are exactly the three signals a gateway feeds in
+// isCaughtUp()/onCaughtUp() and the dispatched clusterSeqNo are exactly the three signals a gateway feeds in
 // off ReplayerStreamReceiver. Case for case with RecoveryStallFenceTest.java.
 
 #include <gtest/gtest.h>
@@ -81,7 +81,7 @@ TEST(RecoveryStallFence, DispatchingRecoveryIsNeverFenced)
     for (std::int64_t s = 0; s < 3600; ++s)
     {
         EXPECT_FALSE(policy.onNotCaughtUp(seconds(s), 1000 + s))
-            << "second " << s << ": a recovery advancing its globalSeqNo is converging";
+            << "second " << s << ": a recovery advancing its clusterSeqNo is converging";
     }
 }
 

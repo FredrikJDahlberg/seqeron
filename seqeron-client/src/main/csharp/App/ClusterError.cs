@@ -29,5 +29,8 @@ public enum ClusterError
 
     /// <summary>This instance has a snapshot it cannot restore: a format or header version this build does not read,
     /// or a file whose records fail the <c>SnapshotEnd</c> the log holds for them.</summary>
-    SnapshotUnrestorable
+    SnapshotUnrestorable,
+
+    /// <summary>A group this instance addresses is not in the log's group table (A-9).</summary>
+    GroupUnknown
 }

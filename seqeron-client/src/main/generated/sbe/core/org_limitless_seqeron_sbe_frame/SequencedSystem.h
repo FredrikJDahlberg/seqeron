@@ -121,7 +121,7 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(34);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(44);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(103);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(210);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
@@ -179,7 +179,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(34);
+        return static_cast<std::uint16_t>(44);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT

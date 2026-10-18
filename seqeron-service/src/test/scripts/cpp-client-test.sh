@@ -8,7 +8,7 @@
 #   B  IPC ingress co-located with the leader (connectColocated)            confirm EXACT, no UDP fallback
 #   C  connectColocated on a follower, which never answers IPC ingress      confirm EXACT, after the UDP fallback
 #   D  the leader killed mid-stream, PendingSends beside an untracked control   tracked confirm EXACT
-#   E  a cold start on the new leader's node, replayed from globalSeqNo 1   follow CONTIGUOUS, >= 1 replay served
+#   E  a cold start on the new leader's node, replayed from groupSeqNo 1    follow CONTIGUOUS, >= 1 replay served
 #   F  the C++ examples, built as an outside consumer builds them: follow_stream and colocated_app echo their pings,
 #      and the active gateway_app of the pair in seqeron-examples/topology.xml is killed — the standby is
 #      designated, resumes past its predecessor's connection id, and serves
@@ -96,6 +96,11 @@ trap cleanup EXIT
 for m in 0 1 2; do
   wait_for_log "$LOG_DIR/seq-$m.log" "Running" 30 || { echo "seq $m not up"; exit 1; }
 done
+# topology.xml less its gateway list first, since the cluster refuses everything before its groups; the list
+# lands in F, once both instances are up.
+sed -e '/<gateways>/,/<\/gateways>/d' "${REPO_ROOT}/seqeron-examples/topology.xml" > "$LOG_DIR/topology-groups.xml"
+"${REPO_ROOT}/seqeron-service/src/main/scripts/clusterctl.sh" load-topology "$LOG_DIR/topology-groups.xml" \
+  > "$LOG_DIR/load-groups.log" 2>&1 || { echo "load-topology failed: $LOG_DIR/load-groups.log"; exit 1; }
 for m in 0 1 2; do
   wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" 30 || true
 done
@@ -166,13 +171,14 @@ example colocated-ex colocated_app "$L2"; COLOCATED_PID=$!
 example gw-a gateway_app "$Q" SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-A; GW_A_PID=$!
 example gw-b gateway_app "$L2" SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-B; GW_B_PID=$!
 F_OK=1
-for f in gw-a gw-b; do
-  wait_for_log "$LOG_DIR/$f.log" "# caught up" 60 || { echo "    $f never caught up"; F_OK=0; }
-done
-# Both instances are up before the list lands, so the bootstrap designation is answered inside its 5 s.
+# Both instances are up before the list lands, and read their queue as soon as their rows do, so the bootstrap
+# designation is answered inside its 5 s.
 CLUSTERCTL_MEMBER_ID="$Q" "${REPO_ROOT}/seqeron-service/src/main/scripts/clusterctl.sh" load-topology \
   "${REPO_ROOT}/seqeron-examples/topology.xml" > "$LOG_DIR/load-topology.log" 2>&1 ||
   { echo "    load-topology failed: $LOG_DIR/load-topology.log"; F_OK=0; }
+for f in gw-a gw-b; do
+  wait_for_log "$LOG_DIR/$f.log" "# caught up" 60 || { echo "    $f never caught up"; F_OK=0; }
+done
 wait_for_count gw-a "ping echoed on connection 0" 3 30 || { echo "    GW-EX-A never served connection 0"; F_OK=0; }
 wait_for_log "$LOG_DIR/gw-b.log" "# connection 0 opened (example-client)" 10 ||
   { echo "    the standby never saw connection 0 open"; F_OK=0; }
@@ -186,7 +192,7 @@ grep -q "designated — serving, connection ids from 1" "$LOG_DIR/gw-b.log" ||
 wait_for_count follow-ex "ping echoed" 3 10 || { echo "    follow_stream echoed no pings"; F_OK=0; }
 wait_for_count colocated-ex "ping echoed" 3 10 || { echo "    colocated_app echoed no pings"; F_OK=0; }
 kill "$FOLLOW_PID" "$COLOCATED_PID" "$GW_B_PID" 2>/dev/null
-wait "$FOLLOW_PID"; FOLLOW_RC=$?   # 1 on a gap in globalSeqNo
+wait "$FOLLOW_PID"; FOLLOW_RC=$?   # 1 on a gap in groupSeqNo
 wait "$COLOCATED_PID"; COLOCATED_RC=$?
 wait "$GW_B_PID"; GW_B_RC=$?
 ((FOLLOW_RC == 0 && COLOCATED_RC == 0 && GW_B_RC == 0)) ||

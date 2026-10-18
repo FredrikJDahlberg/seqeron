@@ -19,9 +19,10 @@ public class FacadeSurfaceTest
 {
     // The front door: these types and their public nested types are what a consumer sees.
     private static readonly Type[] Facades = {
-        typeof(Gateway),     typeof(GatewayOptions),     typeof(IGatewayListener),
-        typeof(Application), typeof(ApplicationOptions), typeof(IApplicationListener),
-        typeof(Payload),     typeof(ClusterError),       typeof(ISnapshotListener)
+        typeof(Gateway),       typeof(GatewayOptions),     typeof(IGatewayListener),
+        typeof(Application),   typeof(ApplicationOptions), typeof(IApplicationListener),
+        typeof(Payload),       typeof(ClusterError),       typeof(ISnapshotListener),
+        typeof(GroupDirectory)
     };
 
     private const BindingFlags Declared = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance |

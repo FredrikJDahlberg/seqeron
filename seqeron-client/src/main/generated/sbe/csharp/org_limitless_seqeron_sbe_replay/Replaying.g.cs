@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Replay
 {
     /// <summary>
-    /// The replayer started a replay. The client attaches to replaySessionId on stream 201,                               follows it until catchUpPosition, then switches to the live queue, de-duplicating                               on globalSeqNo
+    /// The replayer started a replay. The client attaches to replaySessionId on stream 201,                               follows it until catchUpPosition, then switches to the live queue, de-duplicating                               on clusterSeqNo
     /// </summary>
     public sealed partial class Replaying
     {

@@ -47,6 +47,9 @@ using org::limitless::seqeron::protocol::SequencedEvent;
 // The examples' own payloadId and sourceId.
 constexpr std::uint16_t PING_PAYLOAD_ID = 6;
 constexpr std::int32_t PING_SOURCE_ID = 10;
+// Group 1, the examples' topology's first: the queue this example follows, where its pings must appear.
+constexpr std::int32_t GROUP_ID = 1;
+constexpr std::uint16_t PING_GROUP_MASK = 1U << (GROUP_ID - 1);
 
 // The one connection this example models: announced at start-up, and what every ping rides.
 constexpr std::int32_t CONNECTION_ID = 1;
@@ -61,7 +64,7 @@ constexpr std::int64_t IPC_CONNECT_TIMEOUT_MS = 500;
 constexpr std::int64_t PING_INTERVAL_NS = 1'000'000'000;
 
 std::atomic_bool running{ true };
-std::int64_t lastGlobalSeqNo = 0;
+std::int64_t lastGroupSeqNo = 0;
 std::string fault;
 
 std::int64_t pingSentNs = 0;
@@ -124,7 +127,8 @@ void ping(client::ClusterStreamSender& sender)
         .sourceId(PING_SOURCE_ID)
         .connectionId(CONNECTION_ID)
         .sessionId(sender.clusterSessionId()) // advisory; the sequencer overwrites it with the true one
-        .payloadId(PING_PAYLOAD_ID);
+        .payloadId(PING_PAYLOAD_ID)
+        .groupMask(PING_GROUP_MASK);
     pingSentNs = nowNs();
     // Little-endian on the wire, as every SBE field is, so the Java example reads the same eight bytes.
     frame.putPayload(reinterpret_cast<const char*>(&pingSentNs), sizeof pingSentNs);
@@ -141,21 +145,22 @@ void onSignal(int)
     running.store(false, std::memory_order_relaxed);
 }
 
-// The invariant the whole tier exists for: one frame per globalSeqNo, no holes, replay and live alike.
-// Recorded rather than thrown — this runs inside a fragment handler, and Image::poll advances the
-// subscriber position regardless of what a handler raises, so the duty cycle raises it instead.
-bool inOrder(const std::int64_t globalSeqNo)
+// The invariant the whole tier exists for: one frame per groupSeqNo, no holes, replay and live alike (spec F-6);
+// clusterSeqNo increases along the queue but not by one. Recorded rather than thrown — this runs inside a fragment
+// handler, and Image::poll advances the subscriber position regardless of what a handler raises, so the duty cycle
+// raises it instead.
+bool inOrder(const std::int64_t groupSeqNo)
 {
     if (!fault.empty())
     {
         return false;
     }
-    if (globalSeqNo != lastGlobalSeqNo + 1)
+    if (groupSeqNo != lastGroupSeqNo + 1)
     {
-        fault = "gap: " + std::to_string(lastGlobalSeqNo) + " -> " + std::to_string(globalSeqNo);
+        fault = "gap: groupSeqNo " + std::to_string(lastGroupSeqNo) + " -> " + std::to_string(groupSeqNo);
         return false;
     }
-    lastGlobalSeqNo = globalSeqNo;
+    lastGroupSeqNo = groupSeqNo;
     return true;
 }
 
@@ -171,7 +176,7 @@ void printSystem(const SequencedEvent& event)
     {
         case protocol::CLUSTER_HEARTBEAT: {
             auto decoder = protocol::decodeSystem<frame_sbe::ClusterHeartbeat>(event);
-            std::printf("%lld ClusterHeartbeat cluster clock %lldns\n", static_cast<long long>(event.globalSeqNo),
+            std::printf("%lld ClusterHeartbeat cluster clock %lldns\n", static_cast<long long>(event.clusterSeqNo),
                         static_cast<long long>(decoder.header().timestamp()));
             break;
         }
@@ -179,21 +184,22 @@ void printSystem(const SequencedEvent& event)
             // Only after clusterctl load-topology: this frame is the cluster designating one gateway
             // instance, and its gatewayId is in the payload and nowhere else.
             auto decoder = protocol::decodeSystem<frame_sbe::GatewayActive>(event);
-            std::printf("%lld GatewayActive gatewayId=%d\n", static_cast<long long>(event.globalSeqNo),
+            std::printf("%lld GatewayActive gatewayId=%d\n", static_cast<long long>(event.clusterSeqNo),
                         decoder.gatewayId());
             break;
         }
         default:
-            std::printf("%lld system eventType=%u\n", static_cast<long long>(event.globalSeqNo), event.systemEventType);
+            std::printf("%lld system eventType=%u\n", static_cast<long long>(event.clusterSeqNo),
+                        event.systemEventType);
             break;
     }
 }
 
-// Every other frame arrives here in globalSeqNo order, history and live alike — the receiver requests a
-// replay for anything the live queue dropped and dispatches nothing out of order in the meantime.
+// Every other frame arrives here in queue order, history and live alike — the receiver requests a replay for
+// anything the live queue dropped and dispatches nothing out of order in the meantime.
 void onSequenced(const SequencedEvent& event)
 {
-    if (!inOrder(event.globalSeqNo))
+    if (!inOrder(event.groupSeqNo))
     {
         return;
     }
@@ -203,21 +209,22 @@ void onSequenced(const SequencedEvent& event)
     }
     else if (isOwnPing(event))
     {
-        std::printf("%lld ping echoed, round trip %lldus\n", static_cast<long long>(event.globalSeqNo),
+        std::printf("%lld ping echoed, round trip %lldus\n", static_cast<long long>(event.clusterSeqNo),
                     static_cast<long long>((nowNs() - pingSentNs) / 1000));
     }
     else
     {
-        std::printf("%lld payloadId=%u template=%u length=%llu\n", static_cast<long long>(event.globalSeqNo),
+        std::printf("%lld payloadId=%u template=%u length=%llu\n", static_cast<long long>(event.clusterSeqNo),
                     event.payloadId, event.templateId, static_cast<unsigned long long>(event.payloadLength));
     }
 }
 
 // The two connection events reach a C++ consumer here rather than through onSequenced, as a LifecycleEvent. A
-// consumer that passes {} for these gets them in onSequenced instead.
+// consumer that passes {} for these gets them in onSequenced instead. A LifecycleEvent carries no groupSeqNo, and is
+// the frame after the last.
 void onConnected(const protocol::LifecycleEvent& event)
 {
-    if (!inOrder(event.globalSeqNo))
+    if (!inOrder(lastGroupSeqNo + 1))
     {
         return;
     }
@@ -226,28 +233,29 @@ void onConnected(const protocol::LifecycleEvent& event)
                                     ? 0
                                     : protocol::decodeSystem<frame_sbe::ConnectionOpened>(event).connectionDataLength();
     std::printf("%lld ConnectionOpened connection=%d sourceId=%d label=%u bytes\n",
-                static_cast<long long>(event.globalSeqNo), event.connectionId, event.sourceId, label);
+                static_cast<long long>(event.clusterSeqNo), event.connectionId, event.sourceId, label);
 }
 
 void onDisconnected(const protocol::LifecycleEvent& event)
 {
-    if (!inOrder(event.globalSeqNo))
+    if (!inOrder(lastGroupSeqNo + 1))
     {
         return;
     }
-    std::printf("%lld ConnectionClosed connection=%d sourceId=%d\n", static_cast<long long>(event.globalSeqNo),
+    std::printf("%lld ConnectionClosed connection=%d sourceId=%d\n", static_cast<long long>(event.clusterSeqNo),
                 event.connectionId, event.sourceId);
 }
 
-// The one frame family that reaches a consumer here instead of through onSequenced.
+// The one frame family that reaches a consumer here instead of through onSequenced, with no groupSeqNo: it is the
+// frame after the last.
 void onLeadershipChanged(const std::int32_t newLeaderMemberId, const std::int64_t leadershipTermId,
-                         const std::int64_t globalSeqNo)
+                         const std::int64_t clusterSeqNo)
 {
-    if (!inOrder(globalSeqNo))
+    if (!inOrder(lastGroupSeqNo + 1))
     {
         return;
     }
-    std::printf("%lld leader=member %d term %lld\n", static_cast<long long>(globalSeqNo), newLeaderMemberId,
+    std::printf("%lld leader=member %d term %lld\n", static_cast<long long>(clusterSeqNo), newLeaderMemberId,
                 static_cast<long long>(leadershipTermId));
 }
 
@@ -278,7 +286,7 @@ int main()
 
     replayer::ReplayerStreamReceiver receiver(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged,
                                               [] { std::puts("# caught up — following the queue live"); });
-    receiver.start(aeron, memberId);
+    receiver.start(aeron, memberId, GROUP_ID);
     std::printf("# following member %d via %s\n", memberId, aeronDir.c_str());
 
     // The one duty cycle. Every receiver and sender method belongs to this thread.

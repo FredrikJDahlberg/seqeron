@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Org.Limitless.Seqeron.Protocol;
 
 namespace Org.Limitless.Seqeron.App;
@@ -9,6 +11,10 @@ public sealed class ApplicationOptions
     /// <summary>This application's <c>sourceId</c>, the one its <c>&lt;applications&gt;</c> row declares —
     /// required, because spec §5 is one id space, and never −1, which ingress refuses.</summary>
     public int SourceId { get; init; }
+
+    /// <summary>The names of the groups this application publishes to besides its own; one the log's group table
+    /// lacks fences it with <see cref="ClusterError.GroupUnknown"/>.</summary>
+    public IReadOnlyList<string> AddressedGroups { get; init; } = Array.Empty<string>();
 
     /// <summary>This replica's client id, its counters' label; unique among the co-located apps on its node.</summary>
     public int ClientId { get; init; }
@@ -30,7 +36,7 @@ public sealed class ApplicationOptions
     public required IApplicationListener Listener { get; init; }
 
     /// <summary>What serializes this application's state for snapshot rounds and restores it on start; without one
-    /// it takes part in none, whatever its topology row says, and recovers from <c>globalSeqNo</c> 1.</summary>
+    /// it takes part in none, whatever its topology row says, and recovers from <c>clusterSeqNo</c> 1.</summary>
     public ISnapshotListener SnapshotListener { get; init; }
 
     /// <summary>Where this replica keeps its snapshots, one file per round; required with a

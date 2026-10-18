@@ -9,6 +9,7 @@ import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
@@ -22,7 +23,7 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p>While its gate is open it submits a {@code ProbeMarker} every {@code probe.intervalMs}; a declined one is not
  * retried. Its state is the count of markers sequenced under its {@code sourceId} and a digest of their {@code
- * globalSeqNo}s in order, so a replica that restored the wrong round, or applied the tail out of order, serializes
+ * clusterSeqNo}s in order, so a replica that restored the wrong round, or applied the tail out of order, serializes
  * differently from the publisher and is fenced on the next round.
  *
  * <p>System properties, on top of {@link ClusterProbe}'s {@code probe.memberId} / {@code probe.aeronDir} /
@@ -115,6 +116,11 @@ public final class TestApplication implements Application.Listener, SnapshotList
     }
 
     @Override
+    public void onGroupsResolved(final GroupDirectory directory) {
+        // It publishes to its own group alone, so it addresses no other.
+    }
+
+    @Override
     public void onLeadershipChanged(final boolean leading) {
         log(leading ? "now leading — submitting markers" : "not leading — silent");
     }
@@ -126,13 +132,13 @@ public final class TestApplication implements Application.Listener, SnapshotList
             return;
         }
         sequencedMarkers++;
-        digest = digest * 31 + payload.globalSeqNo();
+        digest = digest * 31 + payload.clusterSeqNo();
     }
 
     /** The one line the harness waits on before it may drive this replica. */
     @Override
-    public void onCaughtUp(final long globalSeqNo) {
-        log("Caught up — following live at globalSeqNo %d, %d marker(s) sequenced, digest %016x", globalSeqNo,
+    public void onCaughtUp(final long clusterSeqNo) {
+        log("Caught up — following live at clusterSeqNo %d, %d marker(s) sequenced, digest %016x", clusterSeqNo,
             sequencedMarkers, digest);
     }
 

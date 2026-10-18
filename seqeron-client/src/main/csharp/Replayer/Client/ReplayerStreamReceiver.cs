@@ -46,6 +46,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
     private Aeron _aeron;
     private int? _memberId;
+    private int _groupId;
 
     // The id the Replayer addresses this receiver's replies to, drawn from the driver at start; -1 before.
     private long _replyId = -1;
@@ -88,21 +89,26 @@ public sealed class ReplayerStreamReceiver : IDisposable
         _recovery.RestoreFrom(store, handler);
     }
 
-    /// <summary>Subscribes the queue and control streams, opens the request publication and the convergence counter,
-    /// and requests the cold-start replay from the recording's start, or the snapshot to restore first.</summary>
+    /// <summary>Subscribes the queue of a group and the control stream, opens the request publication and the
+    /// convergence counter, and requests the cold-start replay from the recording's start, or the snapshot to restore
+    /// first.</summary>
     /// <param name="aeron">client sharing the co-located node's media driver</param>
     /// <param name="memberId">this app's node, to label the counter</param>
-    public void Start(Aeron aeron, int memberId)
+    /// <param name="groupId">the group whose queue to read: a consumer names its own, a façade passes the one the
+    /// Replayer resolved (spec R-6)</param>
+    public void Start(Aeron aeron, int memberId, int groupId)
     {
         _aeron = aeron;
         _memberId = memberId;
+        _groupId = groupId;
         _replyId = aeron.NextCorrelationId();
         Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, memberId,
-                    "clientId {0} requests replays as client {1}", _clientId, _replyId);
+                    "clientId {0} reads group {1}'s queue and requests replays as client {2}", _clientId, groupId,
+                    _replyId);
         _recoveryStalledCounter = SeqeronCounters.AddAppCounter(
             aeron, SeqeronCounters.AppRecoveryStalledTypeId,
             $"seqeron.app.recoveryStalled member={memberId} client={_clientId}", memberId, _clientId);
-        _queueSubscription = aeron.AddSubscription(QueueConsumerChannel, FrameLayer.QueueStreamId);
+        _queueSubscription = aeron.AddSubscription(QueueConsumerChannel, FrameLayer.QueueStreamIdOf(groupId));
         _controlSubscription = aeron.AddSubscription(ControlChannel, ReplayProtocol.ControlStreamId);
         _requestPublication = aeron.AddPublication(ReplayProtocol.IpcChannel, ReplayProtocol.RequestStreamId);
         _recovery.Start();
@@ -166,9 +172,9 @@ public sealed class ReplayerStreamReceiver : IDisposable
     /// seam.</summary>
     public bool IsCaughtUp => _recovery.IsCaughtUp;
 
-    /// <summary>Highest globalSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its
+    /// <summary>Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its
     /// own recovery progress by.</summary>
-    public long LastGlobalSeqNo => _recovery.LastGlobalSeqNo;
+    public long LastClusterSeqNo => _recovery.LastClusterSeqNo;
 
     /// <summary>memberId of the current leader per the last <c>LeadershipChanged</c> processed, or -1 until one is
     /// seen. A replica emits iff its own node is this leader.</summary>
@@ -255,6 +261,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
             request.ClientId = _receiver._replyId;
             request.RequestId = requestId;
             request.FromPosition = fromPosition;
+            request.QueueId = _receiver._groupId;
             Offer(Replay.MessageHeader.Size + request.Size);
         }
 

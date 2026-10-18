@@ -147,7 +147,7 @@ class PendingSendsPropertyTest {
             return;
         }
         body.putLong(0, next);
-        final int length = envelope.wrapPayload(frame, 1, 2, session, PAYLOAD_ID, body, Long.BYTES);
+        final int length = envelope.wrapPayload(frame, 1, 2, session, PAYLOAD_ID, 1, body, Long.BYTES);
         if (sender.send(frame, length)) {
             pending.track(frame, length, sender.clusterSessionId(), sender.leadershipTermId());
             next++;

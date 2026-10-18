@@ -2,15 +2,17 @@ package org.limitless.seqeron.app;
 
 import io.aeron.Aeron;
 import io.aeron.Counter;
-import java.util.ArrayDeque;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
@@ -42,7 +44,7 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * carrying the pair's election state, and the active one then submits the round's {@code SnapshotEnd}. An instance
  * whose snapshot differs from the one sequenced is fenced with {@link ClusterError#SNAPSHOT_DIVERGED}. On start, an
  * instance given a listener restores the newest snapshot of its own that the log confirms and resumes after its
- * cut, or replays from {@code globalSeqNo} 1 without one; one it cannot restore is fenced with {@link
+ * cut, or replays from {@code clusterSeqNo} 1 without one; one it cannot restore is fenced with {@link
  * ClusterError#SNAPSHOT_UNRESTORABLE}.
  *
  * <p>Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls
@@ -81,6 +83,12 @@ public final class Gateway implements AutoCloseable {
     /** What a gateway does that this class cannot do for it. */
     public interface Listener {
         /**
+         * The log's group table, once, before the first {@link #onActivated}: what {@link #publish(int, int, int,
+         * DirectBuffer, int)} takes its masks from.
+         */
+        void onGroupsResolved(GroupDirectory directory);
+
+        /**
          * This instance has been designated, has announced itself and may now serve: open the edge.
          *
          * @param firstConnectionId the id {@link #openConnection} will allocate first, resumed past whatever
@@ -95,7 +103,7 @@ public final class Gateway implements AutoCloseable {
          */
         void onStandby();
 
-        /** One application payload off this node's queue, in {@code globalSeqNo} order. */
+        /** One application payload off this node's queue, in {@code clusterSeqNo} order. */
         void onSequenced(Payload payload);
 
         /**
@@ -112,7 +120,7 @@ public final class Gateway implements AutoCloseable {
         void onConnectionClosed(int connectionId);
 
         /** Every transition to caught-up, the first included. */
-        void onCaughtUp(long globalSeqNo);
+        void onCaughtUp(long clusterSeqNo);
 
         /**
          * The cluster clock's tick (spec §7), once a second. It is the one time source that keeps advancing
@@ -173,7 +181,8 @@ public final class Gateway implements AutoCloseable {
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
         this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.queueStallTimeoutMs,
-                                   builder.recoveryStallTimeoutMs, new SessionDispatch());
+                                   builder.recoveryStallTimeoutMs, ReplayProtocol.NO_SOURCE_ID, builder.gatewayName,
+                                   builder.addressedGroups, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, lifecycle::gatewaySourceId);
         if (store != null) {
             session.restoreFrom(store, new Restore());
@@ -297,7 +306,8 @@ public final class Gateway implements AutoCloseable {
     }
 
     /**
-     * Submits one application payload on a connection, stamped with this gateway's {@code sourceId}.
+     * Submits one application payload on a connection to this gateway's own group, stamped with its {@code
+     * sourceId}.
      *
      * @param payload the payload's bytes, its own {@code MessageHeader} included
      * @return {@code Declined} while ingress is held, back-pressured, or the connection's
@@ -305,10 +315,20 @@ public final class Gateway implements AutoCloseable {
      */
     public Publish publish(final int connectionId, final int payloadId, final DirectBuffer payload,
                            final int length) {
+        return publish(connectionId, 0, payloadId, payload, length);
+    }
+
+    /**
+     * The same to the groups {@code groupMask} names as well as its own.
+     *
+     * @param groupMask bits from the {@link GroupDirectory}; one the table lacks is {@code Refused}
+     */
+    public Publish publish(final int connectionId, final int groupMask, final int payloadId, final DirectBuffer payload,
+                           final int length) {
         if (unopened.contains(connectionId)) {
             return Publish.Declined;
         }
-        return session.publishPayload(lifecycle.gatewaySourceId(), connectionId, payloadId, payload, length);
+        return session.publishPayload(lifecycle.gatewaySourceId(), connectionId, groupMask, payloadId, payload, length);
     }
 
     /** Whether the last {@code GatewayActive} for this pair named this instance. */
@@ -338,8 +358,8 @@ public final class Gateway implements AutoCloseable {
         return session.isCaughtUp();
     }
 
-    public long lastGlobalSeqNo() {
-        return session.lastGlobalSeqNo();
+    public long lastClusterSeqNo() {
+        return session.lastClusterSeqNo();
     }
 
     /** Closes the cluster session and the queue. The Aeron client is the caller's and is left open. */
@@ -416,7 +436,7 @@ public final class Gateway implements AutoCloseable {
 
     /** What this instance derives from the frames before a cut, for the round it starts (§6). */
     private SnapshotHeader snapshotHeader() {
-        return new SnapshotHeader(session.leadershipTermId(), session.currentLeaderMemberId(),
+        return new SnapshotHeader(session.leadershipTermId(), session.currentLeaderMemberId(), session.groupTable(),
                                   new SnapshotHeader.GatewayState(lifecycle.gatewaySourceId(),
                                                                   lifecycle.activeGatewayId(), highestConnectionId,
                                                                   lifecycle.pairRows()));
@@ -519,7 +539,7 @@ public final class Gateway implements AutoCloseable {
             case SystemFrame.SNAPSHOT_STARTED:
                 snapshotStarted.wrap(event.buffer(), event.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
                                      SnapshotStartedDecoder.SCHEMA_VERSION);
-                snapshots.onSnapshotStarted(snapshotStarted.round(), event.globalSeqNo(), event.position(),
+                snapshots.onSnapshotStarted(snapshotStarted.round(), event.clusterSeqNo(), event.position(),
                                             event.clusterTimestampNs(), snapshotHeader(), lifecycle.isAnnounced());
                 break;
             case SystemFrame.SNAPSHOT_END:
@@ -531,7 +551,7 @@ public final class Gateway implements AutoCloseable {
                 if (!snapshots.onSnapshotEnd(snapshotEnd.round(), snapshotEnd.recordCount(), snapshotEnd.length(),
                                              snapshotEnd.crc32c())) {
                     session.fence(ClusterError.SNAPSHOT_DIVERGED, "round " + snapshotEnd.round() + "'s sequenced "
-                        + "snapshot at globalSeqNo " + event.globalSeqNo() + " differs from this instance's");
+                        + "snapshot at clusterSeqNo " + event.clusterSeqNo() + " differs from this instance's");
                 }
                 break;
             default:
@@ -551,9 +571,14 @@ public final class Gateway implements AutoCloseable {
         }
 
         @Override
-        public void onCaughtUp(final long globalSeqNo) {
+        public void onGroupsResolved(final GroupDirectory directory) {
+            listener.onGroupsResolved(directory);
+        }
+
+        @Override
+        public void onCaughtUp(final long clusterSeqNo) {
             lifecycle.onCaughtUp();
-            listener.onCaughtUp(globalSeqNo);
+            listener.onCaughtUp(clusterSeqNo);
         }
 
         @Override
@@ -588,6 +613,7 @@ public final class Gateway implements AutoCloseable {
     /** Everything one instance needs to join its pair. */
     public static final class Builder {
         private String gatewayName;
+        private List<String> addressedGroups = List.of();
         private int sourceId = UNRESOLVED;
         private SnapshotListener snapshotListener;
         private Path snapshotDirectory;
@@ -607,6 +633,15 @@ public final class Gateway implements AutoCloseable {
         }
 
         /**
+         * The names of the groups this gateway publishes to besides its own; one the log's group table lacks fences
+         * it with {@link ClusterError#GROUP_UNKNOWN}.
+         */
+        public Builder addressedGroups(final String... addressedGroups) {
+            this.addressedGroups = List.of(addressedGroups);
+            return this;
+        }
+
+        /**
          * The logical gateway's {@code sourceId}, the one its rows declare. Required with a {@link
          * #snapshotListener}, whose snapshot counter it labels.
          */
@@ -617,7 +652,7 @@ public final class Gateway implements AutoCloseable {
 
         /**
          * What serializes this instance's state for snapshot rounds and restores it on start; without one it takes
-         * part in none, whatever its rows say, and recovers from {@code globalSeqNo} 1.
+         * part in none, whatever its rows say, and recovers from {@code clusterSeqNo} 1.
          */
         public Builder snapshotListener(final SnapshotListener snapshotListener) {
             this.snapshotListener = snapshotListener;

@@ -121,19 +121,19 @@ public sealed class ColocatedApp : IApplicationListener
         }
     }
 
-    // Every application payload on this node's queue, in globalSeqNo order, history and live alike — every replica sees
-    // the same ones and so holds the same state. System frames never arrive here; the façade acts on them and reports
-    // only what an application has a decision to make about.
+    // Every application payload on this node's queue, in clusterSeqNo order, history and live alike — every replica
+    // sees the same ones and so holds the same state. System frames never arrive here; the façade acts on them and
+    // reports only what an application has a decision to make about.
     public void OnSequenced(Payload payload)
     {
         if (IsOwnPing(payload))
         {
             long roundTripUs = (long)Stopwatch.GetElapsedTime(_pingSentTicks).TotalMicroseconds;
-            Console.WriteLine($"{payload.GlobalSeqNo} ping echoed, round trip {roundTripUs}us");
+            Console.WriteLine($"{payload.ClusterSeqNo} ping echoed, round trip {roundTripUs}us");
         }
         else
         {
-            Console.WriteLine($"{payload.GlobalSeqNo} sourceId={payload.SourceId} payloadId={payload.PayloadId} " +
+            Console.WriteLine($"{payload.ClusterSeqNo} sourceId={payload.SourceId} payloadId={payload.PayloadId} " +
                               $"length={payload.PayloadLength}");
         }
     }
@@ -146,6 +146,11 @@ public sealed class ColocatedApp : IApplicationListener
                payload.Buffer.GetLong(payload.PayloadOffset, ByteOrder.LittleEndian) == _pingSentTicks;
     }
 
+    // Publishes to its own group alone; one that addresses others takes their masks from here.
+    public void OnGroupsResolved(GroupDirectory directory)
+    {
+    }
+
     // The whole election, for the producer kind nothing elects. False is also where a replica keeping outstanding
     // work calls OutstandingWork.OnNotLeader() — every leadership change shuts an open gate, and a payload submitted
     // during the election may have gone with it.
@@ -154,9 +159,9 @@ public sealed class ColocatedApp : IApplicationListener
         Console.WriteLine(leading ? "# leading — publishing" : "# not leading — silent");
     }
 
-    public void OnCaughtUp(long globalSeqNo)
+    public void OnCaughtUp(long clusterSeqNo)
     {
-        Console.WriteLine($"# caught up at {globalSeqNo} — following the queue live");
+        Console.WriteLine($"# caught up at {clusterSeqNo} — following the queue live");
     }
 
     // The cluster clock, once a second: the one time source that keeps advancing while every producer is silent, and

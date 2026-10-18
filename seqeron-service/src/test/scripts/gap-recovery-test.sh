@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Steady-state gap-recovery test (ReplayerStreamReceiver globalSeqNo gap -> resume).
+# Steady-state gap-recovery test (ReplayerStreamReceiver clusterSeqNo gap -> resume).
 #
 # Verifies that a consumer which is CAUGHT UP (following live off the co-located SequencerService queue)
-# heals a dropped live queue frame: it detects the globalSeqNo gap, resumes the recording at the frame it
+# heals a dropped live queue frame: it detects the clusterSeqNo gap, resumes the recording at the frame it
 # last dispatched, and keeps delivering rather than wedging in-order delivery. Each
 # node records its own node-local queue continuously, so the consumer's co-located member holds ONE
 # continuous recording; the resume heals the gap straight from that recording (served by the node's
@@ -33,7 +33,7 @@
 #   3. Kill the tenure-1 leader -> a survivor becomes the tenure-2 leader. Member 0's own queue recording
 #      keeps flowing across the failover (it is continuous, never rotated).
 #   4. SIGUSR1 the consumer to arm a one-frame live-queue drop, then flood direct cluster ingress. The
-#      first flooded frame is dropped by the consumer -> it sees a globalSeqNo gap and resumes member
+#      first flooded frame is dropped by the consumer -> it sees a clusterSeqNo gap and resumes member
 #      0's continuous recording (via its ReplayerService) at the hole to heal it.
 #   5. SIGTERM the consumer to flush its delivery-latency report.
 #
@@ -113,6 +113,8 @@ OTHER=$([[ "$LEADER" == "1" ]] && echo 2 || echo 1)   # the surviving non-0 memb
 start_seq 0
 wait_for_log "$LOG_DIR/seq-0.log" "Running" 30 || { echo "seq 0 not up"; exit 1; }
 echo "cluster up; tenure-1 leader = member $LEADER ; consumer co-located with member $CN"
+seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-groups.xml \
+  > "$LOG_DIR/load-topology.log" 2>&1 || { echo "load-topology failed — see $LOG_DIR/load-topology.log"; exit 1; }
 
 for m in 0 1 2; do
   wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" 30 || true
@@ -161,7 +163,7 @@ for _ in $(seq 1 40); do kill -0 "$CONSUMER_PID" 2>/dev/null || break; sleep 0.5
 CONSUMER_PID=""  # exited (or gave up waiting); don't re-kill in cleanup
 
 # ── Assertions ────────────────────────────────────────────────────────────────
-RECOVERIES=$(grep -c "queue gap: expected globalSeqNo" "$CONSUMER_LOG" 2>/dev/null)
+RECOVERIES=$(grep -c "queue gap: expected groupSeqNo" "$CONSUMER_LOG" 2>/dev/null)
 DELIVERED=$(grep -oE "n=[0-9]+" "$CONSUMER_LOG" 2>/dev/null | head -1 | cut -d= -f2)
 DELIVERED=${DELIVERED:-0}
 

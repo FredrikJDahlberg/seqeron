@@ -13,7 +13,8 @@
 # longer than itself.
 #
 # Sequence:
-#   1. A three-node cluster; TestApplication on a member that does not lead catches up.
+#   1. A three-node cluster, its groups and TestApplication's row loaded; TestApplication on a member that does
+#      not lead catches up.
 #   2. SIGSTOP the application for CLIENT_PAUSE_SECS, past the cluster's 5 s session timeout, and SIGCONT it.
 #   3. SIGSTOP the other two members for QUORUM_PAUSE_SECS, so the application's member has no quorum: long
 #      enough for the client's 5 s new-leader timeout to close its session, short enough for the members' own
@@ -91,6 +92,10 @@ AN=$(( (LEADER + 1) % 3 ))   # the application's member, a follower
 OTHERS=()
 for m in 0 1 2; do [[ "$m" != "$AN" ]] && OTHERS+=("${SEQ_PIDS[$m]}"); done
 echo "cluster up; member $LEADER leads, the application runs on member $AN"
+# The groups and the application's row first: the cluster refuses everything before them, and an application
+# reads the queue its row names. Phase 3 adds the gateway list.
+seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-groups.xml \
+  > "$LOG_DIR/load-groups.log" 2>&1 || { echo "load-topology failed — see $LOG_DIR/load-groups.log"; exit 1; }
 
 APP_LOG="$LOG_DIR/app.log"
 java "${JAVA_OPTS[@]}" -Dprobe.memberId="$AN" -Dprobe.snapshotDir="$SNAPSHOT_DIR" \

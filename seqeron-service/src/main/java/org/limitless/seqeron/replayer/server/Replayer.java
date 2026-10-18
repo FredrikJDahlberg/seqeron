@@ -25,11 +25,12 @@ public interface Replayer {
     record QueueBacklog(long bytes, long window) { }
 
     /**
-     * Every queue recording the local archive holds, in whatever order it listed them; which one is served is
-     * {@code ReplayerService}'s decision.
+     * Every recording of one group's queue the local archive holds, in whatever order it listed them; which one is
+     * served is {@code ReplayerService}'s decision.
+     * @param groupId the queue's group
      * @return the recordings, possibly empty
      */
-    List<RecordingSpan> listQueueRecordings();
+    List<RecordingSpan> listQueueRecordings(int groupId);
 
     /**
      * Where a still-recording recording has reached. On every request's path, so read off the node's counters
@@ -47,11 +48,12 @@ public interface Replayer {
     long stopPosition(long recordingId);
 
     /**
-     * How far the active queue recording trails the queue, read off this node's counters.
-     * @param span the active queue recording
+     * How far an active queue recording trails its queue, read off this node's counters.
+     * @param groupId the queue's group
+     * @param span the queue's active recording
      * @return its backlog, or {@code null} when the counters show no queue publication it records
      */
-    QueueBacklog queueBacklog(RecordingSpan span);
+    QueueBacklog queueBacklog(int groupId, RecordingSpan span);
 
     /**
      * Starts a bounded replay onto a node-local IPC stream.
@@ -70,10 +72,14 @@ public interface Replayer {
      */
     void stopReplay(long replaySessionId);
 
+    /** {@link #pollArchive}'s answer once the archive has closed the control session. */
+    String ARCHIVE_SESSION_CLOSED = "the control session is closed";
+
     /**
      * Reads one response off the local archive's control session between requests. The archive pings the
      * session once a second and closes it once those go unread, so this is called every duty cycle.
-     * @return the archive's error, or {@code null}; once the session is closed, why
+     * @return the error the archive answered one request with, such as a replay whose client left before it
+     *         connected; {@link #ARCHIVE_SESSION_CLOSED} once the session is closed; or {@code null}
      */
     String pollArchive();
 

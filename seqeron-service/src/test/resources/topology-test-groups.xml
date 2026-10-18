@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The test topologies' groups and nothing a harness must run: what a harness loads first when it runs
+    no gateway pair, since the cluster refuses everything before its groups are active (spec §7.4).
+
+      clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-groups.xml
+
+    topology-test-gateway.xml loads after it, adding the TestGateway pair.
+-->
+<topology xmlns="http://limitless.org/seqeron/topology/1">
+
+    <!-- Every test topology declares the same groups, so any of them loads into a cluster another
+         activated (spec S-8). -->
+    <groups>
+        <group name="test" id="1"/>
+    </groups>
+
+    <!-- TestApplication resolves its queue from its row (spec R-6). An application is elected by nothing, so a
+         row no process runs costs nothing. -->
+    <applications>
+        <application name="TestApplication" sourceId="16" group="test"
+                     description="TestApplication, one replica per member"/>
+    </applications>
+
+</topology>

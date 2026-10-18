@@ -10,11 +10,11 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// A system frame on cluster ingress. Only the twelve submitted events are legal here
+    /// A system frame on cluster ingress. Only the thirteen submitted events are legal here
     /// </summary>
     public sealed partial class UnsequencedSystem
     {
-        public const ushort BlockLength = (ushort)18;
+        public const ushort BlockLength = (ushort)20;
         public const ushort TemplateId = (ushort)102;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;
@@ -137,7 +137,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             return _actingVersion >= BodySinceVersion;
         }
 
-        public const int BodyOffset = 18;
+        public const int BodyOffset = 20;
 
         public static string BodyMetaAttribute(MetaAttribute metaAttribute)
         {

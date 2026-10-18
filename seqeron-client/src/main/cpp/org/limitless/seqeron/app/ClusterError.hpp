@@ -26,6 +26,8 @@ enum class ClusterError : std::uint8_t
     // This instance's source has a snapshot it cannot restore: a format or header version this build does not
     // read, or records that fail the check the Replayer indexed them by.
     SnapshotUnrestorable,
+    // A group this instance addresses is not in the log's group table (A-9).
+    GroupUnknown,
 };
 
 /**
@@ -50,6 +52,8 @@ inline const char* clusterErrorName(const ClusterError error)
             return "SNAPSHOT_DIVERGED";
         case ClusterError::SnapshotUnrestorable:
             return "SNAPSHOT_UNRESTORABLE";
+        case ClusterError::GroupUnknown:
+            return "GROUP_UNKNOWN";
     }
     return "UNKNOWN";
 }

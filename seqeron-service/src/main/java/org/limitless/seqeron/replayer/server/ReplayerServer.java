@@ -6,14 +6,18 @@ import io.aeron.archive.ArchivingMediaDriver;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.driver.MediaDriver;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
@@ -23,18 +27,21 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p><b>On a cluster member</b> it runs inside {@code SequencerServer}, which starts it with {@link #launch}: it
  * attaches to the member's embedded media driver to reach that member's archive over {@code aeron:ipc}, and
- * serves replays from it regardless of leadership.
+ * serves replays from it regardless of leadership. Its topology rows come from the member's sequencer, which
+ * hands each over once as it publishes it; they are not handed over again, so this lives exactly as long as
+ * that sequencer.
  *
  * <p><b>On a gateway host</b>, one that runs no member, {@link #main} runs it on its own media driver and
- * archive, and an {@link AeronQueueRelay} copies a member's queue onto a local one over UDP, moving to the next
- * member when that one is lost. Clients on the host use the local queue and this Replayer exactly as they would
- * on a member; they submit over UDP ingress.
+ * archive, and an {@link AeronQueueRelay} per group it relays copies a member's queue of that group onto a local
+ * one over UDP, moving to the next member when that one is lost. Clients on the host use the local queues and
+ * this Replayer exactly as they would on a member; they submit over UDP ingress.
  *
  * <p>System properties of {@link #main}:
  * <pre>
  *   replayer.archiveEndpoints  — the members' archive control endpoints, host:port, comma-separated,
  *                                tried in order; default each member's in SEQERON_HOSTS, and one of the
  *                                two is required
+ *   replayer.groups            — the groupIds whose queues this host relays, comma-separated; required
  *   replayer.memberId          — this host's node id, one no member uses, which names its directories and labels
  *                                its counters; default 0
  *   replayer.aeronDir          — the Aeron directory; default PortLayout.aeronDir(memberId)
@@ -51,7 +58,7 @@ import org.limitless.seqeron.util.Logger;
  * <p>Launch example (gateway host 3, members on m0/m1/m2):
  * <pre>
  *   SEQERON_HOSTS=m0,m1,m2 \
- *   java -Dreplayer.memberId=3 -Dreplayer.host=gw0 \
+ *   java -Dreplayer.memberId=3 -Dreplayer.host=gw0 -Dreplayer.groups=1 \
  *        --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
  *        --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
  *        -cp seqeron-uber.jar \
@@ -65,6 +72,7 @@ public final class ReplayerServer {
     private static final String PROP_ARCHIVE_ENDPOINTS = "replayer.archiveEndpoints";
     private static final String PROP_HOST = "replayer.host";
     private static final String PROP_BASE_DIR = "replayer.baseDir";
+    private static final String PROP_GROUPS = "replayer.groups";
 
     /**
      * How long shutdown waits for the duty cycle's current iteration, which never blocks on a timeout of
@@ -76,7 +84,7 @@ public final class ReplayerServer {
     private final ArchivingMediaDriver driver;
     private final Aeron aeron;
     private final AeronArchive archive;
-    private final AeronQueueRelay relay;
+    private final List<AeronQueueRelay> relays;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final Thread replayerThread;
     private final Thread relayThread;
@@ -90,16 +98,17 @@ public final class ReplayerServer {
      * @param baseDir          the root of the host's archive directory
      * @param archiveEndpoints the members' archive control endpoints, {@code host:port}, tried in order
      * @param host             this host's name as the members reach it
+     * @param groups           the groupIds whose queues the host relays, ascending
      * @param idleStrategies   the idle strategy of every agent, the relay's and the Replayer's included
      */
     public record GatewayHostConfig(int nodeId, String aeronDir, String baseDir, List<String> archiveEndpoints,
-                                    String host, Supplier<IdleStrategy> idleStrategies) {
+                                    String host, List<Integer> groups, Supplier<IdleStrategy> idleStrategies) {
         /**
          * Reads the settings from the system properties, with their documented defaults.
          *
          * @return the settings
          * @throws IllegalArgumentException if neither {@code replayer.archiveEndpoints} nor {@code SEQERON_HOSTS}
-         *                                  names a member archive
+         *                                  names a member archive, or {@code replayer.groups} names no valid group
          */
         public static GatewayHostConfig fromProperties() {
             final int nodeId = Integer.getInteger(PROP_MEMBER_ID, 0);
@@ -114,7 +123,7 @@ public final class ReplayerServer {
                 nodeId, System.getProperty(PROP_AERON_DIR, PortLayout.aeronDir(nodeId)),
                 System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq"),
                 parseEndpoints(archiveEndpoints), System.getProperty(PROP_HOST, PortLayout.DEFAULT_HOST),
-                IdleStrategies.fromProperty(PROP_IDLE_STRATEGY));
+                parseGroups(System.getProperty(PROP_GROUPS, "")), IdleStrategies.fromProperty(PROP_IDLE_STRATEGY));
         }
     }
 
@@ -144,8 +153,9 @@ public final class ReplayerServer {
     }
 
     /**
-     * Starts a gateway host in this process: its own media driver and archive, the relay that copies a member's
-     * queue onto the host's, and the Replayer; {@link #main} is this over {@link GatewayHostConfig#fromProperties()}.
+     * Starts a gateway host in this process: its own media driver and archive, the relays that copy a member's
+     * queue of each relayed group onto the host's, and the Replayer; {@link #main} is this over
+     * {@link GatewayHostConfig#fromProperties()}.
      *
      * @param config       the host's settings
      * @param fatalHandler run once if a duty cycle dies; the host should then stop
@@ -155,7 +165,8 @@ public final class ReplayerServer {
         final ArchivingMediaDriver driver = launchDriver(config);
         try {
             return new ReplayerServer(config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(),
-                                      config.host(), config.idleStrategies(), fatalHandler);
+                                      config.host(), config.groups(), new ConcurrentLinkedQueue<>(),
+                                      config.idleStrategies(), fatalHandler);
         } catch (final RuntimeException ex) {
             CloseHelper.quietClose(driver);
             throw ex;
@@ -168,18 +179,21 @@ public final class ReplayerServer {
      * @param memberId       the member's id, which names its replay counters.
      * @param aeronDir       the member's Aeron directory.
      * @param idleStrategies the idle strategy of the duty-cycle thread.
+     * @param topologyRows   the topology rows the member's sequencer hands over (see {@link QueueResolver}).
      * @param fatalHandler   run once if the duty cycle dies; the process should then exit.
      * @return the running Replayer, which the caller stops with {@link #stop()}.
      */
     public static ReplayerServer launch(final int memberId, final String aeronDir,
-                                        final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler) {
-        return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, idleStrategies,
-                                  fatalHandler);
+                                        final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
+                                        final Runnable fatalHandler) {
+        return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, List.of(), topologyRows,
+                                  idleStrategies, fatalHandler);
     }
 
     private ReplayerServer(final int memberId, final ArchivingMediaDriver driver, final String aeronDir,
-                           final List<String> archiveEndpoints, final String host,
-                           final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler) {
+                           final List<String> archiveEndpoints, final String host, final List<Integer> groups,
+                           final Queue<byte[]> topologyRows, final Supplier<IdleStrategy> idleStrategies,
+                           final Runnable fatalHandler) {
         this.memberId = memberId;
         this.driver = driver;
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
@@ -193,11 +207,24 @@ public final class ReplayerServer {
             .lock(NoOpLock.INSTANCE));
 
         final IdleStrategy idleStrategy = idleStrategies.get();
-        relay = archiveEndpoints == null
+        relays = new ArrayList<>();
+        int relayedGroups = QueueResolver.EVERY_GROUP;
+        if (archiveEndpoints != null) {
+            relayedGroups = 0;
+            for (final int groupId : groups) {
+                // The lowest relayed queue is the host's default queue, and it alone feeds the resolver.
+                relays.add(new AeronQueueRelay(aeron, archive, archiveEndpoints, host, memberId, groupId,
+                                               relays.isEmpty() ? topologyRows : null, idleStrategies.get(),
+                                               fatalHandler));
+                relayedGroups |= 1 << (groupId - 1);
+            }
+        }
+        final IdleStrategy relayIdleStrategy = relays.isEmpty() ? null : idleStrategies.get();
+        relayThread = relays.isEmpty()
             ? null
-            : new AeronQueueRelay(aeron, archive, archiveEndpoints, host, memberId, idleStrategies.get(), fatalHandler);
-        relayThread = relay == null ? null : new Thread(() -> relay.run(running), "relay-" + memberId);
-        final ReplayerService replayer = new ReplayerService(aeron, archive, memberId, idleStrategy, fatalHandler);
+            : new Thread(() -> AeronQueueRelay.run(relays, running, relayIdleStrategy), "relay-" + memberId);
+        final ReplayerService replayer =
+            new ReplayerService(aeron, archive, memberId, idleStrategy, topologyRows, relayedGroups, fatalHandler);
         replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         if (relayThread != null) {
             relayThread.start();
@@ -206,7 +233,9 @@ public final class ReplayerServer {
 
         Logger.info(Logger.CoreComponent.ReplayerServer, memberId, "Running | aeronDir=%s | idle=%s%s", aeronDir,
                     idleStrategy.getClass().getSimpleName(),
-                    relay == null ? "" : " | gateway host, member archives " + String.join(",", archiveEndpoints));
+                    relays.isEmpty() ? ""
+                                     : " | gateway host, groups " + groups + " from member archives " +
+                            String.join(",", archiveEndpoints));
     }
 
     /**
@@ -220,7 +249,7 @@ public final class ReplayerServer {
         running.set(false);
         final boolean stopped = join(replayerThread) & (relayThread == null || join(relayThread));
         if (stopped) {
-            CloseHelper.quietClose(relay);
+            CloseHelper.quietCloseAll(relays);
             archive.close();
             aeron.close();
             CloseHelper.quietClose(driver);
@@ -274,6 +303,32 @@ public final class ReplayerServer {
             endpoints.append(hosts.get(id)).append(':').append(PortLayout.archivePort(id));
         }
         return endpoints.toString();
+    }
+
+    /** {@code g,g,…}: distinct groupIds 1–16, returned ascending. */
+    static List<Integer> parseGroups(final String csv) {
+        final List<Integer> groups = new ArrayList<>();
+        for (final String field : csv.split(",")) {
+            if (field.isBlank()) {
+                continue;
+            }
+            final int groupId;
+            try {
+                groupId = Integer.parseInt(field.trim());
+            } catch (final NumberFormatException ex) {
+                throw new IllegalArgumentException(PROP_GROUPS + " names '" + field.trim() + "', not a groupId");
+            }
+            if (groupId < 1 || groupId > FrameLayer.MAX_GROUPS || groups.contains(groupId)) {
+                throw new IllegalArgumentException(PROP_GROUPS + " names group " + groupId + " twice or outside 1-" +
+                                                   FrameLayer.MAX_GROUPS);
+            }
+            groups.add(groupId);
+        }
+        if (groups.isEmpty()) {
+            throw new IllegalArgumentException(PROP_GROUPS + " is required on a gateway host: no group is special");
+        }
+        groups.sort(null);
+        return List.copyOf(groups);
     }
 
     /** {@code host:port,host:port,…}, blanks ignored. */

@@ -6,17 +6,26 @@ import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.logbuffer.FragmentHandler;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Queue;
+import java.util.Set;
+import java.util.StringJoiner;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongPredicate;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
+import org.limitless.seqeron.sbe.replay.QueueRequestDecoder;
+import org.limitless.seqeron.sbe.replay.QueueResolvedEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayingEncoder;
@@ -49,14 +58,22 @@ public final class ReplayerService {
     /** Brings the whole process down; wired by {@link ReplayerServer}. See {@link #fatalDutyCycleFailure}. */
     private final Runnable fatalHandler;
 
-    // The SequencerService's queue recording is visible on the local archive.
+    // Every served queue's recording is visible on the local archive.
     private boolean ready = false;
 
-    /** The recording served while it was reported alongside a stale active one, else NULL_VALUE. */
-    private long staleReportedFor = NULL_VALUE;
+    /** The sequenced topology rows, handed over by whoever publishes the default queue. */
+    private final Queue<byte[]> topologyRows;
+    private final UnsafeBuffer topologyRow = new UnsafeBuffer(0, 0);
+    private final QueueResolver resolver;
 
-    /** The active queue recording, kept while it is still recording; a node starts a new one only on restart. */
-    private Replayer.RecordingSpan activeRecording;
+    /** The sources a QueueRequest could not be answered for, each logged once. */
+    private final Set<String> unresolvedLogged = new HashSet<>();
+
+    /** Per queue, slot groupId − 1: the recording served while it was reported alongside a stale active one. */
+    private final long[] staleReportedFor = new long[FrameLayer.MAX_GROUPS];
+
+    /** Per queue, slot groupId − 1: its active recording, kept while it is still recording. */
+    private final Replayer.RecordingSpan[] activeRecordings = new Replayer.RecordingSpan[FrameLayer.MAX_GROUPS];
 
     // When the Replayer's own next archive call may be made, after one threw.
     private long archiveRetryAtMs = 0;
@@ -81,9 +98,11 @@ public final class ReplayerService {
 
     private final MessageHeaderDecoder inHeaderDecoder = new MessageHeaderDecoder();
     private final ReplayRequestDecoder replayRequestDecoder = new ReplayRequestDecoder();
+    private final QueueRequestDecoder queueRequestDecoder = new QueueRequestDecoder();
     private final MessageHeaderEncoder outHeaderEncoder = new MessageHeaderEncoder();
     private final ReplayingEncoder replayingEncoder = new ReplayingEncoder();
     private final ReplayPendingEncoder pendingEncoder = new ReplayPendingEncoder();
+    private final QueueResolvedEncoder queueResolvedEncoder = new QueueResolvedEncoder();
     private final MutableDirectBuffer controlBuffer = new ExpandableArrayBuffer(64);
 
     private final FragmentHandler requestHandler =
@@ -93,13 +112,19 @@ public final class ReplayerService {
 
     /**
      * Production constructor: serves member {@code memberId}'s own Aeron client and archive.
+     * @param topologyRows  the default queue's topology rows (see {@link QueueResolver}), as copies the publisher
+     *                      hands over and this drains
+     * @param relayedGroups the groups whose queues this node holds: every group on a member, those it relays on a
+     *                      gateway host
      * @param fatalHandler run once, from the duty-cycle thread, when the duty cycle dies on an uncaught
      *                     exception — see {@link #fatalDutyCycleFailure}. Must not block: it is expected
      *                     to signal a shutdown and return, not to perform one.
      */
     public ReplayerService(final Aeron aeron, final AeronArchive archive, final int memberId,
-                           final IdleStrategy idleStrategy, final Runnable fatalHandler) {
-        this(new AeronReplayer(aeron, archive, memberId), memberId, idleStrategy, fatalHandler);
+                           final IdleStrategy idleStrategy, final Queue<byte[]> topologyRows, final int relayedGroups,
+                           final Runnable fatalHandler) {
+        this(new AeronReplayer(aeron, archive, memberId), memberId, idleStrategy, topologyRows, relayedGroups,
+             fatalHandler);
     }
 
     /**
@@ -107,17 +132,20 @@ public final class ReplayerService {
      * @param replayer the node's archive, app-facing streams, counters and clock
      * @param memberId which cluster member this ReplayerService co-locates with
      * @param idleStrategy duty-cycle and control-offer idle strategy
+     * @param topologyRows see the production constructor
+     * @param relayedGroups see the production constructor
      * @param fatalHandler see the production constructor
      */
-    ReplayerService(final Replayer replayer,
-                    final int memberId,
-                    final IdleStrategy idleStrategy,
-                    final Runnable fatalHandler) {
+    ReplayerService(final Replayer replayer, final int memberId, final IdleStrategy idleStrategy,
+                    final Queue<byte[]> topologyRows, final int relayedGroups, final Runnable fatalHandler) {
         this.replayer = replayer;
         this.memberId = memberId;
         this.idleStrategy = idleStrategy;
+        this.topologyRows = topologyRows;
+        this.resolver = new QueueResolver(relayedGroups);
         this.fatalHandler = fatalHandler;
         this.replayLive = replayer::isReplayLive;
+        Arrays.fill(staleReportedFor, NULL_VALUE);
 
         this.archiveErrorsCounter = counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID, "archiveErrorsCount");
         this.readyCounter = counter(SeqeronCounters.REPLAYER_READY_TYPE_ID, "ready");
@@ -179,11 +207,16 @@ public final class ReplayerService {
     /** One duty-cycle iteration. Returns a work count for the idle strategy. */
     public int poll() {
         final String archiveError = replayer.pollArchive();
-        if (archiveError != null) {
+        if (Replayer.ARCHIVE_SESSION_CLOSED.equals(archiveError)) {
             // The session is the archive's to close and cannot be reopened, so no replay could be served again.
-            throw new IllegalStateException("the local archive's control session failed: " + archiveError);
+            throw new IllegalStateException("the local archive closed its control session");
         }
-        int work = replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);
+        if (archiveError != null) {
+            // An error answers one request and leaves the session open.
+            onArchiveError("a replay", new IllegalStateException(archiveError));
+        }
+        int work = drainTopologyRows();
+        work += replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);
         if (replayer.epochMillis() < archiveRetryAtMs) {
             // the Replayer's own archive call threw a moment ago; requests are still answered
         } else if (!ready) {
@@ -195,21 +228,44 @@ public final class ReplayerService {
         return work;
     }
 
+    /** Feeds the resolver what the default queue's publisher has handed over since the last cycle. */
+    private int drainTopologyRows() {
+        int work = 0;
+        byte[] row;
+        while ((row = topologyRows.poll()) != null) {
+            topologyRow.wrap(row);
+            resolver.onTopologyRow(topologyRow, 0, row.length);
+            ++work;
+        }
+        return work;
+    }
+
     /**
-     * Waits for the queue recording to be visible on the local archive. It alone is served: every node start
-     * replays the log from globalSeqNo 1 into a new one, and a client checks that its first frame is 1.
+     * Waits for the group table, then for each served queue's active recording to be visible on the local
+     * archive. Only those are served: every node start replays the log from clusterSeqNo 1 into new ones, and a
+     * client checks that a queue's first frame is groupSeqNo 1.
      * @return work count
      */
     private int checkReady() {
+        final int served = resolver.servedGroups();
+        if (served == 0) {
+            return 0; // no group active here yet
+        }
         try {
-            final Replayer.RecordingSpan active = findActiveRecording();
-            if (active == null) {
-                return 0; // nothing recorded yet; retry next cycle
+            final StringJoiner recordings = new StringJoiner(", ");
+            for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+                if (!resolver.serves(groupId)) {
+                    continue;
+                }
+                final Replayer.RecordingSpan active = findActiveRecording(groupId);
+                if (active == null) {
+                    return 0; // not recorded yet; retry next cycle
+                }
+                recordings.add("group " + groupId + "'s queue recording " + active.recordingId() + " live");
             }
             ready = true;
             readyCounter.set(1);
-            Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                        "ready — queue recording %d live; serving replay", active.recordingId());
+            Logger.info(Logger.CoreComponent.ReplayerService, memberId, "ready — %s; serving replay", recordings);
             return 1;
         } catch (final RuntimeException ex) {
             onOwnArchiveCallFailed("listing the queue recordings", ex);
@@ -230,6 +286,12 @@ public final class ReplayerService {
             return;
         }
 
+        if (inHeaderDecoder.templateId() == QueueRequestDecoder.TEMPLATE_ID) {
+            queueRequestDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
+                                     inHeaderDecoder.blockLength(), inHeaderDecoder.version());
+            onQueueRequest();
+            return;
+        }
         if (inHeaderDecoder.templateId() != ReplayRequestDecoder.TEMPLATE_ID) {
             return;
         }
@@ -238,9 +300,10 @@ public final class ReplayerService {
         final long clientId = replayRequestDecoder.clientId();
         final long requestId = replayRequestDecoder.requestId();
         final long fromPosition = replayRequestDecoder.fromPosition();
+        final int queueId = replayRequestDecoder.queueId();
 
-        if (!ready) {
-            sendPending(clientId, requestId);
+        if (!ready || !resolver.serves(queueId)) {
+            sendPending(clientId, requestId); // R-5: no queue here has an active recording by that id
             return;
         }
         stopReplayForClient(clientId);
@@ -251,17 +314,58 @@ public final class ReplayerService {
             if (replaySlots.activeCount() < MAX_CONCURRENT_REPLAYS) {
                 throttledRequestsCounter.increment();
             }
-            replaySlots.addPending(clientId, requestId, fromPosition);
+            replaySlots.addPending(clientId, requestId, fromPosition, queueId);
             sendPending(clientId, requestId);
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                         "client %d pending: no free replay slot (active=%d/%d%s, pending=%d)", clientId,
                         replaySlots.activeCount(), limit,
-                        limit < MAX_CONCURRENT_REPLAYS ? " while the queue recording is behind" : "",
+                        limit < MAX_CONCURRENT_REPLAYS ? " while a queue recording is behind" : "",
                         replaySlots.pendingCount());
             return;
         }
-        startReplayForClient(clientId, requestId, fromPosition);
+        startReplayForClient(clientId, requestId, fromPosition, queueId);
         drainPending();
+    }
+
+    /**
+     * Answers which queue an instance reads (R-6), or {@code ReplayPending} until its row is on the log. Holds no
+     * slot; a request naming both a gateway and an application is logged and not answered.
+     */
+    private void onQueueRequest() {
+        final long clientId = queueRequestDecoder.clientId();
+        final long requestId = queueRequestDecoder.requestId();
+        final int sourceId = queueRequestDecoder.sourceId();
+        final String gatewayName = queueRequestDecoder.gatewayName();
+        final boolean namesGateway = !gatewayName.isEmpty();
+        final boolean namesApplication = sourceId != ReplayProtocol.NO_SOURCE_ID;
+        if (namesGateway && namesApplication) {
+            logUnresolvedOnce("gateway " + gatewayName + " and application " + sourceId,
+                              "it names both, so it is not answered");
+            return;
+        }
+        final String source = namesGateway ? "gateway " + gatewayName
+            : namesApplication             ? "application " + sourceId
+                                           : "the default queue";
+        final int groupId = namesGateway ? resolver.gatewayGroup(gatewayName)
+            : namesApplication           ? resolver.applicationGroup(sourceId)
+                                         : resolver.defaultGroup();
+        if (groupId == QueueResolver.UNRESOLVED) {
+            logUnresolvedOnce(source, "its row is not on the log yet");
+            sendPending(clientId, requestId);
+        } else if (!resolver.serves(groupId)) {
+            logUnresolvedOnce(source, "its group " + groupId + " is not one this node holds a queue for");
+            sendPending(clientId, requestId);
+        } else {
+            sendQueueResolved(clientId, requestId, groupId);
+        }
+    }
+
+    /** Logs, once per source, a {@code QueueRequest} this cannot answer with a queue it serves. */
+    private void logUnresolvedOnce(final String source, final String reason) {
+        if (unresolvedLogged.add(source)) {
+            Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.QueueUnresolved, memberId,
+                         "cannot tell %s which queue to read: %s; it waits, unfenced, until it can", source, reason);
+        }
     }
 
     /**
@@ -270,13 +374,15 @@ public final class ReplayerService {
      * @param clientId client identity
      * @param requestId the request being answered, echoed in every reply
      * @param fromPosition start replay position, or {@link ReplayProtocol#FROM_START}
+     * @param queueId the queue to replay
      */
-    private void startReplayForClient(final long clientId, final long requestId, final long fromPosition) {
+    private void startReplayForClient(final long clientId, final long requestId, final long fromPosition,
+                                      final int queueId) {
         final boolean fromStart = fromPosition == ReplayProtocol.FROM_START;
         try {
-            serveReplay(clientId, requestId, fromPosition);
+            serveReplay(clientId, requestId, fromPosition, queueId);
         } catch (final RuntimeException error) {
-            if (!fromStart && archiveAnswers()) {
+            if (!fromStart && archiveAnswers(queueId)) {
                 rejectResume(clientId, requestId, "archive refused it: " + error.getMessage());
                 return;
             }
@@ -288,9 +394,9 @@ public final class ReplayerService {
     }
 
     /** Whether the local archive still answers at all — what separates a bad request from an outage. */
-    private boolean archiveAnswers() {
+    private boolean archiveAnswers(final int queueId) {
         try {
-            replayer.listQueueRecordings();
+            replayer.listQueueRecordings(queueId);
             return true;
         } catch (final RuntimeException ex) {
             return false;
@@ -312,18 +418,19 @@ public final class ReplayerService {
     }
 
     /**
-     * Serves one replay of the active recording: from its start for {@link ReplayProtocol#FROM_START}, else
+     * Serves one replay of a queue's active recording: from its start for {@link ReplayProtocol#FROM_START}, else
      * resumed at {@code fromPosition}. Bounded at the recording's tip now; the queue carries the rest.
      * @param clientId client identity
      * @param requestId the request being answered, echoed in every reply
      * @param fromPosition start position, or {@link ReplayProtocol#FROM_START}
+     * @param queueId the queue to replay
      */
-    private void serveReplay(final long clientId, final long requestId, final long fromPosition) {
+    private void serveReplay(final long clientId, final long requestId, final long fromPosition, final int queueId) {
         replaySlots.cancelPending(clientId);
 
-        final Replayer.RecordingSpan active = findActiveRecording();
+        final Replayer.RecordingSpan active = findActiveRecording(queueId);
         if (active == null) {
-            replaySlots.addPending(clientId, requestId, fromPosition);
+            replaySlots.addPending(clientId, requestId, fromPosition, queueId);
             sendPending(clientId, requestId);
             return;
         }
@@ -338,7 +445,7 @@ public final class ReplayerService {
         final long recordingId = active.recordingId();
         final long tip = tipOf(recordingId);
         if (tip < 0) {
-            replaySlots.addPending(clientId, requestId, fromPosition);
+            replaySlots.addPending(clientId, requestId, fromPosition, queueId);
             sendPending(clientId, requestId);
             return;
         }
@@ -356,13 +463,13 @@ public final class ReplayerService {
         replaysServedCounter.increment();
         replaySlots.activate(clientId, replaySessionId);
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                    "replay for client %d: recording %d [%d,%d) session %d", clientId, recordingId, replayFrom, tip,
-                    replaySessionId);
+                    "replay for client %d: group %d's recording %d [%d,%d) session %d", clientId, queueId, recordingId,
+                    replayFrom, tip, replaySessionId);
         sendReplaying(clientId, requestId, replaySessionId, tip);
     }
 
     /**
-     * How many replays may run at once: one while the active recording trails the queue by more than a quarter of
+     * How many replays may run at once: one while any queue's active recording trails it by more than a quarter of
      * the window it may trail by, since a replay competes with the recorder for the disk and the recorder holds the
      * sequencer back.
      */
@@ -371,9 +478,14 @@ public final class ReplayerService {
             return MAX_CONCURRENT_REPLAYS; // the next replay is the only one either way
         }
         try {
-            final Replayer.RecordingSpan active = findActiveRecording();
-            final Replayer.QueueBacklog backlog = active == null ? null : replayer.queueBacklog(active);
-            return backlog != null && backlog.bytes() > backlog.window() / 4 ? 1 : MAX_CONCURRENT_REPLAYS;
+            for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+                final Replayer.RecordingSpan active = resolver.serves(groupId) ? findActiveRecording(groupId) : null;
+                final Replayer.QueueBacklog backlog = active == null ? null : replayer.queueBacklog(groupId, active);
+                if (backlog != null && backlog.bytes() > backlog.window() / 4) {
+                    return 1;
+                }
+            }
+            return MAX_CONCURRENT_REPLAYS;
         } catch (final RuntimeException ex) {
             return MAX_CONCURRENT_REPLAYS; // serving the replay meets the same archive and reports it
         }
@@ -411,7 +523,8 @@ public final class ReplayerService {
         while (budget-- > 0) {
             final ReplaySlotAllocator.PendingRequest request = replaySlots.pollPending();
             if (request != null) {
-                startReplayForClient(request.clientId(), request.requestId(), request.fromPosition());
+                startReplayForClient(request.clientId(), request.requestId(), request.fromPosition(),
+                                     request.queueId());
             }
         }
     }
@@ -452,6 +565,20 @@ public final class ReplayerService {
             .replaySessionId(replaySessionId)
             .catchUpPosition(catchUpPosition);
         offerControl(MessageHeaderEncoder.ENCODED_LENGTH + replayingEncoder.encodedLength());
+    }
+
+    /**
+     * Send queue resolved message
+     * @param clientId client identity
+     * @param requestId the request being answered
+     * @param queueId the queue it resolved to
+     */
+    private void sendQueueResolved(final long clientId, final long requestId, final int queueId) {
+        queueResolvedEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
+            .clientId(clientId)
+            .requestId(requestId)
+            .queueId(queueId);
+        offerControl(MessageHeaderEncoder.ENCODED_LENGTH + queueResolvedEncoder.encodedLength());
     }
 
     /**
@@ -531,18 +658,19 @@ public final class ReplayerService {
     }
 
     /**
-     * The newest active queue recording on the local archive, or null. More than one active is an unclean
+     * The newest active recording of a queue on the local archive, or null. More than one active is an unclean
      * shutdown's leftover, reported once per episode; the newest holds the older one's content. Listed again only
      * once the one found has stopped recording, so a request costs no listing.
      */
-    private Replayer.RecordingSpan findActiveRecording() {
-        if (activeRecording != null && replayer.recordingPosition(activeRecording.recordingId()) >= 0) {
-            return activeRecording;
+    private Replayer.RecordingSpan findActiveRecording(final int groupId) {
+        final Replayer.RecordingSpan cached = activeRecordings[groupId - 1];
+        if (cached != null && replayer.recordingPosition(cached.recordingId()) >= 0) {
+            return cached;
         }
-        activeRecording = null;
+        activeRecordings[groupId - 1] = null;
         Replayer.RecordingSpan found = null;
         int activeCount = 0;
-        for (final Replayer.RecordingSpan span : replayer.listQueueRecordings()) {
+        for (final Replayer.RecordingSpan span : replayer.listQueueRecordings(groupId)) {
             if (span.active()) {
                 ++activeCount;
                 if (found == null || span.recordingId() > found.recordingId()) {
@@ -550,15 +678,15 @@ public final class ReplayerService {
                 }
             }
         }
-        if (activeCount > 1 && found.recordingId() != staleReportedFor) {
+        if (activeCount > 1 && found.recordingId() != staleReportedFor[groupId - 1]) {
             Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.StaleActiveRecording, memberId,
-                         "%d queue recordings report as still recording — an unclean shutdown left an older one "
-                             + "unstopped; serving the newest",
-                         activeCount);
+                         "%d recordings of group %d's queue report as still recording — an unclean shutdown left an "
+                             + "older one unstopped; serving the newest",
+                         activeCount, groupId);
         }
-        staleReportedFor = activeCount > 1 ? found.recordingId() : NULL_VALUE;
+        staleReportedFor[groupId - 1] = activeCount > 1 ? found.recordingId() : NULL_VALUE;
         if (found != null && replayer.recordingPosition(found.recordingId()) >= 0) {
-            activeRecording = found;
+            activeRecordings[groupId - 1] = found;
         }
         return found;
     }

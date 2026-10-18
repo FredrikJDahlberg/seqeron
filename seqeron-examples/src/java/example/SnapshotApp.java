@@ -15,6 +15,7 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.app.SnapshotListener;
 
@@ -153,7 +154,7 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
         } else {
             rejected++;
         }
-        System.out.printf("%d transfer %d from %d to %d %s %s%n", payload.globalSeqNo(), amount, from, to,
+        System.out.printf("%d transfer %d from %d to %d %s %s%n", payload.clusterSeqNo(), amount, from, to,
                           ok ? "applied" : "rejected", Arrays.toString(balances));
     }
 
@@ -197,14 +198,18 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
     }
 
     @Override
+    public void onGroupsResolved(final GroupDirectory directory) {
+    }
+
+    @Override
     public void onLeadershipChanged(final boolean leading) {
         System.out.println(leading ? "# leading — submitting transfers" : "# not leading — silent");
     }
 
     /** Transfers move money and never make it, so the total is the opening one whatever was restored. */
     @Override
-    public void onCaughtUp(final long globalSeqNo) {
-        System.out.printf("# caught up at %d — %d transfers, %d rejected, total %d%n", globalSeqNo, applied,
+    public void onCaughtUp(final long clusterSeqNo) {
+        System.out.printf("# caught up at %d — %d transfers, %d rejected, total %d%n", clusterSeqNo, applied,
                           rejected, Arrays.stream(balances).sum());
     }
 

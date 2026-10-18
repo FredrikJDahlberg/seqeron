@@ -139,7 +139,7 @@ public class ReplayerRecoveryTest : IDisposable
         _logged.Clear();
         _actions = new RecordingActions();
         _store = new SnapshotStore(Path.Combine(_directory.Path, "instance-" + _stores++));
-        _receiver = new ReplayerRecovery(_actions, e => _dispatched.Add(e.GlobalSeqNo), null,
+        _receiver = new ReplayerRecovery(_actions, e => _dispatched.Add(e.ClusterSeqNo), null,
                                          () => _caughtUpAt.Add(_dispatched.Count));
     }
 
@@ -162,7 +162,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(FromStart, _receiver.RequestFromPosition);
     }
 
-    [Fact(DisplayName = "a first frame at globalSeqNo 1 is the baseline and puts the client live")]
+    [Fact(DisplayName = "a first frame at clusterSeqNo 1 is the baseline and puts the client live")]
     public void FirstFrameAtOneIsAccepted()
     {
         DeliverQueue(1);
@@ -171,7 +171,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.IsCaughtUp);
     }
 
-    [Fact(DisplayName = "a first frame that is not globalSeqNo 1 is fatal")]
+    [Fact(DisplayName = "a first frame that is not clusterSeqNo 1 is fatal")]
     public void FirstFrameMustBeOne()
     {
         AttachReplay(11, 4096);
@@ -179,7 +179,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Throws<InvalidOperationException>(() => DeliverReplay(7));
     }
 
-    // Once the queue is dispatched mid-walk, a cold start races a live queue already carrying mid-stream globalSeqNos
+    // Once the queue is dispatched mid-walk, a cold start races a live queue already carrying mid-stream clusterSeqNos
     // against a replay that has not delivered 1 yet. That queue frame is neither a valid baseline nor a fault: only
     // the walk may establish the baseline.
     [Fact(DisplayName = "the live queue may not establish the baseline while the cold-start walk is in flight")]
@@ -196,6 +196,64 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverReplay(1); // the walk supplies the real baseline
 
         Assert.Equal(new List<long> { 1 }, _dispatched);
+    }
+
+    // ── a queue's continuity: groupSeqNo, across jumps in clusterSeqNo (spec §14 row 12) ──────────────────────
+
+    [Fact(DisplayName = "a first frame at groupSeqNo 1 is the baseline, whatever its clusterSeqNo")]
+    public void FirstFrameAtGroupSeqNoOneIsAcceptedWhateverItsClusterSeqNo()
+    {
+        DeliverOnQueue(40, 1, false);
+
+        Assert.Equal(new List<long> { 40 }, _dispatched);
+        Assert.True(_receiver.IsCaughtUp);
+    }
+
+    [Fact(DisplayName = "a first frame that is not groupSeqNo 1 is fatal, even at clusterSeqNo 1")]
+    public void FirstFrameMustBeGroupSeqNoOne()
+    {
+        AttachReplay(11, 4096);
+
+        Assert.Throws<InvalidOperationException>(() => DeliverOnQueue(1, 2, true));
+    }
+
+    [Fact(DisplayName = "continuity follows groupSeqNo, so a jump in clusterSeqNo is no gap")]
+    public void ContinuityFollowsGroupSeqNoAcrossJumpsInClusterSeqNo()
+    {
+        DeliverOnQueue(1, 1, false);
+        DeliverOnQueue(5, 2, false);
+        DeliverOnQueue(9, 3, false);
+
+        Assert.Equal(new List<long> { 1, 5, 9 }, _dispatched);
+        Assert.True(_receiver.IsCaughtUp);
+        Assert.True(_actions.RequestsSent == 0, "nothing to recover");
+    }
+
+    [Fact(DisplayName = "a missing groupSeqNo is a gap, resumed at the last dispatched frame and drained in order")]
+    public void AMissingGroupSeqNoIsAGap()
+    {
+        DeliverOnQueue(1, 1, false);
+        DeliverOnQueue(9, 3, false);
+
+        Assert.False(_receiver.IsCaughtUp);
+        Assert.True(_receiver.RequestFromPosition == 1024, "resumes at frame 1, where it starts");
+        Assert.Equal(1, _receiver.RetainedFrameCount);
+
+        AttachReplay(21, 3 * 1024);
+        DeliverOnQueue(1, 1, true); // the anchor, already dispatched
+        DeliverOnQueue(5, 2, true);
+
+        Assert.Equal(new List<long> { 1, 5, 9 }, _dispatched);
+    }
+
+    [Fact(DisplayName = "a frame whose clusterSeqNo is already passed is dropped")]
+    public void AFrameWhoseClusterSeqNoIsPassedIsDropped()
+    {
+        DeliverOnQueue(1, 1, false);
+        DeliverOnQueue(5, 2, false);
+        DeliverOnQueue(5, 2, false);
+
+        Assert.Equal(new List<long> { 1, 5 }, _dispatched);
     }
 
     // ── gap detection and the replay-to-live seam ─────────────────────────────────────────────────
@@ -228,7 +286,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(Logger.CoreComponent.ReplayerStreamReceiver, loggerEvent.Component);
         Assert.Equal(Logger.Severity.Warn, loggerEvent.Severity);
         Assert.Equal(Logger.CoreEventCode.QueueGap, loggerEvent.Code);
-        Assert.Equal("queue gap: expected globalSeqNo=3 got 5 — resuming the recording at globalSeqNo=2",
+        Assert.Equal("queue gap: expected groupSeqNo=3 got 5 — resuming the recording at clusterSeqNo=2",
                      loggerEvent.Message);
     }
 
@@ -347,7 +405,7 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverReplay(3);
 
         Assert.Equal(new List<long> { 1, 2, 3 }, _dispatched);
-        Assert.Equal(3, _receiver.LastGlobalSeqNo);
+        Assert.Equal(3, _receiver.LastClusterSeqNo);
     }
 
     // ── the Replayer's control-stream replies, and request/reply correlation ──────────────────────
@@ -680,7 +738,7 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverReplay(3); // the replay covers a frame the queue already retained
         DeliverReplay(4);
 
-        Assert.Equal(new List<long> { 1, 2, 3, 4 }, _dispatched); // each globalSeqNo dispatched exactly once
+        Assert.Equal(new List<long> { 1, 2, 3, 4 }, _dispatched); // each clusterSeqNo dispatched exactly once
     }
 
     // A hole in REPLAYED history is the one invariant violation that produced no log and no counter: the frame is
@@ -743,7 +801,7 @@ public class ReplayerRecoveryTest : IDisposable
         GoLive();
         DeliverQueueAt(1, 1024);
         DeliverQueueAt(2, 2048);
-        DeliverQueueAt(5, 8192); // gap -> resume anchored on globalSeqNo 2
+        DeliverQueueAt(5, 8192); // gap -> resume anchored on clusterSeqNo 2
         AttachReplay(12, 16384);
 
         DeliverReplay(4); // not the anchor
@@ -814,7 +872,7 @@ public class ReplayerRecoveryTest : IDisposable
 
         Assert.Contains("refused a resume", _receiver.Fault);
         Assert.False(_receiver.IsAwaitingReplay);
-        Assert.False(_receiver.IsCaughtUp, "the hole above globalSeqNo=2 is still open");
+        Assert.False(_receiver.IsCaughtUp, "the hole above clusterSeqNo=2 is still open");
     }
 
     // A resume ends at the bound it was given, so it must declare itself caught up and close its image, which frees
@@ -978,10 +1036,10 @@ public class ReplayerRecoveryTest : IDisposable
 
         // A cold start replaying a long log: slow, but converging one frame at a time. Measuring elapsed time
         // instead of progress is exactly what would fence this.
-        for (long globalSeqNo = 1; globalSeqNo <= 20; globalSeqNo++)
+        for (long clusterSeqNo = 1; clusterSeqNo <= 20; clusterSeqNo++)
         {
-            DeliverReplay(globalSeqNo);
-            Assert.False(CheckProgressAt(ClockMs + globalSeqNo * 60_000), $"at globalSeqNo {globalSeqNo}");
+            DeliverReplay(clusterSeqNo);
+            Assert.False(CheckProgressAt(ClockMs + clusterSeqNo * 60_000), $"at clusterSeqNo {clusterSeqNo}");
         }
     }
 
@@ -1030,7 +1088,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Single(_logged);
         string text = _logged[0].Message;
         // Without these an operator cannot tell an unanswering node from one whose recording cannot cover the hole.
-        Assert.Contains("lastGlobalSeqNo=1", text);
+        Assert.Contains("lastClusterSeqNo=1", text);
         Assert.Contains("awaitingReplay=true", text);
     }
 
@@ -1078,8 +1136,8 @@ public class ReplayerRecoveryTest : IDisposable
     {
         var changes = new List<long>();
         _receiver =
-            new ReplayerRecovery(_actions, e => _dispatched.Add(e.GlobalSeqNo),
-                                 (leaderMemberId, leadershipTermId, globalSeqNo) => changes.Add(globalSeqNo), null);
+            new ReplayerRecovery(_actions, e => _dispatched.Add(e.ClusterSeqNo),
+                                 (leaderMemberId, leadershipTermId, clusterSeqNo) => changes.Add(clusterSeqNo), null);
         DeliverLeadershipChanged(1);
 
         Assert.Equal(new List<long> { 1 }, changes);
@@ -1154,7 +1212,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(new List<string> { "header 4 2", "0 7" }, _restored);
         Assert.Empty(_dispatched);
         Assert.False(_receiver.IsRestoring);
-        Assert.Equal(Cut, _receiver.LastGlobalSeqNo);
+        Assert.Equal(Cut, _receiver.LastClusterSeqNo);
         Assert.True(_receiver.CurrentLeaderMemberId == 2, "the header's leader");
         Assert.True(_receiver.IsAwaitingReplay);
         Assert.Equal(Cut * 1024, _receiver.RequestFromPosition);
@@ -1164,6 +1222,21 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverReplay(11);
         DeliverReplay(12);
         Assert.Equal(new List<long> { 11, 12 }, _dispatched);
+    }
+
+    [Fact(DisplayName = "after a restore, the queue's continuity resumes at the cut frame's groupSeqNo")]
+    public void AfterARestoreContinuityResumesAtTheCutsGroupSeqNo()
+    {
+        WriteSnapshot(2);
+        StartRestoring();
+        AttachReplay(21, 64 * 1024);
+        DeliverReplayFrame(Frames.OnQueue(RestoreFrames.Started(Cut, 2), 4), 4); // the queue's fourth frame
+        _receiver.DoTimers(false);
+
+        AttachReplay(22, 64 * 1024);
+        DeliverReplayFrame(Frames.OnQueue(RestoreFrames.Started(Cut, 2), 4), 4);
+        DeliverOnQueue(Cut + 3, 5, true);
+        Assert.Equal(new List<long> { Cut + 3 }, _dispatched); // groupSeqNo 5 follows the cut's 4
     }
 
     [Fact(DisplayName = "a replay of the cut that stops advancing is requested again at the cut")]
@@ -1315,10 +1388,10 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverReplayFrame(RestoreFrames.Started(Cut, 2), Cut);
     }
 
-    private void DeliverReplayFrame(byte[] frame, long globalSeqNo)
+    private void DeliverReplayFrame(byte[] frame, long clusterSeqNo)
     {
         _wire.Wrap(frame);
-        _receiver.OnFrame(_wire, 0, frame.Length, globalSeqNo * 1024, ReceiveNs, true);
+        _receiver.OnFrame(_wire, 0, frame.Length, clusterSeqNo * 1024, ReceiveNs, true);
     }
 
     // Starts capturing log events here rather than in the constructor: several cases must see only what follows
@@ -1362,11 +1435,11 @@ public class ReplayerRecoveryTest : IDisposable
         _receiver.OnControl(_wire, 0, message.Length);
     }
 
-    private void DeliverLeadershipChanged(long globalSeqNo)
+    private void DeliverLeadershipChanged(long clusterSeqNo)
     {
-        byte[] frame = Frames.LeadershipChanged(globalSeqNo, 2, 3);
+        byte[] frame = Frames.LeadershipChanged(clusterSeqNo, 2, 3);
         _wire.Wrap(frame);
-        _receiver.OnFrame(_wire, 0, frame.Length, globalSeqNo * 1024, ReceiveNs, false);
+        _receiver.OnFrame(_wire, 0, frame.Length, clusterSeqNo * 1024, ReceiveNs, false);
     }
 
     // The replay image reaching the bound the Replayer gave it: how a replay completes.
@@ -1389,21 +1462,29 @@ public class ReplayerRecoveryTest : IDisposable
         return _receiver.CheckRecoveryProgress();
     }
 
-    private void DeliverReplay(long globalSeqNo)
+    private void DeliverReplay(long clusterSeqNo)
     {
-        byte[] frame = Frames.ClusterHeartbeat(globalSeqNo);
+        byte[] frame = Frames.ClusterHeartbeat(clusterSeqNo);
         _wire.Wrap(frame);
-        _receiver.OnFrame(_wire, 0, frame.Length, globalSeqNo * 1024, ReceiveNs, true);
+        _receiver.OnFrame(_wire, 0, frame.Length, clusterSeqNo * 1024, ReceiveNs, true);
     }
 
-    private void DeliverQueue(long globalSeqNo)
+    private void DeliverQueue(long clusterSeqNo)
     {
-        DeliverQueueAt(globalSeqNo, globalSeqNo * 1024);
+        DeliverQueueAt(clusterSeqNo, clusterSeqNo * 1024);
     }
 
-    private void DeliverQueueAt(long globalSeqNo, long position)
+    // A frame at groupSeqNo on a queue that does not carry every frame, starting at its 1024s.
+    private void DeliverOnQueue(long clusterSeqNo, long groupSeqNo, bool fromReplay)
     {
-        byte[] frame = Frames.ClusterHeartbeat(globalSeqNo);
+        byte[] frame = Frames.OnQueue(Frames.ClusterHeartbeat(clusterSeqNo), groupSeqNo);
+        _wire.Wrap(frame);
+        _receiver.OnFrame(_wire, 0, frame.Length, groupSeqNo * 1024, ReceiveNs, fromReplay);
+    }
+
+    private void DeliverQueueAt(long clusterSeqNo, long position)
+    {
+        byte[] frame = Frames.ClusterHeartbeat(clusterSeqNo);
         _wire.Wrap(frame);
         _receiver.OnFrame(_wire, 0, frame.Length, position, ReceiveNs, false);
     }
@@ -1411,17 +1492,17 @@ public class ReplayerRecoveryTest : IDisposable
     // A live queue frame too big for the retained-ahead FIFO to hold: a heartbeat zero-padded past one RetainBlock,
     // which RetainFrame refuses outright. The cheapest of its three overflow triggers to drive; the other two need
     // 65536 frames or 16 MiB.
-    private void DeliverQueueTooBigToRetain(long globalSeqNo)
+    private void DeliverQueueTooBigToRetain(long clusterSeqNo)
     {
-        DeliverQueuePadded(globalSeqNo, OversizedFrameLength);
+        DeliverQueuePadded(clusterSeqNo, OversizedFrameLength);
     }
 
     // A live queue frame of `length` bytes: a heartbeat, decoded from the front, zero-padded to it.
-    private void DeliverQueuePadded(long globalSeqNo, int length)
+    private void DeliverQueuePadded(long clusterSeqNo, int length)
     {
         var frame = new byte[length];
-        Frames.ClusterHeartbeat(globalSeqNo).CopyTo(frame, 0);
+        Frames.ClusterHeartbeat(clusterSeqNo).CopyTo(frame, 0);
         _wire.Wrap(frame);
-        _receiver.OnFrame(_wire, 0, length, globalSeqNo * 1024, ReceiveNs, false);
+        _receiver.OnFrame(_wire, 0, length, clusterSeqNo * 1024, ReceiveNs, false);
     }
 }
