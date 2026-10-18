@@ -59,6 +59,10 @@ for m in 0 1 2; do
 done
 for m in 0 1 2; do
   wait_for_log "$LOG_DIR/seq-$m.log" "Running" 30 || { echo "seq $m not up"; exit 1; }
+done
+seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-groups.xml \
+  > "$LOG_DIR/load-topology.log" 2>&1 || { echo "load-topology failed — see $LOG_DIR/load-topology.log"; exit 1; }
+for m in 0 1 2; do
   wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" 30 || true
 done
 echo "cluster up"

@@ -379,9 +379,21 @@ class ReplayerServiceTest {
 
     @Test
     void anArchiveThatClosedTheControlSessionTakesTheDutyCycleDownLoudly() {
-        fakeReplayer.closeArchiveSession("not connected");
+        fakeReplayer.closeArchiveSession();
 
         assertThrows(IllegalStateException.class, () -> replayerService.poll());
+    }
+
+    @Test
+    void anErrorAnsweringOneRequestIsCountedAndTheDutyCycleRunsOn() {
+        // A replay whose client left before it connected is answered with an error, and the session stays open.
+        fakeReplayer.answerArchiveRequestWithError("no connection established for replayChannel=aeron:ipc");
+
+        replayerService.poll();
+        replayerService.poll();
+
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
+        assertEquals(0, fatalCount.get());
     }
 
     // ── Slots ───────────────────────────────────────────────────────────────────

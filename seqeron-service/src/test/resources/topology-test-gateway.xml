@@ -14,13 +14,19 @@
 -->
 <topology xmlns="http://limitless.org/seqeron/topology/1">
 
+    <!-- Every test topology declares the same groups, so any of them loads into a cluster another
+         activated (spec S-8). -->
+    <groups>
+        <group name="test" id="1"/>
+    </groups>
+
     <!-- sourceId 9, allocated in doc/seqeron-protocol-spec.md §5 — the one id space over both kinds of
          producer. gatewayIds 10 and 11 rather than the next free pair, so a log line or a dump can never
          be confused with the C++ pair's 1/2. -->
     <gateways>
-        <gateway name="GW-T-A" id="10" sourceId="9" rank="0" snapshot="true"
+        <gateway name="GW-T-A" id="10" sourceId="9" rank="0" group="test" snapshot="true"
                  description="TestGateway, the edge-neutral test gateway (tools/TestGateway serve)"/>
-        <gateway name="GW-T-B" id="11" sourceId="9" rank="1" snapshot="true"
+        <gateway name="GW-T-B" id="11" sourceId="9" rank="1" group="test" snapshot="true"
                  description="TestGateway standby"/>
     </gateways>
 

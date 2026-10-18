@@ -42,9 +42,6 @@ public final class FrameLayer {
     /** Group {@code groupId}'s queue is stream {@code QUEUE_STREAM_ID_BASE + groupId}. */
     public static final int QUEUE_STREAM_ID_BASE = 2000;
 
-    /** Stream id of the queue. See {@link #QUEUE_CHANNEL}. */
-    public static final int QUEUE_STREAM_ID = 205;
-
     /**
      * @param groupId 1 to {@link #MAX_GROUPS}
      * @return the stream id of that group's queue

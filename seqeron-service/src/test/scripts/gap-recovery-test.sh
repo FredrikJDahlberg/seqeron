@@ -113,6 +113,8 @@ OTHER=$([[ "$LEADER" == "1" ]] && echo 2 || echo 1)   # the surviving non-0 memb
 start_seq 0
 wait_for_log "$LOG_DIR/seq-0.log" "Running" 30 || { echo "seq 0 not up"; exit 1; }
 echo "cluster up; tenure-1 leader = member $LEADER ; consumer co-located with member $CN"
+seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-groups.xml \
+  > "$LOG_DIR/load-topology.log" 2>&1 || { echo "load-topology failed — see $LOG_DIR/load-topology.log"; exit 1; }
 
 for m in 0 1 2; do
   wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" 30 || true
@@ -161,7 +163,7 @@ for _ in $(seq 1 40); do kill -0 "$CONSUMER_PID" 2>/dev/null || break; sleep 0.5
 CONSUMER_PID=""  # exited (or gave up waiting); don't re-kill in cleanup
 
 # ── Assertions ────────────────────────────────────────────────────────────────
-RECOVERIES=$(grep -c "queue gap: expected clusterSeqNo" "$CONSUMER_LOG" 2>/dev/null)
+RECOVERIES=$(grep -c "queue gap: expected groupSeqNo" "$CONSUMER_LOG" 2>/dev/null)
 DELIVERED=$(grep -oE "n=[0-9]+" "$CONSUMER_LOG" 2>/dev/null | head -1 | cut -d= -f2)
 DELIVERED=${DELIVERED:-0}
 

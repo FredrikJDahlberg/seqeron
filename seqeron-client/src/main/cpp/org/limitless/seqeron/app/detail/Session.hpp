@@ -425,9 +425,16 @@ class Session
     {
         if (m_aeron && m_queueControlSubRegId >= 0)
         {
-            // An add already answered would otherwise stay open with nothing holding it.
-            m_queueControlSub = m_aeron->findSubscription(m_queueControlSubRegId);
-            m_queueRequestPub = m_aeron->findPublication(m_queueRequestPubRegId);
+            // An add already answered would otherwise stay open with nothing holding it. A registration found
+            // once is forgotten, so only what is not held yet is found.
+            if (!m_queueControlSub)
+            {
+                m_queueControlSub = m_aeron->findSubscription(m_queueControlSubRegId);
+            }
+            if (!m_queueRequestPub)
+            {
+                m_queueRequestPub = m_aeron->findPublication(m_queueRequestPubRegId);
+            }
         }
         m_queueControlSub.reset();
         m_queueRequestPub.reset();

@@ -58,7 +58,7 @@ public sealed class FollowStream
     private readonly Frame.GatewayActive _gatewayActive = new Frame.GatewayActive();
 
     private volatile bool _running = true;
-    private long _lastClusterSeqNo;
+    private long _lastGroupSeqNo;
     private string _fault;
     private long _pingSentTicks;
 
@@ -168,11 +168,11 @@ public sealed class FollowStream
         }
     }
 
-    // Every other frame arrives here in clusterSeqNo order, history and live alike — the receiver requests a replay
-    // for anything the live queue dropped and dispatches nothing out of order in the meantime.
+    // Every other frame arrives here in queue order, history and live alike — the receiver requests a replay for
+    // anything the live queue dropped and dispatches nothing out of order in the meantime.
     private void OnSequenced(SequencedEvent sequencedEvent)
     {
-        if (!InOrder(sequencedEvent.ClusterSeqNo))
+        if (!InOrder(sequencedEvent.GroupSeqNo))
         {
             return;
         }
@@ -233,31 +233,33 @@ public sealed class FollowStream
                sequencedEvent.Buffer.GetLong(sequencedEvent.PayloadOffset, ByteOrder.LittleEndian) == _pingSentTicks;
     }
 
-    // The one frame family that reaches a consumer here instead of through OnSequenced.
+    // The one frame family that reaches a consumer here instead of through OnSequenced, with no groupSeqNo: it is
+    // the frame after the last.
     private void OnLeadershipChanged(int newLeaderMemberId, long leadershipTermId, long clusterSeqNo)
     {
-        if (!InOrder(clusterSeqNo))
+        if (!InOrder(_lastGroupSeqNo + 1))
         {
             return;
         }
         Console.WriteLine($"{clusterSeqNo} leader=member {newLeaderMemberId} term {leadershipTermId}");
     }
 
-    // The invariant the whole tier exists for: one frame per clusterSeqNo, no holes, replay and live alike. Recorded
-    // rather than thrown — this runs inside a fragment handler, and Image.Poll advances the subscriber position
-    // regardless of what a handler raises, so the duty cycle above raises it instead.
-    private bool InOrder(long clusterSeqNo)
+    // The invariant the whole tier exists for: one frame per groupSeqNo, no holes, replay and live alike (spec F-6);
+    // clusterSeqNo increases along the queue but not by one. Recorded rather than thrown — this runs inside a fragment
+    // handler, and Image.Poll advances the subscriber position regardless of what a handler raises, so the duty cycle
+    // above raises it instead.
+    private bool InOrder(long groupSeqNo)
     {
         if (_fault != null)
         {
             return false;
         }
-        if (clusterSeqNo != _lastClusterSeqNo + 1)
+        if (groupSeqNo != _lastGroupSeqNo + 1)
         {
-            _fault = "gap: " + _lastClusterSeqNo + " -> " + clusterSeqNo;
+            _fault = "gap: groupSeqNo " + _lastGroupSeqNo + " -> " + groupSeqNo;
             return false;
         }
-        _lastClusterSeqNo = clusterSeqNo;
+        _lastGroupSeqNo = groupSeqNo;
         return true;
     }
 

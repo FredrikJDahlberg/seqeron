@@ -234,6 +234,10 @@ wait_running 1 && wait_running 2 || { echo "members 1/2 not up"; exit 1; }
 wait_for_leader >/dev/null || { echo "no initial leader among 1/2"; exit 1; }
 start_seq 0; wait_running 0 || { echo "member 0 not up"; exit 1; }
 
+# The groups first, since the cluster refuses everything before them; the gateway list follows below.
+seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-groups.xml \
+  > "$LOG_DIR/load-groups.log" 2>&1 || { echo "load-topology failed — see $LOG_DIR/load-groups.log"; exit 1; }
+
 for m in 0 1 2; do wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" "$APP_CATCHUP_TIMEOUT_SECS" || true; done
 
 # Consumer on member 0: fault-injection ON (SIGUSR1 queue-drop) + latency stats (flushed on exit, not read here).
@@ -377,7 +381,7 @@ replica_pid() { local m="$1"; [[ "$m" == "$CN" ]] && echo "${CONSUMER_PID:-}" ||
 replica_log() { local m="$1"; [[ "$m" == "$CN" ]] && echo "$CONSUMER_LOG" || echo "$LOG_DIR/consumer-$m.log"; }
 # A gap the consumer repaired by RESUMING its recording at the hole — the healthy recovery, and the proof
 # that an armed queue-drop actually landed.
-count_queue_resumes() { grep -c 'queue gap: expected clusterSeqNo' "$1" 2>/dev/null || true; }
+count_queue_resumes() { grep -c 'queue gap: expected groupSeqNo' "$1" 2>/dev/null || true; }
 # The client's own "I am not serving" alarm (RecoveryStalled, ReplayerStreamReceiver::checkRecoveryProgress):
 # recovery dispatched nothing for RECOVERY_PROGRESS_TIMEOUT_MS while not caught up. Unlike the one-shot
 # "following live" marker this fires per episode, so it reads CURRENT state rather than latching at boot.
@@ -779,23 +783,23 @@ check_invariants() {
       log "  INVARIANT FAIL: no snapshot round past $LAST_SNAPSHOT_ROUND within ${SNAPSHOT_ROUND_TIMEOUT_SECS}s"; fail=1
     fi
   fi
-  # (h) The rigorous safety property (gap-free, monotone clusterSeqNo) is asserted ONCE at end of run by
+  # (h) The rigorous safety property (gap-free, monotone groupSeqNo) is asserted ONCE at end of run by
   #     verify_sequence below — decoding it every round would re-dump the whole recording each time.
   return $fail
 }
 
 # ── End-of-run safety oracle: verify EVERY node's queue ────────────────────────────
-# The real safety property of the sequencer: the SEQUENCED stream (out of the cluster — sbe-sequenced,
-# schema 202, carrying clusterSeqNo; ingress into the cluster is unsequenced and has none) must be a
-# gap-free, strictly-monotone run 1,2,3,…,N — and EVERY node must have recorded the identical run
-# (Raft replicates the same state to all). So decode all three members' archives and assert both.
+# The real safety property of the sequencer: each queue (the test topology's one group's, carrying
+# groupSeqNo; ingress into the cluster is unsequenced and has none) must be a gap-free, strictly-monotone
+# run 1,2,3,…,N — and EVERY node must have recorded the identical run (Raft replicates the same state to
+# all). So decode all three members' archives and assert both.
 #
-# A killed/restarted node ROTATES its queue: a pre-kill partial recording (clusterSeqNo 1..K) plus a
+# A killed/restarted node ROTATES its queue: a pre-kill partial recording (groupSeqNo 1..K) plus a
 # post-restart recording that re-records 1..N from scratch (recovery is always full-log replay from
-# gseq 1 — there are no snapshots). So each RECORDING is checked independently and reset at its
+# clusterSeqNo 1 — there are no snapshots). So each RECORDING is checked independently and reset at its
 # "[Catalog] Recording ID" boundary — NOT concatenated (that would read the K→1 restart as a regression).
 # The co-resident raft consensus-log recording decodes too (schema 111), but none of its messages carry
-# a clusterSeqNo, so it contributes nothing to the scan below. The node's high-water mark is the max clusterSeqNo it recorded;
+# a groupSeqNo, so it contributes nothing to the scan below. The node's high-water mark is the max groupSeqNo it recorded;
 # all nodes' high-water marks must match (convergence).
 verify_sequence() {
   local jar="$JAR" m rc=0
@@ -827,10 +831,10 @@ verify_sequence() {
     local hw
     hw=$(awk -v member="$m" '
       /\[Catalog\] Recording ID/ { expected=0; next }           # new recording -> reset (rotated queue)
-      /"clusterSeqNo"/ {
+      /"groupSeqNo"/ {                                           # the test topology has one group, so one queue
         s=$0; gsub(/[^0-9]/, "", s); n=s+0; total++
         if (expected==0) {                                       # first sequenced msg in THIS recording
-          if (n!=1) { printf "  member %s SAFETY FAIL: recording starts at clusterSeqNo %d, expected 1\n", member, n > "/dev/stderr"; exit 1 }
+          if (n!=1) { printf "  member %s SAFETY FAIL: recording starts at groupSeqNo %d, expected 1\n", member, n > "/dev/stderr"; exit 1 }
         } else if (n != expected+1) {
           printf "  member %s SAFETY FAIL: gap/regression — expected %d, got %d\n", member, expected+1, n > "/dev/stderr"; exit 1
         }
@@ -839,12 +843,12 @@ verify_sequence() {
       END { if (total==0) { printf "  member %s SAFETY FAIL: no sequenced messages decoded\n", member > "/dev/stderr"; exit 1 } print max }
     ' "$LOG_DIR/sequenced-dump-$m.txt") || { rc=1; continue; }
     highwater[$m]="$hw"
-    log "  member $m: queue gap-free & monotone, high-water clusterSeqNo=$hw"
+    log "  member $m: queue gap-free & monotone, high-water groupSeqNo=$hw"
   done
   for m in 0 1 2; do kill -CONT "${SEQ_PIDS[$m]:-0}" 2>/dev/null; done
-  # Convergence: every node must have recorded the same final clusterSeqNo.
+  # Convergence: every node must have recorded the same final groupSeqNo.
   if [[ "$rc" == 0 && "${highwater[0]}" == "${highwater[1]}" && "${highwater[1]}" == "${highwater[2]}" ]]; then
-    log "  convergence OK: all 3 nodes recorded clusterSeqNo 1..${highwater[0]}"
+    log "  convergence OK: all 3 nodes recorded groupSeqNo 1..${highwater[0]}"
   else
     log "  SAFETY FAIL: nodes diverged (high-water 0=${highwater[0]} 1=${highwater[1]} 2=${highwater[2]})"; rc=1
   fi

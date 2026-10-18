@@ -253,7 +253,7 @@ A `Gateway`'s header continues at *G* = 19 + 33 × `groupCount`:
 A cold start of an instance with a `SnapshotListener` restores in `ReplayerRecovery`, in every language:
 
 1. **Choose.** Take the newest confirmed file in the snapshot directory. One with no trailer gives way to the
-   next older; with none, recover from `clusterSeqNo` 1.
+   next older; with none, recover from the queue's first frame, `groupSeqNo` 1.
 2. **Check the format.** If `formatVersion` is one this build does not support, stop.
 3. **Check the cut.** Request a replay of the recording from the file's `cutPosition`. If its first frame is
    the frame the file names, `clusterSeqNo` `cutClusterSeqNo` stamped `cutTimestamp`, the file is this log's:

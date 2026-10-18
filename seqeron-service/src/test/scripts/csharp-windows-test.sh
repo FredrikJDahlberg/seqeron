@@ -8,7 +8,7 @@
 # the C# examples. Three phases, all of them client functionality:
 #
 #   A  UDP ingress from the gateway host, through PendingSends            confirm EXACT
-#   B  a cold start on the gateway host, replayed from clusterSeqNo 1       follow CONTIGUOUS
+#   B  a cold start on the gateway host, replayed from groupSeqNo 1         follow CONTIGUOUS
 #   C  the C# gateway pair handed over when its active instance is killed  standby resumes at connection 1
 #
 # and the member logs no rejected ingress frame. One member, not three: under WSL1's system-call translation
@@ -73,7 +73,15 @@ cleanup() {
   wait 2>/dev/null
 }
 trap cleanup EXIT
-wait_for_log "$LOG_DIR/seq-0.log" "serving replay" 90 || { echo "member not up"; cat "$LOG_DIR/seq-0.log"; exit 1; }
+wait_for_log "$LOG_DIR/seq-0.log" "Running" 90 || { echo "member not up"; cat "$LOG_DIR/seq-0.log"; exit 1; }
+# topology-csharp.xml less its gateway list first, in WSL beside the member, since the cluster refuses everything
+# before its groups and the gateway host relays nothing until then; the list lands in C.
+sed -e '/<gateways>/,/<\/gateways>/d' "${REPO_ROOT}/seqeron-examples/topology-csharp.xml" > "$LOG_DIR/topology-groups.xml"
+WSL_GROUPS=$(wsl_run wslpath -a "$(cygpath -wa "$LOG_DIR/topology-groups.xml")" | tr -d '\r')
+wsl_run java "${JAVA_OPTS[@]}" -Dclusterctl.memberId=0 -Dclusterctl.baseDir=/tmp/seqeron-seq -cp "$WSL_JAR" \
+  org.limitless.seqeron.tools.ClusterCtl load-topology "$WSL_GROUPS" > "$LOG_DIR/load-groups.log" 2>&1 ||
+  { echo "load-topology failed: $LOG_DIR/load-groups.log"; exit 1; }
+wait_for_log "$LOG_DIR/seq-0.log" "serving replay" 90 || { echo "member not serving"; cat "$LOG_DIR/seq-0.log"; exit 1; }
 echo "member 0 up in WSL"
 
 # The gateway host, on Windows.
@@ -83,7 +91,7 @@ rm -rf "${TMP_DIR}/seqeron-seq-windows"
 # UTF-8 output, as the log patterns expect: redirected, a Windows JVM writes the system code page.
 java "${JAVA_OPTS[@]}" -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 \
   -Dreplayer.memberId="$NODE" -Dreplayer.baseDir="$GATEWAY_BASE" \
-  -Dreplayer.archiveEndpoints="$ENDPOINTS" -cp "$(cygpath -wa "$JAR")" \
+  -Dreplayer.archiveEndpoints="$ENDPOINTS" -Dreplayer.groups=1 -cp "$(cygpath -wa "$JAR")" \
   org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/gateway-host.log" 2>&1 &
 GATEWAY_HOST_PID=$!
 wait_for_log "$LOG_DIR/gateway-host.log" "ready —" 90 ||
@@ -126,13 +134,14 @@ example follow-ex FollowStream; FOLLOW_PID=$!; CLIENT_PIDS+=("$FOLLOW_PID")
 example gw-a GatewayApp SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-CS-A; GW_A_PID=$!; CLIENT_PIDS+=("$GW_A_PID")
 example gw-b GatewayApp SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-CS-B; GW_B_PID=$!; CLIENT_PIDS+=("$GW_B_PID")
 C_OK=1
-for f in gw-a gw-b; do
-  wait_for_log "$LOG_DIR/$f.log" "# caught up" 90 || { echo "    $f never caught up"; C_OK=0; }
-done
-# clusterctl on the gateway host: its Aeron directory is node 3's, and it reaches the leader over UDP.
+# clusterctl on the gateway host: its Aeron directory is node 3's, and it reaches the leader over UDP. Both
+# instances are up before the list lands, and read their queue as soon as their rows do.
 CLUSTERCTL_MEMBER_ID="$NODE" "${REPO_ROOT}/seqeron-service/src/main/scripts/clusterctl.sh" load-topology \
   "$(cygpath -w "${REPO_ROOT}/seqeron-examples/topology-csharp.xml")" > "$LOG_DIR/load-topology.log" 2>&1 ||
   { echo "    load-topology failed: $LOG_DIR/load-topology.log"; C_OK=0; }
+for f in gw-a gw-b; do
+  wait_for_log "$LOG_DIR/$f.log" "# caught up" 90 || { echo "    $f never caught up"; C_OK=0; }
+done
 wait_for_count gw-a "ping echoed on connection 0" 3 60 || { echo "    GW-EX-CS-A never served connection 0"; C_OK=0; }
 wait_for_log "$LOG_DIR/gw-b.log" "# connection 0 opened (example-client)" 20 ||
   { echo "    the standby never saw connection 0 open"; C_OK=0; }

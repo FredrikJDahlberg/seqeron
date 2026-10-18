@@ -30,7 +30,7 @@ cluster copies through unopened; what it means is the business of the producers 
       ▼
   ┌─ cluster member ─────────────────────────────────────────────────┐
   │                                                                  │
-  │  Aeron Cluster ──▶ Sequencer ──▶ queue (aeron:ipc, stream 205) ────┼──▶ consumers on this host:
+  │  Aeron Cluster ──▶ Sequencer ──▶ a queue per group (aeron:ipc) ──┼──▶ consumers on this host:
   │  (Raft log)                       │                              │      live, untethered
   │      ▲                            ▼                              │
   │      │                      Aeron Archive ──▶ Replayer ──────────┼──▶ consumers on this host:
@@ -45,7 +45,7 @@ A deployment is a cluster of **members** — one for development, three or more,
 production — each running one JVM: the Aeron Cluster consensus
 module, the sequencer, an embedded media driver, an Aeron Archive and a Replayer. Clients run in their own
 processes beside a member and attach to its media driver. A **gateway host** is a host that runs clients
-but no member; its own Replayer relays a member's queue onto a local one, so its clients see exactly what
+but no member; its own Replayer relays a member's queues onto local ones, so its clients see exactly what
 they would see on a member.
 
 ### The cluster member
@@ -55,15 +55,16 @@ they would see on a member.
   owns. It has no Aeron dependency and no I/O; it is unit-tested directly.
 - **`SequencerService`** is the Aeron Cluster adapter. It decides when to call the sequencer and publishes
   what comes back, and holds no replicated state of its own.
-- **The queue** is a node-local `aeron:ipc` publication (stream 205) carrying every sequenced message. Every
-  member publishes its own, leader and follower alike, and since every member applies the same committed
-  log in the same order, every queue is byte-identical, message for message.
-- **The archive** records the queue. Each member therefore holds a complete copy of history, written
-  locally, with no cross-node replication and no leader-only recording. The queue is created once and
-  survives leadership changes, so a member's recording is one continuous run across every leader it has
-  seen.
-- **The Replayer** serves history out of that recording to the clients on its host: a cold start from
-  `clusterSeqNo` 1, or a resume after a gap. It is off the live path, and nothing reads the archive except
+- **The queues** are node-local `aeron:ipc` publications, one per group (stream 2000 + `groupId`). A queue
+  carries every system message and the application messages addressed to its group. Every member publishes
+  its own, leader and follower alike, and since every member applies the same committed log in the same
+  order, each queue is byte-identical across members, message for message.
+- **The archive** records the queues. Each member therefore holds a complete copy of each, written
+  locally, with no cross-node replication and no leader-only recording. A queue is created once, when the
+  first topology load activates the groups, and survives leadership changes, so a member's recording of it
+  is one continuous run across every leader it has seen.
+- **The Replayer** serves history out of those recordings to the clients on its host: a cold start from
+  `groupSeqNo` 1, or a resume after a gap. It is off the live path, and nothing reads the archive except
   through it.
 
 ### The client tier

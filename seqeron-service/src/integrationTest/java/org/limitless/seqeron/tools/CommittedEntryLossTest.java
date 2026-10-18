@@ -172,7 +172,8 @@ class CommittedEntryLossTest {
         final SequencedFrameDecoder frame = new SequencedFrameDecoder();
         final MutableLong clusterSeqNo = new MutableLong();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(m)));
-             Subscription queue = aeron.addSubscription(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID)) {
+             Subscription queue =
+                 aeron.addSubscription(FrameLayer.QUEUE_CHANNEL, FrameLayer.queueStreamId(InProcessCluster.GROUP_ID))) {
             while (clusterSeqNo.get() == 0) {
                 queue.poll((buffer, offset, length, header) -> {
                     if (frame.wrap(buffer, offset, length)) {

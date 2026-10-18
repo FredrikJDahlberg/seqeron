@@ -32,13 +32,14 @@ procedure: a failed component restarts and replays.
 ### 1.1 Every node records a complete copy
 
 `SequencerService` runs on every member, leader and follower alike, and republishes every sequenced frame on
-the member's queue (`aeron:ipc`, stream 205), which the member's Aeron Archive records. Every member applies
-the same committed log in the same order, so the queues are byte-identical (spec **F-2**). There is no
-cross-member replication of recordings and no leader-only archive.
+the member's queue of each group the frame reaches (`aeron:ipc`, stream 2000 + `groupId`), which the member's
+Aeron Archive records. Every member applies the same committed log in the same order, so each queue is
+byte-identical across members (spec **F-2**). There is no cross-member replication of recordings and no
+leader-only archive.
 
-The queue publication and its recording are created once, in `onStart`, and survive leadership changes,
-since `aeron:ipc` has no port to conflict on. A member's recording is therefore one continuous run across
-every leader tenure it has seen.
+The queue publications and their recordings are created once, when the first topology load activates the
+groups (spec §7.4), and survive leadership changes, since `aeron:ipc` has no port to conflict on. A member's
+recording of a queue is therefore one continuous run across every leader tenure it has seen.
 
 So any member can serve full history, or a gap, to its own clients, and losing a member loses no history.
 
@@ -261,17 +262,18 @@ which is unit-tested directly, case for case across the languages.
 
 - **Cold start.** It walks the active recording from its start to the tip the Replayer reported when it
   answered, unless it restores a snapshot first (§3.4).
-- **Gap.** A live frame whose `clusterSeqNo` is ahead of the next expected one clears `isCaughtUp()` and
+- **Gap.** A live frame whose `groupSeqNo` is ahead of the next expected one clears `isCaughtUp()` and
   requests a resume at the position of the last delivered frame, repairing only the gap. If the resumed
-  replay's first frame is not the expected `clusterSeqNo` — the member restarted, and its recording changed —
-  the client falls back to a full walk.
+  replay's first frame is not the expected `groupSeqNo` — the member restarted, and its recording changed —
+  the client falls back to a full walk. A frame is a duplicate by its `clusterSeqNo`, which increases along a
+  queue but not by one (spec **F-6**).
 - **Retained frames.** While a walk or resume is in progress, live frames beyond the gap are kept in a
   bounded FIFO (65,536 frames or 16 MiB) and delivered when the replay reaches them, so recovery ends without
   a second gap. Past the bound, the client drops them and walks again.
 - **`isCaughtUp()` is not latched.** It can clear again on a later gap; the gateway fences (§2.1) and the
   leader gate (§4) depend on that.
-- **The first frame is 1.** The first frame a client ever delivers must have `clusterSeqNo` 1, or the process
-  aborts: the member's recording must reach the start of the log.
+- **The first frame is 1.** The first frame a client ever delivers must have `groupSeqNo` 1, or the process
+  aborts: the member's recording must reach the start of the queue.
 - **One replay subscription per replay.** The replay stream (201) is shared by every client on the member,
   and an Aeron publication runs at its slowest tethered subscriber. A client therefore subscribes to it only
   for the duration of its replay, filtered to that replay's session id. A subscription held open between

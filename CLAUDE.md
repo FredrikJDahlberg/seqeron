@@ -305,6 +305,11 @@ the C# example's own pair, which both C# harnesses load.
 starts no process it does not own. A consumer that wants its own replicas or gateways alongside runs
 them itself: `SEQERON_NO_CONSUMERS=1` leaves out the probe followers, the caller launches its own
 after READY, and names them in `SEQERON_EXTRA_PROCESSES` so `stop-cluster.sh` sweeps them too.
+The cluster sequences nothing before its groups are active, so `SEQERON_TOPOLOGY` names a topology document
+either script loads once its members run. Without it, `start-three-node-cluster.sh` loads
+`topology-test-groups.xml` for its probe followers, and with `SEQERON_NO_CONSUMERS=1` the caller loads its own.
+The harnesses that run no gateway pair load `topology-test-groups.xml` first; every test topology declares the
+same group, `test`, and the examples' two declare the same two, so files of a kind load into one cluster.
 
 ## Architecture
 
@@ -313,18 +318,21 @@ after READY, and names them in `SEQERON_EXTRA_PROCESSES` so `stop-cluster.sh` sw
 no Aeron dependency, and is unit-tested directly (`SequencerTest`). `SequencerService`
 (`ClusteredService`) is its Aeron adapter: it decides *when* to call the sequencer and publishes what
 comes back, holding no replicated state itself. Every ingress message gets a cluster-wide monotone
-`clusterSeqNo` plus the Raft consensus timestamp, then is republished on the **node-local queue**
-(`QUEUE_CHANNEL` = `aeron:ipc?alias=seqeron-queue`, `QUEUE_STREAM_ID` = 205), which this node's co-located Aeron Archive
-records. Every frame on it is sequenced: the queue carries `Sequenced` envelopes and nothing else, and
-the sequencer is the stream's only publisher.
+`clusterSeqNo` plus the Raft consensus timestamp, then is republished on the **node-local queue** of each group
+it reaches (`QUEUE_CHANNEL` = `aeron:ipc?alias=seqeron-queue`, stream `queueStreamId(groupId)` = 2000 + `groupId`),
+which this node's co-located Aeron Archive records: every system frame on every queue, an application frame on
+the queue of each group its `groupMask` names, numbered along the queue by `groupSeqNo`. The first topology load
+activates the groups and opens the queues, and the sequencer refuses everything before it. Every frame on a
+queue is sequenced: it carries `Sequenced` envelopes and nothing else, and the sequencer is its only publisher.
 
-**Every node publishes and records its own queue** — leader and follower alike. All nodes process the
+**Every node publishes and records its own queues** — leader and follower alike. All nodes process the
 same committed log in the same order and keep identical sequencing state (so a new leader resumes
 exactly where the last one left off), which makes the queues byte-identical across nodes, frame for frame
 (recording positions match only at equal IPC MTU and term length): each archive
-independently holds complete history, with no cross-node replication. The queue publication is created
-once in `onStart` and never re-created on a leadership change (`aeron:ipc` has no port to collide on),
-so a node's recording is one continuous run spanning every leader tenure.
+independently holds each queue complete, with no cross-node replication. A queue publication is created
+once, at activation, and never re-created on a leadership change (`aeron:ipc` has no port to collide on),
+so a node's recording of it is one continuous run spanning every leader tenure; a node whose archive is not
+recording every queue within 5 s of activation terminates itself.
 
 Consumers split live from history: co-located apps subscribe to the queue **directly** for the live feed
 (untethered, so a slow app is dropped and heals via replay rather than back-pressuring), while the
@@ -368,7 +376,7 @@ frame a producer sends. Every instance compares its own serialization with the s
 difference (spec §16 A-6, A-7); a match confirms its file, which only then is named `<round>.snapshot` and
 replaces every older one. A starting client restores in `ReplayerRecovery` from its newest confirmed file once a
 replay from the file's cut position opens on that cut — a file from a purged log fails it — then resumes after
-the cut; an instance with no such file replays from `clusterSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
+the cut; an instance with no such file replays its queue from `groupSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
@@ -382,13 +390,14 @@ host's alone. The two sides share only the protocol's addresses —
 `FROM_START` and `NO_REPLAY_NEEDED` — and those are `protocol/ReplayProtocol` in every language.
 
 **A gateway host runs clients with no member on it.** `ReplayerServer` with `replayer.archiveEndpoints`
-runs its own media driver and archive, and `AeronQueueRelay` copies a member's queue onto the host's own: one
-archive replay, over UDP, that follows the member's active recording live. Its decisions are the pure
+runs its own media driver and archive, and `AeronQueueRelay` copies a member's queue of each group in
+`replayer.groups` onto the host's own: one archive replay per queue, over UDP, that follows the member's active
+recording live. Its decisions are the pure
 **`QueueRelay`**, unit-tested the way `QueuePublisher` is. It republishes only the frame after the last one it
-published, so the host's queue is the log frame for frame, and on losing its member it resumes on the next
-at the same recording position — every member's active recording starts at `clusterSeqNo` 1 and its
+published, so the host's queue is the member's frame for frame, and on losing its member it resumes on the next
+at the same recording position — every member's active recording of a queue starts at `groupSeqNo` 1 and its
 positions follow from the frames — falling back to that recording's start if the frame there is not the
-next one. Each start relays from `clusterSeqNo` 1 into a new local recording, as a member's restart does, so
+next one. Each start relays from `groupSeqNo` 1 into a new local recording, as a member's restart does, so
 the host's recording starts where a client checks it does. Clients there are unchanged: they attach to the host's
 Aeron directory with the host's node id (one no member uses) where they take a member id, and submit over UDP
 ingress — an `Application` with `offCluster` set, since no leadership there is its own, which makes it the
@@ -529,7 +538,8 @@ the client tier is not API — update it when that surface changes), `fault-tole
 (application snapshots: local files the log confirms), `upgrades.md` (seqeron and application versions,
 and the proposed snapshot-and-upcaster upgrade model), and `versioning-prior-art.md` (how exchanges and
 log-based systems version their protocols, as background to `upgrades.md`). The topology documents here are
-`seqeron-service/src/test/resources/topology-test-gateway.xml`, `topology-test-snapshot.xml` beside it, and
+`seqeron-service/src/test/resources/topology-test-gateway.xml`, `topology-test-snapshot.xml` and
+`topology-test-groups.xml` beside it, and
 `seqeron-examples/topology.xml` and `topology-csharp.xml`. `client-api.md`'s tables have a column per language,
 and a change to the client tier's surface changes all three.
 

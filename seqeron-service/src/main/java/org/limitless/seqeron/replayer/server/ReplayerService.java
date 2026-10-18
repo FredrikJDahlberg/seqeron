@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Queue;
 import java.util.Set;
+import java.util.StringJoiner;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongPredicate;
 import org.agrona.DirectBuffer;
@@ -206,9 +207,13 @@ public final class ReplayerService {
     /** One duty-cycle iteration. Returns a work count for the idle strategy. */
     public int poll() {
         final String archiveError = replayer.pollArchive();
-        if (archiveError != null) {
+        if (Replayer.ARCHIVE_SESSION_CLOSED.equals(archiveError)) {
             // The session is the archive's to close and cannot be reopened, so no replay could be served again.
-            throw new IllegalStateException("the local archive's control session failed: " + archiveError);
+            throw new IllegalStateException("the local archive closed its control session");
+        }
+        if (archiveError != null) {
+            // An error answers one request and leaves the session open.
+            onArchiveError("a replay", new IllegalStateException(archiveError));
         }
         int work = drainTopologyRows();
         work += replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);
@@ -247,15 +252,20 @@ public final class ReplayerService {
             return 0; // no group active here yet
         }
         try {
+            final StringJoiner recordings = new StringJoiner(", ");
             for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
-                if (resolver.serves(groupId) && findActiveRecording(groupId) == null) {
+                if (!resolver.serves(groupId)) {
+                    continue;
+                }
+                final Replayer.RecordingSpan active = findActiveRecording(groupId);
+                if (active == null) {
                     return 0; // not recorded yet; retry next cycle
                 }
+                recordings.add("group " + groupId + "'s queue recording " + active.recordingId() + " live");
             }
             ready = true;
             readyCounter.set(1);
-            Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                        "ready — the queues of groups 0x%s are recording; serving replay", Integer.toHexString(served));
+            Logger.info(Logger.CoreComponent.ReplayerService, memberId, "ready — %s; serving replay", recordings);
             return 1;
         } catch (final RuntimeException ex) {
             onOwnArchiveCallFailed("listing the queue recordings", ex);

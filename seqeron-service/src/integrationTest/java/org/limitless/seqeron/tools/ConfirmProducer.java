@@ -27,8 +27,8 @@ final class ConfirmProducer implements AutoCloseable {
 
     private static final int CLIENT_ID = 9;
 
-    /** The queue it confirms on: group 1's, the in-process cluster's only group. */
-    private static final int GROUP_ID = 1;
+    /** The queue it confirms on, the in-process cluster's one group's. */
+    private static final int GROUP_ID = InProcessCluster.GROUP_ID;
     private static final int GROUP_MASK = 1 << (GROUP_ID - 1);
     private static final int NO_ID = -1;
     private static final byte[] NO_FILLER = new byte[0];

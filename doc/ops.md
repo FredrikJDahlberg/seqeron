@@ -154,7 +154,7 @@ each stream. An alias changes no matching: IPC publications and subscriptions ma
 
 | alias | streams |
 |---|---|
-| `seqeron-queue` | the queue, 205 |
+| `seqeron-queue` | the queues, 2000 + `groupId` (2001–2016) |
 | `seqeron-replay` | the replay protocol, 201–203, and the Replayer's own replays, 204 and 207 |
 | `seqeron-archive` | archive control, 100, and its responses: 120–122 in a member or gateway host |
 | `seqeron-ingress` | a co-located producer's cluster ingress, 101 |
@@ -303,7 +303,7 @@ stream has cycled through all three terms. A UDP stream costs another 3 × term 
 
 | stream | channel | term length | set by |
 |---|---|---|---|
-| the queue (stream 205), every co-located producer's ingress, replay control | `aeron:ipc` | 16 MiB | `aeron.ipc.term.buffer.length` on the member's or gateway host's driver |
+| each queue (stream 2000 + `groupId`), every co-located producer's ingress, replay control | `aeron:ipc` | 16 MiB | `aeron.ipc.term.buffer.length` on the member's or gateway host's driver |
 | ingress from a producer not beside the leader, egress, consensus between members | `aeron:udp` | 16 MiB | `aeron.term.buffer.length` on the sending driver |
 | the Raft log | `aeron:udp` | 64 MiB | `aeron.cluster.log.channel`, default `aeron:udp?term-length=64m` |
 | a replay: recovery, a gateway host's relay | IPC or UDP | the recording's | the stream the recording was made from |

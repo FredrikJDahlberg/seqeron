@@ -45,7 +45,6 @@ namespace org::limitless::seqeron::protocol {
 // consumer subscribes untethered (see ReplayerStreamReceiver), the recording is found by stream id alone.
 // Each group's queue is this channel on its own stream, queueStreamId(groupId).
 inline constexpr const char* QUEUE_CHANNEL = "aeron:ipc?alias=seqeron-queue";
-inline constexpr std::int32_t QUEUE_STREAM_ID = 205;
 
 // The width of groupMask: groupIds run 1 to 16.
 inline constexpr std::int32_t MAX_GROUPS = 16;

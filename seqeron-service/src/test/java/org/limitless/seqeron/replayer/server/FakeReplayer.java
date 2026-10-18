@@ -52,6 +52,7 @@ final class FakeReplayer implements Replayer {
     private RuntimeException replayFailure;
     private RuntimeException archiveFailure;
     private String archiveSessionError;
+    private String archiveRequestError;
     private int archivePolls;
     private int listings;
     private int replayAttempts;
@@ -157,9 +158,14 @@ final class FakeReplayer implements Replayer {
         archiveFailure = null;
     }
 
-    /** Makes every subsequent {@code pollArchive} report {@code error}, as a session the archive closed does. */
-    void closeArchiveSession(final String error) {
-        archiveSessionError = error;
+    /** Makes every subsequent {@code pollArchive} report the session closed, as a session the archive closed does. */
+    void closeArchiveSession() {
+        archiveSessionError = ARCHIVE_SESSION_CLOSED;
+    }
+
+    /** Makes the next {@code pollArchive} report {@code error}, as the archive answering one request does. */
+    void answerArchiveRequestWithError(final String error) {
+        archiveRequestError = error;
     }
 
     /** How many times the archive's queue recordings were listed. */
@@ -262,7 +268,9 @@ final class FakeReplayer implements Replayer {
     @Override
     public String pollArchive() {
         ++archivePolls;
-        return archiveSessionError;
+        final String requestError = archiveRequestError;
+        archiveRequestError = null;
+        return archiveSessionError != null ? archiveSessionError : requestError;
     }
 
     @Override

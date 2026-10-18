@@ -3,11 +3,11 @@
 # read through.
 #
 # A three-node cluster, plus a gateway host: node 3, its own Aeron directory and archive, running
-# ReplayerServer with replayer.archiveEndpoints. Its relay reads the leader's queue recording over UDP and
-# republishes it onto the host's own queue. A ClusterProbe confirm producer on node 3 submits over UDP ingress
+# ReplayerServer with replayer.archiveEndpoints and replayer.groups. Its relay reads the leader's recording of
+# group 1's queue over UDP and republishes it onto the host's own. A ClusterProbe confirm producer on node 3 submits over UDP ingress
 # and checks its own frames on that queue; mid-stream the leader is killed, which is both a leader failover
-# and the relay's source going away. The gateway host is then restarted, which relays the log again from
-# clusterSeqNo 1 into a second local recording, and a fresh ClusterProbe follow on node 3 cold-starts through
+# and the relay's source going away. The gateway host is then restarted, which relays the queue again from
+# groupSeqNo 1 into a second local recording, and a fresh ClusterProbe follow on node 3 cold-starts through
 # the host's Replayer from that recording alone.
 #
 # PASS iff the producer saw every frame exactly once, in order, the relay moved to another member, and
@@ -46,6 +46,8 @@ for m in 0 1 2; do
   wait_for_log "$LOG_DIR/seq-$m.log" "Running" 30 || { echo "seq $m not up"; exit 1; }
 done
 echo "cluster up"
+seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-groups.xml \
+  > "$LOG_DIR/load-topology.log" 2>&1 || { echo "load-topology failed — see $LOG_DIR/load-topology.log"; exit 1; }
 
 sleep 2  # let tenure-1 LeadershipChanged replicate to followers
 L1=$(grep -h "isLeader=true" "$LOG_DIR"/seq-*.log | grep -oE 'SequencerService/[0-9]+' | head -1 | cut -d/ -f2)
@@ -58,7 +60,7 @@ for m in 0 1 2; do
 done
 HOST_LOG="$LOG_DIR/gateway-host.log"
 java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$NODE" -Dreplayer.baseDir="$BASE_DIR" \
-     -Dreplayer.archiveEndpoints="$ENDPOINTS" -cp "$JAR" \
+     -Dreplayer.archiveEndpoints="$ENDPOINTS" -Dreplayer.groups=1 -cp "$JAR" \
      org.limitless.seqeron.replayer.server.ReplayerServer > "$HOST_LOG" 2>&1 &
 HOST_PID=$!
 wait_for_log "$HOST_LOG" "ready —" 30 || {
@@ -87,11 +89,11 @@ grep -q "left member archive localhost:$(archive_port "$L1")" "$HOST_LOG" &&
 kill "$HOST_PID" 2>/dev/null; wait "$HOST_PID" 2>/dev/null
 RESTART_LOG="$LOG_DIR/gateway-host-restart.log"
 java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$NODE" -Dreplayer.baseDir="$BASE_DIR" \
-     -Dreplayer.archiveEndpoints="$ENDPOINTS" -cp "$JAR" \
+     -Dreplayer.archiveEndpoints="$ENDPOINTS" -Dreplayer.groups=1 -cp "$JAR" \
      org.limitless.seqeron.replayer.server.ReplayerServer > "$RESTART_LOG" 2>&1 &
 HOST_PID=$!
 wait_for_log "$RESTART_LOG" "ready —" 30 || echo "restarted gateway host not serving"
-echo "gateway host restarted: $(grep -o 'queue recording [0-9]* live' "$RESTART_LOG")"
+echo "gateway host restarted: $(grep -o 'onto local recording [0-9]*' "$RESTART_LOG")"
 
 FRESH_LOG="$LOG_DIR/fresh-follower.log"
 java "${JAVA_OPTS[@]}" -Dprobe.memberId="$NODE" -Dprobe.clientId=9 -cp "$JAR" \
@@ -105,7 +107,7 @@ echo "--- relay ---"
 grep -E "following member archive|left member archive|FATAL" "$HOST_LOG" || echo "(nothing)"
 echo "producer on node $NODE       : $(grep -h 'confirm:' "$LOG_DIR/confirm.log" | tail -1)"
 echo "relay moved to another member : $SWITCHED"
-echo "restarted host's recording    : $(grep -o 'queue recording [0-9]* live' "$RESTART_LOG")"
+echo "restarted host's recording    : $(grep -o 'onto local recording [0-9]*' "$RESTART_LOG")"
 echo "fresh follower caught up      : $CAUGHT"
 
 kill "$FRESH_PID" "$HOST_PID" "${SEQ_PIDS[@]}" 2>/dev/null; wait 2>/dev/null

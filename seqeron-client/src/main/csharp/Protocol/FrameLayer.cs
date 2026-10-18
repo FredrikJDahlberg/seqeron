@@ -33,9 +33,6 @@ public static class FrameLayer
     /// </summary>
     public const string QueueChannel = "aeron:ipc?alias=seqeron-queue";
 
-    /// <summary>Stream id of the queue.</summary>
-    public const int QueueStreamId = 205;
-
     /// <summary>The width of <c>groupMask</c>: <c>groupId</c>s run 1 to 16.</summary>
     public const int MaxGroups = 16;
 

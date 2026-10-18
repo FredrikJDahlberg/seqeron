@@ -64,7 +64,7 @@ constexpr std::int64_t IPC_CONNECT_TIMEOUT_MS = 500;
 constexpr std::int64_t PING_INTERVAL_NS = 1'000'000'000;
 
 std::atomic_bool running{ true };
-std::int64_t lastClusterSeqNo = 0;
+std::int64_t lastGroupSeqNo = 0;
 std::string fault;
 
 std::int64_t pingSentNs = 0;
@@ -145,21 +145,22 @@ void onSignal(int)
     running.store(false, std::memory_order_relaxed);
 }
 
-// The invariant the whole tier exists for: one frame per clusterSeqNo, no holes, replay and live alike.
-// Recorded rather than thrown — this runs inside a fragment handler, and Image::poll advances the
-// subscriber position regardless of what a handler raises, so the duty cycle raises it instead.
-bool inOrder(const std::int64_t clusterSeqNo)
+// The invariant the whole tier exists for: one frame per groupSeqNo, no holes, replay and live alike (spec F-6);
+// clusterSeqNo increases along the queue but not by one. Recorded rather than thrown — this runs inside a fragment
+// handler, and Image::poll advances the subscriber position regardless of what a handler raises, so the duty cycle
+// raises it instead.
+bool inOrder(const std::int64_t groupSeqNo)
 {
     if (!fault.empty())
     {
         return false;
     }
-    if (clusterSeqNo != lastClusterSeqNo + 1)
+    if (groupSeqNo != lastGroupSeqNo + 1)
     {
-        fault = "gap: " + std::to_string(lastClusterSeqNo) + " -> " + std::to_string(clusterSeqNo);
+        fault = "gap: groupSeqNo " + std::to_string(lastGroupSeqNo) + " -> " + std::to_string(groupSeqNo);
         return false;
     }
-    lastClusterSeqNo = clusterSeqNo;
+    lastGroupSeqNo = groupSeqNo;
     return true;
 }
 
@@ -194,11 +195,11 @@ void printSystem(const SequencedEvent& event)
     }
 }
 
-// Every other frame arrives here in clusterSeqNo order, history and live alike — the receiver requests a
-// replay for anything the live queue dropped and dispatches nothing out of order in the meantime.
+// Every other frame arrives here in queue order, history and live alike — the receiver requests a replay for
+// anything the live queue dropped and dispatches nothing out of order in the meantime.
 void onSequenced(const SequencedEvent& event)
 {
-    if (!inOrder(event.clusterSeqNo))
+    if (!inOrder(event.groupSeqNo))
     {
         return;
     }
@@ -219,10 +220,11 @@ void onSequenced(const SequencedEvent& event)
 }
 
 // The two connection events reach a C++ consumer here rather than through onSequenced, as a LifecycleEvent. A
-// consumer that passes {} for these gets them in onSequenced instead.
+// consumer that passes {} for these gets them in onSequenced instead. A LifecycleEvent carries no groupSeqNo, and is
+// the frame after the last.
 void onConnected(const protocol::LifecycleEvent& event)
 {
-    if (!inOrder(event.clusterSeqNo))
+    if (!inOrder(lastGroupSeqNo + 1))
     {
         return;
     }
@@ -236,7 +238,7 @@ void onConnected(const protocol::LifecycleEvent& event)
 
 void onDisconnected(const protocol::LifecycleEvent& event)
 {
-    if (!inOrder(event.clusterSeqNo))
+    if (!inOrder(lastGroupSeqNo + 1))
     {
         return;
     }
@@ -244,11 +246,12 @@ void onDisconnected(const protocol::LifecycleEvent& event)
                 event.connectionId, event.sourceId);
 }
 
-// The one frame family that reaches a consumer here instead of through onSequenced.
+// The one frame family that reaches a consumer here instead of through onSequenced, with no groupSeqNo: it is the
+// frame after the last.
 void onLeadershipChanged(const std::int32_t newLeaderMemberId, const std::int64_t leadershipTermId,
                          const std::int64_t clusterSeqNo)
 {
-    if (!inOrder(clusterSeqNo))
+    if (!inOrder(lastGroupSeqNo + 1))
     {
         return;
     }

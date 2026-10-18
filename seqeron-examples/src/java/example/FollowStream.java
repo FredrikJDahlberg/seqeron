@@ -68,7 +68,7 @@ public final class FollowStream {
     private static final ClusterHeartbeatDecoder HEARTBEAT_DECODER = new ClusterHeartbeatDecoder();
     private static final GatewayActiveDecoder GATEWAY_ACTIVE_DECODER = new GatewayActiveDecoder();
 
-    private static long lastClusterSeqNo;
+    private static long lastGroupSeqNo;
     private static String fault;
     private static long pingSentNs;
 
@@ -178,11 +178,11 @@ public final class FollowStream {
     }
 
     /**
-     * Every other frame arrives here in clusterSeqNo order, history and live alike — the receiver requests
-     * a replay for anything the live queue dropped and dispatches nothing out of order in the meantime.
+     * Every other frame arrives here in queue order, history and live alike — the receiver requests a replay
+     * for anything the live queue dropped and dispatches nothing out of order in the meantime.
      */
     private static void onSequenced(final SequencedEvent event) {
-        if (!inOrder(event.clusterSeqNo())) {
+        if (!inOrder(event.groupSeqNo())) {
             return;
         }
         if (event.isSystem()) {
@@ -235,29 +235,33 @@ public final class FollowStream {
             && event.buffer().getLong(event.payloadOffset(), ByteOrder.LITTLE_ENDIAN) == pingSentNs;
     }
 
-    /** The one frame family that reaches a consumer here instead of through onSequenced. */
+    /**
+     * The one frame family that reaches a consumer here instead of through onSequenced. It carries no
+     * groupSeqNo, and is the frame after the last.
+     */
     private static void onLeadershipChanged(final int newLeaderMemberId, final long leadershipTermId,
                                             final long clusterSeqNo) {
-        if (!inOrder(clusterSeqNo)) {
+        if (!inOrder(lastGroupSeqNo + 1)) {
             return;
         }
         System.out.printf("%d leader=member %d term %d%n", clusterSeqNo, newLeaderMemberId, leadershipTermId);
     }
 
     /**
-     * The invariant the whole tier exists for: one frame per clusterSeqNo, no holes, replay and live alike.
-     * Recorded rather than thrown — this runs inside a fragment handler, and Image.poll advances the
-     * subscriber position regardless of what a handler raises, so the duty cycle above raises it instead.
+     * The invariant the whole tier exists for: one frame per groupSeqNo, no holes, replay and live alike
+     * (spec F-6); clusterSeqNo increases along the queue but not by one. Recorded rather than thrown — this runs inside
+     * a fragment handler, and Image.poll advances the subscriber position regardless of what a handler raises, so the
+     * duty cycle above raises it instead.
      */
-    private static boolean inOrder(final long clusterSeqNo) {
+    private static boolean inOrder(final long groupSeqNo) {
         if (fault != null) {
             return false;
         }
-        if (clusterSeqNo != lastClusterSeqNo + 1) {
-            fault = "gap: " + lastClusterSeqNo + " -> " + clusterSeqNo;
+        if (groupSeqNo != lastGroupSeqNo + 1) {
+            fault = "gap: groupSeqNo " + lastGroupSeqNo + " -> " + groupSeqNo;
             return false;
         }
-        lastClusterSeqNo = clusterSeqNo;
+        lastGroupSeqNo = groupSeqNo;
         return true;
     }
 }

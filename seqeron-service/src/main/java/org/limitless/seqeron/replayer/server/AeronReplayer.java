@@ -150,7 +150,8 @@ public final class AeronReplayer implements Replayer {
 
     @Override
     public String pollArchive() {
-        return archive.pollForErrorResponse();
+        final String error = archive.pollForErrorResponse();
+        return AeronArchive.NOT_CONNECTED_MSG.equals(error) ? ARCHIVE_SESSION_CLOSED : error;
     }
 
     @Override

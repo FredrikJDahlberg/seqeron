@@ -72,10 +72,14 @@ public interface Replayer {
      */
     void stopReplay(long replaySessionId);
 
+    /** {@link #pollArchive}'s answer once the archive has closed the control session. */
+    String ARCHIVE_SESSION_CLOSED = "the control session is closed";
+
     /**
      * Reads one response off the local archive's control session between requests. The archive pings the
      * session once a second and closes it once those go unread, so this is called every duty cycle.
-     * @return the archive's error, or {@code null}; once the session is closed, why
+     * @return the error the archive answered one request with, such as a replay whose client left before it
+     *         connected; {@link #ARCHIVE_SESSION_CLOSED} once the session is closed; or {@code null}
      */
     String pollArchive();
 

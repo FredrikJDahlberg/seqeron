@@ -12,6 +12,10 @@
 # it launches, waits for and stops that itself, and stop-cluster.sh sweeps it through
 # SEQERON_EXTRA_PROCESSES.
 #
+# The cluster refuses everything before its groups are active (doc/seqeron-protocol-spec.md §7.4).
+# SEQERON_TOPOLOGY names a topology file to load once the member runs; without it, load one with
+# clusterctl.sh load-topology, and the probe replica waits until then.
+#
 # Ctrl-C (or kill $$ / kill -- -$$) stops all of them cleanly.
 #
 # Prerequisites:
@@ -74,9 +78,19 @@ wait_for_log "${SEQ_LOG}" "Running" 20 || {
 }
 echo "[cluster.sh] SequencerServer is running"
 
-echo "[cluster.sh] Waiting for the Replayer to start serving replay…"
-wait_for_log "${SEQ_LOG}" "serving replay" 20 ||
-    echo "[cluster.sh] WARN: Replayer not serving after 20s — starting the consumer anyway" >&2
+if [[ -n "${SEQERON_TOPOLOGY:-}" ]]; then
+    echo "[cluster.sh] Loading ${SEQERON_TOPOLOGY}"
+    "${_seqeron_scripts}/clusterctl.sh" load-topology "${SEQERON_TOPOLOGY}" > "${LOG_DIR}/load-topology.log" 2>&1 || {
+        echo "ERROR: clusterctl load-topology failed — see ${LOG_DIR}/load-topology.log" >&2
+        kill "${SEQ_PID}" 2>/dev/null
+        exit 1
+    }
+    echo "[cluster.sh] Waiting for the Replayer to start serving replay…"
+    wait_for_log "${SEQ_LOG}" "serving replay" 20 ||
+        echo "[cluster.sh] WARN: Replayer not serving after 20s — starting the consumer anyway" >&2
+else
+    echo "[cluster.sh] No SEQERON_TOPOLOGY: the cluster sequences nothing until clusterctl.sh load-topology <file>"
+fi
 
 APP_PID=""
 APP_LOG="${LOG_DIR}/ClusterProbe.log"

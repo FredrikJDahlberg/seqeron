@@ -96,6 +96,8 @@ done
 start_seq 0 "$LOG_DIR/seq-0.log"
 wait_for "Running" "$LOG_DIR/seq-0.log" 120 "seq 0 up" || exit 1
 echo "cluster up; tenure-1 leader = member $LEADER ; restart target = member $CN (never the leader)"
+seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-groups.xml \
+  > "$LOG_DIR/load-topology.log" 2>&1 || { echo "load-topology failed — see $LOG_DIR/load-topology.log"; exit 1; }
 
 for m in 0 1 2; do wait_for "serving replay" "$LOG_DIR/seq-$m.log" 120 "replayer $m serving" || exit 1; done
 echo "replayers serving"
@@ -137,8 +139,8 @@ else
       NEW_RECORDING=$(grep -oE "queue recording [0-9]+ live" "$RESTART_LOG" | grep -oE "[0-9]+")
       # The Replayer names a client by the id it requests replays as, which the client logs at start.
       REPLY_ID=$(grep -oE "requests replays as client [0-9]+" "$CLIENT_LOG" | grep -oE "[0-9]+$" | head -1)
-      REPLAYS=$(grep -c "replay for client ${REPLY_ID:-none}: recording" "$RESTART_LOG")
-      OTHER=$(grep "replay for client ${REPLY_ID:-none}: recording" "$RESTART_LOG" \
+      REPLAYS=$(grep -c "replay for client ${REPLY_ID:-none}: group 1's recording" "$RESTART_LOG")
+      OTHER=$(grep "replay for client ${REPLY_ID:-none}: group 1's recording" "$RESTART_LOG" \
         | grep -vc "recording $NEW_RECORDING ")
       echo "  recording before / after the restart : $OLD_RECORDING / $NEW_RECORDING"
       echo "  replays served to client $CLIENT_ID      : $REPLAYS"

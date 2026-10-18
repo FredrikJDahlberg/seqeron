@@ -10,15 +10,22 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.stream.IntStream;
+import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.MutableLong;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
+import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
 import org.limitless.seqeron.sequencer.SequencerServer;
+import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
+import org.limitless.seqeron.sequencer.client.IngressPublisher;
 
 /**
  * Three members launched in this JVM, each on its own directories under one base, each one's UDP able to be cut,
@@ -30,6 +37,9 @@ final class InProcessCluster implements AutoCloseable {
     static final int NO_MEMBER = -1;
     /** The gateway host's node id, one no member uses. */
     static final int GATEWAY_HOST = MEMBERS;
+    /** The cluster's one group, whose queue every archive holds. */
+    static final int GROUP_ID = 1;
+    private static final long ACTIVATION_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
 
     private final Path baseDir;
     private final AtomicReferenceArray<SequencerServer> nodes = new AtomicReferenceArray<>(MEMBERS);
@@ -52,9 +62,34 @@ final class InProcessCluster implements AutoCloseable {
         }
     }
 
+    /** Launches every member and activates the group, since the cluster sequences nothing before it (spec §7.4). */
     void startAll() {
         for (int m = 0; m < MEMBERS; m++) {
             start(m);
+        }
+        activateGroup();
+    }
+
+    /** Publishes the one-group table from a session of its own, and waits until every member's Replayer serves it. */
+    private void activateGroup() {
+        final ExpandableArrayBuffer body = new ExpandableArrayBuffer(GroupsRegisteredEncoder.BLOCK_LENGTH);
+        final int length = new GroupsRegisteredEncoder().wrap(body, 0).groupNames("test").encodedLength();
+        final IngressPublisher publisher = new IngressPublisher();
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir(awaitLeader())));
+             ClusterStreamSender sender = new ClusterStreamSender()) {
+            sender.connect(aeron, "aeron:udp?endpoint=" + PortLayout.DEFAULT_HOST + ":0",
+                           PortLayout.ingressEndpoints(MEMBERS));
+            while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
+                                           SystemFrame.GROUPS_REGISTERED, body, length) != Publish.Published) {
+                Tests.yield();
+            }
+            for (int m = 0; m < MEMBERS; m++) {
+                try (Aeron member = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir(m)))) {
+                    if (DefaultQueue.resolve(member, ACTIVATION_TIMEOUT_NS, true) != GROUP_ID) {
+                        throw new IllegalStateException("member " + m + " did not activate group " + GROUP_ID);
+                    }
+                }
+            }
         }
     }
 
@@ -83,7 +118,7 @@ final class InProcessCluster implements AutoCloseable {
                                           .toList();
         gatewayHost = ReplayerServer.launchGatewayHost(
             new ReplayerServer.GatewayHostConfig(GATEWAY_HOST, aeronDir(GATEWAY_HOST), baseDir.toString(), archives,
-                                                 PortLayout.DEFAULT_HOST, List.of(1), BackoffIdleStrategy::new),
+                                                 PortLayout.DEFAULT_HOST, List.of(GROUP_ID), BackoffIdleStrategy::new),
             () -> fatal[GATEWAY_HOST].set(true));
     }
 
