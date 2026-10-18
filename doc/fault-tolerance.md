@@ -428,8 +428,9 @@ Each failure above has a harness that produces it against a live cluster, all un
 `failover.yml` also runs the faults no kill or pause produces, against the same `docker/compose.yml` cluster: a
 leader partitioned from its peers while its clients stay connected, one link cut and no other, a follower without
 NAKs or without retransmits, slow and duplicating leader links, a member whose ballots are dropped, and a leader
-starved of CPU. They are [faulteron](https://github.com/FredrikJDahlberg/faulteron)'s tests, an eBPF injector run
-from a pinned commit ([`building.md`](building.md)).
+starved of CPU. The tests are under `seqeron-service/src/test/scripts/faulteron` and drive
+[faulteron](https://github.com/FredrikJDahlberg/faulteron), an eBPF injector, at a pinned commit
+([`building.md`](building.md)).
 
 ## 7. Not covered
 

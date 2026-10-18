@@ -258,6 +258,12 @@ neither `test` nor `check` runs it. A member stopped in-process is closed rather
 rather than delaying, reordering or duplicating them, so the harnesses stay the evidence for process death and for
 the network faults faulteron injects.
 
+**Six fault tests drive faulteron** (github.com/FredrikJDahlberg/faulteron, an eBPF injector in its own repository),
+in `seqeron-service/src/test/scripts/faulteron` beside a `lib.sh` they share: the faults no kill or pause produces,
+against the `docker/compose.yml` cluster. They are this repo's because they assert its guarantees and read its
+probe, logs and topology; faulteron is only the tool, built from a checkout (`FAULTERON_DIR`, default `../faulteron`)
+that `failover.yml` pins.
+
 **Nine of the thirteen harnesses are Java-only.** Eight drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the queue (`ping`), replays history through the co-located Replayer and then follows the queue live

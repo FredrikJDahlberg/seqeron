@@ -168,10 +168,20 @@ WSL1 distribution that has a JDK 21. The thirteenth, `cpp-client-test.sh`, drive
 
 `failover.yml` also runs the faults none of these scripts can produce — partitions that leave clients
 connected, one link cut and no other, lost NAKs or retransmits, delay and duplication, dropped ballots — and a
-leader starved of CPU, against the same `docker/compose.yml` cluster. They are
-[faulteron](https://github.com/FredrikJDahlberg/faulteron)'s tests, an eBPF injector in its own repository, run
-from a pinned commit. To run them locally, on Linux or in a Docker VM, check it out beside this repository and run
-its `test/seqeron-*.sh` after `./gradlew operatorDist`.
+leader starved of CPU, against the same `docker/compose.yml` cluster. The tests are under
+`seqeron-service/src/test/scripts/faulteron`, and drive [faulteron](https://github.com/FredrikJDahlberg/faulteron),
+an eBPF injector in its own repository, which `failover.yml` checks out at a pinned commit. To run them locally, on
+Linux or in a Docker VM, check faulteron out beside this repository (or name it with `FAULTERON_DIR`) and run them
+after `./gradlew operatorDist`. Each loads `topology-test-groups.xml` once the cluster is up.
+
+| test | what it asserts |
+| --- | --- |
+| `partition-leader-test.sh` | the leader, cut off from its peers while a `ClusterProbe confirm` producer streams through it, dropped packets; the majority elected a new leader; the old one rejoined as a follower; the PendingSends producer saw every frame once |
+| `asymmetric-partition-test.sh` | with only the link between the leader and one follower cut (`--peer`), the cut-off follower, which stands for election, does not depose the leader; a producer on the other follower stays exact; the follower catches up once healed |
+| `unrepaired-follower-test.sh` | with 5% of one follower's log DATA dropped and its NAKs (`REPAIR=nak`, the default) or the leader's retransmissions to it (`REPAIR=retransmit`) gone, the follower falls behind with no election: a ping through its queue passes before the fault, times out under it, and passes after the heal; a producer on the other follower stays exact |
+| `jittery-leader-test.sh` | with the leader's cluster and ingress traffic delayed 20–50 ms and 10% duplicated, under the 200 ms leader heartbeat timeout, no election runs, every member's queue answers a ping, and a producer on a follower stays exact. `DELAY_MS=250 JITTER_MS=0` takes the delay past the timeout, a run expected to fail |
+| `throttled-leader-test.sh` | with the leader's container capped at 0.05 CPUs (`docker update --cpus`), the cluster replaces it, a producer on a follower stays exact, and the old leader rejoins and catches up once its CPU is back. The fault is the harness's, not faulteron's: `aeron:ipc` never reaches an interface. `CPUS=0.5` is a cap the leader keeps up under, a run expected to fail |
+| `mute-voter-test.sh` | with one follower's RequestVote and Vote messages dropped and the leader then killed, the fault is invisible until the kill, the two survivors elect no leader while it holds and one as soon as it heals, the killed member rejoins, and a producer on the muted follower stays exact. The hold stays under `ClusterStreamSender`'s 5 s new-leader timeout, past which the producer's session closes |
 
 ## Examples
 
