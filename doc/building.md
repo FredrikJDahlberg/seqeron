@@ -172,7 +172,8 @@ leader starved of CPU, against the same `docker/compose.yml` cluster. The tests 
 `seqeron-service/src/test/scripts/faulteron`, and drive [faulteron](https://github.com/FredrikJDahlberg/faulteron),
 an eBPF injector in its own repository, which `failover.yml` checks out at a pinned commit. To run them locally, on
 Linux or in a Docker VM, check faulteron out beside this repository (or name it with `FAULTERON_DIR`) and run them
-after `./gradlew operatorDist`. Each loads `topology-test-groups.xml` once the cluster is up.
+after `./gradlew operatorDist`. Each loads `topology-test-groups.xml` once the cluster is up, and injects nothing
+until every member's queue answers a ping.
 
 | test | what it asserts |
 | --- | --- |
