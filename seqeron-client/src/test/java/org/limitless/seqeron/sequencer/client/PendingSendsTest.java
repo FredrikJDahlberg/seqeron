@@ -66,7 +66,7 @@ class PendingSendsTest {
     /** Tracks application frame {@code n} as placed on {@code session}, stamped {@code term}. */
     private void send(final long session, final long term, final int n) {
         body.putInt(0, n);
-        pending.track(frame, envelope.wrapPayload(frame, 1, 2, session, PAYLOAD_ID, body, Integer.BYTES), session,
+        pending.track(frame, envelope.wrapPayload(frame, 1, 2, session, PAYLOAD_ID, 1, body, Integer.BYTES), session,
                       term);
     }
 

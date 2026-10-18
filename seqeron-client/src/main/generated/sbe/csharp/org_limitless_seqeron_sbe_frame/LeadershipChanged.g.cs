@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
     /// </summary>
     public sealed partial class LeadershipChanged
     {
-        public const ushort BlockLength = (ushort)46;
+        public const ushort BlockLength = (ushort)56;
         public const ushort TemplateId = (ushort)105;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;
@@ -137,7 +137,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             return _actingVersion >= NewLeaderMemberIdSinceVersion;
         }
 
-        public const int NewLeaderMemberIdOffset = 34;
+        public const int NewLeaderMemberIdOffset = 44;
 
         public static string NewLeaderMemberIdMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -163,11 +163,11 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         {
             get
             {
-                return _buffer.Int32GetLittleEndian(_offset + 34);
+                return _buffer.Int32GetLittleEndian(_offset + 44);
             }
             set
             {
-                _buffer.Int32PutLittleEndian(_offset + 34, value);
+                _buffer.Int32PutLittleEndian(_offset + 44, value);
             }
         }
 
@@ -180,7 +180,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             return _actingVersion >= LeadershipTermIdSinceVersion;
         }
 
-        public const int LeadershipTermIdOffset = 38;
+        public const int LeadershipTermIdOffset = 48;
 
         public static string LeadershipTermIdMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -206,11 +206,11 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 38);
+                return _buffer.Int64GetLittleEndian(_offset + 48);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 38, value);
+                _buffer.Int64PutLittleEndian(_offset + 48, value);
             }
         }
 

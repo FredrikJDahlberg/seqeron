@@ -29,6 +29,7 @@ import org.limitless.seqeron.sbe.frame.GatewayActivationRequestedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayStartedEncoder;
+import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedDecoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
@@ -72,6 +73,10 @@ class ConformanceTest {
     /** {@code SnapshotChunk}'s systemEventType, retired with it: ids are never reused (spec §7). */
     private static final int RETIRED_SNAPSHOT_CHUNK = 27;
 
+    /** The fixture's one group, {@code groupId} 1, which every row but 10 and 11 runs in. */
+    private static final String GROUP = "group-1";
+    private static final int GROUP_MASK = 1;
+
     /** Offset of the payload's length prefix in an ingress frame: past the outer header and the composite. */
     private static final int PREFIX_OFFSET =
         MessageHeaderEncoder.ENCODED_LENGTH + UnsequencedHeaderDecoder.ENCODED_LENGTH;
@@ -83,7 +88,7 @@ class ConformanceTest {
 
     private final MutableDirectBuffer ingress = new ExpandableArrayBuffer(4096);
     private final FrameRecorder frames = new FrameRecorder();
-    private final Sequencer sequencer = new Sequencer(0, frames);
+    private final Sequencer sequencer = activated(new Sequencer(0, frames), frames, GROUP);
 
     // ── Row 1. Copy fidelity (§5) ────────────────────────────────────────────────────────────────
 
@@ -106,15 +111,15 @@ class ConformanceTest {
     // ── Row 2. The prefix property (F-3) ─────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("row 2: each unsequenced composite is the 18-byte prefix of its sequenced counterpart")
+    @DisplayName("row 2: each unsequenced composite is the 20-byte prefix of its sequenced counterpart")
     void prefixProperty() {
-        assertEquals(18, UnsequencedHeaderDecoder.ENCODED_LENGTH);
-        assertEquals(18, UnsequencedSystemHeaderDecoder.ENCODED_LENGTH);
-        assertEquals(34, SequencedHeaderDecoder.ENCODED_LENGTH);
-        assertEquals(34, SequencedSystemHeaderDecoder.ENCODED_LENGTH);
+        assertEquals(20, UnsequencedHeaderDecoder.ENCODED_LENGTH);
+        assertEquals(20, UnsequencedSystemHeaderDecoder.ENCODED_LENGTH);
+        assertEquals(44, SequencedHeaderDecoder.ENCODED_LENGTH);
+        assertEquals(44, SequencedSystemHeaderDecoder.ENCODED_LENGTH);
 
         // The field at offset 16 is a payloadId on one pair and a systemEventType on the other, and is
-        // written here to the same bits: what F-3 buys is that the two pairs are the same 18 bytes.
+        // written here to the same bits: what F-3 buys is that the two pairs are the same 20 bytes.
         final byte[] unsequenced = encodeUnsequencedHeader();
         final byte[] unsequencedSystem = encodeUnsequencedSystemHeader();
         assertArrayEquals(unsequenced, unsequencedSystem,
@@ -124,9 +129,10 @@ class ConformanceTest {
         final byte[] sequencedSystem = encodeSequencedSystemHeader();
         assertArrayEquals(sequenced, sequencedSystem, "and so are the two sequenced ones");
 
-        assertArrayEquals(unsequenced, java.util.Arrays.copyOf(sequenced, 18),
-                          "the ingress composite is the sequenced one's byte prefix — the copy-18 of §9.5");
-        assertArrayEquals(unsequencedSystem, java.util.Arrays.copyOf(sequencedSystem, 18));
+        assertArrayEquals(unsequenced, java.util.Arrays.copyOf(sequenced, 20),
+                          "the ingress composite is the sequenced one's byte prefix — the copy-20 of §9.5, "
+                              + "offsets 16 and 18 included");
+        assertArrayEquals(unsequencedSystem, java.util.Arrays.copyOf(sequencedSystem, 20));
     }
 
     @Test
@@ -139,25 +145,31 @@ class ConformanceTest {
         assertEquals(4, UnsequencedHeaderDecoder.connectionIdEncodingOffset());
         assertEquals(8, UnsequencedHeaderDecoder.sessionIdEncodingOffset());
         assertEquals(16, UnsequencedHeaderDecoder.payloadIdEncodingOffset());
+        assertEquals(18, UnsequencedHeaderDecoder.groupMaskEncodingOffset());
 
         assertEquals(0, UnsequencedSystemHeaderDecoder.sourceIdEncodingOffset());
         assertEquals(4, UnsequencedSystemHeaderDecoder.connectionIdEncodingOffset());
         assertEquals(8, UnsequencedSystemHeaderDecoder.sessionIdEncodingOffset());
         assertEquals(16, UnsequencedSystemHeaderDecoder.systemEventTypeEncodingOffset());
+        assertEquals(18, UnsequencedSystemHeaderDecoder.groupMaskEncodingOffset());
 
         assertEquals(0, SequencedHeaderDecoder.sourceIdEncodingOffset());
         assertEquals(4, SequencedHeaderDecoder.connectionIdEncodingOffset());
         assertEquals(8, SequencedHeaderDecoder.sessionIdEncodingOffset());
         assertEquals(16, SequencedHeaderDecoder.payloadIdEncodingOffset());
-        assertEquals(18, SequencedHeaderDecoder.clusterSeqNoEncodingOffset());
-        assertEquals(26, SequencedHeaderDecoder.timestampEncodingOffset());
+        assertEquals(18, SequencedHeaderDecoder.groupMaskEncodingOffset());
+        assertEquals(20, SequencedHeaderDecoder.clusterSeqNoEncodingOffset());
+        assertEquals(28, SequencedHeaderDecoder.timestampEncodingOffset());
+        assertEquals(36, SequencedHeaderDecoder.groupSeqNoEncodingOffset());
 
         assertEquals(0, SequencedSystemHeaderDecoder.sourceIdEncodingOffset());
         assertEquals(4, SequencedSystemHeaderDecoder.connectionIdEncodingOffset());
         assertEquals(8, SequencedSystemHeaderDecoder.sessionIdEncodingOffset());
         assertEquals(16, SequencedSystemHeaderDecoder.systemEventTypeEncodingOffset());
-        assertEquals(18, SequencedSystemHeaderDecoder.clusterSeqNoEncodingOffset());
-        assertEquals(26, SequencedSystemHeaderDecoder.timestampEncodingOffset());
+        assertEquals(18, SequencedSystemHeaderDecoder.groupMaskEncodingOffset());
+        assertEquals(20, SequencedSystemHeaderDecoder.clusterSeqNoEncodingOffset());
+        assertEquals(28, SequencedSystemHeaderDecoder.timestampEncodingOffset());
+        assertEquals(36, SequencedSystemHeaderDecoder.groupSeqNoEncodingOffset());
     }
 
     @Test
@@ -167,17 +179,18 @@ class ConformanceTest {
         assertEquals(2, SequencedDecoder.payloadHeaderLength(), "the var-data length prefix");
         assertEquals(2, SequencedSystemDecoder.bodyHeaderLength());
 
-        assertEquals(28, FrameLayer.MIN_INGRESS_LENGTH, "ingress fixed overhead, both families");
-        assertEquals(44, MessageHeaderDecoder.ENCODED_LENGTH + SequencedHeaderDecoder.ENCODED_LENGTH +
+        assertEquals(30, FrameLayer.MIN_INGRESS_LENGTH, "ingress fixed overhead, both families");
+        assertEquals(54, MessageHeaderDecoder.ENCODED_LENGTH + SequencedHeaderDecoder.ENCODED_LENGTH +
                          SequencedDecoder.payloadHeaderLength(), "sequenced fixed overhead, both families");
 
         // A ClusterHeartbeat is a template of its own: no length prefix and no payload at all.
-        assertEquals(42, queueSynthesized(1, ClusterHeartbeatDecoder.TEMPLATE_ID, SystemFrame.CLUSTER_HEARTBEAT).length,
-                     "8 + 34, the cheapest frame in the system");
-        assertEquals(50, queueSynthesized(1, SnapshotStartedDecoder.TEMPLATE_ID, SystemFrame.SNAPSHOT_STARTED).length,
-                     "8 + 34 + the round");
+        assertEquals(52, queueSynthesized(1, ClusterHeartbeatDecoder.TEMPLATE_ID, SystemFrame.CLUSTER_HEARTBEAT).length,
+                     "8 + 44, the cheapest frame in the system");
+        assertEquals(60, queueSynthesized(1, SnapshotStartedDecoder.TEMPLATE_ID, SystemFrame.SNAPSHOT_STARTED).length,
+                     "8 + 44 + the round");
 
-        assertEquals(44 + FrameLayer.MAX_PAYLOAD_LENGTH,
+        assertEquals(8928, 54 + FrameLayer.MAX_PAYLOAD_LENGTH, "the largest sequenced frame (§12)");
+        assertEquals(54 + FrameLayer.MAX_PAYLOAD_LENGTH,
                      queuePayloadFrame(1, PAYLOAD_ID, syntheticPayload(FrameLayer.MAX_PAYLOAD_LENGTH)).length,
                      "§12's ceiling as a frame on the wire");
     }
@@ -185,11 +198,11 @@ class ConformanceTest {
     // ── Row 3. System frames round-trip unchanged (§7) ───────────────────────────────────────────
 
     @Test
-    @DisplayName("row 3: each of the twelve submitted events crosses with its payload byte-identical")
+    @DisplayName("row 3: each of the thirteen submitted events crosses with its payload byte-identical")
     void submittedSystemEventsRoundTrip() {
         for (final Map.Entry<Integer, byte[]> event : submittedEvents().entrySet()) {
             final FrameRecorder recorded = new FrameRecorder();
-            final Sequencer target = new Sequencer(0, recorded);
+            final Sequencer target = activated(new Sequencer(0, recorded), recorded, GROUP);
             final int systemEventType = event.getKey();
             final byte[] body = event.getValue();
 
@@ -238,7 +251,7 @@ class ConformanceTest {
     void synthesizedFramesCarryTheirOwnTemplates() {
         sequencer.clusterHeartbeat(TIMESTAMP);
         assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, lastTemplateId());
-        assertEquals(42, frames.lastLength(), "no payload at all — the cheapest frame in the system (§4.2)");
+        assertEquals(52, frames.lastLength(), "no payload at all — the cheapest frame in the system (§4.2)");
         assertEquals(SystemFrame.CLUSTER_HEARTBEAT, wrapSequenced().systemEventType(),
                      "systemEventType is populated on a synthesized frame too, so offset 16 discriminates "
                          + "every frame on the queue");
@@ -261,7 +274,7 @@ class ConformanceTest {
         final int request = systemFrame(SystemFrame.SNAPSHOT_REQUESTED, CLUSTERCTL_SOURCE_ID, snapshotRequestedBody());
         sequencer.sequenceMessage(ingress, 0, request, SESSION_ID, TIMESTAMP);
         assertEquals(SnapshotStartedDecoder.TEMPLATE_ID, lastTemplateId());
-        assertEquals(50, frames.lastLength());
+        assertEquals(60, frames.lastLength());
         assertEquals(SystemFrame.SNAPSHOT_STARTED, wrapSequenced().systemEventType());
         final SnapshotStartedDecoder round = new SnapshotStartedDecoder();
         round.wrap(frames.last(), MessageHeaderDecoder.ENCODED_LENGTH, SnapshotStartedDecoder.BLOCK_LENGTH,
@@ -270,7 +283,7 @@ class ConformanceTest {
 
         sequencer.sessionClosed(SESSION_ID, TIMESTAMP);
         assertEquals(SessionClosedDecoder.TEMPLATE_ID, lastTemplateId());
-        assertEquals(50, frames.lastLength());
+        assertEquals(60, frames.lastLength());
         assertEquals(SystemFrame.SESSION_CLOSED, wrapSequenced().systemEventType());
         assertEquals(-1L, wrapSequenced().sourceSessionId(), "the closed session is the field's, not the header's");
         final SessionClosedDecoder closed = new SessionClosedDecoder();
@@ -282,7 +295,7 @@ class ConformanceTest {
     // ── Row 4. The rejection table (§9.2, S-4/S-5/S-7) ───────────────────────────────────────────
 
     @Test
-    @DisplayName("row 4 condition 1: a frame under 28 bytes or over MAX_INGRESS_LENGTH is refused")
+    @DisplayName("row 4 condition 1: a frame under 30 bytes or over MAX_INGRESS_LENGTH is refused")
     void conditionOneLength() {
         final int wellFormed = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, FrameLayer.MIN_INGRESS_LENGTH - 1, SESSION_ID,
@@ -324,9 +337,9 @@ class ConformanceTest {
     }
 
     @Test
-    @DisplayName("row 4 condition 4: a blockLength that is not 18 is refused on both ingress templates")
+    @DisplayName("row 4 condition 4: a blockLength that is not 20 is refused on both ingress templates")
     void conditionFourBlockLength() {
-        for (final int blockLength : new int[] {17, 19}) {
+        for (final int blockLength : new int[] {19, 21}) {
             final int payloadLength = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4));
             ingress.putShort(BLOCK_LENGTH_OFFSET, (short)blockLength, ByteOrder.LITTLE_ENDIAN);
             assertRejected(() -> sequencer.sequenceMessage(ingress, 0, payloadLength, SESSION_ID, TIMESTAMP),
@@ -384,7 +397,11 @@ class ConformanceTest {
     void conditionNineBodyTooShort() {
         assertEquals(8, GatewayStartedEncoder.BLOCK_LENGTH);
         assertEquals(28, SnapshotEndEncoder.BLOCK_LENGTH);
-        for (final int[] event : new int[][] {{SystemFrame.GATEWAY_STARTED, 7}, {SystemFrame.SNAPSHOT_END, 27}}) {
+        assertEquals(512, GroupsRegisteredEncoder.BLOCK_LENGTH);
+        assertEquals(38, ApplicationRegisteredEncoder.BLOCK_LENGTH);
+        for (final int[] event : new int[][] {{SystemFrame.GATEWAY_STARTED, 7}, {SystemFrame.SNAPSHOT_END, 27},
+                                              {SystemFrame.GROUPS_REGISTERED, 511},
+                                              {SystemFrame.APPLICATION_REGISTERED, 37}}) {
             final int length = systemFrame(event[0], SOURCE_ID, syntheticPayload(event[1]));
             assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
                            "systemEventType " + event[0]);
@@ -399,6 +416,76 @@ class ConformanceTest {
         final int length = systemFrame(SystemFrame.GATEWAY_STARTED, LISTED_SOURCE_ID, gatewayStartedBody(99));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
                        "a gatewayId no list row names", before);
+    }
+
+    @Test
+    @DisplayName("row 4 condition 11: a topology frame S-8 or S-9 refuses is refused")
+    void conditionElevenS8AndS9() {
+        // Row 11 walks every case; this is one of each rule, as the rejection table counts them.
+        final int table = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                      groupsRegisteredBody(GROUP, "group-2"));
+        assertRejected(() -> sequencer.sequenceMessage(ingress, 0, table, SESSION_ID, TIMESTAMP),
+                       "S-8: a table that differs from the active one");
+        final int row = systemFrame(SystemFrame.APPLICATION_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                    applicationRegisteredBody(3, 1));
+        assertRejected(() -> sequencer.sequenceMessage(ingress, 0, row, SESSION_ID + 1, TIMESTAMP),
+                       "S-9: a row on a session that is not the topology session");
+    }
+
+    @Test
+    @DisplayName("row 4 condition 12: a system frame with a non-zero groupMask is refused")
+    void conditionTwelveSystemGroupMask() {
+        final int length = systemFrame(SystemFrame.CLUSTER_STARTED, CLUSTERCTL_SOURCE_ID, clusterStartedBody());
+        ingress.putShort(MessageHeaderEncoder.ENCODED_LENGTH + UnsequencedSystemHeaderDecoder.groupMaskEncodingOffset(),
+                         (short)1, ByteOrder.LITTLE_ENDIAN);
+        assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+    }
+
+    @Test
+    @DisplayName("row 4 condition 13: before activation every frame but the group table is refused")
+    void conditionThirteenBeforeActivation() {
+        final FrameRecorder recorded = new FrameRecorder();
+        final Sequencer fresh = new Sequencer(0, recorded);
+        // Each copied as soon as it is encoded, since every encode reuses the one ingress buffer.
+        final byte[][] encoded = {
+            copy(ingress, 0, systemFrame(SystemFrame.CLUSTER_STARTED, CLUSTERCTL_SOURCE_ID, clusterStartedBody())),
+            copy(ingress, 0, systemFrame(SystemFrame.SNAPSHOT_REQUESTED, CLUSTERCTL_SOURCE_ID, snapshotRequestedBody())),
+            copy(ingress, 0, systemFrame(SystemFrame.CONNECTION_OPENED, SOURCE_ID, connectionOpenedBody(new byte[0]))),
+            copy(ingress, 0, payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4))),
+        };
+        for (final byte[] frame : encoded) {
+            assertRejected(fresh, recorded, () -> fresh.sequenceMessage(new org.agrona.concurrent.UnsafeBuffer(frame), 0,
+                                                                        frame.length, SESSION_ID, TIMESTAMP),
+                           "a frame before the first GroupsRegistered");
+        }
+        fresh.clusterHeartbeat(TIMESTAMP);
+        assertEquals(0, recorded.count(), "a synthesized frame before activation is sequenced onto no queue");
+        assertEquals(1, fresh.clusterSeqNo());
+    }
+
+    @Test
+    @DisplayName("row 4 condition 14: a groupMask that is 0, names an inactive group or lacks the gateway's own")
+    void conditionFourteenApplicationGroupMask() {
+        for (final int groupMask : new int[] {0, 0b10}) {
+            final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4), groupMask);
+            assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
+                           "groupMask " + groupMask);
+        }
+
+        // A gateway in group 2, bound: its frames must reach its own queue, whatever else they address.
+        final FrameRecorder recorded = new FrameRecorder();
+        final Sequencer target = activated(new Sequencer(0, recorded), recorded, GROUP, "group-2");
+        register(target, 11, LISTED_SOURCE_ID, (short)0, 0, 2);
+        bind(target, 11, SESSION_ID + 1);
+        final int foreign = payloadFrame(PAYLOAD_ID, LISTED_SOURCE_ID, syntheticPayload(4), 0b01);
+        assertRejected(target, recorded,
+                       () -> target.sequenceMessage(ingress, 0, foreign, SESSION_ID + 1, TIMESTAMP),
+                       "a bound gateway's frame without its own group's bit");
+        final int both = payloadFrame(PAYLOAD_ID, LISTED_SOURCE_ID, syntheticPayload(4), 0b11);
+        assertTrue(target.sequenceMessage(ingress, 0, both, SESSION_ID + 1, TIMESTAMP));
+        final int unbound = payloadFrame(PAYLOAD_ID, LISTED_SOURCE_ID, syntheticPayload(4), 0b01);
+        assertTrue(target.sequenceMessage(ingress, 0, unbound, SESSION_ID + 2, TIMESTAMP),
+                   "a reply under the gateway's sourceId on another session is not the gateway's frame");
     }
 
     // ── Row 4a. A rejection denies nothing (S-7, C-2) ────────────────────────────────────────────
@@ -416,9 +503,10 @@ class ConformanceTest {
 
         final byte[] payload = syntheticPayload(16);
         final int good = payloadFrame(PAYLOAD_ID, SOURCE_ID, payload);
+        final long before = sequencer.clusterSeqNo();
         assertTrue(sequencer.sequenceMessage(ingress, 0, good, SESSION_ID, TIMESTAMP),
                    "the rejections left no deny list behind (C-2)");
-        assertEquals(1, sequencer.clusterSeqNo(), "and cost no sequence number");
+        assertEquals(before + 1, sequencer.clusterSeqNo(), "and cost no sequence number");
         assertArrayEquals(payload, copy(wrapSequenced().buffer(), wrapSequenced().payloadOffset(), payload.length));
         assertEquals(2, sequencer.rejectedFrameCount());
     }
@@ -435,19 +523,19 @@ class ConformanceTest {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(2048);
         final MutableDirectBuffer payload = new ExpandableArrayBuffer(FrameLayer.MAX_PAYLOAD_LENGTH + 1);
 
-        final int exact = envelope.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID, payload,
-                                                  FrameLayer.MAX_PAYLOAD_LENGTH);
+        final int exact = envelope.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID, GROUP_MASK,
+                                               payload, FrameLayer.MAX_PAYLOAD_LENGTH);
         assertNotEquals(SystemFrame.REFUSED, exact);
         transport.offer(frame, exact);
 
         final int oversized = envelope.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID,
-                                                   payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1);
+                                                   GROUP_MASK, payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1);
         assertEquals(SystemFrame.REFUSED, oversized,
                      "T-3: local and permanent, and distinguishable from a transport's back-pressure");
         assertEquals(1, transport.offers.size(), "nothing was offered to any transport");
 
-        final int again = envelope.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID, payload,
-                                               16);
+        final int again = envelope.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID, GROUP_MASK,
+                                               payload, 16);
         assertNotEquals(SystemFrame.REFUSED, again, "the refusal left the producer usable");
         transport.offer(frame, again);
         assertEquals(2, transport.offers.size());
@@ -461,18 +549,26 @@ class ConformanceTest {
     // ── Row 5. Synthesis determinism (S-3, F-2) ──────────────────────────────────────────────────
 
     @Test
-    @DisplayName("row 5: two independent sequencers fed the same log emit byte-identical frames")
+    @DisplayName("row 5: two independent sequencers fed the same log emit byte-identical frames to the same queues")
     void synthesisIsDeterministic() {
-        assertArrayEquals(driveOneLog().toArray(new byte[0][]), driveOneLog().toArray(new byte[0][]));
+        final FrameRecorder first = driveOneLog();
+        final FrameRecorder second = driveOneLog();
+        assertArrayEquals(first.all().toArray(new byte[0][]), second.all().toArray(new byte[0][]));
+        for (int i = 0; i < first.count(); i++) {
+            assertEquals(first.groupId(i), second.groupId(i), "frame " + i + "'s queue");
+        }
     }
 
-    /** Feeds one fixed message sequence through a fresh sequencer and collects every frame it publishes. */
-    private List<byte[]> driveOneLog() {
+    /** Feeds one fixed message sequence through a fresh sequencer, three groups active, and keeps what it published. */
+    private FrameRecorder driveOneLog() {
         final FrameRecorder recorded = new FrameRecorder();
         final Sequencer target = new Sequencer(0, recorded);
         long timestamp = TIMESTAMP;
 
         target.leadershipChanged(0, 0, timestamp);
+        final int table = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                      groupsRegisteredBody(GROUP, "group-2", "group-3"));
+        target.sequenceMessage(ingress, 0, table, SESSION_ID, timestamp);
         loadList(target, 0);
         target.sequenceMessage(ingress, 0, lastIngressLength, SESSION_ID, timestamp);
         final int policy = systemFrame(SystemFrame.SNAPSHOT_POLICY_REGISTERED, CLUSTERCTL_SOURCE_ID,
@@ -484,11 +580,11 @@ class ConformanceTest {
         for (int i = 0; i < 3; i++) {
             timestamp += FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
             target.clusterHeartbeat(timestamp);
-            final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(8 + i));
+            final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(8 + i), 1 + 2 * i);
             target.sequenceMessage(ingress, 0, length, SESSION_ID, timestamp);
         }
         target.leadershipChanged(1, 1, timestamp);
-        return recorded.all();
+        return recorded;
     }
 
     // ── Row 6. The boundary payload sizes (§12) ─────────────────────────────────────────────────
@@ -507,7 +603,7 @@ class ConformanceTest {
             assertFalse(view.isSystem());
             assertEquals(PAYLOAD_ID, view.payloadId());
             assertEquals(payloadLength, view.payloadLength());
-            assertEquals(44 + payloadLength, frame.length, "44 + the payload (§4.2)");
+            assertEquals(54 + payloadLength, frame.length, "54 + the payload (§4.2)");
         }
     }
 
@@ -528,7 +624,7 @@ class ConformanceTest {
         queue.add(queueSynthesized(7, SessionClosedDecoder.TEMPLATE_ID, SystemFrame.SESSION_CLOSED));
 
         // A consumer that recognises none of them still reads every one, and tracks continuity across all
-        // seven: the read is branch-free because clusterSeqNo sits at 18 on every sequenced message (F-3).
+        // seven: the read is branch-free because clusterSeqNo sits at 20 on every sequenced message (F-3).
         long expected = 1;
         for (final byte[] frame : queue) {
             final SequencedFrameDecoder view = new SequencedFrameDecoder();
@@ -591,8 +687,8 @@ class ConformanceTest {
 
     private static void stampSynthesized(final org.limitless.seqeron.sbe.frame.SequencedSystemHeaderEncoder header,
                                          final int systemEventType, final long clusterSeqNo) {
-        header.sourceId(-1).connectionId(-1).sessionId(-1).systemEventType(systemEventType)
-            .clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
+        header.sourceId(-1).connectionId(-1).sessionId(-1).systemEventType(systemEventType).groupMask(0)
+            .clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP).groupSeqNo(clusterSeqNo);
     }
 
     // ── Row 8. S-6's four cases ──────────────────────────────────────────────────────────────────
@@ -715,7 +811,7 @@ class ConformanceTest {
                      "a GatewayStarted drops the deadline it answered");
 
         final FrameRecorder soleFrames = new FrameRecorder();
-        final Sequencer sole = new Sequencer(0, soleFrames);
+        final Sequencer sole = activated(new Sequencer(0, soleFrames), soleFrames, GROUP);
         register(sole, 21, 6, (short)0, 0);
         assertEquals(21, gatewayActiveAt(soleFrames, soleFrames.count() - 1));
         bind(sole, 21, 200L);
@@ -742,7 +838,225 @@ class ConformanceTest {
         assertEquals(22, lastGatewayActive());
     }
 
+    // ── Row 10. Group selection (F-5, F-6, §7.4) ─────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("row 10: an application frame reaches exactly the queues its mask names, a system frame every queue")
+    void groupSelection() {
+        final FrameRecorder recorded = new FrameRecorder();
+        final Sequencer target = new Sequencer(0, recorded);
+        target.clusterHeartbeat(TIMESTAMP);
+        assertEquals(0, recorded.count(), "frames before activation reach no queue");
+        final int table = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                      groupsRegisteredBody("a", "b", "c"));
+        assertTrue(target.sequenceMessage(ingress, 0, table, SESSION_ID, TIMESTAMP));
+        assertArrayEquals(new int[] {1, 2, 3}, recorded.activated());
+        recorded.clear();
+
+        for (final int groupMask : new int[] {0b001, 0b010, 0b110, 0b111}) {
+            final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(8), groupMask);
+            final int before = recorded.count();
+            assertTrue(target.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+            assertArrayEquals(groupsOf(groupMask), queuesSince(recorded, before),
+                              "mask " + Integer.toBinaryString(groupMask) + ", in ascending groupId");
+            assertIdenticalButForGroupSeqNo(recorded, before);
+        }
+
+        final int connection = systemFrame(SystemFrame.CONNECTION_OPENED, SOURCE_ID, connectionOpenedBody(new byte[0]));
+        int before = recorded.count();
+        assertTrue(target.sequenceMessage(ingress, 0, connection, SESSION_ID, TIMESTAMP));
+        assertArrayEquals(new int[] {1, 2, 3}, queuesSince(recorded, before), "a submitted system frame");
+        assertIdenticalButForGroupSeqNo(recorded, before);
+        before = recorded.count();
+        target.clusterHeartbeat(TIMESTAMP + 1);
+        assertArrayEquals(new int[] {1, 2, 3}, queuesSince(recorded, before), "a synthesized one");
+        assertIdenticalButForGroupSeqNo(recorded, before);
+
+        // groupSeqNo runs from 1 on each queue without a gap, wherever clusterSeqNo jumps.
+        final long[] next = {0, 2, 2, 2}; // the table itself was each queue's first
+        for (int i = 0; i < recorded.count(); i++) {
+            assertEquals(next[recorded.groupId(i)]++, groupSeqNoAt(recorded, i), "frame " + i);
+        }
+    }
+
+    @Test
+    @DisplayName("row 10: with one group, its queue carries every frame after activation")
+    void oneGroupCarriesEverything() {
+        final long first = sequencer.clusterSeqNo() + 1;
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        sequencer.sequenceMessage(ingress, 0, payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4)), SESSION_ID,
+                                  TIMESTAMP);
+        sequencer.leadershipChanged(4, 1, TIMESTAMP);
+
+        assertEquals(3, frames.count());
+        for (int i = 0; i < frames.count(); i++) {
+            assertEquals(1, frames.groupId(i));
+            assertEquals(first + i, wrapSequenced(frames.frame(i), frames.length(i)).clusterSeqNo());
+        }
+    }
+
+    // ── Row 11. Group activation (S-8, S-9, S-3, F-2) ────────────────────────────────────────────
+
+    @Test
+    @DisplayName("row 11: each queue opens with the latest LeadershipChanged, then the group table")
+    void activationPrologue() {
+        final FrameRecorder recorded = new FrameRecorder();
+        final Sequencer target = new Sequencer(0, recorded);
+        target.leadershipChanged(3, 1, TIMESTAMP);
+        target.leadershipChanged(4, 2, TIMESTAMP + 1);
+        final int table = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                      groupsRegisteredBody(GROUP, null, "group-3"));
+        assertTrue(target.sequenceMessage(ingress, 0, table, SESSION_ID, TIMESTAMP + 2));
+
+        assertArrayEquals(new int[] {1, 3}, recorded.activated(), "slot 2 declares no group");
+        assertArrayEquals(new int[] {1, 3, 1, 3}, queuesSince(recorded, 0), "the prologues first, then the table");
+        for (final int i : new int[] {0, 1}) {
+            assertEquals(LeadershipChangedDecoder.TEMPLATE_ID, new MessageHeaderDecoder().wrap(recorded.frame(i), 0)
+                .templateId());
+            assertEquals(4, decodeLeadershipChanged(recorded.frame(i)).leadershipTermId(), "the most recent term");
+            assertEquals(2, wrapSequenced(recorded.frame(i), recorded.length(i)).clusterSeqNo(), "as it was sequenced");
+            assertEquals(1, groupSeqNoAt(recorded, i));
+        }
+        for (final int i : new int[] {2, 3}) {
+            assertEquals(SystemFrame.GROUPS_REGISTERED,
+                         wrapSequenced(recorded.frame(i), recorded.length(i)).systemEventType());
+            assertEquals(2, groupSeqNoAt(recorded, i));
+        }
+        assertIdenticalButForGroupSeqNo(recorded, 0, 2);
+        assertIdenticalButForGroupSeqNo(recorded, 2, 2);
+    }
+
+    @Test
+    @DisplayName("row 11: S-8 refuses an empty, duplicated, changed or extended table, and a source changing group")
+    void s8Refusals() {
+        final FrameRecorder recorded = new FrameRecorder();
+        final Sequencer target = new Sequencer(0, recorded);
+        for (final String[] names : new String[][] {{}, {"a", "a"}}) {
+            final int table = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID, groupsRegisteredBody(names));
+            assertRejected(target, recorded, () -> target.sequenceMessage(ingress, 0, table, SESSION_ID, TIMESTAMP),
+                           "case 1: " + names.length + " names");
+        }
+        activated(target, recorded, "a", "b");
+
+        for (final String[] names : new String[][] {{"a", "c"}, {"a"}, {"a", "b", "c"}}) {
+            final int table = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID, groupsRegisteredBody(names));
+            assertRejected(target, recorded, () -> target.sequenceMessage(ingress, 0, table, SESSION_ID, TIMESTAMP),
+                           "case 2: " + String.join(",", names) + ", adding a group among them");
+        }
+
+        final int inactive = systemFrame(SystemFrame.APPLICATION_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                         applicationRegisteredBody(3, 3));
+        assertRejected(target, recorded, () -> target.sequenceMessage(ingress, 0, inactive, SESSION_ID, TIMESTAMP),
+                       "case 3: a row naming a group that is not active");
+
+        register(target, 11, LISTED_SOURCE_ID, (short)0, 1, 2);
+        final int moved = systemFrame(SystemFrame.GATEWAY_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                      gatewayRegisteredBody(12, LISTED_SOURCE_ID, (short)1, 0, 1));
+        assertRejected(target, recorded, () -> target.sequenceMessage(ingress, 0, moved, SESSION_ID, TIMESTAMP),
+                       "case 4: a gateway row moving its source to another group");
+        final int claimed = systemFrame(SystemFrame.APPLICATION_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                        applicationRegisteredBody(LISTED_SOURCE_ID, 1));
+        assertRejected(target, recorded, () -> target.sequenceMessage(ingress, 0, claimed, SESSION_ID, TIMESTAMP),
+                       "case 4: an application row giving a gateway's source another group");
+
+        final long before = target.clusterSeqNo();
+        final int again = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID, groupsRegisteredBody("a", "b"));
+        assertTrue(target.sequenceMessage(ingress, 0, again, SESSION_ID, TIMESTAMP), "the same table again");
+        register(target, 11, LISTED_SOURCE_ID, (short)0, 0, 2);
+        assertTrue(before + 2 < target.clusterSeqNo(), "the same row again, under its source's group");
+        assertArrayEquals(new int[] {1, 2}, recorded.activated(), "neither activated anything again");
+    }
+
+    @Test
+    @DisplayName("row 11: S-9 holds the topology session from its table until it closes")
+    void s9TopologySession() {
+        final int table = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID, groupsRegisteredBody(GROUP));
+        assertRejected(() -> sequencer.sequenceMessage(ingress, 0, table, SESSION_ID + 1, TIMESTAMP),
+                       "another session's table while the topology session is open");
+        for (final int[] row : new int[][] {
+                 {SystemFrame.GATEWAY_REGISTERED}, {SystemFrame.APPLICATION_REGISTERED},
+                 {SystemFrame.PAYLOAD_ID_REGISTERED}, {SystemFrame.SNAPSHOT_POLICY_REGISTERED}}) {
+            final byte[] body = switch (row[0]) {
+                case SystemFrame.GATEWAY_REGISTERED -> gatewayRegisteredBody(11, LISTED_SOURCE_ID, (short)0, 0, 1);
+                case SystemFrame.APPLICATION_REGISTERED -> applicationRegisteredBody(3, 1);
+                case SystemFrame.PAYLOAD_ID_REGISTERED -> payloadIdRegisteredBody();
+                default -> snapshotPolicyRegisteredBody();
+            };
+            final int length = systemFrame(row[0], CLUSTERCTL_SOURCE_ID, body);
+            assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID + 1, TIMESTAMP),
+                           "systemEventType " + row[0] + " on another session");
+        }
+
+        sequencer.sessionClosed(SESSION_ID, TIMESTAMP);
+        final int row = systemFrame(SystemFrame.APPLICATION_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                    applicationRegisteredBody(3, 1));
+        assertRejected(() -> sequencer.sequenceMessage(ingress, 0, row, SESSION_ID, TIMESTAMP),
+                       "a row once the topology session has closed");
+        systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID, groupsRegisteredBody(GROUP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, table, SESSION_ID + 1, TIMESTAMP),
+                   "another session's table once the topology session has closed");
+        systemFrame(SystemFrame.APPLICATION_REGISTERED, CLUSTERCTL_SOURCE_ID, applicationRegisteredBody(3, 1));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, row, SESSION_ID + 1, TIMESTAMP),
+                   "and its rows, on the session that is now the topology session");
+    }
+
     // ── Fixtures ─────────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Activates the groups {@code names} declares, slot by slot, on {@link #SESSION_ID}, which becomes the
+     * topology session, then forgets what was published: the rows here other than 10 and 11 are about what
+     * follows activation.
+     */
+    private Sequencer activated(final Sequencer target, final FrameRecorder recorded, final String... names) {
+        final int length = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID, groupsRegisteredBody(names));
+        assertTrue(target.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        recorded.clear();
+        return target;
+    }
+
+    /** A group table naming group {@code i + 1} {@code names[i]}; a null name leaves its slot empty. */
+    private static byte[] groupsRegisteredBody(final String... names) {
+        final byte[] body = new byte[GroupsRegisteredEncoder.BLOCK_LENGTH];
+        final int slot = GroupsRegisteredEncoder.groupNamesLength() / FrameLayer.MAX_GROUPS;
+        for (int i = 0; i < names.length; i++) {
+            if (names[i] != null) {
+                final byte[] name = names[i].getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+                System.arraycopy(name, 0, body, i * slot, name.length);
+            }
+        }
+        return body;
+    }
+
+    /** The groups a mask names, ascending. */
+    private static int[] groupsOf(final int groupMask) {
+        return java.util.stream.IntStream.rangeClosed(1, FrameLayer.MAX_GROUPS)
+            .filter(groupId -> (groupMask & (1 << (groupId - 1))) != 0).toArray();
+    }
+
+    /** The queue of each frame published from {@code from} on. */
+    private static int[] queuesSince(final FrameRecorder recorded, final int from) {
+        return java.util.stream.IntStream.range(from, recorded.count()).map(recorded::groupId).toArray();
+    }
+
+    private static long groupSeqNoAt(final FrameRecorder recorded, final int index) {
+        return new SequencedHeaderDecoder().wrap(recorded.frame(index), MessageHeaderDecoder.ENCODED_LENGTH).groupSeqNo();
+    }
+
+    /** Asserts the frames from {@code from} on are one frame, byte for byte but for {@code groupSeqNo} (F-5). */
+    private static void assertIdenticalButForGroupSeqNo(final FrameRecorder recorded, final int from) {
+        assertIdenticalButForGroupSeqNo(recorded, from, recorded.count() - from);
+    }
+
+    private static void assertIdenticalButForGroupSeqNo(final FrameRecorder recorded, final int from, final int count) {
+        final int offset = MessageHeaderDecoder.ENCODED_LENGTH + SequencedHeaderDecoder.groupSeqNoEncodingOffset();
+        final byte[] first = recorded.all().get(from).clone();
+        java.util.Arrays.fill(first, offset, offset + Long.BYTES, (byte)0);
+        for (int i = from + 1; i < from + count; i++) {
+            final byte[] other = recorded.all().get(i).clone();
+            java.util.Arrays.fill(other, offset, offset + Long.BYTES, (byte)0);
+            assertArrayEquals(first, other, "frame " + i);
+        }
+    }
 
     /** Length of the frame the last {@code payloadFrame}/{@code systemFrame} call wrote into {@link #ingress}. */
     private int lastIngressLength;
@@ -765,12 +1079,18 @@ class ConformanceTest {
         return payload;
     }
 
-    /** Encodes one {@code Unsequenced} frame into {@link #ingress}; returns its length. */
+    /** Encodes one {@code Unsequenced} frame into {@link #ingress}, to the fixture's group; returns its length. */
     private int payloadFrame(final int payloadId, final int sourceId, final byte[] payload) {
+        return payloadFrame(payloadId, sourceId, payload, GROUP_MASK);
+    }
+
+    /** The same, to the groups {@code groupMask} names. */
+    private int payloadFrame(final int payloadId, final int sourceId, final byte[] payload, final int groupMask) {
         final org.limitless.seqeron.sbe.frame.UnsequencedEncoder encoder =
             new org.limitless.seqeron.sbe.frame.UnsequencedEncoder();
         encoder.wrapAndApplyHeader(ingress, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(sourceId).connectionId(CONNECTION_ID).sessionId(-1).payloadId(payloadId);
+        encoder.header().sourceId(sourceId).connectionId(CONNECTION_ID).sessionId(-1).payloadId(payloadId)
+            .groupMask(groupMask);
         encoder.putPayload(new org.agrona.concurrent.UnsafeBuffer(payload), 0, payload.length);
         lastIngressLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
         return lastIngressLength;
@@ -782,7 +1102,7 @@ class ConformanceTest {
             new org.limitless.seqeron.sbe.frame.UnsequencedSystemEncoder();
         encoder.wrapAndApplyHeader(ingress, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(sourceId).connectionId(CONNECTION_ID).sessionId(-1)
-            .systemEventType(systemEventType);
+            .systemEventType(systemEventType).groupMask(0);
         encoder.putBody(new org.agrona.concurrent.UnsafeBuffer(body), 0, body.length);
         lastIngressLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
         return lastIngressLength;
@@ -795,7 +1115,7 @@ class ConformanceTest {
             new org.limitless.seqeron.sbe.frame.SequencedEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(payloadId)
-            .clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
+            .groupMask(GROUP_MASK).clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP).groupSeqNo(clusterSeqNo);
         encoder.putPayload(new org.agrona.concurrent.UnsafeBuffer(payload), 0, payload.length);
         return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
@@ -807,26 +1127,28 @@ class ConformanceTest {
             new org.limitless.seqeron.sbe.frame.SequencedSystemEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID)
-            .systemEventType(systemEventType).clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
+            .systemEventType(systemEventType).groupMask(0).clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP)
+            .groupSeqNo(clusterSeqNo);
         encoder.putBody(new org.agrona.concurrent.UnsafeBuffer(body), 0, body.length);
         return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    /** The twelve submitted events of §7, each with a well-formed payload. */
+    /** The thirteen submitted events of §7, each with a well-formed payload. */
     private static Map<Integer, byte[]> submittedEvents() {
         final java.util.LinkedHashMap<Integer, byte[]> events = new java.util.LinkedHashMap<>();
         events.put(SystemFrame.CONNECTION_OPENED, connectionOpenedBody(new byte[0]));
         events.put(SystemFrame.CONNECTION_CLOSED, new byte[0]);
         events.put(SystemFrame.CLUSTER_STARTED, clusterStartedBody());
         events.put(SystemFrame.CLUSTER_STOPPED, clusterStartedBody());
-        events.put(SystemFrame.GATEWAY_REGISTERED, gatewayRegisteredBody(11, LISTED_SOURCE_ID, (short)0, 1));
+        events.put(SystemFrame.GATEWAY_REGISTERED, gatewayRegisteredBody(11, LISTED_SOURCE_ID, (short)0, 1, 1));
         events.put(SystemFrame.GATEWAY_STARTED, gatewayStartedBody(11));
         events.put(SystemFrame.PAYLOAD_ID_REGISTERED, payloadIdRegisteredBody());
         events.put(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, activationRequestedBody(11));
-        events.put(SystemFrame.APPLICATION_REGISTERED, applicationRegisteredBody(3));
+        events.put(SystemFrame.APPLICATION_REGISTERED, applicationRegisteredBody(3, 1));
         events.put(SystemFrame.SNAPSHOT_REQUESTED, snapshotRequestedBody());
         events.put(SystemFrame.SNAPSHOT_END, snapshotEndBody());
         events.put(SystemFrame.SNAPSHOT_POLICY_REGISTERED, snapshotPolicyRegisteredBody());
+        events.put(SystemFrame.GROUPS_REGISTERED, groupsRegisteredBody(GROUP));
         return events;
     }
 
@@ -867,12 +1189,12 @@ class ConformanceTest {
     }
 
     private static byte[] gatewayRegisteredBody(final int gatewayId, final int gatewaySourceId,
-                                                final short preferenceRank, final int remaining) {
+                                                final short preferenceRank, final int remaining, final int groupId) {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(64);
         final GatewayRegisteredEncoder encoder = new GatewayRegisteredEncoder();
         encoder.wrap(body, 0).remaining(remaining).gatewayId(gatewayId).gatewaySourceId(gatewaySourceId)
             .gatewayName("GW-" + gatewayId);
-        encoder.preferenceRank(preferenceRank);
+        encoder.preferenceRank(preferenceRank).snapshot((short)0).groupId((short)groupId);
         return copy(body, 0, encoder.encodedLength());
     }
 
@@ -890,10 +1212,11 @@ class ConformanceTest {
         return copy(body, 0, encoder.encodedLength());
     }
 
-    private static byte[] applicationRegisteredBody(final int applicationSourceId) {
+    private static byte[] applicationRegisteredBody(final int applicationSourceId, final int groupId) {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(64);
         final ApplicationRegisteredEncoder encoder = new ApplicationRegisteredEncoder();
-        encoder.wrap(body, 0).applicationSourceId(applicationSourceId).applicationName("RefDataServer");
+        encoder.wrap(body, 0).applicationSourceId(applicationSourceId).applicationName("RefDataServer")
+            .snapshot((short)0).groupId((short)groupId);
         return copy(body, 0, encoder.encodedLength());
     }
 
@@ -905,11 +1228,18 @@ class ConformanceTest {
         return copy(body, 0, encoder.encodedLength());
     }
 
-    /** Publishes one list row; {@code remaining == 0} closes the list and arms the bootstrap. */
+    /** Publishes one list row in group 1; {@code remaining == 0} closes the list and arms the bootstrap. */
     private void register(final Sequencer target, final int gatewayId, final int gatewaySourceId,
                           final short preferenceRank, final int remaining) {
+        register(target, gatewayId, gatewaySourceId, preferenceRank, remaining, 1);
+    }
+
+    /** The same, in group {@code groupId}. */
+    private void register(final Sequencer target, final int gatewayId, final int gatewaySourceId,
+                          final short preferenceRank, final int remaining, final int groupId) {
         final int length = systemFrame(SystemFrame.GATEWAY_REGISTERED, CLUSTERCTL_SOURCE_ID,
-                                       gatewayRegisteredBody(gatewayId, gatewaySourceId, preferenceRank, remaining));
+                                       gatewayRegisteredBody(gatewayId, gatewaySourceId, preferenceRank, remaining,
+                                                             groupId));
         assertTrue(target.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
     }
 
@@ -949,12 +1279,23 @@ class ConformanceTest {
 
     private void assertRejected(final java.util.function.BooleanSupplier call, final String what,
                                 final long before) {
-        final long rejectedBefore = sequencer.rejectedFrameCount();
-        final int published = frames.count();
+        assertRejected(sequencer, frames, call, what, before);
+    }
+
+    private static void assertRejected(final Sequencer target, final FrameRecorder recorded,
+                                       final java.util.function.BooleanSupplier call, final String what) {
+        assertRejected(target, recorded, call, what, target.clusterSeqNo());
+    }
+
+    private static void assertRejected(final Sequencer target, final FrameRecorder recorded,
+                                       final java.util.function.BooleanSupplier call, final String what,
+                                       final long before) {
+        final long rejectedBefore = target.rejectedFrameCount();
+        final int published = recorded.count();
         assertFalse(call.getAsBoolean(), what);
-        assertEquals(before, sequencer.clusterSeqNo(), what + ": clusterSeqNo must not move (S-5)");
-        assertEquals(published, frames.count(), what + ": nothing at all is emitted, not even behind the rejection");
-        assertEquals(rejectedBefore + 1, sequencer.rejectedFrameCount(), what + ": one counter tick (S-7)");
+        assertEquals(before, target.clusterSeqNo(), what + ": clusterSeqNo must not move (S-5)");
+        assertEquals(published, recorded.count(), what + ": nothing at all is emitted, not even behind the rejection");
+        assertEquals(rejectedBefore + 1, target.rejectedFrameCount(), what + ": one counter tick (S-7)");
     }
 
     private SequencedFrameDecoder wrapSequenced() {
@@ -988,14 +1329,16 @@ class ConformanceTest {
     private static byte[] encodeUnsequencedHeader() {
         final MutableDirectBuffer buffer = new ExpandableArrayBuffer(64);
         new org.limitless.seqeron.sbe.frame.UnsequencedHeaderEncoder().wrap(buffer, 0)
-            .sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(PAYLOAD_ID);
+            .sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(PAYLOAD_ID)
+            .groupMask(0x8001);
         return copy(buffer, 0, UnsequencedHeaderDecoder.ENCODED_LENGTH);
     }
 
     private static byte[] encodeUnsequencedSystemHeader() {
         final MutableDirectBuffer buffer = new ExpandableArrayBuffer(64);
         new org.limitless.seqeron.sbe.frame.UnsequencedSystemHeaderEncoder().wrap(buffer, 0)
-            .sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).systemEventType(PAYLOAD_ID);
+            .sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).systemEventType(PAYLOAD_ID)
+            .groupMask(0x8001);
         return copy(buffer, 0, UnsequencedSystemHeaderDecoder.ENCODED_LENGTH);
     }
 
@@ -1003,7 +1346,7 @@ class ConformanceTest {
         final MutableDirectBuffer buffer = new ExpandableArrayBuffer(64);
         new org.limitless.seqeron.sbe.frame.SequencedHeaderEncoder().wrap(buffer, 0)
             .sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(PAYLOAD_ID)
-            .clusterSeqNo(9).timestamp(TIMESTAMP);
+            .groupMask(0x8001).clusterSeqNo(9).timestamp(TIMESTAMP).groupSeqNo(4);
         return copy(buffer, 0, SequencedHeaderDecoder.ENCODED_LENGTH);
     }
 
@@ -1011,7 +1354,7 @@ class ConformanceTest {
         final MutableDirectBuffer buffer = new ExpandableArrayBuffer(64);
         new org.limitless.seqeron.sbe.frame.SequencedSystemHeaderEncoder().wrap(buffer, 0)
             .sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).systemEventType(PAYLOAD_ID)
-            .clusterSeqNo(9).timestamp(TIMESTAMP);
+            .groupMask(0x8001).clusterSeqNo(9).timestamp(TIMESTAMP).groupSeqNo(4);
         return copy(buffer, 0, SequencedSystemHeaderDecoder.ENCODED_LENGTH);
     }
 

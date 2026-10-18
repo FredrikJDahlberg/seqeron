@@ -30,6 +30,9 @@ public sealed class FollowStream
     private const int PingPayloadId = 6;
     private const int PingSourceId = 10;
 
+    // Group 1, the examples' topology's first: the queue this example follows, where its pings must appear.
+    private const int PingGroupMask = 1;
+
     // The one connection this example models: announced at start-up, and what every ping rides.
     private const int ConnectionId = 1;
 
@@ -155,8 +158,8 @@ public sealed class FollowStream
     {
         _pingSentTicks = Stopwatch.GetTimestamp();
         _pingBody.PutLong(0, _pingSentTicks, ByteOrder.LittleEndian);
-        if (_publisher.PublishPayload(sender, PingSourceId, ConnectionId, PingPayloadId, _pingBody, sizeof(long)) !=
-            Publish.Published)
+        if (_publisher.PublishPayload(sender, PingSourceId, ConnectionId, PingPayloadId, PingGroupMask, _pingBody,
+                                      sizeof(long)) != Publish.Published)
         {
             // Declined: the sender spun through back-pressure and an election and found no session at the end of
             // it. Next second's ping is the retry.

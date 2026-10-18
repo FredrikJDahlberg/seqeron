@@ -136,7 +136,7 @@ public:
         m_offset(offset),
         m_actingVersion(actingVersion)
     {
-        if (SBE_BOUNDS_CHECK_EXPECT(((m_offset + 34) > m_bufferLength), false))
+        if (SBE_BOUNDS_CHECK_EXPECT(((m_offset + 44) > m_bufferLength), false))
         {
             throw std::runtime_error("buffer too short for flyweight [E107]");
         }
@@ -168,7 +168,7 @@ public:
         m_offset = offset;
         m_actingVersion = actingVersion;
 
-        if (SBE_BOUNDS_CHECK_EXPECT(((m_offset + 34) > m_bufferLength), false))
+        if (SBE_BOUNDS_CHECK_EXPECT(((m_offset + 44) > m_bufferLength), false))
         {
             throw std::runtime_error("buffer too short for flyweight [E107]");
         }
@@ -178,7 +178,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t encodedLength() SBE_NOEXCEPT
     {
-        return 34;
+        return 44;
     }
 
     SBE_NODISCARD std::uint64_t offset() const SBE_NOEXCEPT
@@ -468,6 +468,69 @@ public:
         return *this;
     }
 
+    SBE_NODISCARD static const char *groupMaskMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t groupMaskId() SBE_NOEXCEPT
+    {
+        return -1;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t groupMaskSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool groupMaskInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t groupMaskEncodingOffset() SBE_NOEXCEPT
+    {
+        return 18;
+    }
+
+    static SBE_CONSTEXPR std::uint16_t groupMaskNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT16;
+    }
+
+    static SBE_CONSTEXPR std::uint16_t groupMaskMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint16_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint16_t groupMaskMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint16_t>(65534);
+    }
+
+    static SBE_CONSTEXPR std::size_t groupMaskEncodingLength() SBE_NOEXCEPT
+    {
+        return 2;
+    }
+
+    SBE_NODISCARD std::uint16_t groupMask() const SBE_NOEXCEPT
+    {
+        std::uint16_t val;
+        std::memcpy(&val, m_buffer + m_offset + 18, sizeof(std::uint16_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_16(val);
+    }
+
+    SequencedSystemHeader &groupMask(const std::uint16_t value) SBE_NOEXCEPT
+    {
+        std::uint16_t val = SBE_LITTLE_ENDIAN_ENCODE_16(value);
+        std::memcpy(m_buffer + m_offset + 18, &val, sizeof(std::uint16_t));
+        return *this;
+    }
+
     SBE_NODISCARD static const char *clusterSeqNoMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
     {
         switch (metaAttribute)
@@ -494,7 +557,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t clusterSeqNoEncodingOffset() SBE_NOEXCEPT
     {
-        return 18;
+        return 20;
     }
 
     static SBE_CONSTEXPR std::int64_t clusterSeqNoNullValue() SBE_NOEXCEPT
@@ -520,14 +583,14 @@ public:
     SBE_NODISCARD std::int64_t clusterSeqNo() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 18, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 20, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     SequencedSystemHeader &clusterSeqNo(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 18, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 20, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -557,7 +620,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t timestampEncodingOffset() SBE_NOEXCEPT
     {
-        return 26;
+        return 28;
     }
 
     static SBE_CONSTEXPR std::int64_t timestampNullValue() SBE_NOEXCEPT
@@ -583,14 +646,77 @@ public:
     SBE_NODISCARD std::int64_t timestamp() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 26, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 28, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     SequencedSystemHeader &timestamp(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 26, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 28, &val, sizeof(std::int64_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *groupSeqNoMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t groupSeqNoId() SBE_NOEXCEPT
+    {
+        return -1;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t groupSeqNoSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool groupSeqNoInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t groupSeqNoEncodingOffset() SBE_NOEXCEPT
+    {
+        return 36;
+    }
+
+    static SBE_CONSTEXPR std::int64_t groupSeqNoNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_INT64;
+    }
+
+    static SBE_CONSTEXPR std::int64_t groupSeqNoMinValue() SBE_NOEXCEPT
+    {
+        return INT64_C(-9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::int64_t groupSeqNoMaxValue() SBE_NOEXCEPT
+    {
+        return INT64_C(9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::size_t groupSeqNoEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD std::int64_t groupSeqNo() const SBE_NOEXCEPT
+    {
+        std::int64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 36, sizeof(std::int64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+    }
+
+    SequencedSystemHeader &groupSeqNo(const std::int64_t value) SBE_NOEXCEPT
+    {
+        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 36, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -615,12 +741,20 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << +writer.systemEventType();
 
     builder << ", ";
+    builder << R"("groupMask": )";
+    builder << +writer.groupMask();
+
+    builder << ", ";
     builder << R"("clusterSeqNo": )";
     builder << +writer.clusterSeqNo();
 
     builder << ", ";
     builder << R"("timestamp": )";
     builder << +writer.timestamp();
+
+    builder << ", ";
+    builder << R"("groupSeqNo": )";
+    builder << +writer.groupSeqNo();
 
     builder << '}';
 

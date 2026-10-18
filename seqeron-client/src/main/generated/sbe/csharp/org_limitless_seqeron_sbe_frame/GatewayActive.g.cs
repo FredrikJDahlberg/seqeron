@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
     /// </summary>
     public sealed partial class GatewayActive
     {
-        public const ushort BlockLength = (ushort)38;
+        public const ushort BlockLength = (ushort)48;
         public const ushort TemplateId = (ushort)106;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;
@@ -137,7 +137,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             return _actingVersion >= GatewayIdSinceVersion;
         }
 
-        public const int GatewayIdOffset = 34;
+        public const int GatewayIdOffset = 44;
 
         public static string GatewayIdMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -160,11 +160,11 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         {
             get
             {
-                return _buffer.Int32GetLittleEndian(_offset + 34);
+                return _buffer.Int32GetLittleEndian(_offset + 44);
             }
             set
             {
-                _buffer.Int32PutLittleEndian(_offset + 34, value);
+                _buffer.Int32PutLittleEndian(_offset + 44, value);
             }
         }
 

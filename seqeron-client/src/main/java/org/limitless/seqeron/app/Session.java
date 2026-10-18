@@ -39,6 +39,9 @@ final class Session implements AutoCloseable {
     /** How often an attempt to replace a lost session begins while the façade allows it. */
     static final long RECONNECT_INTERVAL_MS = 1_000;
 
+    /** No group is resolved yet (spec A-9), so a frame addresses none and §9.2 condition 14 refuses it. */
+    private static final int UNRESOLVED_GROUP_MASK = 0;
+
     /** What the façade above does with what comes off the queue, and with a fence. */
     interface Dispatch {
         /** A system frame this core does not consume itself. {@code LeadershipChanged} never arrives here. */
@@ -158,7 +161,8 @@ final class Session implements AutoCloseable {
     Publish publishPayload(final int sourceId, final int connectionId, final int payloadId,
                            final DirectBuffer body, final int bodyLength) {
         return fenced ? Publish.Declined
-                      : publisher.publishPayload(sender, sourceId, connectionId, payloadId, body, bodyLength);
+                      : publisher.publishPayload(sender, sourceId, connectionId, payloadId, UNRESOLVED_GROUP_MASK,
+                                                 body, bodyLength);
     }
 
     Publish publishSystem(final int sourceId, final int connectionId, final int systemEventType,

@@ -121,7 +121,7 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(38);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(48);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(106);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(210);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
@@ -179,7 +179,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(38);
+        return static_cast<std::uint16_t>(48);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -385,7 +385,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t gatewayIdEncodingOffset() SBE_NOEXCEPT
     {
-        return 34;
+        return 44;
     }
 
     static SBE_CONSTEXPR std::int32_t gatewayIdNullValue() SBE_NOEXCEPT
@@ -411,14 +411,14 @@ public:
     SBE_NODISCARD std::int32_t gatewayId() const SBE_NOEXCEPT
     {
         std::int32_t val;
-        std::memcpy(&val, m_buffer + m_offset + 34, sizeof(std::int32_t));
+        std::memcpy(&val, m_buffer + m_offset + 44, sizeof(std::int32_t));
         return SBE_LITTLE_ENDIAN_ENCODE_32(val);
     }
 
     GatewayActive &gatewayId(const std::int32_t value) SBE_NOEXCEPT
     {
         std::int32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
-        std::memcpy(m_buffer + m_offset + 34, &val, sizeof(std::int32_t));
+        std::memcpy(m_buffer + m_offset + 44, &val, sizeof(std::int32_t));
         return *this;
     }
 

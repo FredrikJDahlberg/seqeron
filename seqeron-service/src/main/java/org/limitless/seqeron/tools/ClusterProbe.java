@@ -81,6 +81,9 @@ public final class ClusterProbe {
     /** No connection and no advisory session: the probe is a producer, not a gateway with sockets. */
     private static final int NO_ID = -1;
 
+    /** The probe resolves no group yet (spec A-9), so its frames address none and §9.2 condition 14 refuses them. */
+    private static final int UNRESOLVED_GROUP_MASK = 0;
+
     /** {@code ping} and {@code TestGateway} carry no filler; only {@code submit} and {@code confirm} pad a frame. */
     static final byte[] NO_FILLER = new byte[0];
 
@@ -274,7 +277,7 @@ public final class ClusterProbe {
         int encode(final long seqNo, final int connectionId, final int sourceId, final byte[] filler) {
             final int payloadLength = encodePayload(seqNo, filler);
             final int length = envelope.wrapPayload(frame, sourceId, connectionId, NO_ID, PROBE_PAYLOAD_ID,
-                                                    payload, payloadLength);
+                                                    UNRESOLVED_GROUP_MASK, payload, payloadLength);
             if (length == SystemFrame.REFUSED) {
                 throw new IllegalArgumentException(
                     "probe.fillerBytes makes the payload larger than a frame may carry");

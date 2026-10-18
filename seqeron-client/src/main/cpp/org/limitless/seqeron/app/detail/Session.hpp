@@ -129,8 +129,8 @@ class Session
         {
             return protocol::Publish::Declined;
         }
-        return sequencer::client::publishPayload(m_sender, &m_pending, sourceId, connectionId, payloadId, payload,
-                                                 payloadLength);
+        return sequencer::client::publishPayload(m_sender, &m_pending, sourceId, connectionId, payloadId,
+                                                 UNRESOLVED_GROUP_MASK, payload, payloadLength);
     }
 
     template<typename Encoder, typename Fill>
@@ -142,7 +142,7 @@ class Session
             return protocol::Publish::Declined;
         }
         return sequencer::client::publishPayload<Encoder>(m_sender, &m_pending, sourceId, connectionId, payloadId,
-                                                          std::forward<Fill>(fill));
+                                                          UNRESOLVED_GROUP_MASK, std::forward<Fill>(fill));
     }
 
     template<typename Encoder, typename Fill>
@@ -249,6 +249,9 @@ class Session
   private:
     // How often an attempt to replace a lost session begins while the façade allows it.
     static constexpr std::int64_t RECONNECT_INTERVAL_MS = 1'000;
+
+    // No group is resolved yet (spec A-9), so a frame addresses none and §9.2 condition 14 refuses it.
+    static constexpr std::uint16_t UNRESOLVED_GROUP_MASK = 0;
 
     // The fences are deadlines, so they are measured on a clock no wall-clock step can move.
     static std::int64_t monotonicMs()

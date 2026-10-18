@@ -87,6 +87,9 @@ public sealed class SystemFrame
     /// <summary>Synthesis-only; <c>SessionClosed.TemplateId</c> is the frame's, not this.</summary>
     public const int SessionClosed = 31;
 
+    /// <summary>The topology file's group table; the first activates the groups.</summary>
+    public const int GroupsRegistered = Frame.GroupsRegistered.TemplateId;
+
     /// <summary>
     /// The compiled block length of the event <paramref name="systemEventType"/> names, or
     /// <see cref="NotIngressLegal"/> if it is unallocated or synthesis-only: §9.2 conditions 8 and 9 in one lookup.
@@ -120,6 +123,8 @@ public sealed class SystemFrame
                 return Frame.SnapshotEnd.BlockLength;
             case SnapshotPolicyRegistered:
                 return Frame.SnapshotPolicyRegistered.BlockLength;
+            case GroupsRegistered:
+                return Frame.GroupsRegistered.BlockLength;
             default:
                 return NotIngressLegal;
         }
@@ -157,6 +162,7 @@ public sealed class SystemFrame
         header.ConnectionId = connectionId;
         header.SessionId = sessionId;
         header.SystemEventType = (ushort)systemEventType;
+        header.GroupMask = 0;
         _systemEncoder.SetBody(SbeBuffers.Bytes(body, 0, bodyLength));
         return Frame.MessageHeader.Size + _systemEncoder.Size;
     }
@@ -168,12 +174,14 @@ public sealed class SystemFrame
     /// <param name="sessionId">this process's cluster session; advisory, the sequencer overwrites it</param>
     /// <param name="payloadId">names the payload's decoder namespace and encoding; 0 and 1 are invalid on the
     /// wire</param>
+    /// <param name="groupMask">the groups whose queues the frame reaches, the producer's own included
+    /// (§7.4)</param>
     /// <param name="payload">the payload, its own 8-byte <c>MessageHeader</c> included</param>
     /// <param name="payloadLength">bytes of <paramref name="payload"/> to carry</param>
     /// <returns>the frame's length in bytes, or <see cref="Refused"/> if <paramref name="payloadLength"/> is
     /// above <see cref="FrameLayer.MaxPayloadLength"/> or the frame breaks §9.2 condition 6 or 7</returns>
     public int WrapPayload(IMutableDirectBuffer frame, int sourceId, int connectionId, long sessionId, int payloadId,
-                           IDirectBuffer payload, int payloadLength)
+                           int groupMask, IDirectBuffer payload, int payloadLength)
     {
         if (payloadLength > FrameLayer.MaxPayloadLength || sourceId == ClusterSourceId || payloadId == 0 ||
             payloadId == RetiredCorePayloadId)
@@ -187,6 +195,7 @@ public sealed class SystemFrame
         header.ConnectionId = connectionId;
         header.SessionId = sessionId;
         header.PayloadId = (ushort)payloadId;
+        header.GroupMask = (ushort)groupMask;
         _payloadEncoder.SetPayload(SbeBuffers.Bytes(payload, 0, payloadLength));
         return Frame.MessageHeader.Size + _payloadEncoder.Size;
     }

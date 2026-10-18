@@ -47,6 +47,8 @@ using org::limitless::seqeron::protocol::SequencedEvent;
 // The examples' own payloadId and sourceId.
 constexpr std::uint16_t PING_PAYLOAD_ID = 6;
 constexpr std::int32_t PING_SOURCE_ID = 10;
+// Group 1, the examples' topology's first: the queue this example follows, where its pings must appear.
+constexpr std::uint16_t PING_GROUP_MASK = 1;
 
 // The one connection this example models: announced at start-up, and what every ping rides.
 constexpr std::int32_t CONNECTION_ID = 1;
@@ -124,7 +126,8 @@ void ping(client::ClusterStreamSender& sender)
         .sourceId(PING_SOURCE_ID)
         .connectionId(CONNECTION_ID)
         .sessionId(sender.clusterSessionId()) // advisory; the sequencer overwrites it with the true one
-        .payloadId(PING_PAYLOAD_ID);
+        .payloadId(PING_PAYLOAD_ID)
+        .groupMask(PING_GROUP_MASK);
     pingSentNs = nowNs();
     // Little-endian on the wire, as every SBE field is, so the Java example reads the same eight bytes.
     frame.putPayload(reinterpret_cast<const char*>(&pingSentNs), sizeof pingSentNs);

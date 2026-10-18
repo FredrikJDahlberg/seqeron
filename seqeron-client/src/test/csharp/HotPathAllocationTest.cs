@@ -97,7 +97,7 @@ public class HotPathAllocationTest
         for (int i = from; i < from + Frames; i++)
         {
             body.PutLong(0, i);
-            Assert.True(publisher.PublishPayload(sender, 1, 2, PayloadId, body, 16) == Publish.Published);
+            Assert.True(publisher.PublishPayload(sender, 1, 2, PayloadId, 1, body, 16) == Publish.Published);
             pending.OnSequenced(events[i]);
         }
     }

@@ -33,6 +33,9 @@ public static class ClusterProbe
     private const int ProbeSourceId = 8;
     private const int NoConnection = -1;
 
+    // The probe resolves no group yet (spec A-9), so its frames address none and §9.2 condition 14 refuses them.
+    private const int UnresolvedGroupMask = 0;
+
     // ProbeMarker's MessageHeader, then seqNo uint64, then filler as uint16-length var data.
     private const int ProbeMarkerTemplateId = 1;
     private const int ProbeSchemaId = 214;
@@ -147,7 +150,7 @@ public static class ClusterProbe
             if (next <= count && nowTicks >= nextSendTicks)
             {
                 Publish outcome = publisher.PublishPayload(sender, ProbeSourceId, NoConnection, ProbePayloadId,
-                                                           marker.Encode(next), ProbeMarkerLength);
+                                                           UnresolvedGroupMask, marker.Encode(next), ProbeMarkerLength);
                 if (outcome == Publish.Refused)
                 {
                     throw new InvalidOperationException("a ProbeMarker the sequencer would reject");

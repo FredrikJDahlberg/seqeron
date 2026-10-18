@@ -33,6 +33,10 @@ internal sealed class Session : IDisposable
     /// <summary>How often an attempt to replace a lost session begins while the façade allows it.</summary>
     internal const long ReconnectIntervalMs = 1_000;
 
+    /// <summary>No group is resolved yet (spec A-9), so a frame addresses none and §9.2 condition 14 refuses
+    /// it.</summary>
+    private const int UnresolvedGroupMask = 0;
+
     /// <summary>What the façade above does with what comes off the queue, and with a fence.</summary>
     internal interface IDispatch
     {
@@ -157,7 +161,8 @@ internal sealed class Session : IDisposable
     internal Publish PublishPayload(int sourceId, int connectionId, int payloadId, IDirectBuffer body, int bodyLength)
     {
         return _fenced ? Publish.Declined
-                       : _publisher.PublishPayload(_sender, sourceId, connectionId, payloadId, body, bodyLength);
+                       : _publisher.PublishPayload(_sender, sourceId, connectionId, payloadId, UnresolvedGroupMask,
+                                                   body, bodyLength);
     }
 
     internal Publish PublishSystem(int sourceId, int connectionId, int systemEventType, IDirectBuffer body,

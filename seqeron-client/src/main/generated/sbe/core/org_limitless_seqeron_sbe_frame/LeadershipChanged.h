@@ -121,7 +121,7 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(46);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(56);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(105);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(210);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
@@ -179,7 +179,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(46);
+        return static_cast<std::uint16_t>(56);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -385,7 +385,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t newLeaderMemberIdEncodingOffset() SBE_NOEXCEPT
     {
-        return 34;
+        return 44;
     }
 
     static SBE_CONSTEXPR std::int32_t newLeaderMemberIdNullValue() SBE_NOEXCEPT
@@ -411,14 +411,14 @@ public:
     SBE_NODISCARD std::int32_t newLeaderMemberId() const SBE_NOEXCEPT
     {
         std::int32_t val;
-        std::memcpy(&val, m_buffer + m_offset + 34, sizeof(std::int32_t));
+        std::memcpy(&val, m_buffer + m_offset + 44, sizeof(std::int32_t));
         return SBE_LITTLE_ENDIAN_ENCODE_32(val);
     }
 
     LeadershipChanged &newLeaderMemberId(const std::int32_t value) SBE_NOEXCEPT
     {
         std::int32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
-        std::memcpy(m_buffer + m_offset + 34, &val, sizeof(std::int32_t));
+        std::memcpy(m_buffer + m_offset + 44, &val, sizeof(std::int32_t));
         return *this;
     }
 
@@ -448,7 +448,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t leadershipTermIdEncodingOffset() SBE_NOEXCEPT
     {
-        return 38;
+        return 48;
     }
 
     static SBE_CONSTEXPR std::int64_t leadershipTermIdNullValue() SBE_NOEXCEPT
@@ -474,14 +474,14 @@ public:
     SBE_NODISCARD std::int64_t leadershipTermId() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 38, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 48, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     LeadershipChanged &leadershipTermId(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 38, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 48, &val, sizeof(std::int64_t));
         return *this;
     }
 

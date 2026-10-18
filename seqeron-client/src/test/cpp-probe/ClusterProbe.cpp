@@ -49,6 +49,8 @@ constexpr util::Component CLUSTER_PROBE{ "ClusterProbe" };
 constexpr std::uint16_t PROBE_PAYLOAD_ID = 5;
 constexpr std::int32_t PROBE_SOURCE_ID = 8;
 constexpr std::int32_t NO_CONNECTION = -1;
+// The probe resolves no group yet (spec A-9), so its frames address none and §9.2 condition 14 refuses them.
+constexpr std::uint16_t UNRESOLVED_GROUP_MASK = 0;
 
 // ProbeMarker's MessageHeader, then seqNo uint64, then filler as uint16-length var data.
 constexpr std::uint16_t PROBE_MARKER_TEMPLATE_ID = 1;
@@ -285,9 +287,9 @@ int confirm(const Options& options)
         const std::int64_t nowUs = monotonicUs();
         if (next <= count && nowUs >= nextSendUs)
         {
-            const protocol::Publish outcome =
-                client::publishPayload(sender, tracked ? &pending : nullptr, PROBE_SOURCE_ID, NO_CONNECTION,
-                                       PROBE_PAYLOAD_ID, marker.encode(next), PROBE_MARKER_LENGTH);
+            const protocol::Publish outcome = client::publishPayload(
+                sender, tracked ? &pending : nullptr, PROBE_SOURCE_ID, NO_CONNECTION, PROBE_PAYLOAD_ID,
+                UNRESOLVED_GROUP_MASK, marker.encode(next), PROBE_MARKER_LENGTH);
             if (outcome == protocol::Publish::Refused)
             {
                 throw std::logic_error("a ProbeMarker the sequencer would reject");

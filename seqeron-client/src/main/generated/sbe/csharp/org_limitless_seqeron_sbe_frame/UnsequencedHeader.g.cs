@@ -16,7 +16,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
     {
         public const ushort SbeSchemaId = (ushort)210;
         public const ushort SbeSchemaVersion = (ushort)0;
-        public const int Size = 18;
+        public const int Size = 20;
 
         private DirectBuffer _buffer;
         private int _offset;
@@ -110,6 +110,26 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         }
 
 
+        public const ushort GroupMaskNullValue = (ushort)65535;
+        public const ushort GroupMaskMinValue = (ushort)0;
+        public const ushort GroupMaskMaxValue = (ushort)65534;
+
+        /// <summary>
+        /// The groups whose queues the frame reaches: bit g - 1 names group g (§7.4). Never 0, only active groups' bits, the producer's own group's included
+        /// </summary>
+        public ushort GroupMask
+        {
+            get
+            {
+                return _buffer.Uint16GetLittleEndian(_offset + 18);
+            }
+            set
+            {
+                _buffer.Uint16PutLittleEndian(_offset + 18, value);
+            }
+        }
+
+
         public override string ToString()
         {
             var sb = new StringBuilder(100);
@@ -136,6 +156,9 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             builder.Append('|');
             builder.Append("PayloadId=");
             builder.Append(this.PayloadId);
+            builder.Append('|');
+            builder.Append("GroupMask=");
+            builder.Append(this.GroupMask);
             builder.Append(')');
 
         }

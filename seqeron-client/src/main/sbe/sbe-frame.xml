@@ -4,15 +4,16 @@
 
     Two families. The application family (Unsequenced 100, Sequenced 101) carries one opaque,
     length-prefixed payload named by header.payloadId (§6); the cluster tier never decodes it. The
-    system family carries seqeron's own messages, named by header.systemEventType: twelve submitted
+    system family carries seqeron's own messages, named by header.systemEventType: thirteen submitted
     events in UnsequencedSystem 102 / SequencedSystem 103, and five that the sequencer synthesizes as
     templates of their own (ClusterHeartbeat 104, LeadershipChanged 105, GatewayActive 106,
     SnapshotStarted 107, SessionClosed 108).
 
     Each unsequenced header composite is a byte prefix of its sequenced counterpart, and the two
-    families' composites differ only in the name of the uint16 at offset 16 (F-3), so clusterSeqNo is
-    at offset 18 in every sequenced frame. There is no padding and clusterSeqNo is unaligned: use plain
-    accessors only; volatile or atomic access at an unaligned address is undefined.
+    families' composites differ only in the name of the uint16 at offset 16 (F-3), so groupMask is at
+    offset 18, clusterSeqNo at 20 and groupSeqNo at 36 in every sequenced frame. There is no padding and
+    both sequence numbers are unaligned: use plain accessors only; volatile or atomic access at an
+    unaligned address is undefined.
 --><sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
                    package="org.limitless.seqeron.sbe.frame"
                    id="210"
@@ -30,7 +31,7 @@
             <type name="version"     primitiveType="uint16"/>
         </composite>
 
-        <!-- 18 bytes, all set by the producer (§5). -->
+        <!-- 20 bytes, all set by the producer (§5). -->
         <composite name="unsequencedHeader"
                    description="Application frame header on cluster ingress: the producer, its connection and cluster session, and the payload's protocol">
             <type name="sourceId"     primitiveType="int32"
@@ -41,11 +42,13 @@
                   description="Aeron Cluster session id; advisory. The sequencer overwrites it with the session the frame arrived on"/>
             <type name="payloadId"    primitiveType="uint16"
                   description="The payload's schema or encoding (§6). 0 is invalid and 1 is retired; both are rejected"/>
+            <type name="groupMask"    primitiveType="uint16"
+                  description="The groups whose queues the frame reaches: bit g - 1 names group g (§7.4). Never 0, only active groups' bits, the producer's own group's included"/>
         </composite>
 
-        <!-- 34 bytes: unsequencedHeader's 18, then clusterSeqNo and timestamp. -->
+        <!-- 44 bytes: unsequencedHeader's 20, then clusterSeqNo, timestamp and groupSeqNo. -->
         <composite name="sequencedHeader"
-                   description="Application frame header on the queue: the ingress header, plus clusterSeqNo and timestamp">
+                   description="Application frame header on the queue: the ingress header, plus clusterSeqNo, timestamp and groupSeqNo">
             <type name="sourceId"     primitiveType="int32"
                   description="Copied from ingress"/>
             <type name="connectionId" primitiveType="int32"
@@ -54,15 +57,19 @@
                   description="The Aeron Cluster session id the frame arrived on"/>
             <type name="payloadId"    primitiveType="uint16"
                   description="Copied from ingress"/>
+            <type name="groupMask"    primitiveType="uint16"
+                  description="Copied from ingress"/>
             <type name="clusterSeqNo" primitiveType="int64"
-                  description="Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4)"/>
+                  description="Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4). It jumps along a queue"/>
             <type name="timestamp"    primitiveType="int64"
                   description="Raft consensus time at commit, in nanoseconds since the epoch; never a node's local clock (S-3)"/>
+            <type name="groupSeqNo"   primitiveType="int64"
+                  description="This queue's own sequence number: 1 for its first frame, then +1 per frame on it (F-6)"/>
         </composite>
 
         <!-- Identical to unsequencedHeader, with systemEventType at offset 16. -->
         <composite name="unsequencedSystemHeader"
-                   description="System frame header on cluster ingress: the same 18 bytes, naming a system event instead of a payload protocol">
+                   description="System frame header on cluster ingress: the same 20 bytes, naming a system event instead of a payload protocol">
             <type name="sourceId"        primitiveType="int32"
                   description="The producer (§5). -1 is reserved for the cluster and illegal here (F-4)"/>
             <type name="connectionId"    primitiveType="int32"
@@ -71,11 +78,13 @@
                   description="Aeron Cluster session id; advisory. The sequencer overwrites it with the session the frame arrived on"/>
             <type name="systemEventType" primitiveType="uint16"
                   description="The event in the payload; MUST be an allocated, ingress-legal value (§7)"/>
+            <type name="groupMask"       primitiveType="uint16"
+                  description="0: a system frame reaches every queue (§7.4)"/>
         </composite>
 
-        <!-- 34 bytes: unsequencedSystemHeader's 18, then clusterSeqNo and timestamp. -->
+        <!-- 44 bytes: unsequencedSystemHeader's 20, then clusterSeqNo, timestamp and groupSeqNo. -->
         <composite name="sequencedSystemHeader"
-                   description="System frame header on the queue: the ingress header, plus clusterSeqNo and timestamp. Also the header of the synthesized templates">
+                   description="System frame header on the queue: the ingress header, plus clusterSeqNo, timestamp and groupSeqNo. Also the header of the synthesized templates">
             <type name="sourceId"        primitiveType="int32"
                   description="Copied from ingress; -1 on a synthesized frame (F-4)"/>
             <type name="connectionId"    primitiveType="int32"
@@ -84,10 +93,14 @@
                   description="The Aeron Cluster session id the frame arrived on; -1 on a synthesized frame"/>
             <type name="systemEventType" primitiveType="uint16"
                   description="Copied from ingress; on a synthesized frame, the value for that frame's template (§7)"/>
+            <type name="groupMask"       primitiveType="uint16"
+                  description="0, copied from ingress or set on a synthesized frame"/>
             <type name="clusterSeqNo"    primitiveType="int64"
-                  description="Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4)"/>
+                  description="Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4). It jumps along a queue"/>
             <type name="timestamp"       primitiveType="int64"
                   description="Raft consensus time at commit, in nanoseconds since the epoch; never a node's local clock (S-3)"/>
+            <type name="groupSeqNo"      primitiveType="int64"
+                  description="This queue's own sequence number: 1 for its first frame, then +1 per frame on it (F-6)"/>
         </composite>
 
         <type name="correlationId" primitiveType="int64"
@@ -101,6 +114,13 @@
 
         <type name="applicationName" primitiveType="char" length="32" characterEncoding="US-ASCII"
               description="The deployment's name for a co-located application; byte 0 = 0x00 means absent"/>
+
+        <type name="groupNames" primitiveType="char" length="512" characterEncoding="US-ASCII"
+              description="The group table: sixteen 32-byte slots, slot g - 1 naming group g as gatewayName does; a
+                           slot whose byte 0 is 0x00 declares no group"/>
+
+        <type name="groupId" primitiveType="uint8"
+              description="A group, 1-16: bit groupId - 1 of groupMask names it"/>
 
         <!-- Length prefix of an application or system payload. The bytes are arbitrary binary; no character
              encoding applies (SbeLogPrinter -o writes them out raw, §13.1). -->
@@ -132,7 +152,7 @@
     -->
 
     <sbe:message name="UnsequencedSystem" id="102"
-                 description="A system frame on cluster ingress. Only the twelve submitted events are legal here">
+                 description="A system frame on cluster ingress. Only the thirteen submitted events are legal here">
         <field name="header" id="20001" type="unsequencedSystemHeader"/>
         <data  name="body"   id="20045" type="varDataEncoding"
                description="The event named by header.systemEventType, as its SBE block with no MessageHeader. Empty when the event has no fields"/>
@@ -150,7 +170,7 @@
          id, so that offset 16 identifies every frame on the queue. -->
 
     <sbe:message name="ClusterHeartbeat" id="104"
-                 description="The cluster clock, synthesized once a second from a cluster timer. No payload: the frame's timestamp and clusterSeqNo are the message (42 bytes)">
+                 description="The cluster clock, synthesized once a second from a cluster timer. No payload: the frame's timestamp and clusterSeqNo are the message (52 bytes)">
         <field name="header" id="20001" type="sequencedSystemHeader"/>
     </sbe:message>
 
@@ -185,7 +205,7 @@
                description="The Aeron Cluster session that closed"/>
     </sbe:message>
 
-    <!-- ── The twelve submitted system events ───────────────────────────────────────────────────────────
+    <!-- ── The thirteen submitted system events ───────────────────────────────────────────────────────────
          Payloads carried in UnsequencedSystem/SequencedSystem; none has a header field. A template id here
          is never written to the wire: it is the event's systemEventType, and ids are never reused.
     -->
@@ -225,6 +245,9 @@
         <field name="snapshot"        id="20057" type="uint8"
                description="1 if this logical gateway takes part in snapshot rounds, else 0; the same on every row
                             of one gatewaySourceId"/>
+        <field name="groupId"         id="20059" type="groupId"
+               description="The group whose queue the instance reads (A-8); the same on every row of one
+                            gatewaySourceId, and fixed for its life (S-8)"/>
     </sbe:message>
 
     <sbe:message name="GatewayStarted" id="19"
@@ -253,13 +276,15 @@
 
     <sbe:message name="ApplicationRegistered" id="25"
                  description="One co-located application from the topology file (§5). Applications are not elected,
-                              so the row has no instance id, rank or countdown. Labelling only; the sequencer
-                              does not decode it">
+                              so the row has no instance id, rank or countdown. The sequencer reads only its
+                              group (S-8)">
         <field name="applicationSourceId" id="20046" type="int32"
                description="The application's sourceId (§5)"/>
         <field name="applicationName"     id="20047" type="applicationName"/>
         <field name="snapshot"            id="20057" type="uint8"
                description="1 if this application takes part in snapshot rounds, else 0"/>
+        <field name="groupId"             id="20059" type="groupId"
+               description="The group whose queue the replicas read (A-8), fixed for the source's life (S-8)"/>
     </sbe:message>
 
     <sbe:message name="SnapshotRequested" id="26"
@@ -288,6 +313,13 @@
                               other row">
         <field name="intervalSeconds" id="20056" type="uint32"
                description="Seconds between rounds on the cluster clock; 0 = operator requests only"/>
+    </sbe:message>
+
+    <sbe:message name="GroupsRegistered" id="32"
+                 description="The topology file's groups section, published first by clusterctl load-topology. The
+                              first activates the groups, each with its own queue, and a later one must equal
+                              it; each opens its session as the topology session (§7.4, S-8, S-9)">
+        <field name="groupNames" id="20060" type="groupNames"/>
     </sbe:message>
 
 </sbe:messageSchema>

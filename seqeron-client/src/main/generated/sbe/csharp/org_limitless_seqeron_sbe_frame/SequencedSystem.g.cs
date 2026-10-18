@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
     /// </summary>
     public sealed partial class SequencedSystem
     {
-        public const ushort BlockLength = (ushort)34;
+        public const ushort BlockLength = (ushort)44;
         public const ushort TemplateId = (ushort)103;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;
@@ -137,7 +137,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             return _actingVersion >= BodySinceVersion;
         }
 
-        public const int BodyOffset = 34;
+        public const int BodyOffset = 44;
 
         public static string BodyMetaAttribute(MetaAttribute metaAttribute)
         {

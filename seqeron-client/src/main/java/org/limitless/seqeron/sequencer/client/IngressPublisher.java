@@ -36,16 +36,17 @@ public final class IngressPublisher {
      *
      * <p>Two header fields are not parameters: the frame's template, and the cluster session, which is the
      * sender's. What varies is {@code sourceId} — for a reply, the requester's rather than this process's
-     * own — {@code connectionId}, {@code payloadId}, and the payload.
+     * own — {@code connectionId}, {@code payloadId}, {@code groupMask}, and the payload.
      *
      * @param payload the payload's bytes, whatever encoding they carry: the tier copies them through
      *     unopened, so an SBE payload includes its own 8-byte {@code MessageHeader} and a raw one no framing
      *     at all
      */
     public Publish publishPayload(final IngressSender sender, final int sourceId, final int connectionId,
-                                  final int payloadId, final DirectBuffer payload, final int payloadLength) {
+                                  final int payloadId, final int groupMask, final DirectBuffer payload,
+                                  final int payloadLength) {
         final int length = envelope.wrapPayload(frame, sourceId, connectionId, sender.clusterSessionId(),
-                                                payloadId, payload, payloadLength);
+                                                payloadId, groupMask, payload, payloadLength);
         return offer(sender, length);
     }
 

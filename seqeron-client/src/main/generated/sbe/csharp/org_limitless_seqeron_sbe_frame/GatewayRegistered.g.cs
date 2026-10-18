@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
     /// </summary>
     public sealed partial class GatewayRegistered
     {
-        public const ushort BlockLength = (ushort)44;
+        public const ushort BlockLength = (ushort)45;
         public const ushort TemplateId = (ushort)17;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;
@@ -423,6 +423,49 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         }
 
 
+        public const int GroupIdId = 20059;
+        public const int GroupIdSinceVersion = 0;
+        public const int GroupIdDeprecated = 0;
+        public bool GroupIdInActingVersion()
+        {
+            return _actingVersion >= GroupIdSinceVersion;
+        }
+
+        public const int GroupIdOffset = 44;
+
+        public static string GroupIdMetaAttribute(MetaAttribute metaAttribute)
+        {
+            switch (metaAttribute)
+            {
+                case MetaAttribute.Epoch: return "";
+                case MetaAttribute.TimeUnit: return "";
+                case MetaAttribute.SemanticType: return "";
+                case MetaAttribute.Presence: return "required";
+            }
+
+            return "";
+        }
+
+        public const byte GroupIdNullValue = (byte)255;
+        public const byte GroupIdMinValue = (byte)0;
+        public const byte GroupIdMaxValue = (byte)254;
+
+        /// <summary>
+        /// The group whose queue the instance reads (A-8); the same on every row of one                             gatewaySourceId, and fixed for its life (S-8)
+        /// </summary>
+        public byte GroupId
+        {
+            get
+            {
+                return _buffer.Uint8Get(_offset + 44);
+            }
+            set
+            {
+                _buffer.Uint8Put(_offset + 44, value);
+            }
+        }
+
+
         public override string ToString()
         {
             var sb = new StringBuilder(100);
@@ -483,6 +526,9 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             builder.Append('|');
             builder.Append("Snapshot=");
             builder.Append(this.Snapshot);
+            builder.Append('|');
+            builder.Append("GroupId=");
+            builder.Append(this.GroupId);
 
             this.Limit = originalLimit;
 

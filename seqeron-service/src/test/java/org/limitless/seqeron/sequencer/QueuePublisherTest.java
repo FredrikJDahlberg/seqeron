@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.ArrayList;
 import java.util.List;
 import org.agrona.DirectBuffer;
+import org.agrona.collections.IntArrayList;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +32,9 @@ class QueuePublisherTest {
     /** The frame every emit offers; its bytes are never read. */
     private static final DirectBuffer FRAME = new UnsafeBuffer(new byte[64]);
 
+    /** The group every emit goes to; {@link #setUp} activates it. */
+    private static final int GROUP = 1;
+
     /** Aeron's {@code Publication.BACK_PRESSURED} — a failure that retrying clears. */
     private static final long BACK_PRESSURED = -2;
 
@@ -48,6 +52,7 @@ class QueuePublisherTest {
         Logger.install(event -> { });
         actions = new Recorder();
         publisher = new QueuePublisher(actions);
+        publisher.activate(new int[] {GROUP});
     }
 
     @AfterEach
@@ -71,7 +76,11 @@ class QueuePublisherTest {
         long failedOffers; // offers to fail before one lands
         long failResult = BACK_PRESSURED;
         long failedTimers; // scheduleTimer refusals before one is accepted
+        long idlesBeforeRecording; // idles before the archive records a newly opened queue
+        RuntimeException openFailure; // what openQueue throws, if anything
+        final IntArrayList opened = new IntArrayList();
         boolean recordingActive = true;
+        int stoppedGroup; // a group whose recording alone has stopped; 0 for none
         long recordedPosition;
         long recordedAdvancePerIdle; // an archive that is slow but still draining
         long idlesPerAdvance = 1; // ... or one that drains only now and then
@@ -85,7 +94,20 @@ class QueuePublisherTest {
         final List<Boolean> stalledGauge = new ArrayList<>();
 
         @Override
-        public long offerFrame(final DirectBuffer buffer, final int length) {
+        public void openQueue(final int groupId) {
+            if (openFailure != null) {
+                throw openFailure;
+            }
+            opened.addInt(groupId);
+        }
+
+        @Override
+        public boolean attachRecording(final int groupId) {
+            return idles >= idlesBeforeRecording;
+        }
+
+        @Override
+        public long offerFrame(final int groupId, final DirectBuffer buffer, final int length) {
             return ++offers <= failedOffers ? failResult : 1;
         }
 
@@ -113,17 +135,17 @@ class QueuePublisherTest {
         }
 
         @Override
-        public boolean recordingActive() {
-            return recordingActive;
+        public boolean recordingActive(final int groupId) {
+            return recordingActive && groupId != stoppedGroup;
         }
 
         @Override
-        public long recordedPosition() {
+        public long recordedPosition(final int groupId) {
             return recordedPosition;
         }
 
         @Override
-        public long recordingId() {
+        public long recordingId(final int groupId) {
             return 7;
         }
 
@@ -163,7 +185,7 @@ class QueuePublisherTest {
     @Test
     @DisplayName("an offer that lands reads no clock and raises nothing")
     void landedOfferCostsNothing() {
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertEquals(1, actions.offers);
         assertEquals(0, actions.nowNs, "the normal path must not idle, which is what reads the clock");
@@ -176,7 +198,7 @@ class QueuePublisherTest {
     void transientBackPressureIsSilent() {
         actions.failedOffers = clockReads(1); // the first read only anchors the period
 
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertEquals(0, actions.alerts);
         assertFalse(publisher.isFatalSignalled());
@@ -187,7 +209,7 @@ class QueuePublisherTest {
     void sustainedBackPressureAlertsPerInterval() {
         actions.failedOffers = clockReads(4);
 
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertEquals(3, actions.alerts, "one per elapsed interval after the anchoring read");
         assertFalse(publisher.isFatalSignalled());
@@ -199,7 +221,7 @@ class QueuePublisherTest {
         actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(3); // anchor, first observation, then one threshold's worth
 
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertEquals(List.of(true, false), actions.stalledGauge,
                      "raised once — STALLED is edge-triggered — and cleared by the offer that landed");
@@ -212,7 +234,7 @@ class QueuePublisherTest {
         actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(8); // five threshold periods past the first observation
 
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertTrue(publisher.isFatalSignalled());
         assertEquals(1, actions.halts, "a graceful shutdown would wait on this thread, which is still spinning");
@@ -228,7 +250,7 @@ class QueuePublisherTest {
         actions.recordedAdvancePerIdle = 1; // the recording keeps moving under the back-pressure
         actions.failedOffers = clockReads(20);
 
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertFalse(publisher.isFatalSignalled(), "this bounds an archive that has stopped, not a busy one");
         assertEquals(List.of(), actions.stalledGauge);
@@ -245,7 +267,7 @@ class QueuePublisherTest {
         actions.idlesPerAdvance = 4 * QueuePublisher.SPINS_PER_CLOCK_CHECK;
         actions.failedOffers = clockReads(40);
 
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertFalse(publisher.isFatalSignalled(), "the fatal timeout runs from the last advance");
         assertEquals(List.of(true, false), actions.stalledGauge, "raised by a quiet stretch, cleared on landing");
@@ -256,14 +278,14 @@ class QueuePublisherTest {
     void nextStallStartsOnAFreshClock() {
         actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(3);
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
         assertEquals(List.of(true, false), actions.stalledGauge);
 
         // Same recording position as before, and more than the fatal timeout since it last moved: it is the
         // time since THIS stall began that counts, so the next emit may only raise the gauge again.
         actions.nowNs += QueuePublisher.QUEUE_STALL_FATAL_TIMEOUT_NS;
         actions.offers = 0;
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertFalse(publisher.isFatalSignalled());
         assertEquals(List.of(true, false, true, false), actions.stalledGauge);
@@ -275,7 +297,7 @@ class QueuePublisherTest {
         actions.recordingActive = false;
         actions.failedOffers = clockReads(2);
 
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertTrue(publisher.isFatalSignalled());
         assertEquals(1, actions.halts);
@@ -288,7 +310,7 @@ class QueuePublisherTest {
         actions.failResult = CLOSED;
         actions.failedOffers = 1;
 
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertTrue(publisher.isFatalSignalled());
         assertEquals(1, actions.halts);
@@ -301,13 +323,83 @@ class QueuePublisherTest {
         actions.recordingActive = false;
         actions.failedOffers = clockReads(6);
 
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
 
         assertEquals(1, actions.halts);
         assertEquals(0, actions.fatals);
     }
 
+    // ── activate ──────────────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("activation opens every group's queue in order and returns once the archive records them all")
+    void activationOpensAndRecordsEveryQueue() {
+        actions = new Recorder();
+        publisher = new QueuePublisher(actions);
+        actions.idlesBeforeRecording = 3;
+
+        publisher.activate(new int[] {2, 5, 9});
+
+        assertEquals(new IntArrayList(new int[] {2, 5, 9}, 3, -1), actions.opened);
+        assertEquals(3, actions.idles, "it waits on the archive, idling between looks");
+        assertFalse(publisher.isFatalSignalled());
+    }
+
+    @Test
+    @DisplayName("an archive that has not recorded every queue within the activation budget halts the node")
+    void unrecordedQueueAtActivationHalts() {
+        actions = new Recorder();
+        publisher = new QueuePublisher(actions);
+        actions.nanosPerIdle = QueuePublisher.QUEUE_RECORDING_START_TIMEOUT_NS / 4;
+        actions.idlesBeforeRecording = Long.MAX_VALUE;
+
+        publisher.activate(new int[] {1, 2});
+
+        assertTrue(publisher.isFatalSignalled());
+        assertEquals(1, actions.halts, "the callback cannot return with a queue nothing records");
+        assertEquals(4, actions.idles, "the budget covers every queue together, not each in turn");
+    }
+
+    @Test
+    @DisplayName("a queue that cannot be opened halts the node")
+    void queueThatCannotBeOpenedHalts() {
+        actions = new Recorder();
+        publisher = new QueuePublisher(actions);
+        actions.openFailure = new IllegalStateException("archive refused");
+
+        publisher.activate(new int[] {1});
+
+        assertTrue(publisher.isFatalSignalled());
+        assertEquals(1, actions.halts);
+    }
+
     // ── checkRecordingAlive ───────────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("before activation there is no queue, so the 1 Hz check checks nothing")
+    void checkBeforeActivationChecksNothing() {
+        actions = new Recorder();
+        publisher = new QueuePublisher(actions);
+        actions.recordingActive = false;
+
+        publisher.checkRecordingAlive();
+
+        assertFalse(publisher.isFatalSignalled());
+    }
+
+    @Test
+    @DisplayName("any one queue's recording stopping is fatal off the 1 Hz check")
+    void oneStoppedQueueIsFatal() {
+        actions = new Recorder();
+        publisher = new QueuePublisher(actions);
+        publisher.activate(new int[] {1, 2, 3});
+        actions.stoppedGroup = 2;
+
+        publisher.checkRecordingAlive();
+
+        assertTrue(publisher.isFatalSignalled());
+        assertEquals(1, actions.fatals);
+    }
 
     @Test
     @DisplayName("a live recording passes the 1 Hz check silently")
@@ -339,7 +431,7 @@ class QueuePublisherTest {
 
         actions.nanosPerIdle = periodOf(QueuePublisher.QUEUE_STALL_FATAL_TIMEOUT_NS);
         actions.failedOffers = clockReads(4);
-        publisher.emit(FRAME, 64);
+        publisher.emit(GROUP, FRAME, 64);
         actions.failedTimers = clockReads(4);
         publisher.scheduleHeartbeat(CLUSTER_TIME_DEADLINE);
 

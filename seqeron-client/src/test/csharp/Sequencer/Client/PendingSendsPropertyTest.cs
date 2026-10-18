@@ -181,7 +181,7 @@ public class PendingSendsPropertyTest
             return;
         }
         _body.PutLong(0, _next);
-        int length = _envelope.WrapPayload(_frame, 1, 2, _session, PayloadId, _body, sizeof(long));
+        int length = _envelope.WrapPayload(_frame, 1, 2, _session, PayloadId, 1, _body, sizeof(long));
         if (_sender.Send(_frame, length))
         {
             _pending.Track(_frame, length, _sender.ClusterSessionId, _sender.LeadershipTermId);

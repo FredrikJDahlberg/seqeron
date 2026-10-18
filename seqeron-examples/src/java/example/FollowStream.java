@@ -41,6 +41,9 @@ public final class FollowStream {
     private static final int PING_PAYLOAD_ID = 6;
     private static final int PING_SOURCE_ID = 10;
 
+    /** Group 1, the examples' topology's first: the queue this example follows, where its pings must appear. */
+    private static final int PING_GROUP_MASK = 1;
+
     /** The one connection this example models: announced at start-up, and what every ping rides. */
     private static final int CONNECTION_ID = 1;
 
@@ -165,8 +168,8 @@ public final class FollowStream {
     private static void ping(final ClusterStreamSender sender) {
         pingSentNs = System.nanoTime();
         PING_BODY.putLong(0, pingSentNs, ByteOrder.LITTLE_ENDIAN);
-        if (PUBLISHER.publishPayload(sender, PING_SOURCE_ID, CONNECTION_ID, PING_PAYLOAD_ID, PING_BODY, Long.BYTES)
-            != Publish.Published) {
+        if (PUBLISHER.publishPayload(sender, PING_SOURCE_ID, CONNECTION_ID, PING_PAYLOAD_ID, PING_GROUP_MASK,
+                                     PING_BODY, Long.BYTES) != Publish.Published) {
             // Declined: the sender spun through back-pressure and an election and found no session at the
             // end of it. Next second's ping is the retry.
             pingSentNs = 0;

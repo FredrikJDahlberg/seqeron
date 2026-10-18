@@ -106,7 +106,7 @@ TEST(FrameCodec, ApplicationPayloadRoundTripsInsideASequencedFrame)
 
 TEST(FrameCodec, ClusterHeartbeatCarriesItsFieldsInline)
 {
-    // One of the three the sequencer synthesizes: a template of its own, no payload at all, and 42 bytes —
+    // One of the three the sequencer synthesizes: a template of its own, no payload at all, and 52 bytes —
     // the cheapest frame in the system.
     alignas(16) std::array<std::uint8_t, 128> buffer{};
     frm::ClusterHeartbeat frame;
@@ -119,7 +119,7 @@ TEST(FrameCodec, ClusterHeartbeatCarriesItsFieldsInline)
         .clusterSeqNo(5)
         .timestamp(1700000000001LL);
     const auto length = frm::MessageHeader::encodedLength() + frame.encodedLength();
-    EXPECT_EQ(42U, length);
+    EXPECT_EQ(52U, length);
 
     const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()), length);
     ASSERT_TRUE(view.valid);
