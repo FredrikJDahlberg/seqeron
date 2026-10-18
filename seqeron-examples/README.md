@@ -2,7 +2,7 @@
 
 The smallest client of seqeron there is, once per language and the same flow in each: it replays a node's
 history through that node's co-located `ReplayerService`, switches to the live queue when it catches up, and
-prints every frame in `globalSeqNo` order. Each also produces, in both families: one `ConnectionOpened`
+prints every frame in `clusterSeqNo` order. Each also produces, in both families: one `ConnectionOpened`
 system event announcing itself, then one `ping` payload a second at cluster ingress, whose echo comes back
 through the same consumer — so the round trip is measured over the real path.
 
@@ -72,7 +72,7 @@ cluster, and the pair through a handover.
 
 `SnapshotApp` is a co-located application with state worth keeping: a ledger of eight accounts that open
 with 1000 each. The leading replica submits a random transfer once a second (`payloadId` 7: `from` int32,
-`to` int32, `amount` int64, no schema), and every replica applies each one in `globalSeqNo` order, rejecting
+`to` int32, `amount` int64, no schema), and every replica applies each one in `clusterSeqNo` order, rejecting
 a transfer that would overdraw its source account. Whether a transfer applies depends on every transfer
 before it, so a replica cannot rebuild its balances from part of the log: it needs all of it, or a snapshot
 of the state at a known point in it and the frames after that point. Like `ColocatedApp`, it is written
@@ -81,7 +81,7 @@ against `app` alone and its imports and includes are checked the same way.
 **How a snapshot is taken** (`doc/snapshot.md` in the seqeron repo is the full mechanism):
 
 1. The sequencer starts a round by sequencing `SnapshotStarted`, every `interval` seconds of cluster time or
-   on `clusterctl.sh request-snapshot`. Its `globalSeqNo`, `R`, is the round's cut.
+   on `clusterctl.sh request-snapshot`. Its `clusterSeqNo`, `R`, is the round's cut.
 2. Every replica dispatching that frame, live or replayed, serializes its state as of `R` before it
    dispatches `R + 1`. The façade writes its own header as record 0, then calls the listener's `onSnapshot`
    with a 65535-byte buffer and an increasing `recordIndex` until it returns 0. Each record goes straight into
@@ -96,7 +96,7 @@ against `app` alone and its imports and includes are checked the same way.
 **How it is restored.** A replica given a `SnapshotListener` starts by asking its node's Replayer for the
 `SnapshotEnd` of the newest round it holds a file for, and checks the file against it. On a match it calls
 `onRestore` with each record in order, then resumes the queue at `R + 1`. A file the log does not confirm, or
-that does not match its end, is passed over for an older one; with none left, it replays from `globalSeqNo` 1
+that does not match its end, is passed over for an older one; with none left, it replays from `clusterSeqNo` 1
 as any other replica does. A file whose records are damaged, or whose `formatVersion` the build does not
 support, fences it with `SNAPSHOT_UNRESTORABLE`.
 
@@ -188,7 +188,7 @@ The first CMake configure fetches and builds Aeron from source, which is what `a
 whole repo costs. GoogleTest is not fetched — that is seqeron's test dependency, not part of what it
 exports.
 
-Output is one line per frame — `globalSeqNo`, then the decoded system event, or the application
+Output is one line per frame — `clusterSeqNo`, then the decoded system event, or the application
 `payloadId` and template for a payload it has no decoder for:
 
     # following member 0 via /var/folders/…/seqeron-seq-aeron-0
@@ -202,7 +202,7 @@ Output is one line per frame — `globalSeqNo`, then the decoded system event, o
     234 ping echoed, round trip 6415us
     …
 
-`globalSeqNo` 1 is always a `LeadershipChanged`, and it reaches the leadership callback rather than
+`clusterSeqNo` 1 is always a `LeadershipChanged`, and it reaches the leadership callback rather than
 `onSequenced`. The heartbeat is the cluster clock at 1 Hz, so the lines between the pings are it. The C++
 half prints its connection line from a `LifecycleEvent` — `ConnectionOpened connection=1 sourceId=10`,
 identity without the payload (see the callback bullet below).
@@ -258,7 +258,7 @@ C# reads the C++ variables bar `SEQERON_EXAMPLE_EGRESS_PORT` — its egress is e
   `MAX_PAYLOAD_LENGTH` — local, permanent, nothing was offered) or `Declined` (the transport's answer, and
   the one worth retrying). The ping retries a `Declined` by simply sending the next second's.
 - **The producer does not wait for its own frame.** `ping` submits and returns; the echo arrives in
-  `onSequenced` in `globalSeqNo` order like everything else, which is what a real producer that is also a
+  `onSequenced` in `clusterSeqNo` order like everything else, which is what a real producer that is also a
   consumer looks like.
 - **A fragment handler must not throw.** `Image::poll` advances the subscriber position regardless of what
   a handler raises, so the gap is recorded and the duty cycle raises it.
@@ -272,7 +272,7 @@ C# reads the C++ variables bar `SEQERON_EXAMPLE_EGRESS_PORT` — its egress is e
   identity and its payload, which `decodeSystem` reads `connectionData` from as it does in `onSequenced`.
   Java delivers both events to `onSequenced` like any other system frame, and so does C++ for a callback
   passed as `{}`.
-- **`LeadershipChanged` has its own callback,** and `globalSeqNo` 1 is always one. With that callback
+- **`LeadershipChanged` has its own callback,** and `clusterSeqNo` 1 is always one. With that callback
   `null` (Java) or `{}` (C++), it reaches `onSequenced` instead.
 - **A send that succeeds is not a frame sequenced.** Nothing confirms ingress on egress, and a leader
   failover silently loses whatever the old leader had not committed. The ping lives with that — the next

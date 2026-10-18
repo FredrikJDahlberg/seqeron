@@ -468,7 +468,7 @@ public:
         return *this;
     }
 
-    SBE_NODISCARD static const char *globalSeqNoMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    SBE_NODISCARD static const char *clusterSeqNoMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
     {
         switch (metaAttribute)
         {
@@ -477,54 +477,54 @@ public:
         }
     }
 
-    static SBE_CONSTEXPR std::uint16_t globalSeqNoId() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint16_t clusterSeqNoId() SBE_NOEXCEPT
     {
         return -1;
     }
 
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t globalSeqNoSinceVersion() SBE_NOEXCEPT
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t clusterSeqNoSinceVersion() SBE_NOEXCEPT
     {
         return 0;
     }
 
-    SBE_NODISCARD bool globalSeqNoInActingVersion() SBE_NOEXCEPT
+    SBE_NODISCARD bool clusterSeqNoInActingVersion() SBE_NOEXCEPT
     {
         return true;
     }
 
-    SBE_NODISCARD static SBE_CONSTEXPR std::size_t globalSeqNoEncodingOffset() SBE_NOEXCEPT
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t clusterSeqNoEncodingOffset() SBE_NOEXCEPT
     {
         return 18;
     }
 
-    static SBE_CONSTEXPR std::int64_t globalSeqNoNullValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int64_t clusterSeqNoNullValue() SBE_NOEXCEPT
     {
         return SBE_NULLVALUE_INT64;
     }
 
-    static SBE_CONSTEXPR std::int64_t globalSeqNoMinValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int64_t clusterSeqNoMinValue() SBE_NOEXCEPT
     {
         return INT64_C(-9223372036854775807);
     }
 
-    static SBE_CONSTEXPR std::int64_t globalSeqNoMaxValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int64_t clusterSeqNoMaxValue() SBE_NOEXCEPT
     {
         return INT64_C(9223372036854775807);
     }
 
-    static SBE_CONSTEXPR std::size_t globalSeqNoEncodingLength() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::size_t clusterSeqNoEncodingLength() SBE_NOEXCEPT
     {
         return 8;
     }
 
-    SBE_NODISCARD std::int64_t globalSeqNo() const SBE_NOEXCEPT
+    SBE_NODISCARD std::int64_t clusterSeqNo() const SBE_NOEXCEPT
     {
         std::int64_t val;
         std::memcpy(&val, m_buffer + m_offset + 18, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
-    SequencedHeader &globalSeqNo(const std::int64_t value) SBE_NOEXCEPT
+    SequencedHeader &clusterSeqNo(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
         std::memcpy(m_buffer + m_offset + 18, &val, sizeof(std::int64_t));
@@ -615,8 +615,8 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << +writer.payloadId();
 
     builder << ", ";
-    builder << R"("globalSeqNo": )";
-    builder << +writer.globalSeqNo();
+    builder << R"("clusterSeqNo": )";
+    builder << +writer.clusterSeqNo();
 
     builder << ", ";
     builder << R"("timestamp": )";

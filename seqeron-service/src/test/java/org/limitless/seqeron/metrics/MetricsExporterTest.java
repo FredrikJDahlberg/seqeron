@@ -69,28 +69,28 @@ class MetricsExporterTest {
     @DisplayName("each metric keeps its own header, and its samples stay together under it")
     void distinctMetricsKeepDistinctHeaders() {
         addAppCounter(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID, MEMBER, 9, 0);
-        addCounter(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, MEMBER, 42);
+        addCounter(SeqeronCounters.SEQUENCER_CLUSTER_SEQ_NO_TYPE_ID, MEMBER, 42);
         addAppCounter(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID, MEMBER, 10, 1);
 
         final String body = new MetricsExporter(counters, MEMBER).renderMetrics();
 
         assertEquals(1, count(body, "# HELP seqeron_app_recovery_stalled "));
-        assertEquals(1, count(body, "# HELP seqeron_sequencer_global_seq_no "));
+        assertEquals(1, count(body, "# HELP seqeron_sequencer_cluster_seq_no "));
         // Interleaved in the counters region, grouped in the body: a metric's samples must all follow
         // its own header, not another metric's.
-        assertTrue(body.indexOf("client=\"10\"") < body.indexOf("# HELP seqeron_sequencer_global_seq_no ")
-                       || body.indexOf("# HELP seqeron_sequencer_global_seq_no ") < body.indexOf("client=\"9\""),
+        assertTrue(body.indexOf("client=\"10\"") < body.indexOf("# HELP seqeron_sequencer_cluster_seq_no ")
+                       || body.indexOf("# HELP seqeron_sequencer_cluster_seq_no ") < body.indexOf("client=\"9\""),
                    body);
     }
 
     @Test
     @DisplayName("a node-scoped counter carries no client label")
     void nodeScopedCounterHasNoClientLabel() {
-        addCounter(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, MEMBER, 42);
+        addCounter(SeqeronCounters.SEQUENCER_CLUSTER_SEQ_NO_TYPE_ID, MEMBER, 42);
 
         assertTrue(new MetricsExporter(counters, MEMBER)
                        .renderMetrics()
-                       .contains("seqeron_sequencer_global_seq_no{member=\"1\"} 42"));
+                       .contains("seqeron_sequencer_cluster_seq_no{member=\"1\"} 42"));
     }
 
     @Test
@@ -171,14 +171,14 @@ class MetricsExporterTest {
     void scrapeFollowsADriverRestart(@TempDir final File aeronDir) {
         writeCnc(aeronDir, System.currentTimeMillis(), 42);
         assertTrue(
-            MetricsExporter.scrape(aeronDir, MEMBER).contains("seqeron_sequencer_global_seq_no{member=\"1\"} 42"));
+            MetricsExporter.scrape(aeronDir, MEMBER).contains("seqeron_sequencer_cluster_seq_no{member=\"1\"} 42"));
 
         // The restarted member's driver deletes the directory and creates a CnC file of its own.
         assertTrue(new File(aeronDir, CncFileDescriptor.CNC_FILE).delete());
         writeCnc(aeronDir, System.currentTimeMillis(), 7);
 
         assertTrue(
-            MetricsExporter.scrape(aeronDir, MEMBER).contains("seqeron_sequencer_global_seq_no{member=\"1\"} 7"));
+            MetricsExporter.scrape(aeronDir, MEMBER).contains("seqeron_sequencer_cluster_seq_no{member=\"1\"} 7"));
     }
 
     @Test
@@ -211,8 +211,8 @@ class MetricsExporterTest {
             .set(value);
     }
 
-    /** Writes the CnC file a driver would, holding one globalSeqNo counter, its heartbeat last at {@code heartbeatMs}. */
-    private static void writeCnc(final File aeronDir, final long heartbeatMs, final long globalSeqNo) {
+    /** Writes the CnC file a driver would, holding one clusterSeqNo counter, its heartbeat last at {@code heartbeatMs}. */
+    private static void writeCnc(final File aeronDir, final long heartbeatMs, final long clusterSeqNo) {
         final int toDriverLength = 1024 + RingBufferDescriptor.TRAILER_LENGTH;
         final int toClientsLength = 1024 + BroadcastBufferDescriptor.TRAILER_LENGTH;
         final int countersMetaDataLength = COUNTER_COUNT * CountersManager.METADATA_LENGTH;
@@ -230,9 +230,9 @@ class MetricsExporterTest {
                 .consumerHeartbeatTime(heartbeatMs);
             new CountersManager(CncFileDescriptor.createCountersMetaDataBuffer(cnc, metaData),
                                 CncFileDescriptor.createCountersValuesBuffer(cnc, metaData))
-                .newCounter("seqeron member=" + MEMBER, SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID,
+                .newCounter("seqeron member=" + MEMBER, SeqeronCounters.SEQUENCER_CLUSTER_SEQ_NO_TYPE_ID,
                             keyBuffer -> keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, MEMBER))
-                .set(globalSeqNo);
+                .set(clusterSeqNo);
             CncFileDescriptor.signalCncReady(metaData);
         } finally {
             IoUtil.unmap(cnc);

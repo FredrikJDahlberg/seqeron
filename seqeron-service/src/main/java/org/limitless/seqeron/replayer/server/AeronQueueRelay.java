@@ -169,7 +169,7 @@ final class AeronQueueRelay implements AutoCloseable {
             restartReplay();
         } else if (pending == QueueRelay.Verdict.DROP_SOURCE) {
             pending = null;
-            dropSource("its queue recording has a hole where this relay needs frame " + (relay.lastGlobalSeqNo() + 1));
+            dropSource("its queue recording has a hole where this relay needs frame " + (relay.lastClusterSeqNo() + 1));
         } else if (work == 0) {
             imageSeen |= replay.imageCount() > 0;
             if (imageSeen && replay.imageCount() == 0) {
@@ -190,7 +190,7 @@ final class AeronQueueRelay implements AutoCloseable {
 
     private Action onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header) {
         final QueueRelay.Verdict verdict =
-            view.wrap(buffer, offset, length) ? relay.onFrame(view.globalSeqNo(), nowMs) : relay.onUnreadable();
+            view.wrap(buffer, offset, length) ? relay.onFrame(view.clusterSeqNo(), nowMs) : relay.onUnreadable();
         switch (verdict) {
         case SKIP:
             return Action.CONTINUE;
@@ -205,11 +205,11 @@ final class AeronQueueRelay implements AutoCloseable {
     private Action publish(final DirectBuffer buffer, final int offset, final int length, final Header header) {
         final long result = queue.offer(buffer, offset, length);
         if (result > 0) {
-            relay.onPublished(view.globalSeqNo(), header.position());
+            relay.onPublished(view.clusterSeqNo(), header.position());
             return Action.CONTINUE;
         }
         if (result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED) {
-            fatal("the local queue refused frame " + view.globalSeqNo() + " for good (" + result + ")");
+            fatal("the local queue refused frame " + view.clusterSeqNo() + " for good (" + result + ")");
             return Action.BREAK;
         }
         if (relay.onBackPressured(nowMs, counters.getCounterValue(recordingCounterId))) {
@@ -280,7 +280,7 @@ final class AeronQueueRelay implements AutoCloseable {
 
         final long from = relay.replayFrom(startPosition, source.getRecordingPosition(activeId), nowMs);
         if (from == QueueRelay.NOT_SUITABLE) {
-            dropSource("its recording is behind this relay's frame " + relay.lastGlobalSeqNo());
+            dropSource("its recording is behind this relay's frame " + relay.lastClusterSeqNo());
             return;
         }
 
@@ -290,8 +290,8 @@ final class AeronQueueRelay implements AutoCloseable {
         replaySessionId =
             source.startReplay(activeId, from, AeronArchive.REPLAY_ALL_AND_FOLLOW, channel, REPLAY_STREAM_ID);
         Logger.info(Logger.CoreComponent.QueueRelay, nodeId,
-                    "following member archive %s: recording %d from position %d, after globalSeqNo %d",
-                    archiveEndpoints.get(relay.sourceIndex()), activeId, from, relay.lastGlobalSeqNo());
+                    "following member archive %s: recording %d from position %d, after clusterSeqNo %d",
+                    archiveEndpoints.get(relay.sourceIndex()), activeId, from, relay.lastClusterSeqNo());
     }
 
     /** The subscription's channel with the port the driver bound, which is where the member replays to. */
@@ -334,8 +334,8 @@ final class AeronQueueRelay implements AutoCloseable {
     private void fatal(final String reason) {
         fatal = true;
         Logger.fault(Logger.CoreComponent.QueueRelay, Logger.CoreEventCode.QueueRecordingFailure, nodeId,
-                     "FATAL: %s at globalSeqNo=%d, so this host can no longer keep the history it serves", reason,
-                     relay.lastGlobalSeqNo());
+                     "FATAL: %s at clusterSeqNo=%d, so this host can no longer keep the history it serves", reason,
+                     relay.lastClusterSeqNo());
         fatalHandler.run();
     }
 }

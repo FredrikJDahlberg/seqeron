@@ -47,7 +47,7 @@ internal sealed class Session : IDisposable
         void OnPayload(Payload payload);
 
         /// <summary>Every transition to caught-up, the first included.</summary>
-        void OnCaughtUp(long globalSeqNo);
+        void OnCaughtUp(long clusterSeqNo);
 
         /// <summary>The cluster clock's tick, once a second.</summary>
         void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
@@ -184,7 +184,7 @@ internal sealed class Session : IDisposable
 
     internal bool IsFenced => _fenced;
 
-    internal long LastGlobalSeqNo => _receiver.LastGlobalSeqNo;
+    internal long LastClusterSeqNo => _receiver.LastClusterSeqNo;
 
     internal int CurrentLeaderMemberId => _receiver.CurrentLeaderMemberId;
 
@@ -218,7 +218,7 @@ internal sealed class Session : IDisposable
         long nowMs = Clocks.MonotonicMs();
         _recoveryStall.OnCaughtUp();
         _queueStall.OnCaughtUp(nowMs);
-        _dispatch.OnCaughtUp(_receiver.LastGlobalSeqNo);
+        _dispatch.OnCaughtUp(_receiver.LastClusterSeqNo);
     }
 
     private void CheckFences()
@@ -251,11 +251,11 @@ internal sealed class Session : IDisposable
         long nowMs = Clocks.MonotonicMs();
         if (!_receiver.IsCaughtUp)
         {
-            if (_recoveryStall.OnNotCaughtUp(nowMs, _receiver.LastGlobalSeqNo))
+            if (_recoveryStall.OnNotCaughtUp(nowMs, _receiver.LastClusterSeqNo))
             {
                 Stalled(ClusterError.RecoveryStalled, Logger.CoreEventCode.RecoveryStalled,
                         "recovery has dispatched nothing for >" + _recoveryStallTimeoutMs +
-                            "ms (globalSeqNo stuck at " + _receiver.LastGlobalSeqNo + ")");
+                            "ms (clusterSeqNo stuck at " + _receiver.LastClusterSeqNo + ")");
                 return;
             }
         }
@@ -355,7 +355,7 @@ internal sealed class Session : IDisposable
     }
 
     // Confirmed ingress takes the term first: nothing new may go out before the hold it may place is on.
-    private void OnLeadershipChanged(int leaderMemberId, long leadershipTermId, long globalSeqNo)
+    private void OnLeadershipChanged(int leaderMemberId, long leadershipTermId, long clusterSeqNo)
     {
         _pending.OnLeadershipChanged(leadershipTermId);
         _leadershipTermId = leadershipTermId;

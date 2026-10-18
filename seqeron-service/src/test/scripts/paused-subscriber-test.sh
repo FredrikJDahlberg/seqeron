@@ -86,7 +86,7 @@ sleep 3
 DOWN=""
 for m in 0 1 2; do kill -0 "${SEQ_PIDS[$m]}" 2>/dev/null || DOWN+=" $m"; done
 FATAL=$(grep -c "FATAL: the queue recording made no progress" "$LOG_DIR/seq-$SN.log" 2>/dev/null)
-HEALED=$(grep -c "re-converged at globalSeqNo" "$FOLLOWER_LOG" 2>/dev/null)
+HEALED=$(grep -c "re-converged at clusterSeqNo" "$FOLLOWER_LOG" 2>/dev/null)
 
 echo ""
 echo "=== RESULT ==="

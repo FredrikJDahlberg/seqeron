@@ -52,7 +52,7 @@ std::vector<char> filler(std::size_t length)
     return bytes;
 }
 
-std::vector<char> payloadFrame(std::int64_t globalSeqNo, std::uint16_t payloadLength)
+std::vector<char> payloadFrame(std::int64_t clusterSeqNo, std::uint16_t payloadLength)
 {
     const std::vector<char> payload = filler(payloadLength);
     std::vector<char> out(payloadLength + 64, 0);
@@ -63,14 +63,14 @@ std::vector<char> payloadFrame(std::int64_t globalSeqNo, std::uint16_t payloadLe
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .payloadId(PAYLOAD_ID)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(TIMESTAMP);
     frame.putPayload(payload.data(), payloadLength);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
 }
 
-std::vector<char> systemFrame(std::int64_t globalSeqNo, std::uint16_t systemEventType, std::uint16_t bodyLength)
+std::vector<char> systemFrame(std::int64_t clusterSeqNo, std::uint16_t systemEventType, std::uint16_t bodyLength)
 {
     const std::vector<char> body = filler(bodyLength);
     std::vector<char> out(bodyLength + 64, 0);
@@ -81,14 +81,14 @@ std::vector<char> systemFrame(std::int64_t globalSeqNo, std::uint16_t systemEven
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .systemEventType(systemEventType)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(TIMESTAMP);
     frame.putBody(body.data(), bodyLength);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
 }
 
-std::vector<char> clusterHeartbeatFrame(std::int64_t globalSeqNo)
+std::vector<char> clusterHeartbeatFrame(std::int64_t clusterSeqNo)
 {
     std::vector<char> out(128, 0);
     frm::ClusterHeartbeat frame;
@@ -98,7 +98,7 @@ std::vector<char> clusterHeartbeatFrame(std::int64_t globalSeqNo)
         .connectionId(-1)
         .sessionId(-1)
         .systemEventType(CLUSTER_HEARTBEAT)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(TIMESTAMP);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
@@ -190,7 +190,7 @@ TEST(SequencedFrame, SynthesizedFrameCutInsideItsHeader)
     {
         const std::vector<char> fragment = cut(frame, length);
         EXPECT_FALSE(unwrapFrame(fragment.data(), length).valid)
-            << "globalSeqNo is not readable at " << length << " bytes, so P-3 cannot count";
+            << "clusterSeqNo is not readable at " << length << " bytes, so P-3 cannot count";
     }
     EXPECT_TRUE(unwrapFrame(frame.data(), frame.size()).valid);
 }

@@ -40,7 +40,7 @@ struct Digest
 };
 
 // A SnapshotStarted stamped timestampNs: another log's, when it is not the file's.
-inline Bytes started(const std::int64_t globalSeqNo, const std::int64_t round, const std::int64_t timestampNs)
+inline Bytes started(const std::int64_t clusterSeqNo, const std::int64_t round, const std::int64_t timestampNs)
 {
     Bytes out(128, 0);
     sbe::frame::SnapshotStarted frame;
@@ -50,19 +50,19 @@ inline Bytes started(const std::int64_t globalSeqNo, const std::int64_t round, c
         .connectionId(-1)
         .sessionId(-1)
         .systemEventType(protocol::SNAPSHOT_STARTED)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(timestampNs);
     frame.round(round);
     out.resize(sbe::frame::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
 }
 
-inline Bytes started(const std::int64_t globalSeqNo, const std::int64_t round)
+inline Bytes started(const std::int64_t clusterSeqNo, const std::int64_t round)
 {
-    return started(globalSeqNo, round, globalSeqNo * 1000);
+    return started(clusterSeqNo, round, clusterSeqNo * 1000);
 }
 
-inline Bytes system(const std::int64_t globalSeqNo, const std::int32_t sourceId, const std::uint16_t systemEventType,
+inline Bytes system(const std::int64_t clusterSeqNo, const std::int32_t sourceId, const std::uint16_t systemEventType,
                     const char* body, const std::uint16_t bodyLength)
 {
     Bytes out(256, 0);
@@ -73,15 +73,15 @@ inline Bytes system(const std::int64_t globalSeqNo, const std::int32_t sourceId,
         .connectionId(-1)
         .sessionId(5)
         .systemEventType(systemEventType)
-        .globalSeqNo(globalSeqNo)
-        .timestamp(globalSeqNo * 1000);
+        .clusterSeqNo(clusterSeqNo)
+        .timestamp(clusterSeqNo * 1000);
     frame.putBody(body, bodyLength);
     out.resize(sbe::frame::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
 }
 
 // The end the records match.
-inline Bytes end(const std::int64_t globalSeqNo, const std::int32_t sourceId, const std::int64_t round,
+inline Bytes end(const std::int64_t clusterSeqNo, const std::int32_t sourceId, const std::int64_t round,
                  const std::uint32_t formatVersion, const std::vector<Bytes>& records)
 {
     const Digest digest = Digest::of(records);
@@ -93,17 +93,17 @@ inline Bytes end(const std::int64_t globalSeqNo, const std::int32_t sourceId, co
         .length(digest.length)
         .crc32c(digest.crc32c)
         .formatVersion(formatVersion);
-    return system(globalSeqNo, sourceId, protocol::SNAPSHOT_END, body.data(),
+    return system(clusterSeqNo, sourceId, protocol::SNAPSHOT_END, body.data(),
                   static_cast<std::uint16_t>(encoder.encodedLength()));
 }
 
 // Writes records as a round's file and confirms it, as the instance did when it serialized them and the log's end
-// agreed. The cut's timestamp is cutGlobalSeqNo * 1000, as every frame's here.
-inline void write(SnapshotStore& store, const std::int64_t round, const std::int64_t cutGlobalSeqNo,
+// agreed. The cut's timestamp is cutClusterSeqNo * 1000, as every frame's here.
+inline void write(SnapshotStore& store, const std::int64_t round, const std::int64_t cutClusterSeqNo,
                   const std::int64_t cutPosition, const std::uint32_t formatVersion, const std::vector<Bytes>& records)
 {
     const Digest digest = Digest::of(records);
-    store.begin(round, cutGlobalSeqNo, cutPosition, cutGlobalSeqNo * 1000);
+    store.begin(round, cutClusterSeqNo, cutPosition, cutClusterSeqNo * 1000);
     for (const Bytes& record : records)
     {
         store.append(record);

@@ -153,7 +153,7 @@ class QueuePublisherTest {
         }
 
         @Override
-        public long globalSeqNo() {
+        public long clusterSeqNo() {
             return 42;
         }
     }

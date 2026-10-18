@@ -62,7 +62,7 @@ struct RetainBlock
 // arrived, so a consumer's delivery-latency stats measure the queue, not the drain.
 struct RetainRecordHeader
 {
-    std::int64_t globalSeqNo;
+    std::int64_t clusterSeqNo;
     std::int64_t position;
     std::int64_t receiveNs;
     std::uint32_t length;
@@ -122,7 +122,7 @@ class ReplayerRecovery
     using OnConnected = std::function<void(const protocol::LifecycleEvent&)>;
     using OnDisconnected = std::function<void(const protocol::LifecycleEvent&)>;
     using OnLeadershipChanged =
-        std::function<void(std::int32_t newLeaderMemberId, std::int64_t leadershipTermId, std::int64_t globalSeqNo)>;
+        std::function<void(std::int32_t newLeaderMemberId, std::int64_t leadershipTermId, std::int64_t clusterSeqNo)>;
     using OnCaughtUp = std::function<void()>;
 
   private:
@@ -162,9 +162,9 @@ class ReplayerRecovery
     std::int64_t m_lastReplayProgressMs = 0; // when it last changed — the stall watchdog's clock
     std::optional<std::string> m_fault;      // why recovery cannot go on; latched, raised by the receiver
 
-    std::int64_t m_lastGlobalSeqNo = 0;            // highest globalSeqNo delivered; 0 = none yet
+    std::int64_t m_lastClusterSeqNo = 0;           // highest clusterSeqNo delivered; 0 = none yet
     std::int64_t m_lastFramePosition = 0;          // where that frame starts in the recording; requestResume's anchor
-    std::int64_t m_resumeAnchorSequenceNumber = 0; // globalSeqNo a resume replay must open at, or 0 if not resuming
+    std::int64_t m_resumeAnchorSequenceNumber = 0; // clusterSeqNo a resume replay must open at, or 0 if not resuming
     bool m_replayGapLogged = false;                // report a hole in replayed history once per episode, not per frame
     bool m_caughtUp = false;                       // following live; revoked on a queue gap, re-established at the seam
 
@@ -175,7 +175,7 @@ class ReplayerRecovery
     RetainBlockPool m_retainPool;
     std::deque<RetainBlock*> m_retained;
     std::size_t m_retainReadOffset = 0;          // offset of the next unconsumed record within m_retained.front()
-    std::int64_t m_retainTailSequenceNumber = 0; // globalSeqNo of the most recently retained frame; dedups redelivery
+    std::int64_t m_retainTailSequenceNumber = 0; // clusterSeqNo of the most recently retained frame; dedups redelivery
     std::size_t m_retainFrameCount = 0;
     std::size_t m_retainBytes = 0;
     bool m_retainOverflowed = false;
@@ -256,13 +256,13 @@ class ReplayerRecovery
     void onFrame(char* const frame, const std::uint64_t length, const std::int64_t framePosition,
                  const std::int64_t receiveNs, const bool fromReplay)
     {
-        // The envelope is stripped once, here: both frame families carry globalSeqNo, at different offsets.
+        // The envelope is stripped once, here: both frame families carry clusterSeqNo, at different offsets.
         const protocol::FrameView entry = protocol::unwrapFrame(frame, length);
         if (m_restoreFailure || m_fault || !entry.valid)
         {
             return;
         }
-        const auto sequenceNumber = entry.globalSeqNo;
+        const auto sequenceNumber = entry.clusterSeqNo;
         // First frame off a resume replay: it must be the frame whose position requested. Positions follow from
         // the frames, and the recording changes only with the node's driver, so a mismatch is a fault.
         if (fromReplay && m_resumeAnchorSequenceNumber != 0)
@@ -276,27 +276,27 @@ class ReplayerRecovery
             }
             if (sequenceNumber != anchor)
             {
-                fail("resume replay at position " + std::to_string(m_reqFromPosition) + " opened at globalSeqNo=" +
+                fail("resume replay at position " + std::to_string(m_reqFromPosition) + " opened at clusterSeqNo=" +
                      std::to_string(sequenceNumber) + ", expected " + std::to_string(anchor));
                 return;
             }
         }
-        if (m_lastGlobalSeqNo != 0)
+        if (m_lastClusterSeqNo != 0)
         {
-            if (sequenceNumber <= m_lastGlobalSeqNo)
+            if (sequenceNumber <= m_lastClusterSeqNo)
             {
                 return;
             }
-            if (sequenceNumber > m_lastGlobalSeqNo + 1)
+            if (sequenceNumber > m_lastClusterSeqNo + 1)
             {
                 if (!fromReplay && !isRecovering())
                 {
                     util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
-                                       "queue gap: expected globalSeqNo=%lld got %lld — "
-                                       "resuming the recording at globalSeqNo=%lld",
-                                       static_cast<long long>(m_lastGlobalSeqNo + 1),
+                                       "queue gap: expected clusterSeqNo=%lld got %lld — "
+                                       "resuming the recording at clusterSeqNo=%lld",
+                                       static_cast<long long>(m_lastClusterSeqNo + 1),
                                        static_cast<long long>(sequenceNumber),
-                                       static_cast<long long>(m_lastGlobalSeqNo));
+                                       static_cast<long long>(m_lastClusterSeqNo));
                     m_caughtUp = false;
                     requestResume();
                 }
@@ -308,10 +308,10 @@ class ReplayerRecovery
                 {
                     m_replayGapLogged = true;
                     util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
-                                       "gap in REPLAYED history: expected globalSeqNo=%lld got %lld — this "
+                                       "gap in REPLAYED history: expected clusterSeqNo=%lld got %lld — this "
                                        "node's recording does not cover the hole; recovery cannot converge "
                                        "until it does",
-                                       static_cast<long long>(m_lastGlobalSeqNo + 1),
+                                       static_cast<long long>(m_lastClusterSeqNo + 1),
                                        static_cast<long long>(sequenceNumber));
                 }
                 return;
@@ -325,7 +325,7 @@ class ReplayerRecovery
                 return;
             }
             util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::FirstFrameNotOne,
-                                "FATAL: first frame observed has globalSeqNo=%lld, expected 1 — "
+                                "FATAL: first frame observed has clusterSeqNo=%lld, expected 1 — "
                                 "this node's recording does not reach the start of the log; aborting",
                                 static_cast<long long>(sequenceNumber));
             std::abort();
@@ -440,11 +440,11 @@ class ReplayerRecovery
         }
         m_recoveryStallReported = true;
         util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::RecoveryStalled,
-                            "recovery has dispatched nothing for >%lldms: lastGlobalSeqNo=%lld fromPosition=%lld "
+                            "recovery has dispatched nothing for >%lldms: lastClusterSeqNo=%lld fromPosition=%lld "
                             "awaitingReplay=%d replaySession=%lld checkingCut=%d restoring=%d — holding; check this "
                             "node's Replayer and its recording",
                             static_cast<long long>(RECOVERY_PROGRESS_TIMEOUT_MS),
-                            static_cast<long long>(m_lastGlobalSeqNo), static_cast<long long>(m_reqFromPosition),
+                            static_cast<long long>(m_lastClusterSeqNo), static_cast<long long>(m_reqFromPosition),
                             m_awaitingReplay ? 1 : 0, static_cast<long long>(m_replaySessionId), m_checkingCut ? 1 : 0,
                             m_restoring ? 1 : 0);
         m_actions.recoveryStalled(true);
@@ -456,9 +456,9 @@ class ReplayerRecovery
         return m_caughtUp;
     }
 
-    std::int64_t lastGlobalSeqNo() const
+    std::int64_t lastClusterSeqNo() const
     {
-        return m_lastGlobalSeqNo;
+        return m_lastClusterSeqNo;
     }
 
     std::int32_t currentLeaderMemberId() const
@@ -527,7 +527,7 @@ class ReplayerRecovery
     void requestResume()
     {
         requestReplay(m_lastFramePosition);
-        m_resumeAnchorSequenceNumber = m_lastGlobalSeqNo;
+        m_resumeAnchorSequenceNumber = m_lastClusterSeqNo;
     }
 
     // Opens the newest snapshot file below a round and replays the recording from its cut, or walks the recording
@@ -563,7 +563,7 @@ class ReplayerRecovery
     {
         m_checkingCut = true;
         requestReplay(m_reader->cutPosition());
-        m_resumeAnchorSequenceNumber = m_reader->cutGlobalSeqNo();
+        m_resumeAnchorSequenceNumber = m_reader->cutClusterSeqNo();
     }
 
     // The replay from the cut opened: on the round's SnapshotStarted, the file's records are read; on anything else,
@@ -576,10 +576,10 @@ class ReplayerRecovery
         if (!matches)
         {
             util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::SnapshotStoreFailed,
-                               "round %lld's cut, globalSeqNo=%lld at position %lld, is not in this node's "
+                               "round %lld's cut, clusterSeqNo=%lld at position %lld, is not in this node's "
                                "recording; trying an older snapshot",
                                static_cast<long long>(m_snapshotRound),
-                               static_cast<long long>(m_reader->cutGlobalSeqNo()),
+                               static_cast<long long>(m_reader->cutClusterSeqNo()),
                                static_cast<long long>(m_reader->cutPosition()));
             chooseBelow(m_snapshotRound);
             return;
@@ -588,8 +588,8 @@ class ReplayerRecovery
         m_restoreRecordIndex = 0;
         m_restoredHeader.reset();
         util::Logger::info(util::component::ReplayerStreamReceiver,
-                           "restoring round %lld, cut at globalSeqNo=%lld position=%lld",
-                           static_cast<long long>(m_snapshotRound), static_cast<long long>(m_reader->cutGlobalSeqNo()),
+                           "restoring round %lld, cut at clusterSeqNo=%lld position=%lld",
+                           static_cast<long long>(m_snapshotRound), static_cast<long long>(m_reader->cutClusterSeqNo()),
                            static_cast<long long>(m_reader->cutPosition()));
     }
 
@@ -638,16 +638,16 @@ class ReplayerRecovery
     void completeRestore()
     {
         m_restoring = false;
-        m_lastGlobalSeqNo = m_reader->cutGlobalSeqNo();
+        m_lastClusterSeqNo = m_reader->cutClusterSeqNo();
         m_lastFramePosition = m_reader->cutPosition();
         m_reader.reset();
         m_currentLeaderMemberId = m_restoredHeader->leaderMemberId;
         util::Logger::info(util::component::ReplayerStreamReceiver,
-                           "restored round %lld; resuming after globalSeqNo=%lld",
-                           static_cast<long long>(m_snapshotRound), static_cast<long long>(m_lastGlobalSeqNo));
+                           "restored round %lld; resuming after clusterSeqNo=%lld",
+                           static_cast<long long>(m_snapshotRound), static_cast<long long>(m_lastClusterSeqNo));
         if (m_onLeadershipChanged && m_restoredHeader->leadershipTermId >= 0)
         {
-            m_onLeadershipChanged(m_currentLeaderMemberId, m_restoredHeader->leadershipTermId, m_lastGlobalSeqNo);
+            m_onLeadershipChanged(m_currentLeaderMemberId, m_restoredHeader->leadershipTermId, m_lastClusterSeqNo);
         }
         requestResume();
     }
@@ -695,7 +695,7 @@ class ReplayerRecovery
             if (m_reqFromPosition != protocol::REPLAYER_FROM_START)
             {
                 fail("the Replayer refused a resume at position " + std::to_string(m_reqFromPosition) +
-                     " above globalSeqNo=" + std::to_string(m_lastGlobalSeqNo));
+                     " above clusterSeqNo=" + std::to_string(m_lastClusterSeqNo));
                 return;
             }
             m_replaySessionId = -1; // the recording holds nothing yet — follow the live queue
@@ -759,7 +759,7 @@ class ReplayerRecovery
         // passed there — the unwrap here re-addresses the caller's bytes, it does not re-check them.
         const protocol::FrameView view = protocol::unwrapFrame(frame, length);
 
-        m_lastGlobalSeqNo = sequenceNumber;
+        m_lastClusterSeqNo = sequenceNumber;
         m_replayGapLogged = false;
         m_lastFramePosition = framePosition;
         if (!fromReplay && !m_caughtUp && !m_retainOverflowed)
@@ -813,7 +813,7 @@ class ReplayerRecovery
             {
                 m_retainOverflowLogged = true;
                 util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
-                                   "retained-frame buffer full at globalSeqNo=%lld (%zu frames, %zu bytes) — "
+                                   "retained-frame buffer full at clusterSeqNo=%lld (%zu frames, %zu bytes) — "
                                    "dropping ahead-of-hole frames; recovery resumes at the last dispatched frame",
                                    static_cast<long long>(sequenceNumber), m_retainFrameCount, m_retainBytes);
             }
@@ -858,15 +858,15 @@ class ReplayerRecovery
     void drainRetained()
     {
         RetainRecordHeader header;
-        while (peekRetained(header) && header.globalSeqNo <= m_lastGlobalSeqNo + 1)
+        while (peekRetained(header) && header.clusterSeqNo <= m_lastClusterSeqNo + 1)
         {
             std::uint8_t* const payload = m_retained.front()->bytes.data() + m_retainReadOffset + sizeof(header);
             m_retainReadOffset += sizeof(header) + header.length;
             --m_retainFrameCount;
             m_retainBytes -= header.length;
-            if (header.globalSeqNo > m_lastGlobalSeqNo) // otherwise the replay already covered it
+            if (header.clusterSeqNo > m_lastClusterSeqNo) // otherwise the replay already covered it
             {
-                dispatchFrame(reinterpret_cast<char*>(payload), header.length, header.globalSeqNo, header.position,
+                dispatchFrame(reinterpret_cast<char*>(payload), header.length, header.clusterSeqNo, header.position,
                               header.receiveNs, /*fromReplay=*/false);
             }
         }

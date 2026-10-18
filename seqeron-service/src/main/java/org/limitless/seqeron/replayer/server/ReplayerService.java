@@ -197,7 +197,7 @@ public final class ReplayerService {
 
     /**
      * Waits for the queue recording to be visible on the local archive. It alone is served: every node start
-     * replays the log from globalSeqNo 1 into a new one, and a client checks that its first frame is 1.
+     * replays the log from clusterSeqNo 1 into a new one, and a client checks that its first frame is 1.
      * @return work count
      */
     private int checkReady() {

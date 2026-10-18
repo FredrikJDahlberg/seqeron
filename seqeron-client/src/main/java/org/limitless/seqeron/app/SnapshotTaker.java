@@ -81,13 +81,13 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
      * header outgrows a record. One that no longer takes part still abandons the round it held. The cluster
      * session is kept alive after each record, so the round may take as long as its state needs.
      * @param startedRound   its {@code round}
-     * @param cutGlobalSeqNo its {@code globalSeqNo}, the cut
+     * @param cutClusterSeqNo its {@code clusterSeqNo}, the cut
      * @param cutPosition    where it starts in the recording
      * @param cutTimestampNs its consensus timestamp
      * @param header         the façade's header as of the cut
      * @param mayPublish     whether this instance is the one that publishes at the cut
      */
-    void onSnapshotStarted(final long startedRound, final long cutGlobalSeqNo, final long cutPosition,
+    void onSnapshotStarted(final long startedRound, final long cutClusterSeqNo, final long cutPosition,
                            final long cutTimestampNs, final SnapshotHeader header, final boolean mayPublish) {
         publishing = false;
         serialized = false;
@@ -98,7 +98,7 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
         crc.reset();
         recordCount = 0;
         length = 0;
-        store.begin(round, cutGlobalSeqNo, cutPosition, cutTimestampNs);
+        store.begin(round, cutClusterSeqNo, cutPosition, cutTimestampNs);
         append(header.encode(encoding, 0));
         for (int recordIndex = 0;; recordIndex++) {
             final int recordLength = listener.onSnapshot(encoding, recordIndex);

@@ -33,7 +33,7 @@ namespace org::limitless::seqeron::app::detail {
  *   void onSystem(const protocol::SequencedEvent& event) // LeadershipChanged never arrives here
  *   void onLeadershipChanged()                           // confirmed ingress has already taken the new term
  *   void onPayload(const Payload& payload)
- *   void onCaughtUp(std::int64_t globalSeqNo)            // every transition to caught-up, the first included
+ *   void onCaughtUp(std::int64_t clusterSeqNo)           // every transition to caught-up, the first included
  *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs) // the cluster clock's tick
  *   void onFenced(ClusterError fence, const std::string& detail) // once, latched
  *   bool mayReconnect() const // whether a session the cluster closed may be replaced rather than fenced
@@ -183,9 +183,9 @@ class Session
         return m_fenced;
     }
 
-    [[nodiscard]] std::int64_t lastGlobalSeqNo() const
+    [[nodiscard]] std::int64_t lastClusterSeqNo() const
     {
-        return m_receiver.lastGlobalSeqNo();
+        return m_receiver.lastClusterSeqNo();
     }
 
     [[nodiscard]] std::int32_t currentLeaderMemberId() const
@@ -273,7 +273,7 @@ class Session
         }
         m_recoveryStall.onCaughtUp();
         m_queueStall.onCaughtUp(monotonicMs());
-        m_dispatch.onCaughtUp(m_receiver.lastGlobalSeqNo());
+        m_dispatch.onCaughtUp(m_receiver.lastClusterSeqNo());
     }
 
     void checkFences()
@@ -307,11 +307,11 @@ class Session
         const std::int64_t nowMs = monotonicMs();
         if (!m_receiver.isCaughtUp())
         {
-            if (m_recoveryStall.onNotCaughtUp(nowMs, m_receiver.lastGlobalSeqNo()))
+            if (m_recoveryStall.onNotCaughtUp(nowMs, m_receiver.lastClusterSeqNo()))
             {
                 stalled(ClusterError::RecoveryStalled, util::eventCode::RecoveryStalled,
                         "recovery has dispatched nothing for >" + std::to_string(m_recoveryStallTimeoutMs) +
-                            "ms (globalSeqNo stuck at " + std::to_string(m_receiver.lastGlobalSeqNo()) + ")");
+                            "ms (clusterSeqNo stuck at " + std::to_string(m_receiver.lastClusterSeqNo()) + ")");
                 return;
             }
         }

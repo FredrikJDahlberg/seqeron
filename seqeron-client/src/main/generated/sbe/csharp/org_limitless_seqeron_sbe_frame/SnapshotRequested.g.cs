@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// An operator asked for a snapshot round (clusterctl request-snapshot). The sequencer                               answers with SnapshotStarted at the next globalSeqNo
+    /// An operator asked for a snapshot round (clusterctl request-snapshot). The sequencer                               answers with SnapshotStarted at the next clusterSeqNo
     /// </summary>
     public sealed partial class SnapshotRequested
     {

@@ -18,11 +18,11 @@ import org.limitless.seqeron.util.Logger;
 /**
  * The state machine of {@link ReplayerStreamReceiver}. A cold start walks the node's active recording from its
  * start, which holds the whole log; catch-up is detected by position ({@code Replaying.catchUpPosition}); a gap
- * by globalSeqNo, repaired by resuming the active recording at the last dispatched frame.
+ * by clusterSeqNo, repaired by resuming the active recording at the last dispatched frame.
  *
  * <p>The replay-to-live seam is closed by the queue itself: the untethered queue is polled every duty cycle, so
  * frames beyond the current hole are retained and drained once contiguous. While {@link #isRecovering()} a
- * non-contiguous queue frame is expected rather than a new gap, and it may not set the globalSeqNo baseline
+ * non-contiguous queue frame is expected rather than a new gap, and it may not set the clusterSeqNo baseline
  * before the walk has — a cold start would otherwise adopt a mid-stream baseline.
  *
  * <p>{@link #isCaughtUp()} is cleared on a live-queue gap and re-established once contiguous: consumers gate
@@ -98,13 +98,13 @@ final class ReplayerRecovery {
     /** Why recovery cannot go on, or null. Latched: the receiver raises it from its duty cycle. */
     private String fault;
 
-    private long lastGlobalSeqNo;
+    private long lastClusterSeqNo;
 
     /** Where the last dispatched frame starts in the recording; {@link #requestResume}'s anchor. */
     private long lastFramePosition;
 
-    /** globalSeqNo a resume replay must open at, or 0 if not resuming. */
-    private long resumeAnchorGlobalSeqNo;
+    /** clusterSeqNo a resume replay must open at, or 0 if not resuming. */
+    private long resumeAnchorClusterSeqNo;
 
     /** Report a hole in replayed history once per episode, not per frame. */
     private boolean replayGapLogged;
@@ -116,7 +116,7 @@ final class ReplayerRecovery {
     private final Deque<RetainBlock> retained = new ArrayDeque<>();
     private final List<RetainBlock> retainPool = new ArrayList<>();
     private int retainReadOffset;
-    private long retainTailGlobalSeqNo;
+    private long retainTailClusterSeqNo;
     private int retainFrameCount;
     private long retainBytes;
 
@@ -202,66 +202,66 @@ final class ReplayerRecovery {
         if (restoreFailure != null || fault != null || !event.wrap(buffer, offset, length)) {
             return;
         }
-        final long globalSeqNo = event.globalSeqNo();
+        final long clusterSeqNo = event.clusterSeqNo();
 
         // First frame off a resume replay: it must be the frame whose position requested. Positions follow from
         // the frames, and the recording changes only with the node's driver, so a mismatch is a fault.
-        if (fromReplay && resumeAnchorGlobalSeqNo != 0) {
-            final long anchor = resumeAnchorGlobalSeqNo;
-            resumeAnchorGlobalSeqNo = 0;
+        if (fromReplay && resumeAnchorClusterSeqNo != 0) {
+            final long anchor = resumeAnchorClusterSeqNo;
+            resumeAnchorClusterSeqNo = 0;
             if (checkingCut) {
-                onCutReplayed(globalSeqNo == anchor && event.clusterTimestampNs() == reader.cutTimestampNs());
+                onCutReplayed(clusterSeqNo == anchor && event.clusterTimestampNs() == reader.cutTimestampNs());
                 return;
             }
-            if (globalSeqNo != anchor) {
-                fail("resume replay at position " + requestFromPosition + " opened at globalSeqNo=" + globalSeqNo
+            if (clusterSeqNo != anchor) {
+                fail("resume replay at position " + requestFromPosition + " opened at clusterSeqNo=" + clusterSeqNo
                      + ", expected " + anchor);
                 return;
             }
         }
-        if (lastGlobalSeqNo != 0) {
-            if (globalSeqNo <= lastGlobalSeqNo) {
+        if (lastClusterSeqNo != 0) {
+            if (clusterSeqNo <= lastClusterSeqNo) {
                 return;
             }
-            if (globalSeqNo > lastGlobalSeqNo + 1) {
+            if (clusterSeqNo > lastClusterSeqNo + 1) {
                 if (!fromReplay && !isRecovering()) {
                     Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                                Logger.CoreEventCode.QueueGap, actions.memberId(),
-                               "queue gap: expected globalSeqNo=%d got %d — resuming the recording at "
-                                   + "globalSeqNo=%d",
-                               lastGlobalSeqNo + 1, globalSeqNo, lastGlobalSeqNo);
+                               "queue gap: expected clusterSeqNo=%d got %d — resuming the recording at "
+                                   + "clusterSeqNo=%d",
+                               lastClusterSeqNo + 1, clusterSeqNo, lastClusterSeqNo);
                     // No longer following live: consumers gate real decisions on isCaughtUp(), and it must
                     // not hold again until the stream goes contiguous.
                     caughtUp = false;
                     requestResume();
                 }
                 if (!fromReplay) {
-                    retainFrame(globalSeqNo, buffer, offset, length, framePosition, receiveNs);
+                    retainFrame(clusterSeqNo, buffer, offset, length, framePosition, receiveNs);
                 } else if (!replayGapLogged) {
                     replayGapLogged = true;
                     Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                                Logger.CoreEventCode.QueueGap, actions.memberId(),
-                               "gap in REPLAYED history: expected globalSeqNo=%d got %d — this node's recording "
+                               "gap in REPLAYED history: expected clusterSeqNo=%d got %d — this node's recording "
                                    + "does not cover the hole; recovery cannot converge until it does",
-                               lastGlobalSeqNo + 1, globalSeqNo);
+                               lastClusterSeqNo + 1, clusterSeqNo);
                 }
                 return;
             }
-        } else if (globalSeqNo != 1) {
+        } else if (clusterSeqNo != 1) {
             if (!fromReplay && isRecovering()) {
-                retainFrame(globalSeqNo, buffer, offset, length, framePosition, receiveNs);
+                retainFrame(clusterSeqNo, buffer, offset, length, framePosition, receiveNs);
                 return;
             }
             Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.FirstFrameNotOne,
                          actions.memberId(),
-                         "FATAL: first frame observed has globalSeqNo=%d, expected 1 — this node's recording "
+                         "FATAL: first frame observed has clusterSeqNo=%d, expected 1 — this node's recording "
                              + "does not reach the start of the log",
-                         globalSeqNo);
+                         clusterSeqNo);
             throw new IllegalStateException(
-                "first frame observed has globalSeqNo=" + globalSeqNo
+                "first frame observed has clusterSeqNo=" + clusterSeqNo
                     + ", expected 1 — this node's recording does not reach the start of the log");
         }
-        dispatchFrame(buffer, offset, length, globalSeqNo, framePosition, receiveNs, fromReplay);
+        dispatchFrame(buffer, offset, length, clusterSeqNo, framePosition, receiveNs, fromReplay);
         drainRetained();
     }
 
@@ -373,10 +373,10 @@ final class ReplayerRecovery {
         recoveryStallReported = true;
         Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.RecoveryStalled,
                      actions.memberId(),
-                     "recovery has dispatched nothing for >%dms: lastGlobalSeqNo=%d fromPosition=%d awaitingReplay=%b "
+                     "recovery has dispatched nothing for >%dms: lastClusterSeqNo=%d fromPosition=%d awaitingReplay=%b "
                          + "replaySession=%d checkingCut=%b restoring=%b — holding; check this node's Replayer and its "
                          + "recording",
-                     RECOVERY_PROGRESS_TIMEOUT_MS, lastGlobalSeqNo, requestFromPosition, awaitingReplay,
+                     RECOVERY_PROGRESS_TIMEOUT_MS, lastClusterSeqNo, requestFromPosition, awaitingReplay,
                      replaySessionId, checkingCut, restoring);
         actions.recoveryStalled(true);
         return true;
@@ -388,11 +388,11 @@ final class ReplayerRecovery {
     }
 
     /**
-     * Highest globalSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its own
+     * Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its own
      * recovery progress by.
      */
-    public long lastGlobalSeqNo() {
-        return lastGlobalSeqNo;
+    public long lastClusterSeqNo() {
+        return lastClusterSeqNo;
     }
 
     /**
@@ -459,7 +459,7 @@ final class ReplayerRecovery {
      */
     private void requestReplay(final long fromPosition) {
         if (fromPosition == ReplayProtocol.FROM_START) {
-            resumeAnchorGlobalSeqNo = 0; // a walk supersedes any resume in flight
+            resumeAnchorClusterSeqNo = 0; // a walk supersedes any resume in flight
         }
         requestFromPosition = fromPosition;
         awaitingReplay = true;
@@ -477,7 +477,7 @@ final class ReplayerRecovery {
      */
     private void requestResume() {
         requestReplay(lastFramePosition);
-        resumeAnchorGlobalSeqNo = lastGlobalSeqNo;
+        resumeAnchorClusterSeqNo = lastClusterSeqNo;
     }
 
     /**
@@ -511,7 +511,7 @@ final class ReplayerRecovery {
     private void requestCut() {
         checkingCut = true;
         requestReplay(reader.cutPosition());
-        resumeAnchorGlobalSeqNo = reader.cutGlobalSeqNo();
+        resumeAnchorClusterSeqNo = reader.cutClusterSeqNo();
     }
 
     /**
@@ -525,8 +525,8 @@ final class ReplayerRecovery {
         if (!matches) {
             Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                        Logger.CoreEventCode.SnapshotStoreFailed, actions.memberId(),
-                       "round %d's cut, globalSeqNo=%d at position %d, is not in this node's recording; trying an "
-                           + "older snapshot", snapshotRound, reader.cutGlobalSeqNo(), reader.cutPosition());
+                       "round %d's cut, clusterSeqNo=%d at position %d, is not in this node's recording; trying an "
+                           + "older snapshot", snapshotRound, reader.cutClusterSeqNo(), reader.cutPosition());
             chooseBelow(snapshotRound);
             return;
         }
@@ -534,7 +534,7 @@ final class ReplayerRecovery {
         restoreRecordIndex = 0;
         restoredHeader = null;
         Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, actions.memberId(),
-                    "restoring round %d, cut at globalSeqNo=%d position=%d", snapshotRound, reader.cutGlobalSeqNo(),
+                    "restoring round %d, cut at clusterSeqNo=%d position=%d", snapshotRound, reader.cutClusterSeqNo(),
                     reader.cutPosition());
     }
 
@@ -584,15 +584,15 @@ final class ReplayerRecovery {
      */
     private void completeRestore() {
         restoring = false;
-        lastGlobalSeqNo = reader.cutGlobalSeqNo();
+        lastClusterSeqNo = reader.cutClusterSeqNo();
         lastFramePosition = reader.cutPosition();
         closeReader();
         currentLeaderMemberId = restoredHeader.leaderMemberId();
         Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, actions.memberId(),
-                    "restored round %d; resuming after globalSeqNo=%d", snapshotRound, lastGlobalSeqNo);
+                    "restored round %d; resuming after clusterSeqNo=%d", snapshotRound, lastClusterSeqNo);
         if (onLeadershipChanged != null && restoredHeader.leadershipTermId() >= 0) {
             onLeadershipChanged.onLeadershipChanged(currentLeaderMemberId, restoredHeader.leadershipTermId(),
-                                                    lastGlobalSeqNo);
+                                                    lastClusterSeqNo);
         }
         requestResume();
     }
@@ -629,8 +629,8 @@ final class ReplayerRecovery {
                 return;
             }
             if (requestFromPosition != ReplayProtocol.FROM_START) {
-                fail("the Replayer refused a resume at position " + requestFromPosition + " above globalSeqNo="
-                     + lastGlobalSeqNo);
+                fail("the Replayer refused a resume at position " + requestFromPosition + " above clusterSeqNo="
+                     + lastClusterSeqNo);
                 return;
             }
             replaySessionId = -1; // the recording holds nothing yet — follow the live queue
@@ -677,7 +677,7 @@ final class ReplayerRecovery {
 
     /** Everything past the contiguity check; also the path a drained retained frame takes. */
     private void dispatchFrame(final DirectBuffer buffer, final int offset, final int length,
-                               final long globalSeqNo, final long framePosition, final long receiveNs,
+                               final long clusterSeqNo, final long framePosition, final long receiveNs,
                                final boolean fromReplay) {
         noProgressSinceMs = 0;
         if (recoveryStallReported) {
@@ -686,7 +686,7 @@ final class ReplayerRecovery {
         }
         event.wrap(buffer, offset, length);
 
-        lastGlobalSeqNo = globalSeqNo;
+        lastClusterSeqNo = clusterSeqNo;
         replayGapLogged = false;
         lastFramePosition = framePosition;
         if (!fromReplay && !caughtUp && !retainOverflowed) {
@@ -698,7 +698,7 @@ final class ReplayerRecovery {
             currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (onLeadershipChanged != null) {
                 onLeadershipChanged.onLeadershipChanged(currentLeaderMemberId, leadershipChanged.leadershipTermId(),
-                                                        globalSeqNo);
+                                                        clusterSeqNo);
                 return;
             }
         }
@@ -708,10 +708,10 @@ final class ReplayerRecovery {
 
     /**
      * Keeps a live queue frame from beyond the current hole; one not kept is gone. Bounded and lossy past the
-     * bound (overflow falls back to a resume). A plain FIFO: one image delivers globalSeqNo in order, so
+     * bound (overflow falls back to a resume). A plain FIFO: one image delivers clusterSeqNo in order, so
      * only an exact redelivery needs checking.
      */
-    private void retainFrame(final long globalSeqNo, final DirectBuffer buffer, final int offset, final int length,
+    private void retainFrame(final long clusterSeqNo, final DirectBuffer buffer, final int offset, final int length,
                              final long framePosition, final long receiveNs) {
         final int recordSize = RetainBlock.RECORD_HEADER_LENGTH + length;
         if (retainFrameCount >= MAX_RETAINED_FRAMES || (retainBytes + length) > MAX_RETAINED_BYTES
@@ -721,20 +721,20 @@ final class ReplayerRecovery {
                 retainOverflowLogged = true;
                 Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                            Logger.CoreEventCode.QueueGap, actions.memberId(),
-                           "retained-frame buffer full at globalSeqNo=%d (%d frames, %d bytes) — dropping "
+                           "retained-frame buffer full at clusterSeqNo=%d (%d frames, %d bytes) — dropping "
                                + "ahead-of-hole frames; recovery resumes at the last dispatched frame",
-                           globalSeqNo, retainFrameCount, retainBytes);
+                           clusterSeqNo, retainFrameCount, retainBytes);
             }
             return;
         }
-        if (retainFrameCount > 0 && globalSeqNo <= retainTailGlobalSeqNo) {
+        if (retainFrameCount > 0 && clusterSeqNo <= retainTailClusterSeqNo) {
             return; // already retained (the queue redelivered it) — keep the first copy
         }
         if (retained.isEmpty() || retained.peekLast().used + recordSize > RetainBlock.SIZE) {
             retained.addLast(acquireBlock());
         }
         final RetainBlock tail = retained.peekLast();
-        tail.buffer.putLong(tail.used, globalSeqNo);
+        tail.buffer.putLong(tail.used, clusterSeqNo);
         tail.buffer.putLong(tail.used + Long.BYTES, framePosition);
         tail.buffer.putLong(tail.used + 2 * Long.BYTES, receiveNs);
         tail.buffer.putInt(tail.used + 3 * Long.BYTES, length);
@@ -742,15 +742,15 @@ final class ReplayerRecovery {
         tail.used += recordSize;
         ++retainFrameCount;
         retainBytes += length;
-        retainTailGlobalSeqNo = globalSeqNo;
+        retainTailClusterSeqNo = clusterSeqNo;
     }
 
     /** Dispatches every retained frame now contiguous, dropping any the replay covered, and recycles blocks. */
     private void drainRetained() {
         // Exits when the FIFO runs dry, or on a hole below the oldest retained frame.
         RetainBlock front = frontRetained();
-        while (front != null && front.buffer.getLong(retainReadOffset) <= lastGlobalSeqNo + 1) {
-            final long globalSeqNo = front.buffer.getLong(retainReadOffset);
+        while (front != null && front.buffer.getLong(retainReadOffset) <= lastClusterSeqNo + 1) {
+            final long clusterSeqNo = front.buffer.getLong(retainReadOffset);
             final long position = front.buffer.getLong(retainReadOffset + Long.BYTES);
             final long receiveNs = front.buffer.getLong(retainReadOffset + 2 * Long.BYTES);
             final int length = front.buffer.getInt(retainReadOffset + 3 * Long.BYTES);
@@ -758,8 +758,8 @@ final class ReplayerRecovery {
             retainReadOffset += RetainBlock.RECORD_HEADER_LENGTH + length;
             --retainFrameCount;
             retainBytes -= length;
-            if (globalSeqNo > lastGlobalSeqNo) { // otherwise the replay already covered it
-                dispatchFrame(front.buffer, payloadOffset, length, globalSeqNo, position, receiveNs, false);
+            if (clusterSeqNo > lastClusterSeqNo) { // otherwise the replay already covered it
+                dispatchFrame(front.buffer, payloadOffset, length, clusterSeqNo, position, receiveNs, false);
             }
             front = frontRetained();
         }
@@ -829,7 +829,7 @@ final class ReplayerRecovery {
     private static final class RetainBlock {
         static final int SIZE = 16 * 1024;
 
-        /** globalSeqNo, position, receiveNs, length — the per-record framing within a block. */
+        /** clusterSeqNo, position, receiveNs, length — the per-record framing within a block. */
         static final int RECORD_HEADER_LENGTH = 3 * Long.BYTES + Integer.BYTES;
 
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[SIZE]);

@@ -177,11 +177,11 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     }
 
     /**
-     * Highest globalSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its own
+     * Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its own
      * recovery progress by.
      */
-    public long lastGlobalSeqNo() {
-        return recovery.lastGlobalSeqNo();
+    public long lastClusterSeqNo() {
+        return recovery.lastClusterSeqNo();
     }
 
     /**

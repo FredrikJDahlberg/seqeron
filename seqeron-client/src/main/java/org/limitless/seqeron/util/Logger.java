@@ -64,7 +64,7 @@ public final class Logger {
     public enum CoreEventCode implements EventCode {
         /** Routine status, with no anomaly of its own to identify. */
         Info,
-        /** An ingress message the sequencer would not sequence; {@code globalSeqNo} does not move. */
+        /** An ingress message the sequencer would not sequence; {@code clusterSeqNo} does not move. */
         MalformedIngressMessage,
         /** Aeron's consensus module raised an error. */
         ConsensusModuleError,
@@ -90,13 +90,13 @@ public final class Logger {
         ShutdownTimeout,
         /** A gateway host's relay stopped reading one member's archive and moved to the next. */
         RelaySourceLost,
-        /** The live queue skipped a {@code globalSeqNo}; recovery replays the hole. */
+        /** The live queue skipped a {@code clusterSeqNo}; recovery replays the hole. */
         QueueGap,
         /** Recovery has dispatched nothing for longer than its deadline. */
         RecoveryStalled,
         /** The queue has carried no {@code ClusterHeartbeat} for longer than its deadline. */
         QueueStalled,
-        /** The first frame observed was not {@code globalSeqNo} 1, so history is incomplete. */
+        /** The first frame observed was not {@code clusterSeqNo} 1, so history is incomplete. */
         FirstFrameNotOne,
         /** A source's latest snapshot cannot be restored, so its instance cannot recover. */
         SnapshotRestoreFailed,

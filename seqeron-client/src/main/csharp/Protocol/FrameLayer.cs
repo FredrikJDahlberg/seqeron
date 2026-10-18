@@ -6,7 +6,7 @@ namespace Org.Limitless.Seqeron.Protocol;
 /// The frame layer's constants: the queue's identity, the cluster clock, and the size limits of spec §12. The C#
 /// mirror of the spec, as <c>FrameLayer.java</c> and <c>SequencedFrame.hpp</c> are; a change is a wire change
 /// (<b>V-3</b>) and lands in all three. Never read from a transport: <b>S-3</b> forbids checking a node's own
-/// MTU, which would fork <c>globalSeqNo</c>.
+/// MTU, which would fork <c>clusterSeqNo</c>.
 /// </summary>
 public static class FrameLayer
 {
@@ -28,7 +28,7 @@ public static class FrameLayer
 
     /// <summary>
     /// The queue: the node-local IPC stream every node republishes each sequenced frame on, in
-    /// <c>globalSeqNo</c> order, and records into its own archive. Co-located apps follow it live.
+    /// <c>clusterSeqNo</c> order, and records into its own archive. Co-located apps follow it live.
     /// </summary>
     public const string QueueChannel = "aeron:ipc?alias=seqeron-queue";
 

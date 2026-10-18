@@ -6,7 +6,7 @@
 //            PendingSends unless --untracked — and exits 0 iff its own queue showed 1..count exactly once, in order.
 //            --colocated connects through the member's IPC ingress first, falling back to UDP.
 //   follow:  cold-starts a ReplayerStreamReceiver, follows the queue live for --live-seconds after catching up, and
-//            exits 0 iff it dispatched every frame from globalSeqNo 1 with no gap.
+//            exits 0 iff it dispatched every frame from clusterSeqNo 1 with no gap.
 //
 // ProbeMarker is encoded by hand: sbe-probe.xml (schema 214) generates no C++ codecs. The egress port is explicit,
 // since ClusterStreamSender sends its egress channel to the cluster as given rather than resolving an ephemeral one.
@@ -332,19 +332,19 @@ int follow(const Options& options)
         [&](const protocol::SequencedEvent& event) {
             if (first == 0)
             {
-                first = event.globalSeqNo;
+                first = event.clusterSeqNo;
             }
-            else if (event.globalSeqNo != last + 1)
+            else if (event.clusterSeqNo != last + 1)
             {
                 gaps++;
             }
-            last = event.globalSeqNo;
+            last = event.clusterSeqNo;
         },
         {}, {}, {},
         [&] {
             if (!caughtUp)
             {
-                util::Logger::info(CLUSTER_PROBE, "Caught up at globalSeqNo %lld — following live",
+                util::Logger::info(CLUSTER_PROBE, "Caught up at clusterSeqNo %lld — following live",
                                    static_cast<long long>(last));
             }
             caughtUp = true;
@@ -362,7 +362,7 @@ int follow(const Options& options)
     }
     receiver.close();
     const bool exact = first == 1 && gaps == 0 && caughtUp;
-    util::Logger::info(CLUSTER_PROBE, "follow: %s — dispatched globalSeqNo %lld to %lld, gaps %lld",
+    util::Logger::info(CLUSTER_PROBE, "follow: %s — dispatched clusterSeqNo %lld to %lld, gaps %lld",
                        exact ? "CONTIGUOUS" : "NOT CONTIGUOUS", static_cast<long long>(first),
                        static_cast<long long>(last), static_cast<long long>(gaps));
     return exact ? 0 : 1;

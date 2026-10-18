@@ -54,7 +54,7 @@ public sealed class FollowStream
     private readonly Frame.GatewayActive _gatewayActive = new Frame.GatewayActive();
 
     private volatile bool _running = true;
-    private long _lastGlobalSeqNo;
+    private long _lastClusterSeqNo;
     private string _fault;
     private long _pingSentTicks;
 
@@ -164,11 +164,11 @@ public sealed class FollowStream
         }
     }
 
-    // Every other frame arrives here in globalSeqNo order, history and live alike — the receiver requests a replay
+    // Every other frame arrives here in clusterSeqNo order, history and live alike — the receiver requests a replay
     // for anything the live queue dropped and dispatches nothing out of order in the meantime.
     private void OnSequenced(SequencedEvent sequencedEvent)
     {
-        if (!InOrder(sequencedEvent.GlobalSeqNo))
+        if (!InOrder(sequencedEvent.ClusterSeqNo))
         {
             return;
         }
@@ -179,11 +179,11 @@ public sealed class FollowStream
         else if (IsOwnPing(sequencedEvent))
         {
             long roundTripUs = (long)Stopwatch.GetElapsedTime(_pingSentTicks).TotalMicroseconds;
-            Console.WriteLine($"{sequencedEvent.GlobalSeqNo} ping echoed, round trip {roundTripUs}us");
+            Console.WriteLine($"{sequencedEvent.ClusterSeqNo} ping echoed, round trip {roundTripUs}us");
         }
         else
         {
-            Console.WriteLine($"{sequencedEvent.GlobalSeqNo} payloadId={sequencedEvent.PayloadId} " +
+            Console.WriteLine($"{sequencedEvent.ClusterSeqNo} payloadId={sequencedEvent.PayloadId} " +
                               $"template={sequencedEvent.TemplateId} length={sequencedEvent.PayloadLength}");
         }
     }
@@ -193,30 +193,30 @@ public sealed class FollowStream
     // consumer handles it or not, so the default arm is where a consumer of one protocol spends its time.
     private void PrintSystem(SequencedEvent sequencedEvent)
     {
-        long globalSeqNo = sequencedEvent.GlobalSeqNo;
+        long clusterSeqNo = sequencedEvent.ClusterSeqNo;
         SbeBuffers.Wrap(_view, sequencedEvent.Buffer, sequencedEvent.PayloadOffset, sequencedEvent.PayloadLength);
         switch (sequencedEvent.SystemEventType)
         {
             case SystemFrame.ConnectionOpened:
                 _connectionOpened.WrapForDecode(_view, 0, Frame.ConnectionOpened.BlockLength,
                                                 Frame.ConnectionOpened.SchemaVersion);
-                Console.WriteLine($"{globalSeqNo} ConnectionOpened connection={sequencedEvent.ConnectionId} " +
+                Console.WriteLine($"{clusterSeqNo} ConnectionOpened connection={sequencedEvent.ConnectionId} " +
                                   $"label={_connectionOpened.ConnectionDataLength()} bytes");
                 break;
             case SystemFrame.ClusterHeartbeat:
                 _heartbeat.WrapForDecode(_view, 0, Frame.ClusterHeartbeat.BlockLength,
                                          Frame.ClusterHeartbeat.SchemaVersion);
-                Console.WriteLine($"{globalSeqNo} ClusterHeartbeat cluster clock {_heartbeat.Header.Timestamp}ns");
+                Console.WriteLine($"{clusterSeqNo} ClusterHeartbeat cluster clock {_heartbeat.Header.Timestamp}ns");
                 break;
             case SystemFrame.GatewayActive:
                 // Only after clusterctl load-topology: this frame is the cluster designating one gateway instance, and
                 // its gatewayId is in the payload and nowhere else.
                 _gatewayActive.WrapForDecode(_view, 0, Frame.GatewayActive.BlockLength,
                                              Frame.GatewayActive.SchemaVersion);
-                Console.WriteLine($"{globalSeqNo} GatewayActive gatewayId={_gatewayActive.GatewayId}");
+                Console.WriteLine($"{clusterSeqNo} GatewayActive gatewayId={_gatewayActive.GatewayId}");
                 break;
             default:
-                Console.WriteLine($"{globalSeqNo} system eventType={sequencedEvent.SystemEventType}");
+                Console.WriteLine($"{clusterSeqNo} system eventType={sequencedEvent.SystemEventType}");
                 break;
         }
     }
@@ -230,30 +230,30 @@ public sealed class FollowStream
     }
 
     // The one frame family that reaches a consumer here instead of through OnSequenced.
-    private void OnLeadershipChanged(int newLeaderMemberId, long leadershipTermId, long globalSeqNo)
+    private void OnLeadershipChanged(int newLeaderMemberId, long leadershipTermId, long clusterSeqNo)
     {
-        if (!InOrder(globalSeqNo))
+        if (!InOrder(clusterSeqNo))
         {
             return;
         }
-        Console.WriteLine($"{globalSeqNo} leader=member {newLeaderMemberId} term {leadershipTermId}");
+        Console.WriteLine($"{clusterSeqNo} leader=member {newLeaderMemberId} term {leadershipTermId}");
     }
 
-    // The invariant the whole tier exists for: one frame per globalSeqNo, no holes, replay and live alike. Recorded
+    // The invariant the whole tier exists for: one frame per clusterSeqNo, no holes, replay and live alike. Recorded
     // rather than thrown — this runs inside a fragment handler, and Image.Poll advances the subscriber position
     // regardless of what a handler raises, so the duty cycle above raises it instead.
-    private bool InOrder(long globalSeqNo)
+    private bool InOrder(long clusterSeqNo)
     {
         if (_fault != null)
         {
             return false;
         }
-        if (globalSeqNo != _lastGlobalSeqNo + 1)
+        if (clusterSeqNo != _lastClusterSeqNo + 1)
         {
-            _fault = "gap: " + _lastGlobalSeqNo + " -> " + globalSeqNo;
+            _fault = "gap: " + _lastClusterSeqNo + " -> " + clusterSeqNo;
             return false;
         }
-        _lastGlobalSeqNo = globalSeqNo;
+        _lastClusterSeqNo = clusterSeqNo;
         return true;
     }
 

@@ -152,7 +152,7 @@ constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
  */
 struct SequencedEvent
 {
-    std::int64_t globalSeqNo;
+    std::int64_t clusterSeqNo;
     std::int32_t sourceId;           ///< Fixed constant identifying the submitting producer process (header.sourceId)
     std::int32_t connectionId;       ///< Connection id at that producer; routes the reply (header.connectionId)
     std::int64_t sourceSessionId;    ///< Aeron Cluster client session id (header.sessionId)
@@ -187,7 +187,7 @@ struct FrameView
     std::int32_t sourceId;
     std::int32_t connectionId;
     std::int64_t sourceSessionId; ///< Aeron Cluster client session id (header.sessionId)
-    std::int64_t globalSeqNo;
+    std::int64_t clusterSeqNo;
     std::int64_t clusterTimestampNs; ///< cluster consensus time (epoch ns) when committed (header.timestamp)
     std::uint16_t templateId;        ///< application family: the payload's own, never the envelope's
     /// The payload's own, to wrap its decoder with; both 0 on any system frame, whose message carries
@@ -214,7 +214,7 @@ inline void readSystemHeader(FrameView& view, sbe::frame::SequencedSystemHeader&
     view.sourceId = header.sourceId();
     view.connectionId = header.connectionId();
     view.sourceSessionId = header.sessionId();
-    view.globalSeqNo = header.globalSeqNo();
+    view.clusterSeqNo = header.clusterSeqNo();
     view.clusterTimestampNs = header.timestamp();
 }
 
@@ -260,7 +260,7 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
         view.sourceId = header.sourceId();
         view.connectionId = header.connectionId();
         view.sourceSessionId = header.sessionId();
-        view.globalSeqNo = header.globalSeqNo();
+        view.clusterSeqNo = header.clusterSeqNo();
         view.clusterTimestampNs = header.timestamp();
 
         const std::uint64_t payloadLength = sequenced.payloadLength();
@@ -423,7 +423,7 @@ inline std::int64_t frameStartPosition(const aeron::Header& header)
  */
 struct LifecycleEvent
 {
-    std::int64_t globalSeqNo;
+    std::int64_t clusterSeqNo;
     std::int32_t sourceId;           ///< publishing producer process (header.sourceId)
     std::int32_t connectionId;       ///< connection at that producer (header.connectionId)
     std::int64_t sourceSessionId;    ///< Aeron Cluster session the event was submitted on
@@ -458,7 +458,7 @@ Decoder decodeSystem(const LifecycleEvent& event)
 inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t receiveTimeNs,
                                        const std::int64_t position)
 {
-    return SequencedEvent{ .globalSeqNo = view.globalSeqNo,
+    return SequencedEvent{ .clusterSeqNo = view.clusterSeqNo,
                            .sourceId = view.sourceId,
                            .connectionId = view.connectionId,
                            .sourceSessionId = view.sourceSessionId,
@@ -483,7 +483,7 @@ inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t
  */
 inline LifecycleEvent lifecycleEventOf(const FrameView& view, const std::int64_t receiveTimeNs)
 {
-    return LifecycleEvent{ .globalSeqNo = view.globalSeqNo,
+    return LifecycleEvent{ .clusterSeqNo = view.clusterSeqNo,
                            .sourceId = view.sourceId,
                            .connectionId = view.connectionId,
                            .sourceSessionId = view.sourceSessionId,

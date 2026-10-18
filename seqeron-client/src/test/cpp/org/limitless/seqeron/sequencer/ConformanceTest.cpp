@@ -62,7 +62,7 @@ constexpr std::int64_t TIMESTAMP = 1700000000000LL;
 
 // One SequencedSystem frame. `fill` writes the payload and returns its length.
 template<typename Fill>
-std::vector<std::uint8_t> systemFrame(std::int64_t globalSeqNo, std::uint16_t systemEventType, Fill&& fill)
+std::vector<std::uint8_t> systemFrame(std::int64_t clusterSeqNo, std::uint16_t systemEventType, Fill&& fill)
 {
     std::array<char, 256> body{};
     const std::uint16_t bodyLength = fill(body.data(), body.size());
@@ -75,7 +75,7 @@ std::vector<std::uint8_t> systemFrame(std::int64_t globalSeqNo, std::uint16_t sy
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .systemEventType(systemEventType)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(TIMESTAMP);
     frame.putBody(body.data(), bodyLength);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
@@ -84,7 +84,7 @@ std::vector<std::uint8_t> systemFrame(std::int64_t globalSeqNo, std::uint16_t sy
 
 // One of the five the sequencer synthesizes: its own template, fields inline, -1 identity (F-4).
 template<typename Encoder, typename Fill>
-std::vector<std::uint8_t> synthesizedFrame(std::int64_t globalSeqNo, std::uint16_t systemEventType, Fill&& fill)
+std::vector<std::uint8_t> synthesizedFrame(std::int64_t clusterSeqNo, std::uint16_t systemEventType, Fill&& fill)
 {
     std::vector<std::uint8_t> out(128, 0);
     Encoder frame;
@@ -94,7 +94,7 @@ std::vector<std::uint8_t> synthesizedFrame(std::int64_t globalSeqNo, std::uint16
         .connectionId(-1)
         .sessionId(-1)
         .systemEventType(systemEventType)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(TIMESTAMP);
     fill(frame);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
@@ -102,7 +102,7 @@ std::vector<std::uint8_t> synthesizedFrame(std::int64_t globalSeqNo, std::uint16
 }
 
 // One application frame carrying `payloadLength` bytes the cluster tier never opens (S-2).
-std::vector<std::uint8_t> payloadFrame(std::int64_t globalSeqNo, std::uint16_t payloadId, std::size_t payloadLength)
+std::vector<std::uint8_t> payloadFrame(std::int64_t clusterSeqNo, std::uint16_t payloadId, std::size_t payloadLength)
 {
     std::vector<char> payload(payloadLength);
     for (std::size_t i = 0; i < payloadLength; ++i)
@@ -118,7 +118,7 @@ std::vector<std::uint8_t> payloadFrame(std::int64_t globalSeqNo, std::uint16_t p
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .payloadId(payloadId)
-        .globalSeqNo(globalSeqNo)
+        .clusterSeqNo(clusterSeqNo)
         .timestamp(TIMESTAMP);
     frame.putPayload(payload.data(), static_cast<std::uint16_t>(payloadLength));
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
@@ -160,7 +160,7 @@ TEST(Conformance, IngressCompositesAreThePrefixOfTheirSequencedCounterparts)
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .payloadId(2)
-        .globalSeqNo(9)
+        .clusterSeqNo(9)
         .timestamp(TIMESTAMP);
 
     alignas(16) std::array<std::uint8_t, 64> sequencedSystem{};
@@ -170,7 +170,7 @@ TEST(Conformance, IngressCompositesAreThePrefixOfTheirSequencedCounterparts)
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .systemEventType(2)
-        .globalSeqNo(9)
+        .clusterSeqNo(9)
         .timestamp(TIMESTAMP);
 
     EXPECT_EQ(0, std::memcmp(sequenced.data(), sequencedSystem.data(), 34));
@@ -197,14 +197,14 @@ TEST(Conformance, EveryFrameLayerFieldSitsAtTheOffsetSection41Gives)
     EXPECT_EQ(4U, frm::SequencedHeader::connectionIdEncodingOffset());
     EXPECT_EQ(8U, frm::SequencedHeader::sessionIdEncodingOffset());
     EXPECT_EQ(16U, frm::SequencedHeader::payloadIdEncodingOffset());
-    EXPECT_EQ(18U, frm::SequencedHeader::globalSeqNoEncodingOffset());
+    EXPECT_EQ(18U, frm::SequencedHeader::clusterSeqNoEncodingOffset());
     EXPECT_EQ(26U, frm::SequencedHeader::timestampEncodingOffset());
 
     EXPECT_EQ(0U, frm::SequencedSystemHeader::sourceIdEncodingOffset());
     EXPECT_EQ(4U, frm::SequencedSystemHeader::connectionIdEncodingOffset());
     EXPECT_EQ(8U, frm::SequencedSystemHeader::sessionIdEncodingOffset());
     EXPECT_EQ(16U, frm::SequencedSystemHeader::systemEventTypeEncodingOffset());
-    EXPECT_EQ(18U, frm::SequencedSystemHeader::globalSeqNoEncodingOffset());
+    EXPECT_EQ(18U, frm::SequencedSystemHeader::clusterSeqNoEncodingOffset());
     EXPECT_EQ(26U, frm::SequencedSystemHeader::timestampEncodingOffset());
 }
 
@@ -637,9 +637,9 @@ TEST(Conformance, TheBoundaryPayloadSizesCrossIntact)
 
 TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
 {
-    // globalSeqNo sits at 18 on all seven sequenced messages (F-3), so the continuity read is branch-free
+    // clusterSeqNo sits at 18 on all seven sequenced messages (F-3), so the continuity read is branch-free
     // over frames the consumer comprehends none of. Every one of these must come back valid: a frame
-    // dropped here is a globalSeqNo missing from that read, which reads as a gap that is not there.
+    // dropped here is a clusterSeqNo missing from that read, which reads as a gap that is not there.
     std::vector<std::vector<std::uint8_t>> queue;
     queue.push_back(payloadFrame(1, 4095, 8));
     queue.push_back(systemFrame(2, protocol::PAYLOAD_ID_REGISTERED, [](char* body, std::size_t cap) {
@@ -663,8 +663,8 @@ TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
     for (const auto& frame : queue)
     {
         const auto view = viewOf(frame);
-        EXPECT_TRUE(view.valid) << "frame " << expected << " is unreadable, so P-3 would lose its globalSeqNo";
-        EXPECT_EQ(expected, view.globalSeqNo);
+        EXPECT_TRUE(view.valid) << "frame " << expected << " is unreadable, so P-3 would lose its clusterSeqNo";
+        EXPECT_EQ(expected, view.clusterSeqNo);
         ++expected;
     }
 
@@ -677,7 +677,7 @@ TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .payloadId(4095)
-        .globalSeqNo(77)
+        .clusterSeqNo(77)
         .timestamp(TIMESTAMP);
     frame.putPayload(nullptr, 0);
     const auto length = frm::MessageHeader::encodedLength() + frame.encodedLength();
@@ -685,7 +685,7 @@ TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
     const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()), length);
     ASSERT_TRUE(view.valid) << "an empty payload under an unallocated payloadId is still a frame";
     EXPECT_EQ(4095, view.payloadId);
-    EXPECT_EQ(77, view.globalSeqNo);
+    EXPECT_EQ(77, view.clusterSeqNo);
     EXPECT_EQ(0U, view.templateId) << "no inner declaration, so nothing can dispatch on it (P-1)";
 }
 

@@ -38,7 +38,7 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * whose gate is open then submits the round's {@code SnapshotEnd}. A replica whose snapshot differs from the one
  * sequenced is fenced with {@link ClusterError#SNAPSHOT_DIVERGED}. On start, a replica given a listener restores
  * the newest snapshot of its own that the log confirms and resumes after its cut, or replays from {@code
- * globalSeqNo} 1 without one; one it cannot restore is fenced with {@link ClusterError#SNAPSHOT_UNRESTORABLE}.
+ * clusterSeqNo} 1 without one; one it cannot restore is fenced with {@link ClusterError#SNAPSHOT_UNRESTORABLE}.
  *
  * <p>Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls
  * {@link #doWork()} each iteration. The C++ twin is {@code app/Application.hpp}; keep the two in
@@ -72,11 +72,11 @@ public final class Application implements AutoCloseable {
          */
         void onLeadershipChanged(boolean leading);
 
-        /** One application payload off this node's queue, in {@code globalSeqNo} order. */
+        /** One application payload off this node's queue, in {@code clusterSeqNo} order. */
         void onSequenced(Payload payload);
 
         /** Every transition to caught-up, the first included. */
-        void onCaughtUp(long globalSeqNo);
+        void onCaughtUp(long clusterSeqNo);
 
         /**
          * The cluster clock's tick (spec §7), once a second. It is the one time source that keeps advancing
@@ -211,8 +211,8 @@ public final class Application implements AutoCloseable {
         return session.isCaughtUp();
     }
 
-    public long lastGlobalSeqNo() {
-        return session.lastGlobalSeqNo();
+    public long lastClusterSeqNo() {
+        return session.lastClusterSeqNo();
     }
 
     /** Closes the cluster session and the queue. The Aeron client is the caller's and is left open. */
@@ -262,7 +262,7 @@ public final class Application implements AutoCloseable {
             case SystemFrame.SNAPSHOT_STARTED -> {
                 started.wrap(event.buffer(), event.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
                              SnapshotStartedDecoder.SCHEMA_VERSION);
-                snapshots.onSnapshotStarted(started.round(), event.globalSeqNo(), event.position(),
+                snapshots.onSnapshotStarted(started.round(), event.clusterSeqNo(), event.position(),
                                             event.clusterTimestampNs(),
                                             new SnapshotHeader(session.leadershipTermId(),
                                                                session.currentLeaderMemberId(), null),
@@ -276,7 +276,7 @@ public final class Application implements AutoCloseable {
                          MessageHeaderDecoder.SCHEMA_VERSION);
                 if (!snapshots.onSnapshotEnd(end.round(), end.recordCount(), end.length(), end.crc32c())) {
                     session.fence(ClusterError.SNAPSHOT_DIVERGED, "round " + end.round() + "'s sequenced "
-                        + "snapshot at globalSeqNo " + event.globalSeqNo() + " differs from this replica's");
+                        + "snapshot at clusterSeqNo " + event.clusterSeqNo() + " differs from this replica's");
                 }
             }
             default -> {
@@ -300,8 +300,8 @@ public final class Application implements AutoCloseable {
         }
 
         @Override
-        public void onCaughtUp(final long globalSeqNo) {
-            listener.onCaughtUp(globalSeqNo);
+        public void onCaughtUp(final long clusterSeqNo) {
+            listener.onCaughtUp(clusterSeqNo);
         }
 
         @Override
@@ -396,7 +396,7 @@ public final class Application implements AutoCloseable {
 
         /**
          * What serializes this application's state for snapshot rounds and restores it on start; without one it
-         * takes part in none, whatever its topology row says, and recovers from {@code globalSeqNo} 1.
+         * takes part in none, whatever its topology row says, and recovers from {@code clusterSeqNo} 1.
          */
         public Builder snapshotListener(final SnapshotListener snapshotListener) {
             this.snapshotListener = snapshotListener;

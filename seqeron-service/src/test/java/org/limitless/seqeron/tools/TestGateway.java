@@ -400,9 +400,9 @@ public final class TestGateway {
 
         /** The one line the harnesses wait on before they may drive this instance. */
         @Override
-        public void onCaughtUp(final long globalSeqNo) {
-            log("Caught up — following live at globalSeqNo %d, %d connection(s) open, %d marker(s) sequenced",
-                globalSeqNo, openConnections.size(), sequencedMarkers);
+        public void onCaughtUp(final long clusterSeqNo) {
+            log("Caught up — following live at clusterSeqNo %d, %d connection(s) open, %d marker(s) sequenced",
+                clusterSeqNo, openConnections.size(), sequencedMarkers);
         }
 
         @Override

@@ -11,7 +11,7 @@ namespace Org.Limitless.Seqeron.App;
 /// reply offers and replies lost in an election.
 /// <para><b>Safety</b>, checked on every step: a replica's outstanding set matches the log prefix it has applied;
 /// only a caught-up replica that sees itself as leader dispatches; within one gate opening a request is dispatched
-/// at most once unless its offer failed; a sweep dispatches in <c>globalSeqNo</c> order; and a request this opening
+/// at most once unless its offer failed; a sweep dispatches in <c>clusterSeqNo</c> order; and a request this opening
 /// dispatched is never silently lost — its reply is pending, in flight or in the log, or a leadership change this
 /// replica has yet to act on will close the gate.</para>
 /// <para><b>Liveness</b>: once the faults stop, every request has a reply in the log and every replica's

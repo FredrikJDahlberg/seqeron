@@ -42,7 +42,7 @@ namespace org::limitless::seqeron::app {
 /** What a Gateway's Listener provides: the edge. */
 template<typename L>
 concept GatewayListener = requires(L& listener, const Payload& payload, std::int32_t connectionId, const char* data,
-                                   std::size_t length, std::int64_t globalSeqNo, std::int64_t clusterTimeNs,
+                                   std::size_t length, std::int64_t clusterSeqNo, std::int64_t clusterTimeNs,
                                    std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
     // Open the edge; false is retried on the next doWork().
     { listener.onActivated(connectionId) } -> std::convertible_to<bool>;
@@ -52,7 +52,7 @@ concept GatewayListener = requires(L& listener, const Payload& payload, std::int
     listener.onSequenced(payload);
     listener.onConnectionOpened(connectionId, data, length);
     listener.onConnectionClosed(connectionId);
-    listener.onCaughtUp(globalSeqNo);
+    listener.onCaughtUp(clusterSeqNo);
     listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
     listener.onFenced(fence, detail);
 };
@@ -71,7 +71,7 @@ concept GatewayListener = requires(L& listener, const Payload& payload, std::int
  * serializes its state at each round's cut into its own directory, under a header carrying the pair's election
  * state, and the active one then submits the round's SnapshotEnd. An instance whose snapshot differs from the one
  * sequenced is fenced with ClusterError::SnapshotDiverged. On start, an instance given a listener restores the
- * newest snapshot of its own that the log confirms and resumes after its cut, or replays from globalSeqNo 1 without
+ * newest snapshot of its own that the log confirms and resumes after its cut, or replays from clusterSeqNo 1 without
  * one; one it cannot restore is fenced with ClusterError::SnapshotUnrestorable.
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
@@ -111,7 +111,7 @@ class Gateway
         // counter it labels.
         std::int32_t sourceId = UNRESOLVED;
         // What serializes this instance's state for snapshot rounds and restores it on start; without one it takes
-        // part in none, whatever its rows say, and recovers from globalSeqNo 1. Must outlive the gateway.
+        // part in none, whatever its rows say, and recovers from clusterSeqNo 1. Must outlive the gateway.
         SnapshotListener* snapshotListener = nullptr;
         // Where this instance keeps its snapshots, one file per round; required with a snapshotListener. Its own: no
         // other instance, its pair's included, may write it. A restart restores from what it holds, so it must
@@ -343,9 +343,9 @@ class Gateway
         return m_session.isCaughtUp();
     }
 
-    [[nodiscard]] std::int64_t lastGlobalSeqNo() const
+    [[nodiscard]] std::int64_t lastClusterSeqNo() const
     {
-        return m_session.lastGlobalSeqNo();
+        return m_session.lastClusterSeqNo();
     }
 
     // Closes the cluster session and the queue. The Aeron client is the caller's and is left open.
@@ -584,7 +584,7 @@ class Gateway
                 }
                 case protocol::SNAPSHOT_STARTED: {
                     auto started = protocol::decodeSystem<sbe::frame::SnapshotStarted>(event);
-                    m_gateway.m_snapshots.onSnapshotStarted(started.round(), event.globalSeqNo, event.position,
+                    m_gateway.m_snapshots.onSnapshotStarted(started.round(), event.clusterSeqNo, event.position,
                                                             event.clusterTimestampNs, m_gateway.snapshotHeader(),
                                                             m_gateway.m_lifecycle.isAnnounced());
                     break;
@@ -600,8 +600,8 @@ class Gateway
                     {
                         m_gateway.m_session.fence(
                             ClusterError::SnapshotDiverged,
-                            "round " + std::to_string(end.round()) + "'s sequenced snapshot at globalSeqNo " +
-                                std::to_string(event.globalSeqNo) + " differs from this instance's");
+                            "round " + std::to_string(end.round()) + "'s sequenced snapshot at clusterSeqNo " +
+                                std::to_string(event.clusterSeqNo) + " differs from this instance's");
                     }
                     break;
                 }
@@ -621,10 +621,10 @@ class Gateway
             m_gateway.m_listener.onSequenced(payload);
         }
 
-        void onCaughtUp(const std::int64_t globalSeqNo)
+        void onCaughtUp(const std::int64_t clusterSeqNo)
         {
             m_gateway.m_lifecycle.onCaughtUp();
-            m_gateway.m_listener.onCaughtUp(globalSeqNo);
+            m_gateway.m_listener.onCaughtUp(clusterSeqNo);
         }
 
         // The cluster clock's tick (spec §7), once a second. It is the one time source that keeps

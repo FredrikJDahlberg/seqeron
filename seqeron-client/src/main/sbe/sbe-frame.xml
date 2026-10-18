@@ -10,8 +10,8 @@
     SnapshotStarted 107, SessionClosed 108).
 
     Each unsequenced header composite is a byte prefix of its sequenced counterpart, and the two
-    families' composites differ only in the name of the uint16 at offset 16 (F-3), so globalSeqNo is
-    at offset 18 in every sequenced frame. There is no padding and globalSeqNo is unaligned: use plain
+    families' composites differ only in the name of the uint16 at offset 16 (F-3), so clusterSeqNo is
+    at offset 18 in every sequenced frame. There is no padding and clusterSeqNo is unaligned: use plain
     accessors only; volatile or atomic access at an unaligned address is undefined.
 --><sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
                    package="org.limitless.seqeron.sbe.frame"
@@ -43,9 +43,9 @@
                   description="The payload's schema or encoding (§6). 0 is invalid and 1 is retired; both are rejected"/>
         </composite>
 
-        <!-- 34 bytes: unsequencedHeader's 18, then globalSeqNo and timestamp. -->
+        <!-- 34 bytes: unsequencedHeader's 18, then clusterSeqNo and timestamp. -->
         <composite name="sequencedHeader"
-                   description="Application frame header on the queue: the ingress header, plus globalSeqNo and timestamp">
+                   description="Application frame header on the queue: the ingress header, plus clusterSeqNo and timestamp">
             <type name="sourceId"     primitiveType="int32"
                   description="Copied from ingress"/>
             <type name="connectionId" primitiveType="int32"
@@ -54,7 +54,7 @@
                   description="The Aeron Cluster session id the frame arrived on"/>
             <type name="payloadId"    primitiveType="uint16"
                   description="Copied from ingress"/>
-            <type name="globalSeqNo"  primitiveType="int64"
+            <type name="clusterSeqNo" primitiveType="int64"
                   description="Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4)"/>
             <type name="timestamp"    primitiveType="int64"
                   description="Raft consensus time at commit, in nanoseconds since the epoch; never a node's local clock (S-3)"/>
@@ -73,9 +73,9 @@
                   description="The event in the payload; MUST be an allocated, ingress-legal value (§7)"/>
         </composite>
 
-        <!-- 34 bytes: unsequencedSystemHeader's 18, then globalSeqNo and timestamp. -->
+        <!-- 34 bytes: unsequencedSystemHeader's 18, then clusterSeqNo and timestamp. -->
         <composite name="sequencedSystemHeader"
-                   description="System frame header on the queue: the ingress header, plus globalSeqNo and timestamp. Also the header of the synthesized templates">
+                   description="System frame header on the queue: the ingress header, plus clusterSeqNo and timestamp. Also the header of the synthesized templates">
             <type name="sourceId"        primitiveType="int32"
                   description="Copied from ingress; -1 on a synthesized frame (F-4)"/>
             <type name="connectionId"    primitiveType="int32"
@@ -84,7 +84,7 @@
                   description="The Aeron Cluster session id the frame arrived on; -1 on a synthesized frame"/>
             <type name="systemEventType" primitiveType="uint16"
                   description="Copied from ingress; on a synthesized frame, the value for that frame's template (§7)"/>
-            <type name="globalSeqNo"     primitiveType="int64"
+            <type name="clusterSeqNo"    primitiveType="int64"
                   description="Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4)"/>
             <type name="timestamp"       primitiveType="int64"
                   description="Raft consensus time at commit, in nanoseconds since the epoch; never a node's local clock (S-3)"/>
@@ -150,7 +150,7 @@
          id, so that offset 16 identifies every frame on the queue. -->
 
     <sbe:message name="ClusterHeartbeat" id="104"
-                 description="The cluster clock, synthesized once a second from a cluster timer. No payload: the frame's timestamp and globalSeqNo are the message (42 bytes)">
+                 description="The cluster clock, synthesized once a second from a cluster timer. No payload: the frame's timestamp and clusterSeqNo are the message (42 bytes)">
         <field name="header" id="20001" type="sequencedSystemHeader"/>
     </sbe:message>
 
@@ -158,7 +158,7 @@
                  description="A new leadership term began. One per term, including a term the same member wins again">
         <field name="header"            id="20001" type="sequencedSystemHeader"/>
         <field name="newLeaderMemberId" id="20008" type="int32"
-               description="Aeron Cluster member that leads from this globalSeqNo on"/>
+               description="Aeron Cluster member that leads from this clusterSeqNo on"/>
         <field name="leadershipTermId"  id="20048" type="int64"
                description="Aeron Cluster leadershipTermId of the term that starts here"/>
     </sbe:message>
@@ -171,7 +171,7 @@
 
     <sbe:message name="SnapshotStarted" id="107"
                  description="Starts a snapshot round: every participating source serializes its state as of this
-                              frame's globalSeqNo, the round's cut (doc/snapshot.md §3)">
+                              frame's clusterSeqNo, the round's cut (doc/snapshot.md §3)">
         <field name="header" id="20001" type="sequencedSystemHeader"/>
         <field name="round"  id="20049" type="int64"
                description="The round's number, from 1"/>
@@ -264,7 +264,7 @@
 
     <sbe:message name="SnapshotRequested" id="26"
                  description="An operator asked for a snapshot round (clusterctl request-snapshot). The sequencer
-                              answers with SnapshotStarted at the next globalSeqNo">
+                              answers with SnapshotStarted at the next clusterSeqNo">
         <field name="correlationId" id="20002" type="correlationId"/>
     </sbe:message>
 

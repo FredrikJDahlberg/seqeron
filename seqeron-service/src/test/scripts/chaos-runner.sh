@@ -377,7 +377,7 @@ replica_pid() { local m="$1"; [[ "$m" == "$CN" ]] && echo "${CONSUMER_PID:-}" ||
 replica_log() { local m="$1"; [[ "$m" == "$CN" ]] && echo "$CONSUMER_LOG" || echo "$LOG_DIR/consumer-$m.log"; }
 # A gap the consumer repaired by RESUMING its recording at the hole — the healthy recovery, and the proof
 # that an armed queue-drop actually landed.
-count_queue_resumes() { grep -c 'queue gap: expected globalSeqNo' "$1" 2>/dev/null || true; }
+count_queue_resumes() { grep -c 'queue gap: expected clusterSeqNo' "$1" 2>/dev/null || true; }
 # The client's own "I am not serving" alarm (RecoveryStalled, ReplayerStreamReceiver::checkRecoveryProgress):
 # recovery dispatched nothing for RECOVERY_PROGRESS_TIMEOUT_MS while not caught up. Unlike the one-shot
 # "following live" marker this fires per episode, so it reads CURRENT state rather than latching at boot.
@@ -655,9 +655,9 @@ snapshot_round() {
 }
 
 # ── Steady-state oracle ──────────────────────────────────────────────────────────
-# Liveness + a safety PROXY via log grep. The RIGOROUS safety oracle (gap-free, monotone globalSeqNo across
+# Liveness + a safety PROXY via log grep. The RIGOROUS safety oracle (gap-free, monotone clusterSeqNo across
 # the ordered stream, and replica convergence) should be a decode of the cluster log, not grep — pipe the
-# recording through seqeron-service/src/main/scripts/sbe-log-printer.sh and assert no globalSeqNo gap. That is the TODO seam
+# recording through seqeron-service/src/main/scripts/sbe-log-printer.sh and assert no clusterSeqNo gap. That is the TODO seam
 # marked below; grep gives liveness + smoke, the decoder gives the actual proof.
 check_invariants() {
   local fail=0
@@ -779,29 +779,29 @@ check_invariants() {
       log "  INVARIANT FAIL: no snapshot round past $LAST_SNAPSHOT_ROUND within ${SNAPSHOT_ROUND_TIMEOUT_SECS}s"; fail=1
     fi
   fi
-  # (h) The rigorous safety property (gap-free, monotone globalSeqNo) is asserted ONCE at end of run by
+  # (h) The rigorous safety property (gap-free, monotone clusterSeqNo) is asserted ONCE at end of run by
   #     verify_sequence below — decoding it every round would re-dump the whole recording each time.
   return $fail
 }
 
 # ── End-of-run safety oracle: verify EVERY node's queue ────────────────────────────
 # The real safety property of the sequencer: the SEQUENCED stream (out of the cluster — sbe-sequenced,
-# schema 202, carrying globalSeqNo; ingress into the cluster is unsequenced and has none) must be a
+# schema 202, carrying clusterSeqNo; ingress into the cluster is unsequenced and has none) must be a
 # gap-free, strictly-monotone run 1,2,3,…,N — and EVERY node must have recorded the identical run
 # (Raft replicates the same state to all). So decode all three members' archives and assert both.
 #
-# A killed/restarted node ROTATES its queue: a pre-kill partial recording (globalSeqNo 1..K) plus a
+# A killed/restarted node ROTATES its queue: a pre-kill partial recording (clusterSeqNo 1..K) plus a
 # post-restart recording that re-records 1..N from scratch (recovery is always full-log replay from
 # gseq 1 — there are no snapshots). So each RECORDING is checked independently and reset at its
 # "[Catalog] Recording ID" boundary — NOT concatenated (that would read the K→1 restart as a regression).
 # The co-resident raft consensus-log recording decodes too (schema 111), but none of its messages carry
-# a globalSeqNo, so it contributes nothing to the scan below. The node's high-water mark is the max globalSeqNo it recorded;
+# a clusterSeqNo, so it contributes nothing to the scan below. The node's high-water mark is the max clusterSeqNo it recorded;
 # all nodes' high-water marks must match (convergence).
 verify_sequence() {
   local jar="$JAR" m rc=0
   # Quiesce first: stop the background load and let the last sequenced messages replicate to every node.
   # That alone isn't enough for a stationary stream, though: the 1 Hz ClusterHeartbeat (the cluster clock) keeps
-  # advancing globalSeqNo forever by design, background load or not, and the three archives are dumped
+  # advancing clusterSeqNo forever by design, background load or not, and the three archives are dumped
   # sequentially (each a multi-second decode of thousands of frames) — so without freezing the cluster,
   # a heartbeat or two legitimately lands between reading member 0's archive and member 2's, and convergence
   # fails on a phantom 1-frame "divergence" that's really just clock drift across a non-atomic snapshot.
@@ -827,10 +827,10 @@ verify_sequence() {
     local hw
     hw=$(awk -v member="$m" '
       /\[Catalog\] Recording ID/ { expected=0; next }           # new recording -> reset (rotated queue)
-      /"globalSeqNo"/ {
+      /"clusterSeqNo"/ {
         s=$0; gsub(/[^0-9]/, "", s); n=s+0; total++
         if (expected==0) {                                       # first sequenced msg in THIS recording
-          if (n!=1) { printf "  member %s SAFETY FAIL: recording starts at globalSeqNo %d, expected 1\n", member, n > "/dev/stderr"; exit 1 }
+          if (n!=1) { printf "  member %s SAFETY FAIL: recording starts at clusterSeqNo %d, expected 1\n", member, n > "/dev/stderr"; exit 1 }
         } else if (n != expected+1) {
           printf "  member %s SAFETY FAIL: gap/regression — expected %d, got %d\n", member, expected+1, n > "/dev/stderr"; exit 1
         }
@@ -839,12 +839,12 @@ verify_sequence() {
       END { if (total==0) { printf "  member %s SAFETY FAIL: no sequenced messages decoded\n", member > "/dev/stderr"; exit 1 } print max }
     ' "$LOG_DIR/sequenced-dump-$m.txt") || { rc=1; continue; }
     highwater[$m]="$hw"
-    log "  member $m: queue gap-free & monotone, high-water globalSeqNo=$hw"
+    log "  member $m: queue gap-free & monotone, high-water clusterSeqNo=$hw"
   done
   for m in 0 1 2; do kill -CONT "${SEQ_PIDS[$m]:-0}" 2>/dev/null; done
-  # Convergence: every node must have recorded the same final globalSeqNo.
+  # Convergence: every node must have recorded the same final clusterSeqNo.
   if [[ "$rc" == 0 && "${highwater[0]}" == "${highwater[1]}" && "${highwater[1]}" == "${highwater[2]}" ]]; then
-    log "  convergence OK: all 3 nodes recorded globalSeqNo 1..${highwater[0]}"
+    log "  convergence OK: all 3 nodes recorded clusterSeqNo 1..${highwater[0]}"
   else
     log "  SAFETY FAIL: nodes diverged (high-water 0=${highwater[0]} 1=${highwater[1]} 2=${highwater[2]})"; rc=1
   fi

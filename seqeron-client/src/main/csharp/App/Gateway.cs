@@ -24,7 +24,7 @@ namespace Org.Limitless.Seqeron.App;
 /// header carrying the pair's election state, and the active one then submits the round's <c>SnapshotEnd</c>. An
 /// instance whose snapshot differs from the one sequenced is fenced with <see cref="ClusterError.SnapshotDiverged"/>.
 /// On start, an instance given a listener restores the newest snapshot of its own that the log confirms and resumes
-/// after its cut, or replays from <c>globalSeqNo</c> 1 without one; one it cannot restore is fenced with
+/// after its cut, or replays from <c>clusterSeqNo</c> 1 without one; one it cannot restore is fenced with
 /// <see cref="ClusterError.SnapshotUnrestorable"/>.</para>
 /// <para>Single-threaded: every member belongs to the caller's one duty-cycle thread, which calls
 /// <see cref="DoWork"/> each iteration. <c>Gateway.java</c> and <c>app/Gateway.hpp</c> are its twins; keep the three
@@ -280,7 +280,7 @@ public sealed class Gateway : IDisposable
 
     public bool IsCaughtUp => _session.IsCaughtUp;
 
-    public long LastGlobalSeqNo => _session.LastGlobalSeqNo;
+    public long LastClusterSeqNo => _session.LastClusterSeqNo;
 
     /// <summary>Closes the cluster session and the queue. The Aeron client is the caller's and is left open.</summary>
     public void Dispose()
@@ -501,7 +501,7 @@ public sealed class Gateway : IDisposable
                     Wrap(sequencedEvent);
                     _snapshotStarted.WrapForDecode(_view, 0, Frame.SnapshotStarted.BlockLength,
                                                    Frame.SnapshotStarted.SchemaVersion);
-                    g._snapshots.OnSnapshotStarted(_snapshotStarted.Round, sequencedEvent.GlobalSeqNo,
+                    g._snapshots.OnSnapshotStarted(_snapshotStarted.Round, sequencedEvent.ClusterSeqNo,
                                                    sequencedEvent.Position, sequencedEvent.ClusterTimestampNs,
                                                    g.CurrentSnapshotHeader(), g._lifecycle.IsAnnounced);
                     break;
@@ -517,8 +517,8 @@ public sealed class Gateway : IDisposable
                                                     _snapshotEnd.Crc32c))
                     {
                         g._session.Fence(ClusterError.SnapshotDiverged,
-                                         "round " + _snapshotEnd.Round + "'s sequenced snapshot at globalSeqNo " +
-                                             sequencedEvent.GlobalSeqNo + " differs from this instance's");
+                                         "round " + _snapshotEnd.Round + "'s sequenced snapshot at clusterSeqNo " +
+                                             sequencedEvent.ClusterSeqNo + " differs from this instance's");
                     }
                     break;
                 default:
@@ -537,10 +537,10 @@ public sealed class Gateway : IDisposable
             _gateway._listener.OnSequenced(payload);
         }
 
-        public void OnCaughtUp(long globalSeqNo)
+        public void OnCaughtUp(long clusterSeqNo)
         {
             _gateway._lifecycle.OnCaughtUp();
-            _gateway._listener.OnCaughtUp(globalSeqNo);
+            _gateway._listener.OnCaughtUp(clusterSeqNo);
         }
 
         public void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs)

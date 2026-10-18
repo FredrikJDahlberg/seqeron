@@ -4,7 +4,7 @@
 //
 // Safety, checked on every step: a replica's outstanding set matches the log prefix it has applied; only a
 // caught-up replica that sees itself as leader dispatches; within one gate opening a request is dispatched
-// at most once unless its offer failed; a sweep dispatches in globalSeqNo order; and a request this opening
+// at most once unless its offer failed; a sweep dispatches in clusterSeqNo order; and a request this opening
 // dispatched is never silently lost — its reply is pending, in flight or in the log, or a leadership change
 // this replica has yet to act on will close the gate.
 //

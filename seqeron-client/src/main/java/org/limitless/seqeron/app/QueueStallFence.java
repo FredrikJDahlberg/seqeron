@@ -6,7 +6,7 @@ package org.limitless.seqeron.app;
  * absence — and nothing else — separates a quiet deployment from a queue this process has stopped seeing.
  *
  * <p><b>Armed by catching up, and re-armed by each re-convergence.</b> A cold start replays history, from
- * {@code globalSeqNo} 1 or a snapshot's cut, and a re-walk dispatches history rather than live frames; neither
+ * {@code clusterSeqNo} 1 or a snapshot's cut, and a re-walk dispatches history rather than live frames; neither
  * has a heartbeat cadence to measure, so timing either would fence the very path recovery takes.
  * {@link RecoveryStallFence} is the fence covering that side.
  *

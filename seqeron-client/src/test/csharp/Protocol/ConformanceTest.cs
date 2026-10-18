@@ -61,7 +61,7 @@ public class ConformanceTest
         c.ConnectionId = ConnectionId;
         c.SessionId = SessionId;
         c.PayloadId = 2;
-        c.GlobalSeqNo = 9;
+        c.ClusterSeqNo = 9;
         c.Timestamp = Frames.Timestamp;
 
         var d = new Frame.SequencedSystemHeader();
@@ -70,7 +70,7 @@ public class ConformanceTest
         d.ConnectionId = ConnectionId;
         d.SessionId = SessionId;
         d.SystemEventType = 2;
-        d.GlobalSeqNo = 9;
+        d.ClusterSeqNo = 9;
         d.Timestamp = Frames.Timestamp;
 
         Assert.Equal(sequenced[..34], sequencedSystem[..34]);
@@ -91,7 +91,7 @@ public class ConformanceTest
         header.ConnectionId = 0x05060708;
         header.SessionId = 0x1112131415161718;
         header.PayloadId = 0x2122;
-        header.GlobalSeqNo = 0x3132333435363738;
+        header.ClusterSeqNo = 0x3132333435363738;
         header.Timestamp = 0x4142434445464748;
         AssertSection41(bytes, 0x2122, sequenced: true);
 
@@ -102,7 +102,7 @@ public class ConformanceTest
         system.ConnectionId = 0x05060708;
         system.SessionId = 0x1112131415161718;
         system.SystemEventType = 0x2122;
-        system.GlobalSeqNo = 0x3132333435363738;
+        system.ClusterSeqNo = 0x3132333435363738;
         system.Timestamp = 0x4142434445464748;
         AssertSection41(bytes, 0x2122, sequenced: true);
 
@@ -384,8 +384,8 @@ public class ConformanceTest
     [Fact]
     public void UnknownPayloadsAndEventsAreReadableSoContinuityHolds()
     {
-        // globalSeqNo sits at 18 on all seven sequenced messages (F-3), so the continuity read is branch-free over
-        // frames the consumer comprehends none of. A frame dropped here is a globalSeqNo missing from that read,
+        // clusterSeqNo sits at 18 on all seven sequenced messages (F-3), so the continuity read is branch-free over
+        // frames the consumer comprehends none of. A frame dropped here is a clusterSeqNo missing from that read,
         // which reads as a gap that is not there.
         var body = new byte[64];
         var registered = new Frame.PayloadIdRegistered();
@@ -406,8 +406,8 @@ public class ConformanceTest
         long expected = 1;
         foreach (byte[] frame in queue)
         {
-            Assert.True(Wrap(frame), $"frame {expected} is unreadable, so P-3 would lose its globalSeqNo");
-            Assert.Equal(expected, _view.GlobalSeqNo);
+            Assert.True(Wrap(frame), $"frame {expected} is unreadable, so P-3 would lose its clusterSeqNo");
+            Assert.Equal(expected, _view.ClusterSeqNo);
             expected++;
         }
 
@@ -415,7 +415,7 @@ public class ConformanceTest
         byte[] unallocated = Frames.Payload(77, 0, payloadId: 4095);
         Assert.True(Wrap(unallocated), "an empty payload under an unallocated payloadId is still a frame");
         Assert.Equal(4095, _view.PayloadId);
-        Assert.Equal(77, _view.GlobalSeqNo);
+        Assert.Equal(77, _view.ClusterSeqNo);
         Assert.Equal(0, _view.TemplateId); // no inner declaration, so nothing can dispatch on it (P-1)
     }
 

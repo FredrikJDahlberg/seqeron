@@ -166,9 +166,9 @@ public sealed class ReplayerStreamReceiver : IDisposable
     /// seam.</summary>
     public bool IsCaughtUp => _recovery.IsCaughtUp;
 
-    /// <summary>Highest globalSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its
+    /// <summary>Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its
     /// own recovery progress by.</summary>
-    public long LastGlobalSeqNo => _recovery.LastGlobalSeqNo;
+    public long LastClusterSeqNo => _recovery.LastClusterSeqNo;
 
     /// <summary>memberId of the current leader per the last <c>LeadershipChanged</c> processed, or -1 until one is
     /// seen. A replica emits iff its own node is this leader.</summary>

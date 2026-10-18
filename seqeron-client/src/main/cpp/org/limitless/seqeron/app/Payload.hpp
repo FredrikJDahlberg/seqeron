@@ -35,9 +35,9 @@ class Payload
 {
   public:
     // Cluster-wide monotone sequence number; increments by exactly one per frame.
-    [[nodiscard]] std::int64_t globalSeqNo() const noexcept
+    [[nodiscard]] std::int64_t clusterSeqNo() const noexcept
     {
-        return m_event.globalSeqNo;
+        return m_event.clusterSeqNo;
     }
 
     // The producer that submitted this frame (spec §5).

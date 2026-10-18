@@ -30,12 +30,12 @@ import org.limitless.seqeron.protocol.SnapshotHeader;
 class SnapshotStoreTest {
     /**
      * Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1, cut at
-     * globalSeqNo 42, position 43008, timestamp 42000.
+     * clusterSeqNo 42, position 43008, timestamp 42000.
      */
     private static final String GOLDEN_TRAILER = "0300000000000000" + "ca0b000000000000" + "04000000" + "6bf5246c"
         + "01000000" + "2a00000000000000" + "00a8000000000000" + "10a4000000000000" + "534e5032";
 
-    private static final long CUT_GLOBAL_SEQ_NO = 42;
+    private static final long CUT_CLUSTER_SEQ_NO = 42;
     private static final long CUT_POSITION = 43008;
     private static final long CUT_TIMESTAMP_NS = 42000;
 
@@ -61,7 +61,7 @@ class SnapshotStoreTest {
         assertEquals(3018, reader.length());
         assertEquals(0x6c24f56bL, reader.crc32c());
         assertEquals(1, reader.formatVersion());
-        assertEquals(CUT_GLOBAL_SEQ_NO, reader.cutGlobalSeqNo());
+        assertEquals(CUT_CLUSTER_SEQ_NO, reader.cutClusterSeqNo());
         assertEquals(CUT_POSITION, reader.cutPosition());
         assertEquals(CUT_TIMESTAMP_NS, reader.cutTimestampNs());
         final UnsafeBuffer view = new UnsafeBuffer(0, 0);
@@ -214,7 +214,7 @@ class SnapshotStoreTest {
     }
 
     private static void begin(final SnapshotStore store, final long round) {
-        store.begin(round, CUT_GLOBAL_SEQ_NO, CUT_POSITION, CUT_TIMESTAMP_NS);
+        store.begin(round, CUT_CLUSTER_SEQ_NO, CUT_POSITION, CUT_TIMESTAMP_NS);
     }
 
     private List<String> names() throws IOException {

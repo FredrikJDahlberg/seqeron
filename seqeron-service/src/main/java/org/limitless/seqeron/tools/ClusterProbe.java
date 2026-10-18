@@ -225,8 +225,8 @@ public final class ClusterProbe {
                              TimeUnit.NANOSECONDS.toSeconds(ECHO_TIMEOUT_NS));
                 return 1;
             }
-            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "ping seqNo %d echoed at globalSeqNo %d",
-                        seqNo, handler.globalSeqNo);
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "ping seqNo %d echoed at clusterSeqNo %d",
+                        seqNo, handler.clusterSeqNo);
             return 0;
         } catch (final RuntimeException ex) {
             Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
@@ -289,7 +289,7 @@ public final class ClusterProbe {
         private final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final ProbeMarkerDecoder decoder = new ProbeMarkerDecoder();
         private boolean found;
-        private long globalSeqNo;
+        private long clusterSeqNo;
 
         private EchoHandler(final long seqNo) {
             this.seqNo = seqNo;
@@ -307,7 +307,7 @@ public final class ClusterProbe {
                          view.blockLength(), view.version());
             if (decoder.seqNo() == seqNo) {
                 found = true;
-                globalSeqNo = view.globalSeqNo();
+                clusterSeqNo = view.clusterSeqNo();
             }
         }
     }
@@ -336,7 +336,7 @@ public final class ClusterProbe {
                     pending.onSequenced(event);
                 }
                 own.onSequenced(event);
-            }, (leaderMemberId, leadershipTermId, globalSeqNo) -> pending.onLeadershipChanged(leadershipTermId),
+            }, (leaderMemberId, leadershipTermId, clusterSeqNo) -> pending.onLeadershipChanged(leadershipTermId),
                 () -> caughtUp.set(true));
             receiver.start(aeron, MEMBER_ID);
             final IdleStrategy idle = new YieldingIdleStrategy();
@@ -474,8 +474,8 @@ public final class ClusterProbe {
             if (announcedLive.compareAndSet(false, true)) {
                 Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "Caught up — following live");
             } else {
-                Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "re-converged at globalSeqNo %d",
-                            self.get().lastGlobalSeqNo());
+                Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "re-converged at clusterSeqNo %d",
+                            self.get().lastClusterSeqNo());
             }
         }, queueFaults);
         self.set(receiver);

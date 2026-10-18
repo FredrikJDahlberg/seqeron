@@ -6,7 +6,7 @@ package org.limitless.seqeron.app;
  * on {@code isCaughtUp()}: a recovery that never converges would otherwise keep an active gateway serving
  * behind a view of the log frozen at a hole it cannot close.
  *
- * <p><b>Progress, not elapsed recovery.</b> A converging re-walk always advances the {@code globalSeqNo}
+ * <p><b>Progress, not elapsed recovery.</b> A converging re-walk always advances the {@code clusterSeqNo}
  * it has dispatched and a non-converging one never does, so timing elapsed recovery would fence the very
  * path a recovery takes. It never arms before the first catch-up: a cold start replays the whole log (no
  * snapshots) and has no useful time bound.
@@ -23,7 +23,7 @@ final class RecoveryStallFence {
     private long recoveryStartMs;
 
     /** The dispatched frontier at the last observation; only meaningful while an episode is timed. */
-    private long lastGlobalSeqNo;
+    private long lastClusterSeqNo;
 
     /**
      * A fence with no episode timed yet.
@@ -44,17 +44,17 @@ final class RecoveryStallFence {
     /**
      * Evaluates one not-caught-up observation. The first of an episode, and every one that finds the frontier
      * advanced, only re-anchors the clock — the deadline is always measured from the last sign of progress.
-     * @param nowMs        monotonic clock reading
-     * @param globalSeqNo  the highest globalSeqNo dispatched so far
+     * @param nowMs         monotonic clock reading
+     * @param clusterSeqNo  the highest clusterSeqNo dispatched so far
      * @return true once recovery has dispatched nothing for at least the deadline, on an instance that has
      *         been caught up before; always false for a cold start
      */
-    public boolean onNotCaughtUp(final long nowMs, final long globalSeqNo) {
+    public boolean onNotCaughtUp(final long nowMs, final long clusterSeqNo) {
         if (!everCaughtUp) {
             return false;
         }
-        if (recoveryStartMs == 0 || globalSeqNo != lastGlobalSeqNo) {
-            lastGlobalSeqNo = globalSeqNo;
+        if (recoveryStartMs == 0 || clusterSeqNo != lastClusterSeqNo) {
+            lastClusterSeqNo = clusterSeqNo;
             recoveryStartMs = nowMs;
             return false;
         }

@@ -31,7 +31,7 @@ import org.limitless.seqeron.util.Logger;
  * Here the node's archive, its queue and its Replayer are simulated, a seeded generator drives faults through
  * them, and the two properties recovery exists to provide are asserted over whatever comes out.
  *
- * <p><b>Safety</b> — every dispatched frame is the next globalSeqNo, always. No gap, no duplicate, no
+ * <p><b>Safety</b> — every dispatched frame is the next clusterSeqNo, always. No gap, no duplicate, no
  * reordering, at any point in any run. This is the invariant the whole walk/resume/retain machinery is for,
  * and it is checked on every dispatch rather than at the end, so a violation names the frame that broke it.
  *
@@ -119,10 +119,10 @@ class ReplayerRecoveryPropertyTest {
         /** The client's own files, null for a run that restores nothing. */
         private final SnapshotStore store;
 
-        /** Every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds. */
+        /** Every frame that is not a heartbeat, by clusterSeqNo: the snapshot rounds. */
         private final Map<Long, RestoreFrames.Frame> frames = new HashMap<>();
 
-        /** The state: how many heartbeats, and the sum of their globalSeqNos — restored, then folded. */
+        /** The state: how many heartbeats, and the sum of their clusterSeqNos — restored, then folded. */
         private long heartbeats;
         private long heartbeatSum;
         private int nextRecordIndex;
@@ -135,11 +135,11 @@ class ReplayerRecoveryPropertyTest {
         private long pendingFromPosition;
         private long nextSessionId = 1;
 
-        /** Next globalSeqNo the open replay will deliver; {@code replayEndSeqNo < 0} means none is open. */
+        /** Next clusterSeqNo the open replay will deliver; {@code replayEndSeqNo < 0} means none is open. */
         private long replayCursor;
         private long replayEndSeqNo = -1;
 
-        /** Last globalSeqNo the queue actually delivered — what a redelivery re-offers. */
+        /** Last clusterSeqNo the queue actually delivered — what a redelivery re-offers. */
         private long lastLive;
 
         private long clockMs = CLOCK_MS;
@@ -159,7 +159,7 @@ class ReplayerRecoveryPropertyTest {
 
         void execute() {
             // History before the client starts. A cold start over an EMPTY archive that then drops the very
-            // first queue frame is the one designed abort — the first frame observed must be globalSeqNo 1 —
+            // first queue frame is the one designed abort — the first frame observed must be clusterSeqNo 1 —
             // and not a recovery failure, so the model does not construct it.
             if (restoring) {
                 publishSnapshotRounds();
@@ -197,15 +197,15 @@ class ReplayerRecoveryPropertyTest {
 
             assertNull(client.fault(), tag);
             assertTrue(client.isCaughtUp(), tag + ": never re-converged after the faults stopped");
-            assertEquals(tip, client.lastGlobalSeqNo(), tag + ": converged short of the tip");
+            assertEquals(tip, client.lastClusterSeqNo(), tag + ": converged short of the tip");
             assertEquals(tip + 1, expectedNext, tag + ": caught up without having dispatched every frame");
             if (restoring) {
                 long count = 0;
                 long sum = 0;
-                for (long globalSeqNo = 1; globalSeqNo <= tip; ++globalSeqNo) {
-                    if (!frames.containsKey(globalSeqNo)) {
+                for (long clusterSeqNo = 1; clusterSeqNo <= tip; ++clusterSeqNo) {
+                    if (!frames.containsKey(clusterSeqNo)) {
                         ++count;
-                        sum += globalSeqNo;
+                        sum += clusterSeqNo;
                     }
                 }
                 assertEquals(count, heartbeats, tag + ": restored state plus the tail is not the full replay's");
@@ -247,16 +247,16 @@ class ReplayerRecoveryPropertyTest {
         }
 
         private boolean converged() {
-            return client.isCaughtUp() && client.lastGlobalSeqNo() == tip;
+            return client.isCaughtUp() && client.lastClusterSeqNo() == tip;
         }
 
         private void chaosStep() {
             switch (rng.roll(10)) {
                 case 0, 1, 2, 3 -> {
-                    final long globalSeqNo = publish();
+                    final long clusterSeqNo = publish();
                     // A queue drop is the fault the whole resume path exists for, so it is the common one.
                     if (!chance(20)) {
-                        deliverQueue(globalSeqNo);
+                        deliverQueue(clusterSeqNo);
                     }
                 }
                 case 4, 5 -> serveRequest();
@@ -294,17 +294,17 @@ class ReplayerRecoveryPropertyTest {
             return ++tip;
         }
 
-        private void deliverQueue(final long globalSeqNo) {
-            lastLive = globalSeqNo;
-            deliver(globalSeqNo, false);
+        private void deliverQueue(final long clusterSeqNo) {
+            lastLive = clusterSeqNo;
+            deliver(clusterSeqNo, false);
         }
 
-        private void deliver(final long globalSeqNo, final boolean fromReplay) {
-            final RestoreFrames.Frame special = frames.get(globalSeqNo);
+        private void deliver(final long clusterSeqNo, final boolean fromReplay) {
+            final RestoreFrames.Frame special = frames.get(clusterSeqNo);
             if (special != null) {
-                client.onFrame(special.buffer(), 0, special.length(), positionOf(globalSeqNo), RECEIVE_NS, fromReplay);
+                client.onFrame(special.buffer(), 0, special.length(), positionOf(clusterSeqNo), RECEIVE_NS, fromReplay);
             } else {
-                client.onFrame(frame(globalSeqNo), 0, FRAME_LENGTH, positionOf(globalSeqNo), RECEIVE_NS, fromReplay);
+                client.onFrame(frame(clusterSeqNo), 0, FRAME_LENGTH, positionOf(clusterSeqNo), RECEIVE_NS, fromReplay);
             }
         }
 
@@ -410,12 +410,12 @@ class ReplayerRecoveryPropertyTest {
         // ── the safety property ────────────────────────────────────────────────────────────────────────
 
         private void onSequenced(final SequencedEvent event) {
-            assertEquals(expectedNext, event.globalSeqNo(), tag + ": dispatched out of order");
-            assertTrue(event.globalSeqNo() <= tip, tag + ": dispatched a frame that was never published");
+            assertEquals(expectedNext, event.clusterSeqNo(), tag + ": dispatched out of order");
+            assertTrue(event.clusterSeqNo() <= tip, tag + ": dispatched a frame that was never published");
             ++expectedNext;
-            if (!frames.containsKey(event.globalSeqNo())) {
+            if (!frames.containsKey(event.clusterSeqNo())) {
                 ++heartbeats;
-                heartbeatSum += event.globalSeqNo();
+                heartbeatSum += event.clusterSeqNo();
             }
         }
 
@@ -448,9 +448,9 @@ class ReplayerRecoveryPropertyTest {
             return rng.chance(percent);
         }
 
-        /** Where frame {@code globalSeqNo} starts in the active recording: frame 1 at 0. */
-        private long positionOf(final long globalSeqNo) {
-            return (globalSeqNo - 1) * STRIDE;
+        /** Where frame {@code clusterSeqNo} starts in the active recording: frame 1 at 0. */
+        private long positionOf(final long clusterSeqNo) {
+            return (clusterSeqNo - 1) * STRIDE;
         }
     }
 
@@ -464,13 +464,13 @@ class ReplayerRecoveryPropertyTest {
     private static final int REPLAYING_LENGTH = CONTROL_HEADER_LENGTH + ReplayingEncoder.BLOCK_LENGTH;
     private static final int REPLAY_PENDING_LENGTH = CONTROL_HEADER_LENGTH + ReplayPendingEncoder.BLOCK_LENGTH;
 
-    private static UnsafeBuffer frame(final long globalSeqNo) {
+    private static UnsafeBuffer frame(final long clusterSeqNo) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         final ClusterHeartbeatEncoder encoder = new ClusterHeartbeatEncoder();
         encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(-1).connectionId(-1).sessionId(-1)
             .systemEventType(SystemFrame.CLUSTER_HEARTBEAT)
-            .globalSeqNo(globalSeqNo).timestamp(globalSeqNo * 1000);
+            .clusterSeqNo(clusterSeqNo).timestamp(clusterSeqNo * 1000);
         return buffer;
     }
 

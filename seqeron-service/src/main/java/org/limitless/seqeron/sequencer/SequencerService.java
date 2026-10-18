@@ -72,7 +72,7 @@ public final class SequencerService implements ClusteredService {
     private Path queueFaultTrigger;
 
     // Operator counters
-    private Counter globalSeqNoCounter;
+    private Counter clusterSeqNoCounter;
     private Counter queueBackPressureAlertCounter;
     private Counter queueStalledCounter;
     private Counter rejectedIngressCounter;
@@ -108,8 +108,8 @@ public final class SequencerService implements ClusteredService {
         // Refused before anything is acquired, so nothing is left behind.
         if (snapshotImage != null) {
             throw refuseStart("[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
-                              + "globalSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster directory "
-                              + "so the log replays in full.");
+                              + "clusterSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster "
+                              + "directory so the log replays in full.");
         }
 
         this.cluster = cluster;
@@ -169,7 +169,7 @@ public final class SequencerService implements ClusteredService {
 
     /** Creates this node's operator counters. */
     private void createCounters() {
-        globalSeqNoCounter = counter(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, "globalSeqNo");
+        clusterSeqNoCounter = counter(SeqeronCounters.SEQUENCER_CLUSTER_SEQ_NO_TYPE_ID, "clusterSeqNo");
         queueBackPressureAlertCounter =
             counter(SeqeronCounters.SEQUENCER_QUEUE_BACKPRESSURE_ALERTS_TYPE_ID, "queueBackPressureAlerts");
         queueStalledCounter = counter(SeqeronCounters.SEQUENCER_QUEUE_STALLED_TYPE_ID, "queueStalled");
@@ -239,8 +239,8 @@ public final class SequencerService implements ClusteredService {
         if (session == null) {
             rejectedIngressCounter.increment();
             Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.MalformedIngressMessage,
-                         memberId, "skipping ingress message with no client session (globalSeqNo stays %d)",
-                         sequencer.globalSeqNo());
+                         memberId, "skipping ingress message with no client session (clusterSeqNo stays %d)",
+                         sequencer.clusterSeqNo());
             return;
         }
         if (sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp)) {
@@ -295,7 +295,7 @@ public final class SequencerService implements ClusteredService {
     @Override
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
         throw new UnsupportedOperationException(
-            "[SequencerService] Snapshots are not supported: recovery is full-log replay from globalSeqNo 1, "
+            "[SequencerService] Snapshots are not supported: recovery is full-log replay from clusterSeqNo 1, "
             + "which is what keeps each node's queue recording complete. Stop the cluster with clusterctl "
             + "shutdown (ABORT), not a SNAPSHOT/SHUTDOWN toggle.");
     }
@@ -357,7 +357,7 @@ public final class SequencerService implements ClusteredService {
 
     /** Closes the operator counters; a node whose start was refused created none. */
     private void closeCounters() {
-        CloseHelper.quietCloseAll(globalSeqNoCounter, queueBackPressureAlertCounter, queueStalledCounter,
+        CloseHelper.quietCloseAll(clusterSeqNoCounter, queueBackPressureAlertCounter, queueStalledCounter,
                                   rejectedIngressCounter, leadershipChangeCounter, currentLeaderMemberIdCounter,
                                   lastHeartbeatTimestampCounter, gatewayPromotionCounter, gatewayPromotionFailedCounter,
                                   bootstrapActivatedCounter, messagesSequencedCounter);
@@ -365,7 +365,7 @@ public final class SequencerService implements ClusteredService {
 
     /** Mirrors the sequencer's state onto the operator counters after a callback. */
     private void updateCounters() {
-        globalSeqNoCounter.set(sequencer.globalSeqNo());
+        clusterSeqNoCounter.set(sequencer.clusterSeqNo());
         gatewayPromotionCounter.set(sequencer.gatewayPromotionCount());
         gatewayPromotionFailedCounter.set(sequencer.gatewayPromotionFailedCount());
         bootstrapActivatedCounter.set(sequencer.bootstrapActivationEmitted() ? 1 : 0);
@@ -440,8 +440,8 @@ public final class SequencerService implements ClusteredService {
         }
 
         @Override
-        public long globalSeqNo() {
-            return sequencer.globalSeqNo();
+        public long clusterSeqNo() {
+            return sequencer.clusterSeqNo();
         }
     }
 }

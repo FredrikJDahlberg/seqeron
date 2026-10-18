@@ -9,7 +9,7 @@ import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
  * The frame layer's constants: the queue's identity, the cluster clock, and the size limits of spec §12.
  * Java's compiled-in mirror of the spec (C++'s is {@code SequencedFrame.hpp}); a change is a wire change
  * (<b>V-3</b>) and lands in both. Here because producer, sequencer and consumer all answer to them. Never
- * read from a transport: <b>S-3</b> forbids checking a node's own MTU, which would fork {@code globalSeqNo}.
+ * read from a transport: <b>S-3</b> forbids checking a node's own MTU, which would fork {@code clusterSeqNo}.
  */
 public final class FrameLayer {
     /**
@@ -31,7 +31,7 @@ public final class FrameLayer {
 
     /**
      * The queue: the node-local IPC stream every node republishes each sequenced frame on, in {@code
-     * globalSeqNo} order, and records into its own archive. Co-located apps follow it live.
+     * clusterSeqNo} order, and records into its own archive. Co-located apps follow it live.
      */
     public static final String QUEUE_CHANNEL = "aeron:ipc?alias=seqeron-queue";
 

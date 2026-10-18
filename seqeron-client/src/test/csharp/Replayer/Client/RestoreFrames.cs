@@ -27,16 +27,16 @@ internal static class RestoreFrames
         }
     }
 
-    public static byte[] Started(long globalSeqNo, long round)
+    public static byte[] Started(long clusterSeqNo, long round)
     {
-        return Frames.SnapshotStarted(globalSeqNo, round);
+        return Frames.SnapshotStarted(clusterSeqNo, round);
     }
 
     /// <summary>A <c>SnapshotStarted</c> stamped <paramref name="timestampNs"/>: another log's, when it is not the
     /// file's.</summary>
-    public static byte[] Started(long globalSeqNo, long round, long timestampNs)
+    public static byte[] Started(long clusterSeqNo, long round, long timestampNs)
     {
-        byte[] bytes = Frames.SnapshotStarted(globalSeqNo, round);
+        byte[] bytes = Frames.SnapshotStarted(clusterSeqNo, round);
         var header = new Frame.SequencedSystemHeader();
         header.Wrap(new DirectBuffer(bytes), Frame.MessageHeader.Size, Frame.MessageHeader.SbeSchemaVersion);
         header.Timestamp = timestampNs;
@@ -44,7 +44,7 @@ internal static class RestoreFrames
     }
 
     /// <summary>The end the records <paramref name="records"/> match.</summary>
-    public static byte[] End(long globalSeqNo, int sourceId, long round, int formatVersion, params byte[][] records)
+    public static byte[] End(long clusterSeqNo, int sourceId, long round, int formatVersion, params byte[][] records)
     {
         Digest digest = Digest.Of(records);
         var body = new byte[Frame.SnapshotEnd.BlockLength];
@@ -64,8 +64,8 @@ internal static class RestoreFrames
         header.ConnectionId = -1;
         header.SessionId = 5;
         header.SystemEventType = SystemFrame.SnapshotEnd;
-        header.GlobalSeqNo = globalSeqNo;
-        header.Timestamp = globalSeqNo * 1000;
+        header.ClusterSeqNo = clusterSeqNo;
+        header.Timestamp = clusterSeqNo * 1000;
         frame.SetBody(body);
         return bytes[..(Frame.MessageHeader.Size + frame.Size)];
     }
@@ -73,11 +73,11 @@ internal static class RestoreFrames
     /// <summary>Writes <paramref name="records"/> as round <paramref name="round"/>'s file and confirms it, as the
     /// instance did when it serialized them and the log's end agreed. The cut's timestamp is
     /// <see cref="Frames.Timestamp"/>, as every frame's here.</summary>
-    public static void Write(SnapshotStore store, long round, long cutGlobalSeqNo, long cutPosition, int formatVersion,
+    public static void Write(SnapshotStore store, long round, long cutClusterSeqNo, long cutPosition, int formatVersion,
                              params byte[][] records)
     {
         Digest digest = Digest.Of(records);
-        store.Begin(round, cutGlobalSeqNo, cutPosition, Frames.Timestamp);
+        store.Begin(round, cutClusterSeqNo, cutPosition, Frames.Timestamp);
         foreach (byte[] record in records)
         {
             using var buffer = new UnsafeBuffer(record);

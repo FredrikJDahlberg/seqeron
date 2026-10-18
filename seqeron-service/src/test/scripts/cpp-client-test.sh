@@ -8,7 +8,7 @@
 #   B  IPC ingress co-located with the leader (connectColocated)            confirm EXACT, no UDP fallback
 #   C  connectColocated on a follower, which never answers IPC ingress      confirm EXACT, after the UDP fallback
 #   D  the leader killed mid-stream, PendingSends beside an untracked control   tracked confirm EXACT
-#   E  a cold start on the new leader's node, replayed from globalSeqNo 1   follow CONTIGUOUS, >= 1 replay served
+#   E  a cold start on the new leader's node, replayed from clusterSeqNo 1  follow CONTIGUOUS, >= 1 replay served
 #   F  the C++ examples, built as an outside consumer builds them: follow_stream and colocated_app echo their pings,
 #      and the active gateway_app of the pair in seqeron-examples/topology.xml is killed — the standby is
 #      designated, resumes past its predecessor's connection id, and serves
@@ -186,7 +186,7 @@ grep -q "designated — serving, connection ids from 1" "$LOG_DIR/gw-b.log" ||
 wait_for_count follow-ex "ping echoed" 3 10 || { echo "    follow_stream echoed no pings"; F_OK=0; }
 wait_for_count colocated-ex "ping echoed" 3 10 || { echo "    colocated_app echoed no pings"; F_OK=0; }
 kill "$FOLLOW_PID" "$COLOCATED_PID" "$GW_B_PID" 2>/dev/null
-wait "$FOLLOW_PID"; FOLLOW_RC=$?   # 1 on a gap in globalSeqNo
+wait "$FOLLOW_PID"; FOLLOW_RC=$?   # 1 on a gap in clusterSeqNo
 wait "$COLOCATED_PID"; COLOCATED_RC=$?
 wait "$GW_B_PID"; GW_B_RC=$?
 ((FOLLOW_RC == 0 && COLOCATED_RC == 0 && GW_B_RC == 0)) ||

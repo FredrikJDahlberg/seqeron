@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// Application frame header on the queue: the ingress header, plus globalSeqNo and timestamp
+    /// Application frame header on the queue: the ingress header, plus clusterSeqNo and timestamp
     /// </summary>
     public sealed partial class SequencedHeader
     {
@@ -110,14 +110,14 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         }
 
 
-        public const long GlobalSeqNoNullValue = -9223372036854775808L;
-        public const long GlobalSeqNoMinValue = -9223372036854775807L;
-        public const long GlobalSeqNoMaxValue = 9223372036854775807L;
+        public const long ClusterSeqNoNullValue = -9223372036854775808L;
+        public const long ClusterSeqNoMinValue = -9223372036854775807L;
+        public const long ClusterSeqNoMaxValue = 9223372036854775807L;
 
         /// <summary>
         /// Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4)
         /// </summary>
-        public long GlobalSeqNo
+        public long ClusterSeqNo
         {
             get
             {
@@ -177,8 +177,8 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
             builder.Append("PayloadId=");
             builder.Append(this.PayloadId);
             builder.Append('|');
-            builder.Append("GlobalSeqNo=");
-            builder.Append(this.GlobalSeqNo);
+            builder.Append("ClusterSeqNo=");
+            builder.Append(this.ClusterSeqNo);
             builder.Append('|');
             builder.Append("Timestamp=");
             builder.Append(this.Timestamp);

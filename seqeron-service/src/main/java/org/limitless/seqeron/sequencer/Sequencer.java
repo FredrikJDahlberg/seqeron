@@ -30,9 +30,9 @@ import org.limitless.seqeron.sbe.frame.UnsequencedSystemHeaderDecoder;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The sequencer's replicated state machine, free of every Aeron type: {@code globalSeqNo}, the gateway
+ * The sequencer's replicated state machine, free of every Aeron type: {@code clusterSeqNo}, the gateway
  * list and election, the snapshot rounds, and every frame encode. Each event method hands its frames to
- * the {@link FrameSink} in {@code globalSeqNo} order, the event's own frame first and whatever it triggered
+ * the {@link FrameSink} in {@code clusterSeqNo} order, the event's own frame first and whatever it triggered
  * behind it; {@link SequencerService} publishes them and decides nothing.
  *
  * <p>Sequencing copies the 18-byte ingress header, appends the 16-byte stamp and copies the payload through
@@ -43,7 +43,7 @@ import org.limitless.seqeron.util.Logger;
  * every node encodes byte-identical frames. Single-threaded: driven only from the cluster's service thread.
  */
 public final class Sequencer {
-    /** Where every frame goes, in {@code globalSeqNo} order. */
+    /** Where every frame goes, in {@code clusterSeqNo} order. */
     public interface FrameSink {
         /**
          * @param buffer holding the frame from offset 0; reused for the next frame once this returns
@@ -149,7 +149,7 @@ public final class Sequencer {
     // Replicated state: advanced identically on every node.
 
     /** Cluster-wide monotone counter; advanced for messages and lifecycle events alike. */
-    private long globalSeqNo = 0;
+    private long clusterSeqNo = 0;
 
     /**
      * Ingress frames refused by §9.2 since this node started (<b>S-7</b>). Reaches no frame, but nodes that
@@ -223,8 +223,8 @@ public final class Sequencer {
     }
 
     /** The last assigned sequence number; 0 before anything has been sequenced. */
-    public long globalSeqNo() {
-        return globalSeqNo;
+    public long clusterSeqNo() {
+        return clusterSeqNo;
     }
 
     /** Ingress frames refused by §9.2 since this node started; see {@link #rejectedFrameCount}. */
@@ -327,7 +327,7 @@ public final class Sequencer {
             return false;
         }
 
-        final long globalSeq = ++globalSeqNo;
+        final long clusterSeq = ++clusterSeqNo;
         headerEncoder.wrap(encodeBuffer, 0)
             .blockLength(system ? SequencedSystemEncoder.BLOCK_LENGTH : SequencedEncoder.BLOCK_LENGTH)
             .templateId(system ? SequencedSystemEncoder.TEMPLATE_ID : SequencedEncoder.TEMPLATE_ID)
@@ -337,7 +337,7 @@ public final class Sequencer {
                               UnsequencedHeaderDecoder.ENCODED_LENGTH);
         queueHeaderEncoder.wrap(encodeBuffer, MessageHeaderEncoder.ENCODED_LENGTH)
             .sessionId(sessionId)
-            .globalSeqNo(globalSeq)
+            .clusterSeqNo(clusterSeq)
             .timestamp(timestamp);
         encodeBuffer.putBytes(QUEUE_BODY_PREFIX_OFFSET, buffer, prefixOffset,
                               UnsequencedDecoder.payloadHeaderLength() + bodyLength);
@@ -433,13 +433,13 @@ public final class Sequencer {
     }
 
     /**
-     * Refuses an ingress frame (<b>S-7</b>): logged and counted, and {@code globalSeqNo} is not advanced.
+     * Refuses an ingress frame (<b>S-7</b>): logged and counted, and {@code clusterSeqNo} is not advanced.
      * @return false, for the caller to return
      */
     private boolean reject(final String reason) {
         rejectedFrameCount++;
         Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.MalformedIngressMessage, memberId,
-                     "skipping malformed ingress message: %s (globalSeqNo stays %d)", reason, globalSeqNo);
+                     "skipping malformed ingress message: %s (clusterSeqNo stays %d)", reason, clusterSeqNo);
         return false;
     }
 
@@ -450,9 +450,9 @@ public final class Sequencer {
      * @param timestamp now
      */
     public void clusterHeartbeat(final long timestamp) {
-        final long globalSeq = ++globalSeqNo;
+        final long clusterSeq = ++clusterSeqNo;
         clusterHeartbeatEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        stampSynthesized(clusterHeartbeatEncoder.header(), SystemFrame.CLUSTER_HEARTBEAT, globalSeq, timestamp);
+        stampSynthesized(clusterHeartbeatEncoder.header(), SystemFrame.CLUSTER_HEARTBEAT, clusterSeq, timestamp);
         publish(MessageHeaderEncoder.ENCODED_LENGTH + clusterHeartbeatEncoder.encodedLength());
 
         int overdue;
@@ -472,9 +472,9 @@ public final class Sequencer {
      * @param timestamp now
      */
     public void leadershipChanged(final long leadershipTermId, final int leaderMemberId, final long timestamp) {
-        final long globalSeq = ++globalSeqNo;
+        final long clusterSeq = ++clusterSeqNo;
         leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        stampSynthesized(leadershipChangedEncoder.header(), SystemFrame.LEADERSHIP_CHANGED, globalSeq, timestamp);
+        stampSynthesized(leadershipChangedEncoder.header(), SystemFrame.LEADERSHIP_CHANGED, clusterSeq, timestamp);
         leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
         leadershipChangedEncoder.leadershipTermId(leadershipTermId);
         publish(MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength());
@@ -485,12 +485,12 @@ public final class Sequencer {
         return snapshotRound;
     }
 
-    /** Encodes the next round's {@code SnapshotStarted}; its {@code globalSeqNo} is the round's cut. */
+    /** Encodes the next round's {@code SnapshotStarted}; its {@code clusterSeqNo} is the round's cut. */
     private int snapshotStarted(final long timestamp) {
         lastSnapshotStart = timestamp;
-        final long globalSeq = ++globalSeqNo;
+        final long clusterSeq = ++clusterSeqNo;
         snapshotStartedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        stampSynthesized(snapshotStartedEncoder.header(), SystemFrame.SNAPSHOT_STARTED, globalSeq, timestamp);
+        stampSynthesized(snapshotStartedEncoder.header(), SystemFrame.SNAPSHOT_STARTED, clusterSeq, timestamp);
         snapshotStartedEncoder.round(++snapshotRound);
         return MessageHeaderEncoder.ENCODED_LENGTH + snapshotStartedEncoder.encodedLength();
     }
@@ -510,9 +510,9 @@ public final class Sequencer {
      */
     public boolean sessionClosed(final long sessionId, final long timestamp) {
         final boolean promoted = promoteOnClose(sessionId, timestamp);
-        final long globalSeq = ++globalSeqNo;
+        final long clusterSeq = ++clusterSeqNo;
         sessionClosedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        stampSynthesized(sessionClosedEncoder.header(), SystemFrame.SESSION_CLOSED, globalSeq, timestamp);
+        stampSynthesized(sessionClosedEncoder.header(), SystemFrame.SESSION_CLOSED, clusterSeq, timestamp);
         sessionClosedEncoder.clusterSessionId(sessionId);
         publish(MessageHeaderEncoder.ENCODED_LENGTH + sessionClosedEncoder.encodedLength());
         return promoted;
@@ -529,8 +529,8 @@ public final class Sequencer {
             gatewayPromotionFailedCount++;
             Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
                          "gateway instance %d's session closed with no standby to promote — this logical "
-                             + "gateway has no active instance until one starts (globalSeqNo stays %d)",
-                         closedGatewayId, globalSeqNo);
+                             + "gateway has no active instance until one starts (clusterSeqNo stays %d)",
+                         closedGatewayId, clusterSeqNo);
             return false;
         }
         promote(promoted, timestamp);
@@ -552,8 +552,8 @@ public final class Sequencer {
             Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
                          "gateway instance %d never declared itself started within %dms and has no sibling to "
                              + "promote — this logical gateway has no active instance until one starts "
-                             + "(globalSeqNo stays %d)",
-                         designated, GATEWAY_ACTIVATION_TIMEOUT_MS, globalSeqNo);
+                             + "(clusterSeqNo stays %d)",
+                         designated, GATEWAY_ACTIVATION_TIMEOUT_MS, clusterSeqNo);
             return;
         }
         Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayActivationTimeout, memberId,
@@ -645,9 +645,9 @@ public final class Sequencer {
         if (row != null) {
             designatedGateway.put(row.gatewaySourceId, gatewayId);
         }
-        final long globalSeq = ++globalSeqNo;
+        final long clusterSeq = ++clusterSeqNo;
         gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        stampSynthesized(gatewayActiveEncoder.header(), SystemFrame.GATEWAY_ACTIVE, globalSeq, timestamp);
+        stampSynthesized(gatewayActiveEncoder.header(), SystemFrame.GATEWAY_ACTIVE, clusterSeq, timestamp);
         gatewayActiveEncoder.gatewayId(gatewayId);
         return MessageHeaderEncoder.ENCODED_LENGTH + gatewayActiveEncoder.encodedLength();
     }
@@ -663,12 +663,12 @@ public final class Sequencer {
      * id and written anyway, so offset 16 discriminates every frame on the queue.
      */
     private static void stampSynthesized(final SequencedSystemHeaderEncoder header, final int systemEventType,
-                                         final long globalSeq, final long timestamp) {
+                                         final long clusterSeq, final long timestamp) {
         header.sourceId(NO_SOURCE_ID)
             .connectionId(NO_SOURCE_ID)
             .sessionId(NO_SOURCE_ID)
             .systemEventType(systemEventType)
-            .globalSeqNo(globalSeq)
+            .clusterSeqNo(clusterSeq)
             .timestamp(timestamp);
     }
 

@@ -7,7 +7,7 @@ package org.limitless.seqeron.replayer.server;
  *
  * <p>It republishes exactly the frame after the last one it published, so the local queue holds the log
  * frame for frame whichever member each frame came from. Every member's active recording starts at
- * {@code globalSeqNo} 1 and its positions follow from the frames alone, so a replay on the next member
+ * {@code clusterSeqNo} 1 and its positions follow from the frames alone, so a replay on the next member
  * normally resumes at the position the last one reached. Nothing depends on that: a frame past the
  * next one means the position did not line up there, and the replay starts again from that
  * recording's start, skipping what is already published.
@@ -45,7 +45,7 @@ final class QueueRelay {
     private long nextAttemptMs;
     private long lastFrameMs;
 
-    private long lastGlobalSeqNo;
+    private long lastClusterSeqNo;
     private long resumePosition = NOT_SUITABLE;
     private boolean fromStart;
     private boolean forceStart;
@@ -71,9 +71,9 @@ final class QueueRelay {
         return sourceIndex;
     }
 
-    /** The last {@code globalSeqNo} republished; 0 before the first. */
-    long lastGlobalSeqNo() {
-        return lastGlobalSeqNo;
+    /** The last {@code clusterSeqNo} republished; 0 before the first. */
+    long lastClusterSeqNo() {
+        return lastClusterSeqNo;
     }
 
     /** Whether an attempt on {@link #sourceIndex} may start now. */
@@ -107,16 +107,16 @@ final class QueueRelay {
     /**
      * Judges one frame off the replay.
      *
-     * @param globalSeqNo the frame's
+     * @param clusterSeqNo the frame's
      * @param nowMs       the clock; any frame proves the member alive
      */
-    Verdict onFrame(final long globalSeqNo, final long nowMs) {
+    Verdict onFrame(final long clusterSeqNo, final long nowMs) {
         lastFrameMs = nowMs;
-        if (globalSeqNo <= lastGlobalSeqNo) {
+        if (clusterSeqNo <= lastClusterSeqNo) {
             failedAttempts = 0;
             return Verdict.SKIP;
         }
-        if (globalSeqNo == lastGlobalSeqNo + 1) {
+        if (clusterSeqNo == lastClusterSeqNo + 1) {
             return Verdict.PUBLISH;
         }
         return onHole();
@@ -130,11 +130,11 @@ final class QueueRelay {
     /**
      * The frame {@link #onFrame} said to publish is on the local queue.
      *
-     * @param globalSeqNo    its {@code globalSeqNo}
+     * @param clusterSeqNo   its {@code clusterSeqNo}
      * @param sourcePosition the member recording's position just past it
      */
-    void onPublished(final long globalSeqNo, final long sourcePosition) {
-        lastGlobalSeqNo = globalSeqNo;
+    void onPublished(final long clusterSeqNo, final long sourcePosition) {
+        lastClusterSeqNo = clusterSeqNo;
         resumePosition = sourcePosition;
         failedAttempts = 0;
         backPressured = false;

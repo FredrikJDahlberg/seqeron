@@ -125,7 +125,7 @@ public final class ColocatedApp implements Application.Listener {
     }
 
     /**
-     * Every application payload on this node's queue, in {@code globalSeqNo} order, history and live alike —
+     * Every application payload on this node's queue, in {@code clusterSeqNo} order, history and live alike —
      * every replica sees the same ones and so holds the same state. System frames never arrive here; the
      * façade acts on them and reports only what an application has a decision to make about.
      */
@@ -133,9 +133,9 @@ public final class ColocatedApp implements Application.Listener {
     public void onSequenced(final Payload payload) {
         if (isOwnPing(payload)) {
             System.out.printf("%d ping echoed, round trip %dus%n",
-                              payload.globalSeqNo(), (System.nanoTime() - pingSentNs) / 1_000L);
+                              payload.clusterSeqNo(), (System.nanoTime() - pingSentNs) / 1_000L);
         } else {
-            System.out.printf("%d sourceId=%d payloadId=%d length=%d%n", payload.globalSeqNo(),
+            System.out.printf("%d sourceId=%d payloadId=%d length=%d%n", payload.clusterSeqNo(),
                               payload.sourceId(), payload.payloadId(), payload.payloadLength());
         }
     }
@@ -158,8 +158,8 @@ public final class ColocatedApp implements Application.Listener {
     }
 
     @Override
-    public void onCaughtUp(final long globalSeqNo) {
-        System.out.printf("# caught up at %d — following the queue live%n", globalSeqNo);
+    public void onCaughtUp(final long clusterSeqNo) {
+        System.out.printf("# caught up at %d — following the queue live%n", clusterSeqNo);
     }
 
     /**

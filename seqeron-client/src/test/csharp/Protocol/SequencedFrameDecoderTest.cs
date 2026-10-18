@@ -99,7 +99,7 @@ public class SequencedFrameDecoderTest
         int headerEnd = MessageHeader.Size + SequencedSystemHeader.Size;
         for (int length = MessageHeader.Size; length < headerEnd; length++)
         {
-            Assert.False(Wrap(frame[..length]), $"globalSeqNo is not readable at {length} bytes, so P-3 cannot count");
+            Assert.False(Wrap(frame[..length]), $"clusterSeqNo is not readable at {length} bytes, so P-3 cannot count");
         }
         Assert.True(Wrap(frame));
     }

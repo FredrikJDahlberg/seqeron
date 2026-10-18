@@ -34,7 +34,7 @@ final class QueueRecordings {
     private static final int REPLAY_STREAM_ID = 1205;
     private static final long TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
 
-    /** One recording: a digest of each frame it holds, globalSeqNo 1 first. */
+    /** One recording: a digest of each frame it holds, clusterSeqNo 1 first. */
     record Recording(String archive, long recordingId, boolean active, LongArrayList digests) { }
 
     private record Span(long recordingId, long startPosition, boolean active) { }
@@ -43,15 +43,15 @@ final class QueueRecordings {
     }
 
     /**
-     * Every queue recording on every archive is one log: each holds globalSeqNo 1 onwards, each once and in order,
-     * each archive's active recording holds at least 1..{@code untilGlobalSeqNo}, and every recording holding a
-     * globalSeqNo holds the same frame for it.
+     * Every queue recording on every archive is one log: each holds clusterSeqNo 1 onwards, each once and in order,
+     * each archive's active recording holds at least 1..{@code untilClusterSeqNo}, and every recording holding a
+     * clusterSeqNo holds the same frame for it.
      * @param aeronDirs each archive's driver directory, by the name a failure gives it
-     * @param untilGlobalSeqNo the globalSeqNo each active recording must reach, waited for
+     * @param untilClusterSeqNo the clusterSeqNo each active recording must reach, waited for
      */
-    static void assertOneLog(final Map<String, String> aeronDirs, final long untilGlobalSeqNo) {
+    static void assertOneLog(final Map<String, String> aeronDirs, final long untilClusterSeqNo) {
         final List<Recording> recordings = new ArrayList<>();
-        aeronDirs.forEach((name, aeronDir) -> recordings.addAll(read(name, aeronDir, untilGlobalSeqNo)));
+        aeronDirs.forEach((name, aeronDir) -> recordings.addAll(read(name, aeronDir, untilClusterSeqNo)));
         assertOneLog(recordings);
     }
 
@@ -59,9 +59,9 @@ final class QueueRecordings {
      * As {@link #assertOneLog(Map, long)}, over the active recordings alone: a member restarted after the others
      * discarded entries it applied holds one log again only from its restart.
      */
-    static void assertActiveOneLog(final Map<String, String> aeronDirs, final long untilGlobalSeqNo) {
+    static void assertActiveOneLog(final Map<String, String> aeronDirs, final long untilClusterSeqNo) {
         final List<Recording> recordings = new ArrayList<>();
-        aeronDirs.forEach((name, aeronDir) -> recordings.addAll(read(name, aeronDir, untilGlobalSeqNo)));
+        aeronDirs.forEach((name, aeronDir) -> recordings.addAll(read(name, aeronDir, untilClusterSeqNo)));
         recordings.removeIf(recording -> !recording.active());
         assertOneLog(recordings);
     }
@@ -76,7 +76,7 @@ final class QueueRecordings {
         for (final Recording recording : recordings) {
             for (int i = 0; i < recording.digests.size(); i++) {
                 if (recording.digests.getLong(i) != longest.digests.getLong(i)) {
-                    fail(describe(recording) + " and " + describe(longest) + " hold different frames at globalSeqNo " +
+                    fail(describe(recording) + " and " + describe(longest) + " hold different frames at clusterSeqNo " +
                          (i + 1));
                 }
             }
@@ -84,7 +84,7 @@ final class QueueRecordings {
     }
 
     /** The queue recordings on the archive behind {@code aeronDir}: stopped ones whole, the active one to the given. */
-    private static List<Recording> read(final String name, final String aeronDir, final long untilGlobalSeqNo) {
+    private static List<Recording> read(final String name, final String aeronDir, final long untilClusterSeqNo) {
         final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
         final AeronArchive archive =
             AeronArchive.connect(new AeronArchive.Context()
@@ -97,7 +97,7 @@ final class QueueRecordings {
         try {
             final List<Recording> recordings = new ArrayList<>();
             for (final Span span : awaitSpans(name, archive)) {
-                recordings.add(readOne(name, aeron, archive, span, untilGlobalSeqNo));
+                recordings.add(readOne(name, aeron, archive, span, untilClusterSeqNo));
             }
             return recordings;
         } finally {
@@ -131,7 +131,7 @@ final class QueueRecordings {
     }
 
     private static Recording readOne(final String name, final Aeron aeron, final AeronArchive archive, final Span span,
-                                     final long untilGlobalSeqNo) {
+                                     final long untilClusterSeqNo) {
         final long recordingId = span.recordingId();
         final long startPosition = span.startPosition();
         final boolean active = span.active();
@@ -147,15 +147,15 @@ final class QueueRecordings {
         final long deadline = System.nanoTime() + TIMEOUT_NS;
         try (Subscription subscription = aeron.addSubscription(
                  ChannelUri.addSessionId(REPLAY_CHANNEL, (int)replaySessionId), REPLAY_STREAM_ID)) {
-            while (active ? reader.next <= untilGlobalSeqNo : !isReplayed(subscription, stopPosition)) {
+            while (active ? reader.next <= untilClusterSeqNo : !isReplayed(subscription, stopPosition)) {
                 final int fragments = subscription.poll(assembler, 100);
                 if (reader.error != null) {
                     fail(reader.error);
                 }
                 if (fragments == 0) {
                     if (System.nanoTime() > deadline) {
-                        fail(describe(reader.recording) + " reached globalSeqNo " + (reader.next - 1) + " of " +
-                             (active ? untilGlobalSeqNo : "its stop position"));
+                        fail(describe(reader.recording) + " reached clusterSeqNo " + (reader.next - 1) + " of " +
+                             (active ? untilClusterSeqNo : "its stop position"));
                     }
                     Tests.yield();
                 }
@@ -178,7 +178,7 @@ final class QueueRecordings {
             recording.recordingId;
     }
 
-    /** Checks each frame is the next globalSeqNo and digests it; records a failure, since a poll swallows a throw. */
+    /** Checks each frame is the next clusterSeqNo and digests it; records a failure, since a poll swallows a throw. */
     private static final class Reader implements FragmentHandler {
         final Recording recording;
         final SequencedFrameDecoder frame = new SequencedFrameDecoder();
@@ -197,12 +197,12 @@ final class QueueRecordings {
                 return;
             }
             if (!frame.wrap(buffer, offset, length)) {
-                error = describe(recording) + " holds a frame that is not sequenced after globalSeqNo " + (next - 1);
+                error = describe(recording) + " holds a frame that is not sequenced after clusterSeqNo " + (next - 1);
                 return;
             }
-            if (frame.globalSeqNo() != next) {
+            if (frame.clusterSeqNo() != next) {
                 error =
-                    describe(recording) + " holds globalSeqNo " + frame.globalSeqNo() + " where " + next + " belongs";
+                    describe(recording) + " holds clusterSeqNo " + frame.clusterSeqNo() + " where " + next + " belongs";
                 return;
             }
             if (bytes.length < length) {

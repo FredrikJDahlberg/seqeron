@@ -12,11 +12,11 @@ public interface IApplicationListener
     /// </summary>
     void OnLeadershipChanged(bool leading);
 
-    /// <summary>One application payload off this node's queue, in <c>globalSeqNo</c> order.</summary>
+    /// <summary>One application payload off this node's queue, in <c>clusterSeqNo</c> order.</summary>
     void OnSequenced(Payload payload);
 
     /// <summary>Every transition to caught-up, the first included.</summary>
-    void OnCaughtUp(long globalSeqNo);
+    void OnCaughtUp(long clusterSeqNo);
 
     /// <summary>
     /// The cluster clock's tick (spec §7), once a second. It is the one time source that keeps advancing while every

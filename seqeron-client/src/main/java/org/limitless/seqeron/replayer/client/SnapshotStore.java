@@ -36,7 +36,7 @@ import org.limitless.seqeron.util.Logger;
  * 16  recordCount     int32
  * 20  crc32c          uint32
  * 24  formatVersion   uint32
- * 28  cutGlobalSeqNo  int64    the round's SnapshotStarted
+ * 28  cutClusterSeqNo  int64    the round's SnapshotStarted
  * 36  cutPosition     int64    where that frame starts in the recording
  * 44  cutTimestamp    int64    its consensus timestamp
  * 52  magic           uint32   {@link #MAGIC}
@@ -69,7 +69,7 @@ public final class SnapshotStore {
         new UnsafeBuffer(new byte[RECORD_PREFIX_LENGTH + SnapshotFormat.MAX_RECORD_LENGTH]);
     private OutputStream out;
     private long writingRound;
-    private long cutGlobalSeqNo;
+    private long cutClusterSeqNo;
     private long cutPosition;
     private long cutTimestampNs;
     /** The round whose file was last completed, which {@link #confirm} may name; -1 for none. */
@@ -93,15 +93,15 @@ public final class SnapshotStore {
     /**
      * Starts writing a round's file, dropping any write still open, once the rounds before it are confirmed.
      * @param round          its round
-     * @param cutGlobalSeqNo its {@code SnapshotStarted}'s {@code globalSeqNo}
+     * @param cutClusterSeqNo its {@code SnapshotStarted}'s {@code clusterSeqNo}
      * @param cutPosition    where that frame starts in the recording
      * @param cutTimestampNs that frame's consensus timestamp
      */
-    public void begin(final long round, final long cutGlobalSeqNo, final long cutPosition, final long cutTimestampNs) {
+    public void begin(final long round, final long cutClusterSeqNo, final long cutPosition, final long cutTimestampNs) {
         awaitWrites();
         abandon();
         writingRound = round;
-        this.cutGlobalSeqNo = cutGlobalSeqNo;
+        this.cutClusterSeqNo = cutClusterSeqNo;
         this.cutPosition = cutPosition;
         this.cutTimestampNs = cutTimestampNs;
         try {
@@ -146,7 +146,7 @@ public final class SnapshotStore {
         scratch.putInt(16, recordCount, LE);
         scratch.putInt(20, (int)crc32c, LE);
         scratch.putInt(24, formatVersion, LE);
-        scratch.putLong(28, cutGlobalSeqNo, LE);
+        scratch.putLong(28, cutClusterSeqNo, LE);
         scratch.putLong(36, cutPosition, LE);
         scratch.putLong(44, cutTimestampNs, LE);
         scratch.putInt(52, MAGIC, LE);
@@ -326,7 +326,7 @@ public final class SnapshotStore {
         private final long length;
         private final long crc32c;
         private final int formatVersion;
-        private final long cutGlobalSeqNo;
+        private final long cutClusterSeqNo;
         private final long cutPosition;
         private final long cutTimestampNs;
         private final byte[] record = new byte[SnapshotFormat.MAX_RECORD_LENGTH];
@@ -338,7 +338,7 @@ public final class SnapshotStore {
         private boolean damaged;
 
         private Reader(final InputStream in, final long recordsLength, final int recordCount, final long length,
-                       final long crc32c, final int formatVersion, final long cutGlobalSeqNo, final long cutPosition,
+                       final long crc32c, final int formatVersion, final long cutClusterSeqNo, final long cutPosition,
                        final long cutTimestampNs) {
             this.in = in;
             this.recordsLength = recordsLength;
@@ -346,7 +346,7 @@ public final class SnapshotStore {
             this.length = length;
             this.crc32c = crc32c;
             this.formatVersion = formatVersion;
-            this.cutGlobalSeqNo = cutGlobalSeqNo;
+            this.cutClusterSeqNo = cutClusterSeqNo;
             this.cutPosition = cutPosition;
             this.cutTimestampNs = cutTimestampNs;
         }
@@ -371,9 +371,9 @@ public final class SnapshotStore {
             return formatVersion;
         }
 
-        /** The trailer's {@code cutGlobalSeqNo}. */
-        public long cutGlobalSeqNo() {
-            return cutGlobalSeqNo;
+        /** The trailer's {@code cutClusterSeqNo}. */
+        public long cutClusterSeqNo() {
+            return cutClusterSeqNo;
         }
 
         /** The trailer's {@code cutPosition}. */

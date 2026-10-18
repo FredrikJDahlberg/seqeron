@@ -126,7 +126,7 @@ public class SnapshotTakerTest : IDisposable
         Assert.Equal(3, reader.RecordCount);
         Assert.Equal(end.Length, reader.Length);
         Assert.Equal(end.Crc32C, reader.Crc32C);
-        Assert.Equal(70, reader.CutGlobalSeqNo);
+        Assert.Equal(70, reader.CutClusterSeqNo);
         Assert.Equal(70 * 1024, reader.CutPosition);
         Assert.Equal(70_000, reader.CutTimestampNs);
         List<byte[]> records = ReadAll(reader);
@@ -303,7 +303,7 @@ public class SnapshotTakerTest : IDisposable
         return taker;
     }
 
-    // A round's SnapshotStarted: cut at globalSeqNo round * 10.
+    // A round's SnapshotStarted: cut at clusterSeqNo round * 10.
     private static void Started(SnapshotTaker taker, long round, bool mayPublish)
     {
         Started(taker, round, Header, mayPublish);

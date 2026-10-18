@@ -271,7 +271,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive
  *   2. Call start(aeron, archive, recordingId, catchUpPosition, replayChannel).
  *   3. Call poll() in a duty-cycle loop.
  *
- * Every recording a node holds starts at globalSeqNo 1, so that one recording is the whole log. It is
+ * Every recording a node holds starts at clusterSeqNo 1, so that one recording is the whole log. It is
  * replayed with NULL_LENGTH, so it follows the recording's growth once caught up: the same image delivers
  * history and then the live feed, with no subscription switch.
  *
@@ -291,9 +291,9 @@ class ClusterStreamClient
     /**
      * Creates a client that has not started.
      *
-     * @param onSequenced    every frame but the connection lifecycle pair, in globalSeqNo order
-     * @param onConnected    each ConnectionOpened; empty drops them, leaving a hole in globalSeqNo
-     * @param onDisconnected each ConnectionClosed; empty drops them, leaving a hole in globalSeqNo
+     * @param onSequenced    every frame but the connection lifecycle pair, in clusterSeqNo order
+     * @param onConnected    each ConnectionOpened; empty drops them, leaving a hole in clusterSeqNo
+     * @param onDisconnected each ConnectionClosed; empty drops them, leaving a hole in clusterSeqNo
      * @param onCaughtUp     once the replay reaches its catch-up position
      * @param onReplayEnded  the replay image closed before its catch-up position
      */

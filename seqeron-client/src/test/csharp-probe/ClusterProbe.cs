@@ -22,7 +22,7 @@ namespace Org.Limitless.Seqeron.Tools;
 /// its own queue showed 1..count exactly once, in order. <c>--colocated</c> connects through the member's IPC ingress
 /// first, falling back to UDP.</item>
 /// <item><c>follow</c>: cold-starts a <see cref="ReplayerStreamReceiver"/>, follows the queue live for
-/// <c>--live-seconds</c> after catching up, and exits 0 iff it dispatched every frame from <c>globalSeqNo</c> 1 with
+/// <c>--live-seconds</c> after catching up, and exits 0 iff it dispatched every frame from <c>clusterSeqNo</c> 1 with
 /// no gap.</item>
 /// </list>
 /// <c>ProbeMarker</c> is encoded by hand: sbe-probe.xml (schema 214) generates no C# codecs.
@@ -96,7 +96,7 @@ public static class ClusterProbe
                 }
                 own.OnSequenced(sequencedEvent);
             },
-            (leader, term, globalSeqNo) => pending.OnLeadershipChanged(term), () => caughtUp = true);
+            (leader, term, clusterSeqNo) => pending.OnLeadershipChanged(term), () => caughtUp = true);
         receiver.Start(aeron, options.MemberId);
         while (!caughtUp)
         {
@@ -188,16 +188,16 @@ public static class ClusterProbe
         receiver = new ReplayerStreamReceiver(options.ClientId,
                                               sequencedEvent =>
                                               {
-                                                  long globalSeqNo = sequencedEvent.GlobalSeqNo;
+                                                  long clusterSeqNo = sequencedEvent.ClusterSeqNo;
                                                   if (first == 0)
                                                   {
-                                                      first = globalSeqNo;
+                                                      first = clusterSeqNo;
                                                   }
-                                                  else if (globalSeqNo != last + 1)
+                                                  else if (clusterSeqNo != last + 1)
                                                   {
                                                       gaps++;
                                                   }
-                                                  last = globalSeqNo;
+                                                  last = clusterSeqNo;
                                               },
                                               null,
                                               () =>
@@ -205,8 +205,8 @@ public static class ClusterProbe
                                                   if (!caughtUp)
                                                   {
                                                       Logger.Info(Logger.CoreComponent.ClusterProbe, options.MemberId,
-                                                                  "Caught up at globalSeqNo {0} — following live",
-                                                                  receiver.LastGlobalSeqNo);
+                                                                  "Caught up at clusterSeqNo {0} — following live",
+                                                                  receiver.LastClusterSeqNo);
                                                   }
                                                   caughtUp = true;
                                               });
@@ -227,7 +227,7 @@ public static class ClusterProbe
         }
         bool exact = first == 1 && gaps == 0 && caughtUp;
         Logger.Info(Logger.CoreComponent.ClusterProbe, options.MemberId,
-                    "follow: {0} — dispatched globalSeqNo {1} to {2}, gaps {3}",
+                    "follow: {0} — dispatched clusterSeqNo {1} to {2}, gaps {3}",
                     exact ? "CONTIGUOUS" : "NOT CONTIGUOUS", first, last, gaps);
         return exact ? 0 : 1;
     }

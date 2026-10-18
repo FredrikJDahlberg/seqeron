@@ -139,13 +139,13 @@ public final class GatewayApp implements Gateway.Listener {
         pingSentNs = 0;
     }
 
-    /** Every application payload on this node's queue, in {@code globalSeqNo} order, history and live alike. */
+    /** Every application payload on this node's queue, in {@code clusterSeqNo} order, history and live alike. */
     @Override
     public void onSequenced(final Payload payload) {
         if (pingSentNs != 0 && payload.connectionId() == connectionId && payload.payloadId() == PING_PAYLOAD_ID &&
             payload.payloadLength() == Long.BYTES &&
             payload.buffer().getLong(payload.payloadOffset(), ByteOrder.LITTLE_ENDIAN) == pingSentNs) {
-            System.out.printf("%d ping echoed on connection %d, round trip %dus%n", payload.globalSeqNo(),
+            System.out.printf("%d ping echoed on connection %d, round trip %dus%n", payload.clusterSeqNo(),
                               payload.connectionId(), (System.nanoTime() - pingSentNs) / 1_000L);
         }
     }
@@ -167,8 +167,8 @@ public final class GatewayApp implements Gateway.Listener {
     }
 
     @Override
-    public void onCaughtUp(final long globalSeqNo) {
-        System.out.printf("# caught up at %d — following the queue live%n", globalSeqNo);
+    public void onCaughtUp(final long clusterSeqNo) {
+        System.out.printf("# caught up at %d — following the queue live%n", clusterSeqNo);
     }
 
     @Override

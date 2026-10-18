@@ -17,12 +17,12 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 public class SnapshotStoreTest : IDisposable
 {
     // Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1, cut at
-    // globalSeqNo 42, position 43008, timestamp 42000.
+    // clusterSeqNo 42, position 43008, timestamp 42000.
     private const string GoldenTrailer = "0300000000000000" + "ca0b000000000000" + "04000000" + "6bf5246c" +
                                          "01000000" + "2a00000000000000" + "00a8000000000000" + "10a4000000000000" +
                                          "534e5032";
 
-    private const long CutGlobalSeqNo = 42;
+    private const long CutClusterSeqNo = 42;
     private const long CutPosition = 43008;
     private const long CutTimestampNs = 42000;
 
@@ -50,7 +50,7 @@ public class SnapshotStoreTest : IDisposable
         Assert.Equal(3018, reader.Length);
         Assert.Equal(0x6c24f56bU, reader.Crc32C);
         Assert.Equal(1, reader.FormatVersion);
-        Assert.Equal(CutGlobalSeqNo, reader.CutGlobalSeqNo);
+        Assert.Equal(CutClusterSeqNo, reader.CutClusterSeqNo);
         Assert.Equal(CutPosition, reader.CutPosition);
         Assert.Equal(CutTimestampNs, reader.CutTimestampNs);
         using var view = new UnsafeBuffer();
@@ -212,7 +212,7 @@ public class SnapshotStoreTest : IDisposable
 
     private static void Begin(SnapshotStore store, long round)
     {
-        store.Begin(round, CutGlobalSeqNo, CutPosition, CutTimestampNs);
+        store.Begin(round, CutClusterSeqNo, CutPosition, CutTimestampNs);
     }
 
     // Each record's length in order, then what ends the read.

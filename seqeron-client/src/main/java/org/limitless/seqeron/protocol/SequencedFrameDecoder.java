@@ -37,7 +37,7 @@ public class SequencedFrameDecoder {
     private int sourceId;
     private int connectionId;
     private long sourceSessionId;
-    private long globalSeqNo;
+    private long clusterSeqNo;
     private long clusterTimestampNs;
     private int templateId;
     private int blockLength;
@@ -91,7 +91,7 @@ public class SequencedFrameDecoder {
         payloadId = frameHeader.payloadId();
         systemEventType = 0;
         readIdentity(frameHeader.sourceId(), frameHeader.connectionId(), frameHeader.sessionId(),
-                     frameHeader.globalSeqNo(), frameHeader.timestamp());
+                     frameHeader.clusterSeqNo(), frameHeader.timestamp());
 
         payloadLength = source.getShort(prefixOffset, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
         payloadOffset = prefixOffset + SequencedDecoder.payloadHeaderLength();
@@ -150,15 +150,15 @@ public class SequencedFrameDecoder {
         blockLength = 0;
         version = 0;
         readIdentity(systemHeader.sourceId(), systemHeader.connectionId(), systemHeader.sessionId(),
-                     systemHeader.globalSeqNo(), systemHeader.timestamp());
+                     systemHeader.clusterSeqNo(), systemHeader.timestamp());
     }
 
     private void readIdentity(final int frameSourceId, final int frameConnectionId, final long frameSessionId,
-                              final long frameGlobalSeqNo, final long frameTimestamp) {
+                              final long frameClusterSeqNo, final long frameTimestamp) {
         sourceId = frameSourceId;
         connectionId = frameConnectionId;
         sourceSessionId = frameSessionId;
-        globalSeqNo = frameGlobalSeqNo;
+        clusterSeqNo = frameClusterSeqNo;
         clusterTimestampNs = frameTimestamp;
     }
 
@@ -193,8 +193,8 @@ public class SequencedFrameDecoder {
     }
 
     /** Cluster-wide monotone sequence number; increments by exactly one per frame. */
-    public long globalSeqNo() {
-        return globalSeqNo;
+    public long clusterSeqNo() {
+        return clusterSeqNo;
     }
 
     /** Cluster consensus time (epoch ns) at which the frame was committed ({@code header.timestamp}). */

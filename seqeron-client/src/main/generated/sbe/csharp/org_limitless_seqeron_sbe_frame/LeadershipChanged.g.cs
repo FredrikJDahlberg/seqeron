@@ -157,7 +157,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         public const int NewLeaderMemberIdMaxValue = 2147483647;
 
         /// <summary>
-        /// Aeron Cluster member that leads from this globalSeqNo on
+        /// Aeron Cluster member that leads from this clusterSeqNo on
         /// </summary>
         public int NewLeaderMemberId
         {

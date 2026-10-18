@@ -251,7 +251,7 @@ PASS=1
 
 for m in 0 1 2; do
     n="$(delivered_of "${m}")"; n="${n:-0}"
-    reconverged=$(grep -c "re-converged at globalSeqNo" "${LOG_DIR}/observer-${m}.log" 2>/dev/null)
+    reconverged=$(grep -c "re-converged at clusterSeqNo" "${LOG_DIR}/observer-${m}.log" 2>/dev/null)
     echo "observer node-${m}                : ${n} frames in order, ${reconverged} re-convergence(s)"
     [[ "${n}" -ge "${MIN_DELIVERED}" ]] \
         || { echo "FAIL: observer on node-${m} delivered ${n} < ${MIN_DELIVERED} frames"; PASS=0; }

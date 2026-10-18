@@ -40,7 +40,7 @@ inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(protocol::REPLAY
  * caller uses to gate leader-only emission: every node runs a replica, and only the leader's submits.
  *
  * Startup: cold replicas walk the node's active recording from its start via the Replayer — it holds the
- * whole log, every leader tenure included — riding the replay image and de-duping by globalSeqNo. The queue
+ * whole log, every leader tenure included — riding the replay image and de-duping by clusterSeqNo. The queue
  * is dispatched throughout, so it closes the seam itself the moment the replay reaches it. A steady-state
  * queue gap clears isCaughtUp() and resumes the active recording just below the hole, falling back to a walk
  * if that resume does not land where it was anchored. No archive connection is opened here.
@@ -60,7 +60,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
      *
      * @param clientId            this replica's id on the node, its counters' client label; replicas sharing one
      *                            share their counters' series
-     * @param onSequenced         every other frame, application and system, in globalSeqNo order; required
+     * @param onSequenced         every other frame, application and system, in clusterSeqNo order; required
      * @param onConnected         each ConnectionOpened
      * @param onDisconnected      each ConnectionClosed
      * @param onLeadershipChanged each LeadershipChanged
@@ -212,11 +212,11 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         return m_recovery.isCaughtUp();
     }
 
-    // Highest globalSeqNo dispatched in order, 0 before the first: the frontier recovery progress is
+    // Highest clusterSeqNo dispatched in order, 0 before the first: the frontier recovery progress is
     // measured by.
-    std::int64_t lastGlobalSeqNo() const
+    std::int64_t lastClusterSeqNo() const
     {
-        return m_recovery.lastGlobalSeqNo();
+        return m_recovery.lastClusterSeqNo();
     }
 
     // memberId of the current leader per the last LeadershipChanged, or -1 until one is seen.

@@ -23,7 +23,7 @@
 #
 # --stream <id> selects the newest recording on that stream instead. Prefer it
 # for the queue: a node restart mints a new queue recording that replays the whole
-# history from globalSeqNo 1, so older ones are strict prefixes of the newest and
+# history from clusterSeqNo 1, so older ones are strict prefixes of the newest and
 # dumping them all just repeats the same history.
 #
 # The cluster does not need to be stopped — an in-progress recording is

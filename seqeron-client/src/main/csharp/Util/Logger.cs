@@ -70,7 +70,7 @@ public static class Logger
         /// <summary>Routine status, with no anomaly of its own to identify.</summary>
         Info,
 
-        /// <summary>An ingress message the sequencer would not sequence; <c>globalSeqNo</c> does not move.</summary>
+        /// <summary>An ingress message the sequencer would not sequence; <c>clusterSeqNo</c> does not move.</summary>
         MalformedIngressMessage,
 
         /// <summary>Aeron's consensus module raised an error.</summary>
@@ -112,7 +112,7 @@ public static class Logger
         /// <summary>A gateway host's relay stopped reading one member's archive and moved to the next.</summary>
         RelaySourceLost,
 
-        /// <summary>The live queue skipped a <c>globalSeqNo</c>; recovery replays the hole.</summary>
+        /// <summary>The live queue skipped a <c>clusterSeqNo</c>; recovery replays the hole.</summary>
         QueueGap,
 
         /// <summary>Recovery has dispatched nothing for longer than its deadline.</summary>
@@ -121,7 +121,7 @@ public static class Logger
         /// <summary>The queue has carried no <c>ClusterHeartbeat</c> for longer than its deadline.</summary>
         QueueStalled,
 
-        /// <summary>The first frame observed was not <c>globalSeqNo</c> 1, so history is incomplete.</summary>
+        /// <summary>The first frame observed was not <c>clusterSeqNo</c> 1, so history is incomplete.</summary>
         FirstFrameNotOne,
 
         /// <summary>A source's latest snapshot cannot be restored, so its instance cannot recover.</summary>

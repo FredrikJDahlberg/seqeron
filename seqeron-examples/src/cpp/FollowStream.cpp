@@ -61,7 +61,7 @@ constexpr std::int64_t IPC_CONNECT_TIMEOUT_MS = 500;
 constexpr std::int64_t PING_INTERVAL_NS = 1'000'000'000;
 
 std::atomic_bool running{ true };
-std::int64_t lastGlobalSeqNo = 0;
+std::int64_t lastClusterSeqNo = 0;
 std::string fault;
 
 std::int64_t pingSentNs = 0;
@@ -141,21 +141,21 @@ void onSignal(int)
     running.store(false, std::memory_order_relaxed);
 }
 
-// The invariant the whole tier exists for: one frame per globalSeqNo, no holes, replay and live alike.
+// The invariant the whole tier exists for: one frame per clusterSeqNo, no holes, replay and live alike.
 // Recorded rather than thrown — this runs inside a fragment handler, and Image::poll advances the
 // subscriber position regardless of what a handler raises, so the duty cycle raises it instead.
-bool inOrder(const std::int64_t globalSeqNo)
+bool inOrder(const std::int64_t clusterSeqNo)
 {
     if (!fault.empty())
     {
         return false;
     }
-    if (globalSeqNo != lastGlobalSeqNo + 1)
+    if (clusterSeqNo != lastClusterSeqNo + 1)
     {
-        fault = "gap: " + std::to_string(lastGlobalSeqNo) + " -> " + std::to_string(globalSeqNo);
+        fault = "gap: " + std::to_string(lastClusterSeqNo) + " -> " + std::to_string(clusterSeqNo);
         return false;
     }
-    lastGlobalSeqNo = globalSeqNo;
+    lastClusterSeqNo = clusterSeqNo;
     return true;
 }
 
@@ -171,7 +171,7 @@ void printSystem(const SequencedEvent& event)
     {
         case protocol::CLUSTER_HEARTBEAT: {
             auto decoder = protocol::decodeSystem<frame_sbe::ClusterHeartbeat>(event);
-            std::printf("%lld ClusterHeartbeat cluster clock %lldns\n", static_cast<long long>(event.globalSeqNo),
+            std::printf("%lld ClusterHeartbeat cluster clock %lldns\n", static_cast<long long>(event.clusterSeqNo),
                         static_cast<long long>(decoder.header().timestamp()));
             break;
         }
@@ -179,21 +179,22 @@ void printSystem(const SequencedEvent& event)
             // Only after clusterctl load-topology: this frame is the cluster designating one gateway
             // instance, and its gatewayId is in the payload and nowhere else.
             auto decoder = protocol::decodeSystem<frame_sbe::GatewayActive>(event);
-            std::printf("%lld GatewayActive gatewayId=%d\n", static_cast<long long>(event.globalSeqNo),
+            std::printf("%lld GatewayActive gatewayId=%d\n", static_cast<long long>(event.clusterSeqNo),
                         decoder.gatewayId());
             break;
         }
         default:
-            std::printf("%lld system eventType=%u\n", static_cast<long long>(event.globalSeqNo), event.systemEventType);
+            std::printf("%lld system eventType=%u\n", static_cast<long long>(event.clusterSeqNo),
+                        event.systemEventType);
             break;
     }
 }
 
-// Every other frame arrives here in globalSeqNo order, history and live alike — the receiver requests a
+// Every other frame arrives here in clusterSeqNo order, history and live alike — the receiver requests a
 // replay for anything the live queue dropped and dispatches nothing out of order in the meantime.
 void onSequenced(const SequencedEvent& event)
 {
-    if (!inOrder(event.globalSeqNo))
+    if (!inOrder(event.clusterSeqNo))
     {
         return;
     }
@@ -203,12 +204,12 @@ void onSequenced(const SequencedEvent& event)
     }
     else if (isOwnPing(event))
     {
-        std::printf("%lld ping echoed, round trip %lldus\n", static_cast<long long>(event.globalSeqNo),
+        std::printf("%lld ping echoed, round trip %lldus\n", static_cast<long long>(event.clusterSeqNo),
                     static_cast<long long>((nowNs() - pingSentNs) / 1000));
     }
     else
     {
-        std::printf("%lld payloadId=%u template=%u length=%llu\n", static_cast<long long>(event.globalSeqNo),
+        std::printf("%lld payloadId=%u template=%u length=%llu\n", static_cast<long long>(event.clusterSeqNo),
                     event.payloadId, event.templateId, static_cast<unsigned long long>(event.payloadLength));
     }
 }
@@ -217,7 +218,7 @@ void onSequenced(const SequencedEvent& event)
 // consumer that passes {} for these gets them in onSequenced instead.
 void onConnected(const protocol::LifecycleEvent& event)
 {
-    if (!inOrder(event.globalSeqNo))
+    if (!inOrder(event.clusterSeqNo))
     {
         return;
     }
@@ -226,28 +227,28 @@ void onConnected(const protocol::LifecycleEvent& event)
                                     ? 0
                                     : protocol::decodeSystem<frame_sbe::ConnectionOpened>(event).connectionDataLength();
     std::printf("%lld ConnectionOpened connection=%d sourceId=%d label=%u bytes\n",
-                static_cast<long long>(event.globalSeqNo), event.connectionId, event.sourceId, label);
+                static_cast<long long>(event.clusterSeqNo), event.connectionId, event.sourceId, label);
 }
 
 void onDisconnected(const protocol::LifecycleEvent& event)
 {
-    if (!inOrder(event.globalSeqNo))
+    if (!inOrder(event.clusterSeqNo))
     {
         return;
     }
-    std::printf("%lld ConnectionClosed connection=%d sourceId=%d\n", static_cast<long long>(event.globalSeqNo),
+    std::printf("%lld ConnectionClosed connection=%d sourceId=%d\n", static_cast<long long>(event.clusterSeqNo),
                 event.connectionId, event.sourceId);
 }
 
 // The one frame family that reaches a consumer here instead of through onSequenced.
 void onLeadershipChanged(const std::int32_t newLeaderMemberId, const std::int64_t leadershipTermId,
-                         const std::int64_t globalSeqNo)
+                         const std::int64_t clusterSeqNo)
 {
-    if (!inOrder(globalSeqNo))
+    if (!inOrder(clusterSeqNo))
     {
         return;
     }
-    std::printf("%lld leader=member %d term %lld\n", static_cast<long long>(globalSeqNo), newLeaderMemberId,
+    std::printf("%lld leader=member %d term %lld\n", static_cast<long long>(clusterSeqNo), newLeaderMemberId,
                 static_cast<long long>(leadershipTermId));
 }
 

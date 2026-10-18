@@ -80,10 +80,10 @@ class SnapshotStore
             return m_formatVersion;
         }
 
-        // The trailer's cutGlobalSeqNo.
-        [[nodiscard]] std::int64_t cutGlobalSeqNo() const
+        // The trailer's cutClusterSeqNo.
+        [[nodiscard]] std::int64_t cutClusterSeqNo() const
         {
-            return m_cutGlobalSeqNo;
+            return m_cutClusterSeqNo;
         }
 
         // The trailer's cutPosition.
@@ -154,7 +154,7 @@ class SnapshotStore
           m_length(protocol::detail::getLe(trailer + 8, 8)),
           m_crc32c(static_cast<std::uint32_t>(protocol::detail::getLe(trailer + 20, 4))),
           m_formatVersion(static_cast<std::uint32_t>(protocol::detail::getLe(trailer + 24, 4))),
-          m_cutGlobalSeqNo(static_cast<std::int64_t>(protocol::detail::getLe(trailer + 28, 8))),
+          m_cutClusterSeqNo(static_cast<std::int64_t>(protocol::detail::getLe(trailer + 28, 8))),
           m_cutPosition(static_cast<std::int64_t>(protocol::detail::getLe(trailer + 36, 8))),
           m_cutTimestampNs(static_cast<std::int64_t>(protocol::detail::getLe(trailer + 44, 8)))
         {}
@@ -177,7 +177,7 @@ class SnapshotStore
         std::uint64_t m_length;
         std::uint32_t m_crc32c;
         std::uint32_t m_formatVersion;
-        std::int64_t m_cutGlobalSeqNo;
+        std::int64_t m_cutClusterSeqNo;
         std::int64_t m_cutPosition;
         std::int64_t m_cutTimestampNs;
         std::uint64_t m_consumed = 0;
@@ -205,17 +205,17 @@ class SnapshotStore
      * Starts writing a round's file, dropping any write still open, once the rounds before it are confirmed.
      *
      * @param round          its round
-     * @param cutGlobalSeqNo its SnapshotStarted's globalSeqNo
+     * @param cutClusterSeqNo its SnapshotStarted's clusterSeqNo
      * @param cutPosition    where that frame starts in the recording
      * @param cutTimestampNs that frame's consensus timestamp
      */
-    void begin(const std::int64_t round, const std::int64_t cutGlobalSeqNo, const std::int64_t cutPosition,
+    void begin(const std::int64_t round, const std::int64_t cutClusterSeqNo, const std::int64_t cutPosition,
                const std::int64_t cutTimestampNs)
     {
         awaitWrites();
         abandon();
         m_writingRound = round;
-        m_cutGlobalSeqNo = cutGlobalSeqNo;
+        m_cutClusterSeqNo = cutClusterSeqNo;
         m_cutPosition = cutPosition;
         m_cutTimestampNs = cutTimestampNs;
         m_out.rdbuf()->pubsetbuf(m_outBuffer.data(), static_cast<std::streamsize>(m_outBuffer.size()));
@@ -269,7 +269,7 @@ class SnapshotStore
         protocol::detail::putLe(trailer.data() + 16, static_cast<std::uint32_t>(recordCount), 4);
         protocol::detail::putLe(trailer.data() + 20, crc32c, 4);
         protocol::detail::putLe(trailer.data() + 24, formatVersion, 4);
-        protocol::detail::putLe(trailer.data() + 28, static_cast<std::uint64_t>(m_cutGlobalSeqNo), 8);
+        protocol::detail::putLe(trailer.data() + 28, static_cast<std::uint64_t>(m_cutClusterSeqNo), 8);
         protocol::detail::putLe(trailer.data() + 36, static_cast<std::uint64_t>(m_cutPosition), 8);
         protocol::detail::putLe(trailer.data() + 44, static_cast<std::uint64_t>(m_cutTimestampNs), 8);
         protocol::detail::putLe(trailer.data() + 52, MAGIC, 4);
@@ -491,7 +491,7 @@ class SnapshotStore
     std::vector<char> m_outBuffer = std::vector<char>(IO_BUFFER_LENGTH);
     std::ofstream m_out;
     std::int64_t m_writingRound = 0;
-    std::int64_t m_cutGlobalSeqNo = 0;
+    std::int64_t m_cutClusterSeqNo = 0;
     std::int64_t m_cutPosition = 0;
     std::int64_t m_cutTimestampNs = 0;
     bool m_writing = false; // m_out holds the round's .tmp file

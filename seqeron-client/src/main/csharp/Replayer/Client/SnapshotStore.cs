@@ -21,7 +21,7 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// 16  recordCount     int32
 /// 20  crc32c          uint32
 /// 24  formatVersion   uint32
-/// 28  cutGlobalSeqNo  int64    the round's SnapshotStarted
+/// 28  cutClusterSeqNo int64    the round's SnapshotStarted
 /// 36  cutPosition     int64    where that frame starts in the recording
 /// 44  cutTimestamp    int64    its consensus timestamp
 /// 52  magic           uint32   Magic
@@ -51,7 +51,7 @@ public sealed class SnapshotStore
     private readonly string _directory;
     private FileStream _out;
     private long _writingRound;
-    private long _cutGlobalSeqNo;
+    private long _cutClusterSeqNo;
     private long _cutPosition;
     private long _cutTimestampNs;
 
@@ -80,15 +80,15 @@ public sealed class SnapshotStore
     /// <summary>Starts writing a round's file, dropping any write still open, once the rounds before it are
     /// confirmed.</summary>
     /// <param name="round">its round</param>
-    /// <param name="cutGlobalSeqNo">its SnapshotStarted's globalSeqNo</param>
+    /// <param name="cutClusterSeqNo">its SnapshotStarted's clusterSeqNo</param>
     /// <param name="cutPosition">where that frame starts in the recording</param>
     /// <param name="cutTimestampNs">that frame's consensus timestamp</param>
-    public void Begin(long round, long cutGlobalSeqNo, long cutPosition, long cutTimestampNs)
+    public void Begin(long round, long cutClusterSeqNo, long cutPosition, long cutTimestampNs)
     {
         AwaitWrites();
         Abandon();
         _writingRound = round;
-        _cutGlobalSeqNo = cutGlobalSeqNo;
+        _cutClusterSeqNo = cutClusterSeqNo;
         _cutPosition = cutPosition;
         _cutTimestampNs = cutTimestampNs;
         try
@@ -142,7 +142,7 @@ public sealed class SnapshotStore
         BinaryPrimitives.WriteInt32LittleEndian(trailer.Slice(16), recordCount);
         BinaryPrimitives.WriteUInt32LittleEndian(trailer.Slice(20), crc32c);
         BinaryPrimitives.WriteInt32LittleEndian(trailer.Slice(24), formatVersion);
-        BinaryPrimitives.WriteInt64LittleEndian(trailer.Slice(28), _cutGlobalSeqNo);
+        BinaryPrimitives.WriteInt64LittleEndian(trailer.Slice(28), _cutClusterSeqNo);
         BinaryPrimitives.WriteInt64LittleEndian(trailer.Slice(36), _cutPosition);
         BinaryPrimitives.WriteInt64LittleEndian(trailer.Slice(44), _cutTimestampNs);
         BinaryPrimitives.WriteInt32LittleEndian(trailer.Slice(52), Magic);
@@ -383,7 +383,7 @@ public sealed class SnapshotStore
         private bool _damaged;
 
         internal Reader(FileStream input, long recordsLength, int recordCount, long length, uint crc32c,
-                        int formatVersion, long cutGlobalSeqNo, long cutPosition, long cutTimestampNs)
+                        int formatVersion, long cutClusterSeqNo, long cutPosition, long cutTimestampNs)
         {
             _in = input;
             _recordsLength = recordsLength;
@@ -391,7 +391,7 @@ public sealed class SnapshotStore
             Length = length;
             Crc32C = crc32c;
             FormatVersion = formatVersion;
-            CutGlobalSeqNo = cutGlobalSeqNo;
+            CutClusterSeqNo = cutClusterSeqNo;
             CutPosition = cutPosition;
             CutTimestampNs = cutTimestampNs;
             _recordBuffer = new UnsafeBuffer(_record);
@@ -409,8 +409,8 @@ public sealed class SnapshotStore
         /// <summary>The trailer's <c>formatVersion</c>.</summary>
         public int FormatVersion { get; }
 
-        /// <summary>The trailer's <c>cutGlobalSeqNo</c>.</summary>
-        public long CutGlobalSeqNo { get; }
+        /// <summary>The trailer's <c>cutClusterSeqNo</c>.</summary>
+        public long CutClusterSeqNo { get; }
 
         /// <summary>The trailer's <c>cutPosition</c>.</summary>
         public long CutPosition { get; }

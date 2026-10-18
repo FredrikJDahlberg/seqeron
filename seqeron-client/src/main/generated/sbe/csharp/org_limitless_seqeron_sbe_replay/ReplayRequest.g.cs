@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Replay
 {
     /// <summary>
-    /// A client asks its replayer for history: the active recording from its start (cold                               start, fromPosition -1), or from fromPosition (after a gap). Every recording a                               node holds starts at globalSeqNo 1, so the active one alone is complete
+    /// A client asks its replayer for history: the active recording from its start (cold                               start, fromPosition -1), or from fromPosition (after a gap). Every recording a                               node holds starts at clusterSeqNo 1, so the active one alone is complete
     /// </summary>
     public sealed partial class ReplayRequest
     {

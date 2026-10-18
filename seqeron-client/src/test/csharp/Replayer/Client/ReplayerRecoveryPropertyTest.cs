@@ -15,7 +15,7 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// but it can only reach the interleavings someone thought to write. Here the node's archive, its queue and its
 /// Replayer are simulated, a seeded generator drives faults through them, and the two properties recovery exists to
 /// provide are asserted over whatever comes out.
-/// <para><b>Safety</b>: every dispatched frame is the next globalSeqNo, always, checked on every dispatch so a
+/// <para><b>Safety</b>: every dispatched frame is the next clusterSeqNo, always, checked on every dispatch so a
 /// violation names the frame that broke it.</para>
 /// <para><b>Liveness</b>: once the faults stop, recovery converges: caught up, at the tip, having dispatched every
 /// frame ever published.</para>
@@ -104,10 +104,10 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         // The client's own files, null for a run that restores nothing.
         private readonly SnapshotStore _store;
 
-        // Every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds.
+        // Every frame that is not a heartbeat, by clusterSeqNo: the snapshot rounds.
         private readonly Dictionary<long, byte[]> _frames = new Dictionary<long, byte[]>();
 
-        // The state: how many heartbeats, and the sum of their globalSeqNos; restored, then folded.
+        // The state: how many heartbeats, and the sum of their clusterSeqNos; restored, then folded.
         private long _heartbeats;
         private long _heartbeatSum;
         private int _nextRecordIndex;
@@ -120,11 +120,11 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         private long _pendingFromPosition;
         private long _nextSessionId = 1;
 
-        // Next globalSeqNo the open replay will deliver; _replayEndSeqNo < 0 means none is open.
+        // Next clusterSeqNo the open replay will deliver; _replayEndSeqNo < 0 means none is open.
         private long _replayCursor;
         private long _replayEndSeqNo = -1;
 
-        // Last globalSeqNo the queue actually delivered: what a redelivery re-offers.
+        // Last clusterSeqNo the queue actually delivered: what a redelivery re-offers.
         private long _lastLive;
 
         private long _clockMs = ClockMs;
@@ -147,7 +147,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         public void Execute()
         {
             // History before the client starts. A cold start over an EMPTY archive that then drops the very first
-            // queue frame is the one designed abort (the first frame observed must be globalSeqNo 1) and not a
+            // queue frame is the one designed abort (the first frame observed must be clusterSeqNo 1) and not a
             // recovery failure, so the model does not construct it.
             if (_restoring)
             {
@@ -196,18 +196,18 @@ public class ReplayerRecoveryPropertyTest : IDisposable
 
             Assert.True(_client.Fault == null, _tag + ": " + _client.Fault);
             Assert.True(_client.IsCaughtUp, _tag + ": never re-converged after the faults stopped");
-            Assert.True(_tip == _client.LastGlobalSeqNo, _tag + ": converged short of the tip");
+            Assert.True(_tip == _client.LastClusterSeqNo, _tag + ": converged short of the tip");
             Assert.True(_tip + 1 == _expectedNext, _tag + ": caught up without having dispatched every frame");
             if (_restoring)
             {
                 long count = 0;
                 long sum = 0;
-                for (long globalSeqNo = 1; globalSeqNo <= _tip; ++globalSeqNo)
+                for (long clusterSeqNo = 1; clusterSeqNo <= _tip; ++clusterSeqNo)
                 {
-                    if (!_frames.ContainsKey(globalSeqNo))
+                    if (!_frames.ContainsKey(clusterSeqNo))
                     {
                         ++count;
-                        sum += globalSeqNo;
+                        sum += clusterSeqNo;
                     }
                 }
                 Assert.True(count == _heartbeats, _tag + ": restored state plus the tail is not the full replay's");
@@ -251,7 +251,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
 
         private bool Converged()
         {
-            return _client.IsCaughtUp && _client.LastGlobalSeqNo == _tip;
+            return _client.IsCaughtUp && _client.LastClusterSeqNo == _tip;
         }
 
         private void ChaosStep()
@@ -262,11 +262,11 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 case 1:
                 case 2:
                 case 3:
-                    long globalSeqNo = Publish();
+                    long clusterSeqNo = Publish();
                     // A queue drop is the fault the whole resume path exists for, so it is the common one.
                     if (!Chance(20))
                     {
-                        DeliverQueue(globalSeqNo);
+                        DeliverQueue(clusterSeqNo);
                     }
                     break;
                 case 4:
@@ -319,20 +319,20 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             return ++_tip;
         }
 
-        private void DeliverQueue(long globalSeqNo)
+        private void DeliverQueue(long clusterSeqNo)
         {
-            _lastLive = globalSeqNo;
-            Deliver(globalSeqNo, false);
+            _lastLive = clusterSeqNo;
+            Deliver(clusterSeqNo, false);
         }
 
-        private void Deliver(long globalSeqNo, bool fromReplay)
+        private void Deliver(long clusterSeqNo, bool fromReplay)
         {
-            if (!_frames.TryGetValue(globalSeqNo, out byte[] frame))
+            if (!_frames.TryGetValue(clusterSeqNo, out byte[] frame))
             {
-                frame = Frames.ClusterHeartbeat(globalSeqNo);
+                frame = Frames.ClusterHeartbeat(clusterSeqNo);
             }
             _wire.Wrap(frame);
-            _client.OnFrame(_wire, 0, frame.Length, PositionOf(globalSeqNo), ReceiveNs, fromReplay);
+            _client.OnFrame(_wire, 0, frame.Length, PositionOf(clusterSeqNo), ReceiveNs, fromReplay);
         }
 
         // ── the Replayer ───────────────────────────────────────────────────────────────────────────────
@@ -441,14 +441,14 @@ public class ReplayerRecoveryPropertyTest : IDisposable
 
         private void OnSequenced(SequencedEvent sequencedEvent)
         {
-            long globalSeqNo = sequencedEvent.GlobalSeqNo;
-            Assert.True(_expectedNext == globalSeqNo, $"{_tag}: dispatched {globalSeqNo}, expected {_expectedNext}");
-            Assert.True(globalSeqNo <= _tip, _tag + ": dispatched a frame that was never published");
+            long clusterSeqNo = sequencedEvent.ClusterSeqNo;
+            Assert.True(_expectedNext == clusterSeqNo, $"{_tag}: dispatched {clusterSeqNo}, expected {_expectedNext}");
+            Assert.True(clusterSeqNo <= _tip, _tag + ": dispatched a frame that was never published");
             ++_expectedNext;
-            if (!_frames.ContainsKey(globalSeqNo))
+            if (!_frames.ContainsKey(clusterSeqNo))
             {
                 ++_heartbeats;
-                _heartbeatSum += globalSeqNo;
+                _heartbeatSum += clusterSeqNo;
             }
         }
 
@@ -485,10 +485,10 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             return _rng.Chance(percent);
         }
 
-        // Where frame `globalSeqNo` starts in the active recording: frame 1 at 0.
-        private static long PositionOf(long globalSeqNo)
+        // Where frame `clusterSeqNo` starts in the active recording: frame 1 at 0.
+        private static long PositionOf(long clusterSeqNo)
         {
-            return (globalSeqNo - 1) * Stride;
+            return (clusterSeqNo - 1) * Stride;
         }
     }
 }

@@ -7,7 +7,7 @@
 # republishes it onto the host's own queue. A ClusterProbe confirm producer on node 3 submits over UDP ingress
 # and checks its own frames on that queue; mid-stream the leader is killed, which is both a leader failover
 # and the relay's source going away. The gateway host is then restarted, which relays the log again from
-# globalSeqNo 1 into a second local recording, and a fresh ClusterProbe follow on node 3 cold-starts through
+# clusterSeqNo 1 into a second local recording, and a fresh ClusterProbe follow on node 3 cold-starts through
 # the host's Replayer from that recording alone.
 #
 # PASS iff the producer saw every frame exactly once, in order, the relay moved to another member, and

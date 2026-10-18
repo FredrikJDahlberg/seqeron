@@ -8,7 +8,7 @@
 # the C# examples. Three phases, all of them client functionality:
 #
 #   A  UDP ingress from the gateway host, through PendingSends            confirm EXACT
-#   B  a cold start on the gateway host, replayed from globalSeqNo 1        follow CONTIGUOUS
+#   B  a cold start on the gateway host, replayed from clusterSeqNo 1       follow CONTIGUOUS
 #   C  the C# gateway pair handed over when its active instance is killed  standby resumes at connection 1
 #
 # and the member logs no rejected ingress frame. One member, not three: under WSL1's system-call translation

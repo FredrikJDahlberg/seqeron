@@ -14,7 +14,7 @@ public sealed class GatewayOptions
     public int SourceId { get; init; } = Gateway.Unresolved;
 
     /// <summary>What serializes this instance's state for snapshot rounds and restores it on start; without one it
-    /// takes part in none, whatever its rows say, and recovers from <c>globalSeqNo</c> 1.</summary>
+    /// takes part in none, whatever its rows say, and recovers from <c>clusterSeqNo</c> 1.</summary>
     public ISnapshotListener SnapshotListener { get; init; }
 
     /// <summary>Where this instance keeps its snapshots, one file per round; required with a

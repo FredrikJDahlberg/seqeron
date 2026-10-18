@@ -127,7 +127,7 @@ class SequencedFrameDecoderTest {
         final int headerEnd = MessageHeaderEncoder.ENCODED_LENGTH + SequencedSystemHeaderDecoder.ENCODED_LENGTH;
         for (int length = MessageHeaderEncoder.ENCODED_LENGTH; length < headerEnd; length++) {
             assertFalse(wrap(Arrays.copyOf(frame, length)),
-                        "globalSeqNo is not readable at " + length + " bytes, so P-3 cannot count");
+                        "clusterSeqNo is not readable at " + length + " bytes, so P-3 cannot count");
         }
         assertTrue(wrap(frame));
     }
@@ -198,32 +198,32 @@ class SequencedFrameDecoderTest {
         return cases;
     }
 
-    private static byte[] payloadFrame(final long globalSeqNo, final int payloadLength) {
+    private static byte[] payloadFrame(final long clusterSeqNo, final int payloadLength) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(payloadLength + 64);
         final SequencedEncoder encoder = new SequencedEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(PAYLOAD_ID)
-            .globalSeqNo(globalSeqNo).timestamp(TIMESTAMP);
+            .clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
         encoder.putPayload(new UnsafeBuffer(filler(payloadLength)), 0, payloadLength);
         return copy(frame, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    private static byte[] systemFrame(final long globalSeqNo, final int systemEventType, final int bodyLength) {
+    private static byte[] systemFrame(final long clusterSeqNo, final int systemEventType, final int bodyLength) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(bodyLength + 64);
         final SequencedSystemEncoder encoder = new SequencedSystemEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID)
-            .systemEventType(systemEventType).globalSeqNo(globalSeqNo).timestamp(TIMESTAMP);
+            .systemEventType(systemEventType).clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
         encoder.putBody(new UnsafeBuffer(filler(bodyLength)), 0, bodyLength);
         return copy(frame, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    private static byte[] clusterHeartbeatFrame(final long globalSeqNo) {
+    private static byte[] clusterHeartbeatFrame(final long clusterSeqNo) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(64);
         final ClusterHeartbeatEncoder encoder = new ClusterHeartbeatEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(-1).connectionId(-1).sessionId(-1)
-            .systemEventType(SystemFrame.CLUSTER_HEARTBEAT).globalSeqNo(globalSeqNo).timestamp(TIMESTAMP);
+            .systemEventType(SystemFrame.CLUSTER_HEARTBEAT).clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
         return copy(frame, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 

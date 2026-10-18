@@ -50,7 +50,7 @@ final class Session implements AutoCloseable {
         void onPayload(Payload payload);
 
         /** Every transition to caught-up, the first included. */
-        void onCaughtUp(long globalSeqNo);
+        void onCaughtUp(long clusterSeqNo);
 
         /** The cluster clock's tick, once a second. */
         void onClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
@@ -190,8 +190,8 @@ final class Session implements AutoCloseable {
         return fenced;
     }
 
-    long lastGlobalSeqNo() {
-        return receiver.lastGlobalSeqNo();
+    long lastClusterSeqNo() {
+        return receiver.lastClusterSeqNo();
     }
 
     int currentLeaderMemberId() {
@@ -221,7 +221,7 @@ final class Session implements AutoCloseable {
         final long nowMs = Clocks.monotonicMs();
         recoveryStall.onCaughtUp();
         queueStall.onCaughtUp(nowMs);
-        dispatch.onCaughtUp(receiver.lastGlobalSeqNo());
+        dispatch.onCaughtUp(receiver.lastClusterSeqNo());
     }
 
     private void checkFences() {
@@ -248,10 +248,10 @@ final class Session implements AutoCloseable {
         }
         final long nowMs = Clocks.monotonicMs();
         if (!receiver.isCaughtUp()) {
-            if (recoveryStall.onNotCaughtUp(nowMs, receiver.lastGlobalSeqNo())) {
+            if (recoveryStall.onNotCaughtUp(nowMs, receiver.lastClusterSeqNo())) {
                 stalled(ClusterError.RECOVERY_STALLED, Logger.CoreEventCode.RecoveryStalled,
-                        "recovery has dispatched nothing for >" + recoveryStallTimeoutMs + "ms (globalSeqNo stuck at " +
-                            receiver.lastGlobalSeqNo() + ")");
+                        "recovery has dispatched nothing for >" + recoveryStallTimeoutMs +
+                            "ms (clusterSeqNo stuck at " + receiver.lastClusterSeqNo() + ")");
                 return;
             }
         } else if (queueStall.isStalled(nowMs)) {
@@ -346,7 +346,7 @@ final class Session implements AutoCloseable {
 
     /** Confirmed ingress takes the term first: nothing new may go out before the hold it may place is on. */
     private void onLeadershipChanged(final int leaderMemberId, final long leadershipTermId,
-                                     final long globalSeqNo) {
+                                     final long clusterSeqNo) {
         pending.onLeadershipChanged(leadershipTermId);
         this.leadershipTermId = leadershipTermId;
         dispatch.onLeadershipChanged();

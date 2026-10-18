@@ -31,14 +31,14 @@ namespace org::limitless::seqeron::app {
 /** What an Application's Listener provides. */
 template<typename L>
 concept ApplicationListener =
-    requires(L& listener, const Payload& payload, bool leading, std::int64_t globalSeqNo, std::int64_t clusterTimeNs,
+    requires(L& listener, const Payload& payload, bool leading, std::int64_t clusterSeqNo, std::int64_t clusterTimeNs,
              std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
         // The gate crossed an edge. False is where OutstandingWork::onNotLeader() belongs: every leadership
         // change shuts an open gate, and the work may have gone with the election. False also comes before
         // onFenced when this replica fences with its gate open.
         listener.onLeadershipChanged(leading);
         listener.onSequenced(payload);
-        listener.onCaughtUp(globalSeqNo);
+        listener.onCaughtUp(clusterSeqNo);
         listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
         listener.onFenced(fence, detail);
     };
@@ -62,7 +62,7 @@ concept ApplicationListener =
  * serializes its state at each round's cut into its own directory, and the one whose gate is open then submits the
  * round's SnapshotEnd. A replica whose snapshot differs from the one sequenced is fenced with
  * ClusterError::SnapshotDiverged. On start, a replica given a listener restores the newest snapshot of its own that
- * the log confirms and resumes after its cut, or replays from globalSeqNo 1 without one; one it cannot restore is
+ * the log confirms and resumes after its cut, or replays from clusterSeqNo 1 without one; one it cannot restore is
  * fenced with ClusterError::SnapshotUnrestorable.
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
@@ -99,7 +99,7 @@ class Application
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
         std::int64_t ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
         // What serializes this application's state for snapshot rounds and restores it on start; without one it
-        // takes part in none, whatever its topology row says, and recovers from globalSeqNo 1. Must outlive the
+        // takes part in none, whatever its topology row says, and recovers from clusterSeqNo 1. Must outlive the
         // replica.
         SnapshotListener* snapshotListener = nullptr;
         // Where this replica keeps its snapshots, one file per round; required with a snapshotListener. Its own: no
@@ -284,9 +284,9 @@ class Application
         return m_session.isCaughtUp();
     }
 
-    [[nodiscard]] std::int64_t lastGlobalSeqNo() const
+    [[nodiscard]] std::int64_t lastClusterSeqNo() const
     {
-        return m_session.lastGlobalSeqNo();
+        return m_session.lastClusterSeqNo();
     }
 
     // Closes the cluster session and the queue. The Aeron client is the caller's and is left open.
@@ -358,7 +358,7 @@ class Application
                 case protocol::SNAPSHOT_STARTED: {
                     auto started = protocol::decodeSystem<sbe::frame::SnapshotStarted>(event);
                     m_app.m_snapshots.onSnapshotStarted(
-                        started.round(), event.globalSeqNo, event.position, event.clusterTimestampNs,
+                        started.round(), event.clusterSeqNo, event.position, event.clusterTimestampNs,
                         protocol::SnapshotHeader{ m_app.m_session.leadershipTermId(),
                                                   m_app.m_session.currentLeaderMemberId(), std::nullopt },
                         m_app.m_gate.isOpen());
@@ -374,8 +374,8 @@ class Application
                     {
                         m_app.m_session.fence(ClusterError::SnapshotDiverged,
                                               "round " + std::to_string(end.round()) +
-                                                  "'s sequenced snapshot at globalSeqNo " +
-                                                  std::to_string(event.globalSeqNo) + " differs from this replica's");
+                                                  "'s sequenced snapshot at clusterSeqNo " +
+                                                  std::to_string(event.clusterSeqNo) + " differs from this replica's");
                     }
                     break;
                 }
@@ -399,9 +399,9 @@ class Application
             m_app.m_listener.onSequenced(payload);
         }
 
-        void onCaughtUp(const std::int64_t globalSeqNo)
+        void onCaughtUp(const std::int64_t clusterSeqNo)
         {
-            m_app.m_listener.onCaughtUp(globalSeqNo);
+            m_app.m_listener.onCaughtUp(clusterSeqNo);
         }
 
         // The cluster clock's tick (spec §7), once a second. It is the one time source that keeps

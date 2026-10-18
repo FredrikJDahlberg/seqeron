@@ -78,8 +78,8 @@ public class SequencedFrameDecoder
         _frameHeader.Wrap(_view, BlockOffset, Frame.Sequenced.SchemaVersion);
         PayloadId = _frameHeader.PayloadId;
         SystemEventType = 0;
-        ReadIdentity(_frameHeader.SourceId, _frameHeader.ConnectionId, _frameHeader.SessionId, _frameHeader.GlobalSeqNo,
-                     _frameHeader.Timestamp);
+        ReadIdentity(_frameHeader.SourceId, _frameHeader.ConnectionId, _frameHeader.SessionId,
+                     _frameHeader.ClusterSeqNo, _frameHeader.Timestamp);
 
         PayloadLength = source.GetShort(offset + prefixOffset, ByteOrder.LittleEndian) & 0xFFFF;
         int payloadStart = prefixOffset + Frame.Sequenced.PayloadHeaderSize;
@@ -144,15 +144,15 @@ public class SequencedFrameDecoder
         BlockLength = 0;
         Version = 0;
         ReadIdentity(_systemHeader.SourceId, _systemHeader.ConnectionId, _systemHeader.SessionId,
-                     _systemHeader.GlobalSeqNo, _systemHeader.Timestamp);
+                     _systemHeader.ClusterSeqNo, _systemHeader.Timestamp);
     }
 
-    private void ReadIdentity(int sourceId, int connectionId, long sessionId, long globalSeqNo, long timestamp)
+    private void ReadIdentity(int sourceId, int connectionId, long sessionId, long clusterSeqNo, long timestamp)
     {
         SourceId = sourceId;
         ConnectionId = connectionId;
         SourceSessionId = sessionId;
-        GlobalSeqNo = globalSeqNo;
+        ClusterSeqNo = clusterSeqNo;
         ClusterTimestampNs = timestamp;
     }
 
@@ -178,7 +178,7 @@ public class SequencedFrameDecoder
     public long SourceSessionId { get; private set; }
 
     /// <summary>Cluster-wide monotone sequence number; increments by exactly one per frame.</summary>
-    public long GlobalSeqNo { get; private set; }
+    public long ClusterSeqNo { get; private set; }
 
     /// <summary>Cluster consensus time (epoch ns) at which the frame was committed
     /// (<c>header.timestamp</c>).</summary>

@@ -44,7 +44,7 @@ internal static class SequencedEvents
         header.ConnectionId = -1;
         header.SessionId = -1;
         header.SystemEventType = SystemFrame.SessionClosed;
-        header.GlobalSeqNo = 0;
+        header.ClusterSeqNo = 0;
         header.Timestamp = 0;
         closed.ClusterSessionId = clusterSessionId;
 
@@ -66,7 +66,7 @@ internal static class SequencedEvents
         header.ConnectionId = 0;
         header.SessionId = sourceSessionId;
         header.PayloadId = (ushort)payloadId;
-        header.GlobalSeqNo = 0;
+        header.ClusterSeqNo = 0;
         header.Timestamp = 0;
         sequenced.SetPayload(body);
         return Frame.MessageHeader.Size + sequenced.Size;
@@ -81,7 +81,7 @@ internal static class SequencedEvents
         header.ConnectionId = 0;
         header.SessionId = sourceSessionId;
         header.SystemEventType = (ushort)systemEventType;
-        header.GlobalSeqNo = 0;
+        header.ClusterSeqNo = 0;
         header.Timestamp = 0;
         sequenced.SetBody(body);
         return Frame.MessageHeader.Size + sequenced.Size;

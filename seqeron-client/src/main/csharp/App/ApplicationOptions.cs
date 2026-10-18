@@ -30,7 +30,7 @@ public sealed class ApplicationOptions
     public required IApplicationListener Listener { get; init; }
 
     /// <summary>What serializes this application's state for snapshot rounds and restores it on start; without one
-    /// it takes part in none, whatever its topology row says, and recovers from <c>globalSeqNo</c> 1.</summary>
+    /// it takes part in none, whatever its topology row says, and recovers from <c>clusterSeqNo</c> 1.</summary>
     public ISnapshotListener SnapshotListener { get; init; }
 
     /// <summary>Where this replica keeps its snapshots, one file per round; required with a

@@ -93,7 +93,7 @@ class SnapshotTakerTest {
         return taker;
     }
 
-    /** Round {@code round}'s {@code SnapshotStarted}: cut at globalSeqNo {@code round * 10}. */
+    /** Round {@code round}'s {@code SnapshotStarted}: cut at clusterSeqNo {@code round * 10}. */
     private static void started(final SnapshotTaker taker, final long round, final boolean mayPublish) {
         started(taker, round, HEADER, mayPublish);
     }
@@ -164,7 +164,7 @@ class SnapshotTakerTest {
         assertEquals(3, reader.recordCount());
         assertEquals(end[2], reader.length());
         assertEquals(end[3], reader.crc32c());
-        assertEquals(70, reader.cutGlobalSeqNo());
+        assertEquals(70, reader.cutClusterSeqNo());
         assertEquals(70 * 1024, reader.cutPosition());
         assertEquals(70_000, reader.cutTimestampNs());
         final List<byte[]> records = readAll(reader);

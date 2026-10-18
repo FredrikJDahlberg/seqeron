@@ -64,7 +64,7 @@ public final class FollowStream {
     private static final ClusterHeartbeatDecoder HEARTBEAT_DECODER = new ClusterHeartbeatDecoder();
     private static final GatewayActiveDecoder GATEWAY_ACTIVE_DECODER = new GatewayActiveDecoder();
 
-    private static long lastGlobalSeqNo;
+    private static long lastClusterSeqNo;
     private static String fault;
     private static long pingSentNs;
 
@@ -174,21 +174,21 @@ public final class FollowStream {
     }
 
     /**
-     * Every other frame arrives here in globalSeqNo order, history and live alike — the receiver requests
+     * Every other frame arrives here in clusterSeqNo order, history and live alike — the receiver requests
      * a replay for anything the live queue dropped and dispatches nothing out of order in the meantime.
      */
     private static void onSequenced(final SequencedEvent event) {
-        if (!inOrder(event.globalSeqNo())) {
+        if (!inOrder(event.clusterSeqNo())) {
             return;
         }
         if (event.isSystem()) {
             printSystem(event);
         } else if (isOwnPing(event)) {
             System.out.printf("%d ping echoed, round trip %dus%n",
-                              event.globalSeqNo(), (System.nanoTime() - pingSentNs) / 1_000L);
+                              event.clusterSeqNo(), (System.nanoTime() - pingSentNs) / 1_000L);
         } else {
             System.out.printf("%d payloadId=%d template=%d length=%d%n",
-                              event.globalSeqNo(), event.payloadId(), event.templateId(), event.payloadLength());
+                              event.clusterSeqNo(), event.payloadId(), event.templateId(), event.payloadLength());
         }
     }
 
@@ -204,13 +204,13 @@ public final class FollowStream {
             case SystemFrame.CONNECTION_OPENED -> {
                 OPENED_DECODER.wrap(event.buffer(), event.payloadOffset(), ConnectionOpenedDecoder.BLOCK_LENGTH,
                                     ConnectionOpenedDecoder.SCHEMA_VERSION);
-                System.out.printf("%d ConnectionOpened connection=%d label=%d bytes%n", event.globalSeqNo(),
+                System.out.printf("%d ConnectionOpened connection=%d label=%d bytes%n", event.clusterSeqNo(),
                                   event.connectionId(), OPENED_DECODER.connectionDataLength());
             }
             case SystemFrame.CLUSTER_HEARTBEAT -> {
                 HEARTBEAT_DECODER.wrap(event.buffer(), event.payloadOffset(), ClusterHeartbeatDecoder.BLOCK_LENGTH,
                                        ClusterHeartbeatDecoder.SCHEMA_VERSION);
-                System.out.printf("%d ClusterHeartbeat cluster clock %dns%n", event.globalSeqNo(),
+                System.out.printf("%d ClusterHeartbeat cluster clock %dns%n", event.clusterSeqNo(),
                                   HEARTBEAT_DECODER.header().timestamp());
             }
             case SystemFrame.GATEWAY_ACTIVE -> {
@@ -218,10 +218,10 @@ public final class FollowStream {
                 // instance, and its gatewayId is in the payload and nowhere else.
                 GATEWAY_ACTIVE_DECODER.wrap(event.buffer(), event.payloadOffset(), GatewayActiveDecoder.BLOCK_LENGTH,
                                             GatewayActiveDecoder.SCHEMA_VERSION);
-                System.out.printf("%d GatewayActive gatewayId=%d%n", event.globalSeqNo(),
+                System.out.printf("%d GatewayActive gatewayId=%d%n", event.clusterSeqNo(),
                                   GATEWAY_ACTIVE_DECODER.gatewayId());
             }
-            default -> System.out.printf("%d system eventType=%d%n", event.globalSeqNo(), event.systemEventType());
+            default -> System.out.printf("%d system eventType=%d%n", event.clusterSeqNo(), event.systemEventType());
         }
     }
 
@@ -233,27 +233,27 @@ public final class FollowStream {
 
     /** The one frame family that reaches a consumer here instead of through onSequenced. */
     private static void onLeadershipChanged(final int newLeaderMemberId, final long leadershipTermId,
-                                            final long globalSeqNo) {
-        if (!inOrder(globalSeqNo)) {
+                                            final long clusterSeqNo) {
+        if (!inOrder(clusterSeqNo)) {
             return;
         }
-        System.out.printf("%d leader=member %d term %d%n", globalSeqNo, newLeaderMemberId, leadershipTermId);
+        System.out.printf("%d leader=member %d term %d%n", clusterSeqNo, newLeaderMemberId, leadershipTermId);
     }
 
     /**
-     * The invariant the whole tier exists for: one frame per globalSeqNo, no holes, replay and live alike.
+     * The invariant the whole tier exists for: one frame per clusterSeqNo, no holes, replay and live alike.
      * Recorded rather than thrown — this runs inside a fragment handler, and Image.poll advances the
      * subscriber position regardless of what a handler raises, so the duty cycle above raises it instead.
      */
-    private static boolean inOrder(final long globalSeqNo) {
+    private static boolean inOrder(final long clusterSeqNo) {
         if (fault != null) {
             return false;
         }
-        if (globalSeqNo != lastGlobalSeqNo + 1) {
-            fault = "gap: " + lastGlobalSeqNo + " -> " + globalSeqNo;
+        if (clusterSeqNo != lastClusterSeqNo + 1) {
+            fault = "gap: " + lastClusterSeqNo + " -> " + clusterSeqNo;
             return false;
         }
-        lastGlobalSeqNo = globalSeqNo;
+        lastClusterSeqNo = clusterSeqNo;
         return true;
     }
 }

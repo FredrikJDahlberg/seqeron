@@ -17,7 +17,7 @@
 # here directly rather than as one random outcome among many. Member 0 is restarted: with no snapshots,
 # recovery is a full-log replay onto a BRAND NEW queue publication/recording, leaving the pre-restart recording
 # stopped beside it. A fresh client (same clientId) must then catch up from the new recording alone: it
-# starts at globalSeqNo 1 and holds the whole log, so the old one is never served.
+# starts at clusterSeqNo 1 and holds the whole log, so the old one is never served.
 #
 # Java only — no C++ binary is built or launched: the backlog is
 # ClusterProbe submit and the client is ClusterProbe follow, which attaches to the member's own media

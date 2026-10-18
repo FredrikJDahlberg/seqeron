@@ -6,7 +6,7 @@
 // archive, its queue and its Replayer are simulated, a seeded generator drives faults through them, and the
 // two properties recovery exists to provide are asserted over whatever comes out.
 //
-// Safety   — every dispatched frame is the next globalSeqNo, always. No gap, no duplicate, no reordering,
+// Safety   — every dispatched frame is the next clusterSeqNo, always. No gap, no duplicate, no reordering,
 //            at any point in any run. This is the invariant the whole walk/resume/retain machinery is for,
 //            and it is checked on every dispatch, so a violation names the frame that broke it.
 // Liveness — once the faults stop, recovery converges: caught up, at the tip, having dispatched every frame
@@ -97,7 +97,7 @@ struct SilentLoggerSink final : diag::LoggerSink
 
 // One frame carrying a ClusterHeartbeat — the cheapest well-formed frame there is, and the same one the
 // named suite uses.
-std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
+std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t clusterSeqNo)
 {
     std::vector<std::uint8_t> buf(256, 0);
     frm::ClusterHeartbeat frame;
@@ -107,8 +107,8 @@ std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
         .connectionId(0)
         .sessionId(0)
         .systemEventType(protocol::CLUSTER_HEARTBEAT)
-        .globalSeqNo(globalSeqNo)
-        .timestamp(globalSeqNo * 1000);
+        .clusterSeqNo(clusterSeqNo)
+        .timestamp(clusterSeqNo * 1000);
     buf.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return buf;
 }
@@ -152,7 +152,7 @@ struct Simulation final
     void execute()
     {
         // History before the client starts. A cold start over an EMPTY archive that then drops the very
-        // first queue frame is the one designed abort — the first frame observed must be globalSeqNo 1 — and
+        // first queue frame is the one designed abort — the first frame observed must be clusterSeqNo 1 — and
         // not a recovery failure, so the model does not construct it.
         if (restoring)
         {
@@ -200,18 +200,18 @@ struct Simulation final
 
         EXPECT_FALSE(recovery.fault().has_value()) << tag << ": " << recovery.fault().value_or("");
         EXPECT_TRUE(recovery.isCaughtUp()) << tag << ": never re-converged after the faults stopped";
-        EXPECT_EQ(tip, recovery.lastGlobalSeqNo()) << tag << ": converged short of the tip";
+        EXPECT_EQ(tip, recovery.lastClusterSeqNo()) << tag << ": converged short of the tip";
         EXPECT_EQ(tip + 1, expectedNext) << tag << ": caught up without having dispatched every frame";
         if (restoring)
         {
             std::int64_t count = 0;
             std::int64_t sum = 0;
-            for (std::int64_t globalSeqNo = 1; globalSeqNo <= tip; ++globalSeqNo)
+            for (std::int64_t clusterSeqNo = 1; clusterSeqNo <= tip; ++clusterSeqNo)
             {
-                if (!frames.contains(globalSeqNo))
+                if (!frames.contains(clusterSeqNo))
                 {
                     ++count;
-                    sum += globalSeqNo;
+                    sum += clusterSeqNo;
                 }
             }
             EXPECT_EQ(count, heartbeats) << tag << ": restored state plus the tail is not the full replay's";
@@ -253,23 +253,23 @@ struct Simulation final
         frames.emplace(publish(), std::move(frame));
     }
 
-    // Where frame globalSeqNo starts in the active recording: frame 1 at 0.
-    static std::int64_t positionOf(const std::int64_t globalSeqNo)
+    // Where frame clusterSeqNo starts in the active recording: frame 1 at 0.
+    static std::int64_t positionOf(const std::int64_t clusterSeqNo)
     {
-        return (globalSeqNo - 1) * STRIDE;
+        return (clusterSeqNo - 1) * STRIDE;
     }
 
-    void deliver(const std::int64_t globalSeqNo, const bool fromReplay)
+    void deliver(const std::int64_t clusterSeqNo, const bool fromReplay)
     {
-        const auto special = frames.find(globalSeqNo);
-        rf::Bytes buf = special != frames.end() ? special->second : encodeHeartbeat(globalSeqNo);
-        recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), positionOf(globalSeqNo), /*receiveNs=*/0,
+        const auto special = frames.find(clusterSeqNo);
+        rf::Bytes buf = special != frames.end() ? special->second : encodeHeartbeat(clusterSeqNo);
+        recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), positionOf(clusterSeqNo), /*receiveNs=*/0,
                          fromReplay);
     }
 
     bool converged() const
     {
-        return recovery.isCaughtUp() && recovery.lastGlobalSeqNo() == tip;
+        return recovery.isCaughtUp() && recovery.lastClusterSeqNo() == tip;
     }
 
     void chaosStep()
@@ -280,11 +280,11 @@ struct Simulation final
             case 1:
             case 2:
             case 3: {
-                const std::int64_t globalSeqNo = publish();
+                const std::int64_t clusterSeqNo = publish();
                 // A queue drop is the fault the whole resume path exists for, so it is the common one.
                 if (!chance(20))
                 {
-                    deliverQueue(globalSeqNo);
+                    deliverQueue(clusterSeqNo);
                 }
                 break;
             }
@@ -338,10 +338,10 @@ struct Simulation final
         return ++tip;
     }
 
-    void deliverQueue(const std::int64_t globalSeqNo)
+    void deliverQueue(const std::int64_t clusterSeqNo)
     {
-        lastLive = globalSeqNo;
-        deliver(globalSeqNo, /*fromReplay=*/false);
+        lastLive = clusterSeqNo;
+        deliver(clusterSeqNo, /*fromReplay=*/false);
     }
 
     // ── the Replayer ──────────────────────────────────────────────────────────────────────────────────
@@ -448,17 +448,17 @@ struct Simulation final
 
     void onSequenced(const SequencedEvent& event)
     {
-        if (event.globalSeqNo != expectedNext || event.globalSeqNo > tip)
+        if (event.clusterSeqNo != expectedNext || event.clusterSeqNo > tip)
         {
             broken = true; // stops the run rather than reporting the same break once per remaining frame
-            ADD_FAILURE() << tag << ": dispatched globalSeqNo " << event.globalSeqNo << ", expected " << expectedNext
+            ADD_FAILURE() << tag << ": dispatched clusterSeqNo " << event.clusterSeqNo << ", expected " << expectedNext
                           << " (tip " << tip << ")";
         }
-        expectedNext = event.globalSeqNo + 1;
-        if (!frames.contains(event.globalSeqNo))
+        expectedNext = event.clusterSeqNo + 1;
+        if (!frames.contains(event.clusterSeqNo))
         {
             ++heartbeats;
-            heartbeatSum += event.globalSeqNo;
+            heartbeatSum += event.clusterSeqNo;
         }
     }
 
@@ -508,10 +508,10 @@ struct Simulation final
     helpers::TempDirectory directory;
     SnapshotStore store{ directory.path() };
 
-    // every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds
+    // every frame that is not a heartbeat, by clusterSeqNo: the snapshot rounds
     std::map<std::int64_t, rf::Bytes> frames;
 
-    // the state: how many heartbeats, and the sum of their globalSeqNos — restored, then folded
+    // the state: how many heartbeats, and the sum of their clusterSeqNos — restored, then folded
     std::int64_t heartbeats = 0;
     std::int64_t heartbeatSum = 0;
     std::int32_t nextRecordIndex = 0;
@@ -524,11 +524,11 @@ struct Simulation final
     std::int64_t pendingFromPosition = 0;
     std::int64_t nextSessionId = 1;
 
-    // next globalSeqNo the open replay will deliver; replayEndSeqNo < 0 means none is open
+    // next clusterSeqNo the open replay will deliver; replayEndSeqNo < 0 means none is open
     std::int64_t replayCursor = 0;
     std::int64_t replayEndSeqNo = -1;
 
-    std::int64_t lastLive = 0; // last globalSeqNo the queue delivered — what a redelivery re-offers
+    std::int64_t lastLive = 0; // last clusterSeqNo the queue delivered — what a redelivery re-offers
     std::int64_t clockMs = CLOCK_MS;
     bool chaos = true;
     bool broken = false;

@@ -149,14 +149,14 @@ class ConformanceTest {
         assertEquals(4, SequencedHeaderDecoder.connectionIdEncodingOffset());
         assertEquals(8, SequencedHeaderDecoder.sessionIdEncodingOffset());
         assertEquals(16, SequencedHeaderDecoder.payloadIdEncodingOffset());
-        assertEquals(18, SequencedHeaderDecoder.globalSeqNoEncodingOffset());
+        assertEquals(18, SequencedHeaderDecoder.clusterSeqNoEncodingOffset());
         assertEquals(26, SequencedHeaderDecoder.timestampEncodingOffset());
 
         assertEquals(0, SequencedSystemHeaderDecoder.sourceIdEncodingOffset());
         assertEquals(4, SequencedSystemHeaderDecoder.connectionIdEncodingOffset());
         assertEquals(8, SequencedSystemHeaderDecoder.sessionIdEncodingOffset());
         assertEquals(16, SequencedSystemHeaderDecoder.systemEventTypeEncodingOffset());
-        assertEquals(18, SequencedSystemHeaderDecoder.globalSeqNoEncodingOffset());
+        assertEquals(18, SequencedSystemHeaderDecoder.clusterSeqNoEncodingOffset());
         assertEquals(26, SequencedSystemHeaderDecoder.timestampEncodingOffset());
     }
 
@@ -395,7 +395,7 @@ class ConformanceTest {
     @DisplayName("row 4 condition 10: a frame failing S-6 is refused")
     void conditionTenS6() {
         loadList(sequencer, 1);
-        final long before = sequencer.globalSeqNo();
+        final long before = sequencer.clusterSeqNo();
         final int length = systemFrame(SystemFrame.GATEWAY_STARTED, LISTED_SOURCE_ID, gatewayStartedBody(99));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
                        "a gatewayId no list row names", before);
@@ -418,7 +418,7 @@ class ConformanceTest {
         final int good = payloadFrame(PAYLOAD_ID, SOURCE_ID, payload);
         assertTrue(sequencer.sequenceMessage(ingress, 0, good, SESSION_ID, TIMESTAMP),
                    "the rejections left no deny list behind (C-2)");
-        assertEquals(1, sequencer.globalSeqNo(), "and cost no sequence number");
+        assertEquals(1, sequencer.clusterSeqNo(), "and cost no sequence number");
         assertArrayEquals(payload, copy(wrapSequenced().buffer(), wrapSequenced().payloadOffset(), payload.length));
         assertEquals(2, sequencer.rejectedFrameCount());
     }
@@ -528,39 +528,39 @@ class ConformanceTest {
         queue.add(queueSynthesized(7, SessionClosedDecoder.TEMPLATE_ID, SystemFrame.SESSION_CLOSED));
 
         // A consumer that recognises none of them still reads every one, and tracks continuity across all
-        // seven: the read is branch-free because globalSeqNo sits at 18 on every sequenced message (F-3).
+        // seven: the read is branch-free because clusterSeqNo sits at 18 on every sequenced message (F-3).
         long expected = 1;
         for (final byte[] frame : queue) {
             final SequencedFrameDecoder view = new SequencedFrameDecoder();
             assertTrue(view.wrap(new org.agrona.concurrent.UnsafeBuffer(frame), 0, frame.length),
-                       "globalSeqNo " + expected + " is not readable, so P-3 would lose it");
-            assertEquals(expected, view.globalSeqNo(), "continuity does not depend on payload comprehension");
+                       "clusterSeqNo " + expected + " is not readable, so P-3 would lose it");
+            assertEquals(expected, view.clusterSeqNo(), "continuity does not depend on payload comprehension");
             expected++;
         }
 
-        // And an empty payload is a frame like any other: it names no message, but it holds a globalSeqNo.
+        // And an empty payload is a frame like any other: it names no message, but it holds a clusterSeqNo.
         final byte[] empty = queuePayloadFrame(8, 4095, new byte[0]);
         final SequencedFrameDecoder view = new SequencedFrameDecoder();
         assertTrue(view.wrap(new org.agrona.concurrent.UnsafeBuffer(empty), 0, empty.length));
-        assertEquals(8, view.globalSeqNo());
+        assertEquals(8, view.clusterSeqNo());
         assertEquals(0, view.templateId(), "no inner declaration, so nothing can dispatch on it (P-1)");
     }
 
-    /** One synthesized message, built directly so its globalSeqNo is the fixture's rather than a sequencer's. */
-    private static byte[] queueSynthesized(final long globalSeqNo, final int templateId, final int systemEventType) {
+    /** One synthesized message, built directly so its clusterSeqNo is the fixture's rather than a sequencer's. */
+    private static byte[] queueSynthesized(final long clusterSeqNo, final int templateId, final int systemEventType) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(64);
         if (templateId == ClusterHeartbeatDecoder.TEMPLATE_ID) {
             final org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder encoder =
                 new org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder();
             encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-            stampSynthesized(encoder.header(), systemEventType, globalSeqNo);
+            stampSynthesized(encoder.header(), systemEventType, clusterSeqNo);
             return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
         }
         if (templateId == LeadershipChangedDecoder.TEMPLATE_ID) {
             final org.limitless.seqeron.sbe.frame.LeadershipChangedEncoder encoder =
                 new org.limitless.seqeron.sbe.frame.LeadershipChangedEncoder();
             encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-            stampSynthesized(encoder.header(), systemEventType, globalSeqNo);
+            stampSynthesized(encoder.header(), systemEventType, clusterSeqNo);
             encoder.newLeaderMemberId(1);
             encoder.leadershipTermId(1);
             return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
@@ -569,7 +569,7 @@ class ConformanceTest {
             final org.limitless.seqeron.sbe.frame.SnapshotStartedEncoder encoder =
                 new org.limitless.seqeron.sbe.frame.SnapshotStartedEncoder();
             encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-            stampSynthesized(encoder.header(), systemEventType, globalSeqNo);
+            stampSynthesized(encoder.header(), systemEventType, clusterSeqNo);
             encoder.round(1);
             return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
         }
@@ -577,22 +577,22 @@ class ConformanceTest {
             final org.limitless.seqeron.sbe.frame.SessionClosedEncoder encoder =
                 new org.limitless.seqeron.sbe.frame.SessionClosedEncoder();
             encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-            stampSynthesized(encoder.header(), systemEventType, globalSeqNo);
+            stampSynthesized(encoder.header(), systemEventType, clusterSeqNo);
             encoder.clusterSessionId(SESSION_ID);
             return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
         }
         final org.limitless.seqeron.sbe.frame.GatewayActiveEncoder encoder =
             new org.limitless.seqeron.sbe.frame.GatewayActiveEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-        stampSynthesized(encoder.header(), systemEventType, globalSeqNo);
+        stampSynthesized(encoder.header(), systemEventType, clusterSeqNo);
         encoder.gatewayId(11);
         return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
     private static void stampSynthesized(final org.limitless.seqeron.sbe.frame.SequencedSystemHeaderEncoder header,
-                                         final int systemEventType, final long globalSeqNo) {
+                                         final int systemEventType, final long clusterSeqNo) {
         header.sourceId(-1).connectionId(-1).sessionId(-1).systemEventType(systemEventType)
-            .globalSeqNo(globalSeqNo).timestamp(TIMESTAMP);
+            .clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
     }
 
     // ── Row 8. S-6's four cases ──────────────────────────────────────────────────────────────────
@@ -668,13 +668,13 @@ class ConformanceTest {
         assertEquals(11, lastGatewayActive(), "bootstrap designates rank 0, and only rank 0");
         assertEquals(4, frames.count(), "and nothing else");
 
-        // The operator's request is forwarded, and answered one globalSeqNo behind it.
+        // The operator's request is forwarded, and answered one clusterSeqNo behind it.
         final int request = systemFrame(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, CLUSTERCTL_SOURCE_ID,
                                         activationRequestedBody(12));
         assertTrue(sequencer.sequenceMessage(ingress, 0, request, SESSION_ID, TIMESTAMP));
         final SequencedFrameDecoder forwarded = wrapSequenced(frames.frame(4), frames.length(4));
         assertEquals(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, forwarded.systemEventType());
-        assertEquals(forwarded.globalSeqNo() + 1, sequencer.globalSeqNo(), "the answer sits one behind the request");
+        assertEquals(forwarded.clusterSeqNo() + 1, sequencer.clusterSeqNo(), "the answer sits one behind the request");
         assertEquals(12, lastGatewayActive());
 
         // Rank 1 binds and loses it: rank 0 comes back — lowest-rank-excluding, not next-rank-up.
@@ -719,10 +719,11 @@ class ConformanceTest {
         register(sole, 21, 6, (short)0, 0);
         assertEquals(21, gatewayActiveAt(soleFrames, soleFrames.count() - 1));
         bind(sole, 21, 200L);
-        final long before = sole.globalSeqNo();
+        final long before = sole.clusterSeqNo();
         assertFalse(sole.sessionClosed(200L, TIMESTAMP));
         assertEquals(1L, sole.gatewayPromotionFailedCount(), "a gateway's session closed with nobody to promote");
-        assertEquals(before + 1, sole.globalSeqNo(), "no sibling, so no GatewayActive: only the close's SessionClosed");
+        assertEquals(before + 1, sole.clusterSeqNo(),
+                     "no sibling, so no GatewayActive: only the close's SessionClosed");
     }
 
     @Test
@@ -788,25 +789,25 @@ class ConformanceTest {
     }
 
     /** A queue-side {@code Sequenced} frame, built directly rather than through the sequencer. */
-    private static byte[] queuePayloadFrame(final long globalSeqNo, final int payloadId, final byte[] payload) {
+    private static byte[] queuePayloadFrame(final long clusterSeqNo, final int payloadId, final byte[] payload) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(payload.length + 64);
         final org.limitless.seqeron.sbe.frame.SequencedEncoder encoder =
             new org.limitless.seqeron.sbe.frame.SequencedEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(payloadId)
-            .globalSeqNo(globalSeqNo).timestamp(TIMESTAMP);
+            .clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
         encoder.putPayload(new org.agrona.concurrent.UnsafeBuffer(payload), 0, payload.length);
         return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
     /** The same for the submitted system family. */
-    private static byte[] queueSystemFrame(final long globalSeqNo, final int systemEventType, final byte[] body) {
+    private static byte[] queueSystemFrame(final long clusterSeqNo, final int systemEventType, final byte[] body) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(body.length + 64);
         final org.limitless.seqeron.sbe.frame.SequencedSystemEncoder encoder =
             new org.limitless.seqeron.sbe.frame.SequencedSystemEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID)
-            .systemEventType(systemEventType).globalSeqNo(globalSeqNo).timestamp(TIMESTAMP);
+            .systemEventType(systemEventType).clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
         encoder.putBody(new org.agrona.concurrent.UnsafeBuffer(body), 0, body.length);
         return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
@@ -939,11 +940,11 @@ class ConformanceTest {
 
     /** Asserts a rejection cost nothing: no frame, no sequence number, no synthesis, one counter tick. */
     private void assertRejected(final java.util.function.BooleanSupplier call) {
-        assertRejected(call, "", sequencer.globalSeqNo());
+        assertRejected(call, "", sequencer.clusterSeqNo());
     }
 
     private void assertRejected(final java.util.function.BooleanSupplier call, final String what) {
-        assertRejected(call, what, sequencer.globalSeqNo());
+        assertRejected(call, what, sequencer.clusterSeqNo());
     }
 
     private void assertRejected(final java.util.function.BooleanSupplier call, final String what,
@@ -951,7 +952,7 @@ class ConformanceTest {
         final long rejectedBefore = sequencer.rejectedFrameCount();
         final int published = frames.count();
         assertFalse(call.getAsBoolean(), what);
-        assertEquals(before, sequencer.globalSeqNo(), what + ": globalSeqNo must not move (S-5)");
+        assertEquals(before, sequencer.clusterSeqNo(), what + ": clusterSeqNo must not move (S-5)");
         assertEquals(published, frames.count(), what + ": nothing at all is emitted, not even behind the rejection");
         assertEquals(rejectedBefore + 1, sequencer.rejectedFrameCount(), what + ": one counter tick (S-7)");
     }
@@ -1002,7 +1003,7 @@ class ConformanceTest {
         final MutableDirectBuffer buffer = new ExpandableArrayBuffer(64);
         new org.limitless.seqeron.sbe.frame.SequencedHeaderEncoder().wrap(buffer, 0)
             .sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(PAYLOAD_ID)
-            .globalSeqNo(9).timestamp(TIMESTAMP);
+            .clusterSeqNo(9).timestamp(TIMESTAMP);
         return copy(buffer, 0, SequencedHeaderDecoder.ENCODED_LENGTH);
     }
 
@@ -1010,7 +1011,7 @@ class ConformanceTest {
         final MutableDirectBuffer buffer = new ExpandableArrayBuffer(64);
         new org.limitless.seqeron.sbe.frame.SequencedSystemHeaderEncoder().wrap(buffer, 0)
             .sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).systemEventType(PAYLOAD_ID)
-            .globalSeqNo(9).timestamp(TIMESTAMP);
+            .clusterSeqNo(9).timestamp(TIMESTAMP);
         return copy(buffer, 0, SequencedSystemHeaderDecoder.ENCODED_LENGTH);
     }
 

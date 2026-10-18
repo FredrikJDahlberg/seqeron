@@ -15,7 +15,7 @@ public interface IGatewayListener
     /// designation, and before <see cref="OnFenced"/> when this instance fences while serving.</summary>
     void OnStandby();
 
-    /// <summary>One application payload off this node's queue, in <c>globalSeqNo</c> order.</summary>
+    /// <summary>One application payload off this node's queue, in <c>clusterSeqNo</c> order.</summary>
     void OnSequenced(Payload payload);
 
     /// <summary>This logical gateway took a connection, whichever instance issued it. A consumer that keeps
@@ -28,7 +28,7 @@ public interface IGatewayListener
     void OnConnectionClosed(int connectionId);
 
     /// <summary>Every transition to caught-up, the first included.</summary>
-    void OnCaughtUp(long globalSeqNo);
+    void OnCaughtUp(long clusterSeqNo);
 
     /// <summary>
     /// The cluster clock's tick (spec §7), once a second. It is the one time source that keeps advancing while every

@@ -73,7 +73,7 @@ class FailoverConfirmTest {
             producer.assertExactlyOnceInOrder();
 
             cluster.start(leader); // its recording rebuilds over the full-log replay
-            QueueRecordings.assertOneLog(cluster.archives(), producer.lastGlobalSeqNo());
+            QueueRecordings.assertOneLog(cluster.archives(), producer.lastClusterSeqNo());
         }
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");

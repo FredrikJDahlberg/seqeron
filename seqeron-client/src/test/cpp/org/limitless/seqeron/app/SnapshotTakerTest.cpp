@@ -119,7 +119,7 @@ struct Instances
     int keepAlives = 0;
 };
 
-// A round's SnapshotStarted: cut at globalSeqNo round * 10.
+// A round's SnapshotStarted: cut at clusterSeqNo round * 10.
 void started(SnapshotTaker& taker, const std::int64_t round, const protocol::SnapshotHeader& header,
              const bool mayPublish)
 {
@@ -190,7 +190,7 @@ TEST(SnapshotTaker, TheRoundsFileHoldsTheHeaderTheRecordsAndTheCutThePublisherSu
     EXPECT_EQ(3, reader->recordCount());
     EXPECT_EQ(static_cast<std::uint64_t>(end.length), reader->length());
     EXPECT_EQ(end.crc32c, reader->crc32c());
-    EXPECT_EQ(70, reader->cutGlobalSeqNo());
+    EXPECT_EQ(70, reader->cutClusterSeqNo());
     EXPECT_EQ(70 * 1024, reader->cutPosition());
     EXPECT_EQ(70'000, reader->cutTimestampNs());
     const auto records = readAll(*reader);

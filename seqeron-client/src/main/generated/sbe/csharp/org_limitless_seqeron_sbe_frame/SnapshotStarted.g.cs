@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// Starts a snapshot round: every participating source serializes its state as of this                               frame's globalSeqNo, the round's cut (doc/snapshot.md §3)
+    /// Starts a snapshot round: every participating source serializes its state as of this                               frame's clusterSeqNo, the round's cut (doc/snapshot.md §3)
     /// </summary>
     public sealed partial class SnapshotStarted
     {

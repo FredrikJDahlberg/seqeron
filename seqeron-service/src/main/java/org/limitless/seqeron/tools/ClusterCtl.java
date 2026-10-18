@@ -148,13 +148,13 @@ public final class ClusterCtl {
     private static int start() {
         final long correlationId = System.nanoTime();
         try (Session session = new Session()) {
-            final long globalSeqNo =
+            final long clusterSeqNo =
                 publishMarkerAndAwaitEcho(session, SystemFrame.CLUSTER_STARTED, correlationId);
-            if (globalSeqNo < 0) {
+            if (clusterSeqNo < 0) {
                 System.err.println("[clusterctl] start: no sequenced ClusterStarted echo within timeout");
                 return 1;
             }
-            System.out.printf("[clusterctl] start: system-started recorded at globalSeqNo=%d%n", globalSeqNo);
+            System.out.printf("[clusterctl] start: system-started recorded at clusterSeqNo=%d%n", clusterSeqNo);
             return 0;
         } catch (final Exception ex) {
             System.err.println("[clusterctl] start: no elected leader / cluster unreachable (" + ex.getMessage() + ")");
@@ -170,12 +170,12 @@ public final class ClusterCtl {
 
         final long correlationId = System.nanoTime();
         try (Session session = new Session()) {
-            final long globalSeqNo =
+            final long clusterSeqNo =
                 publishMarkerAndAwaitEcho(session, SystemFrame.CLUSTER_STOPPED, correlationId);
-            if (globalSeqNo < 0) {
+            if (clusterSeqNo < 0) {
                 System.err.println("[clusterctl] shutdown: no ClusterStopped echo within timeout — aborting anyway");
             } else {
-                System.out.printf("[clusterctl] shutdown: system-stopped recorded at globalSeqNo=%d%n", globalSeqNo);
+                System.out.printf("[clusterctl] shutdown: system-stopped recorded at clusterSeqNo=%d%n", clusterSeqNo);
             }
         } catch (final Exception ex) {
             System.err.println("[clusterctl] shutdown: could not publish ClusterStopped (" + ex.getMessage() +
@@ -208,14 +208,14 @@ public final class ClusterCtl {
         }
 
         try (Session session = new Session()) {
-            final long globalSeqNo = publishGatewayActiveAndAwaitEcho(session, gatewayId);
-            if (globalSeqNo < 0) {
+            final long clusterSeqNo = publishGatewayActiveAndAwaitEcho(session, gatewayId);
+            if (clusterSeqNo < 0) {
                 System.err.println("[clusterctl] activate: no synthesized GatewayActive within timeout — is "
                                + "<gatewayId> a list row?");
                 return 1;
             }
-            System.out.printf("[clusterctl] activate: GatewayActive(gatewayId=%d) recorded at globalSeqNo=%d%n",
-                              gatewayId, globalSeqNo);
+            System.out.printf("[clusterctl] activate: GatewayActive(gatewayId=%d) recorded at clusterSeqNo=%d%n",
+                              gatewayId, clusterSeqNo);
             return 0;
         } catch (final Exception ex) {
             System.err.println("[clusterctl] activate: no elected leader / cluster unreachable (" + ex.getMessage() +
@@ -226,7 +226,7 @@ public final class ClusterCtl {
 
     /**
      * Publishes {@code SnapshotRequested} and waits for the {@code SnapshotStarted} the sequencer synthesizes at
-     * the next {@code globalSeqNo}; none follows when the loaded topology has no {@code <snapshots>}.
+     * the next {@code clusterSeqNo}; none follows when the loaded topology has no {@code <snapshots>}.
      */
     private static int requestSnapshot() {
         final long correlationId = System.nanoTime();
@@ -245,7 +245,7 @@ public final class ClusterCtl {
                       + "<snapshots> element?");
                 return 1;
             }
-            System.out.printf("[clusterctl] request-snapshot: round %d started at globalSeqNo=%d%n", started.round,
+            System.out.printf("[clusterctl] request-snapshot: round %d started at clusterSeqNo=%d%n", started.round,
                               cut);
             return 0;
         } catch (final Exception ex) {
@@ -257,7 +257,7 @@ public final class ClusterCtl {
 
     /**
      * Matches our {@code SnapshotRequested} by correlationId, then the {@code SnapshotStarted} at the {@code
-     * globalSeqNo} just behind it. One handler for both, since one poll can deliver the two together.
+     * clusterSeqNo} just behind it. One handler for both, since one poll can deliver the two together.
      */
     private static final class SnapshotStartedEchoHandler extends EchoHandler {
         private final ClusterStartedDecoder marker = new ClusterStartedDecoder();
@@ -282,11 +282,11 @@ public final class ClusterCtl {
                 marker.wrap(buffer, view.payloadOffset(), ClusterStartedDecoder.BLOCK_LENGTH,
                             MessageHeaderDecoder.SCHEMA_VERSION);
                 if (marker.correlationId() == correlationId) {
-                    requestSeqNo = view.globalSeqNo();
+                    requestSeqNo = view.clusterSeqNo();
                 }
                 return false;
             }
-            if (requestSeqNo < 0 || view.globalSeqNo() != requestSeqNo + 1) {
+            if (requestSeqNo < 0 || view.clusterSeqNo() != requestSeqNo + 1) {
                 return false;
             }
             decoder.wrap(buffer, view.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
@@ -320,14 +320,14 @@ public final class ClusterCtl {
         }
 
         try (Session session = new Session()) {
-            final long globalSeqNo = publishTopologyAndAwaitEcho(session, topology);
-            if (globalSeqNo < 0) {
+            final long clusterSeqNo = publishTopologyAndAwaitEcho(session, topology);
+            if (clusterSeqNo < 0) {
                 System.err.println("[clusterctl] load-topology: no sequenced GatewayRegistered echo within timeout");
                 return 1;
             }
             System.out.printf("[clusterctl] load-topology: %d gateway row(s) recorded, list complete at "
-                              + "globalSeqNo=%d; %d application row(s) and %d protocol row(s) registered%s%n",
-                              topology.gateways().size(), globalSeqNo, topology.applications().size(),
+                              + "clusterSeqNo=%d; %d application row(s) and %d protocol row(s) registered%s%n",
+                              topology.gateways().size(), clusterSeqNo, topology.applications().size(),
                               topology.protocols().size(),
                               topology.snapshots() == null ? ""
                                   : "; snapshot interval " + topology.snapshots().intervalSeconds() + " s");
@@ -412,7 +412,7 @@ public final class ClusterCtl {
 
     /**
      * Publishes {@code GatewayActivationRequested(gatewayId)} and reads the queue for the {@code GatewayActive}
-     * behind it, matched by {@code gatewayId}. Returns its globalSeqNo, or -1 on timeout.
+     * behind it, matched by {@code gatewayId}. Returns its clusterSeqNo, or -1 on timeout.
      */
     private static long publishGatewayActiveAndAwaitEcho(final Session session, final int gatewayId) {
         final Subscription queue = awaitQueue(session);
@@ -519,7 +519,7 @@ public final class ClusterCtl {
 
     /**
      * Publishes the marker for {@code systemEventType} with {@code correlationId}, then reads the queue for its
-     * echo. Returns the assigned globalSeqNo, or -1 on timeout.
+     * echo. Returns the assigned clusterSeqNo, or -1 on timeout.
      */
     private static long publishMarkerAndAwaitEcho(final Session session, final int systemEventType,
                                                   final long correlationId) {
@@ -548,7 +548,7 @@ public final class ClusterCtl {
     /**
      * Reads the queue until {@code handler} sees its echo, or {@link #ECHO_TIMEOUT_NS} passes, polling egress
      * alongside so the publishing session stays alive.
-     * @return the echoed frame's globalSeqNo, or -1 on timeout
+     * @return the echoed frame's clusterSeqNo, or -1 on timeout
      */
     private static long awaitEcho(final Session session, final Subscription queue, final EchoHandler handler) {
         final FragmentAssembler assembler = new FragmentAssembler(handler);
@@ -558,7 +558,7 @@ public final class ClusterCtl {
             session.sender.pollEgress();
             IDLE.idle(fragments);
         }
-        return handler.found ? handler.globalSeqNo : -1;
+        return handler.found ? handler.clusterSeqNo : -1;
     }
 
     /** Waits for one sequenced echo of a marker this tool published; subclasses say which frame is theirs. */
@@ -566,7 +566,7 @@ public final class ClusterCtl {
         final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final int systemEventType;
         private boolean found;
-        private long globalSeqNo;
+        private long clusterSeqNo;
 
         EchoHandler(final int systemEventType) {
             this.systemEventType = systemEventType;
@@ -587,7 +587,7 @@ public final class ClusterCtl {
                 return;
             }
             if (matches(buffer)) {
-                globalSeqNo = view.globalSeqNo();
+                clusterSeqNo = view.clusterSeqNo();
                 found = true;
             }
         }

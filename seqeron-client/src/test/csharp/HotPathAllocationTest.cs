@@ -37,10 +37,10 @@ public class HotPathAllocationTest
         var offsets = new List<int>();
         var lengths = new List<int>();
         var queue = new List<byte>();
-        for (long globalSeqNo = 1; globalSeqNo <= 2 * Frames; globalSeqNo++)
+        for (long clusterSeqNo = 1; clusterSeqNo <= 2 * Frames; clusterSeqNo++)
         {
-            byte[] frame = globalSeqNo % 2 == 0 ? Protocol.Frames.ClusterHeartbeat(globalSeqNo)
-                                                : Protocol.Frames.Payload(globalSeqNo, 32);
+            byte[] frame = clusterSeqNo % 2 == 0 ? Protocol.Frames.ClusterHeartbeat(clusterSeqNo)
+                                                : Protocol.Frames.Payload(clusterSeqNo, 32);
             offsets.Add(queue.Count);
             lengths.Add(frame.Length);
             queue.AddRange(frame);
@@ -53,7 +53,7 @@ public class HotPathAllocationTest
         Deliver(recovery, buffer, offsets, lengths, Frames);
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        Assert.Equal(2 * Frames, recovery.LastGlobalSeqNo);
+        Assert.Equal(2 * Frames, recovery.LastClusterSeqNo);
         Assert.Equal(0, allocated);
     }
 

@@ -10,7 +10,7 @@ namespace Org.Limitless.Seqeron.App;
 /// A payload that carries no header (spec §13.2) is addressed by <see cref="PayloadOffset"/> instead.
 /// <para>Nothing of seqeron's own vocabulary reaches here — the system family is the façade's business, and a frame
 /// of it never arrives as a payload. What is left is the payload's identity in the total order
-/// (<see cref="GlobalSeqNo"/>), who sent it and on whose behalf (<see cref="SourceId"/>,
+/// (<see cref="ClusterSeqNo"/>), who sent it and on whose behalf (<see cref="SourceId"/>,
 /// <see cref="ConnectionId"/>), the consensus clock it was stamped with, and the bytes.</para>
 /// <para>Dispatch on <c>(PayloadId, TemplateId)</c>, never <c>TemplateId</c> alone: template ids are unique per
 /// schema, so two applications' templates can collide.</para>
@@ -30,7 +30,7 @@ public sealed class Payload
     }
 
     /// <summary>Cluster-wide monotone sequence number; increments by exactly one per frame.</summary>
-    public long GlobalSeqNo => _event.GlobalSeqNo;
+    public long ClusterSeqNo => _event.ClusterSeqNo;
 
     /// <summary>The producer that submitted this frame (spec §5).</summary>
     public int SourceId => _event.SourceId;

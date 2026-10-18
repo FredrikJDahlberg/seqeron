@@ -309,11 +309,11 @@ after READY, and names them in `SEQERON_EXTRA_PROCESSES` so `stop-cluster.sh` sw
 ## Architecture
 
 ### Aeron Cluster sequencer — `SequencerServer` / `SequencerService` / `Sequencer`
-`Sequencer` is the replicated state machine proper — it owns `globalSeqNo` and every frame encode, has
+`Sequencer` is the replicated state machine proper — it owns `clusterSeqNo` and every frame encode, has
 no Aeron dependency, and is unit-tested directly (`SequencerTest`). `SequencerService`
 (`ClusteredService`) is its Aeron adapter: it decides *when* to call the sequencer and publishes what
 comes back, holding no replicated state itself. Every ingress message gets a cluster-wide monotone
-`globalSeqNo` plus the Raft consensus timestamp, then is republished on the **node-local queue**
+`clusterSeqNo` plus the Raft consensus timestamp, then is republished on the **node-local queue**
 (`QUEUE_CHANNEL` = `aeron:ipc?alias=seqeron-queue`, `QUEUE_STREAM_ID` = 205), which this node's co-located Aeron Archive
 records. Every frame on it is sequenced: the queue carries `Sequenced` envelopes and nothing else, and
 the sequencer is the stream's only publisher.
@@ -347,7 +347,7 @@ drops the frame and carries on. The same holds on the client side — `Image.pol
 fragment handler raises to the Aeron error handler and advances the subscriber position anyway — which is
 why a client records the fault and raises it from its own duty cycle instead.
 
-Besides forwarded ingress, the sequencer synthesizes its own frames on the same `globalSeqNo` counter:
+Besides forwarded ingress, the sequencer synthesizes its own frames on the same `clusterSeqNo` counter:
 `SessionClosed` (one per cluster session close: nothing from that session reaches the log after it),
 `LeadershipChanged` (one per term, same leader or not), and a **1 Hz `ClusterHeartbeat`** (`Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS`) — the cluster
 clock, so consumers have a consensus-driven time source that keeps advancing while a producer is silent,
@@ -355,7 +355,7 @@ which is exactly when a gateway's keepalive watchdog must probe.
 
 **Cluster snapshots are not supported**, and both `ClusteredService` hooks refuse: `onTakeSnapshot` throws, and
 `onStart` refuses a snapshot image rather than restoring from one. `clusterctl shutdown` uses `ABORT`,
-and a node's recovery is always full-log replay from `globalSeqNo` 1. That is deliberate: replaying the whole log
+and a node's recovery is always full-log replay from `clusterSeqNo` 1. That is deliberate: replaying the whole log
 is what keeps each node's queue recording complete and gap-free — a node restored from a snapshot would
 record only from wherever it resumed. The cost is that recovery time and archive size grow with uptime
 (the 1 Hz heartbeat alone is ~86.4k frames/day).
@@ -368,7 +368,7 @@ frame a producer sends. Every instance compares its own serialization with the s
 difference (spec §16 A-6, A-7); a match confirms its file, which only then is named `<round>.snapshot` and
 replaces every older one. A starting client restores in `ReplayerRecovery` from its newest confirmed file once a
 replay from the file's cut position opens on that cut — a file from a purged log fails it — then resumes after
-the cut; an instance with no such file replays from `globalSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
+the cut; an instance with no such file replays from `clusterSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
@@ -386,9 +386,9 @@ runs its own media driver and archive, and `AeronQueueRelay` copies a member's q
 archive replay, over UDP, that follows the member's active recording live. Its decisions are the pure
 **`QueueRelay`**, unit-tested the way `QueuePublisher` is. It republishes only the frame after the last one it
 published, so the host's queue is the log frame for frame, and on losing its member it resumes on the next
-at the same recording position — every member's active recording starts at `globalSeqNo` 1 and its
+at the same recording position — every member's active recording starts at `clusterSeqNo` 1 and its
 positions follow from the frames — falling back to that recording's start if the frame there is not the
-next one. Each start relays from `globalSeqNo` 1 into a new local recording, as a member's restart does, so
+next one. Each start relays from `clusterSeqNo` 1 into a new local recording, as a member's restart does, so
 the host's recording starts where a client checks it does. Clients there are unchanged: they attach to the host's
 Aeron directory with the host's node id (one no member uses) where they take a member id, and submit over UDP
 ingress — an `Application` with `offCluster` set, since no leadership there is its own, which makes it the

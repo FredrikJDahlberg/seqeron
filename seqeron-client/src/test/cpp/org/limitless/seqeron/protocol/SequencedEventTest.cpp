@@ -32,7 +32,7 @@ constexpr std::int32_t SOURCE_ID = 7;
 constexpr std::int32_t CONNECTION_ID = 42;
 constexpr std::int64_t SESSION_ID = 0x5EE51000LL;
 constexpr std::int64_t TIMESTAMP = 1700000000000LL;
-constexpr std::int64_t GLOBAL_SEQ_NO = 918;
+constexpr std::int64_t CLUSTER_SEQ_NO = 918;
 constexpr std::uint16_t PAYLOAD_ID = 2;
 
 // The payload's own declaration, which unwrapFrame reads off its 8-byte MessageHeader.
@@ -64,7 +64,7 @@ std::vector<char> payloadFrame()
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .payloadId(PAYLOAD_ID)
-        .globalSeqNo(GLOBAL_SEQ_NO)
+        .clusterSeqNo(CLUSTER_SEQ_NO)
         .timestamp(TIMESTAMP);
     frame.putPayload(payload.data(), static_cast<std::uint64_t>(payload.size()));
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
@@ -82,7 +82,7 @@ std::vector<char> systemFrame(std::uint16_t systemEventType, const std::vector<c
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .systemEventType(systemEventType)
-        .globalSeqNo(GLOBAL_SEQ_NO)
+        .clusterSeqNo(CLUSTER_SEQ_NO)
         .timestamp(TIMESTAMP);
     frame.putBody(body.data(), bodyLength);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
@@ -102,7 +102,7 @@ TEST(SequencedEventFactory, ApplicationFrameFieldByField)
 
     const SequencedEvent event = sequencedEventOf(view, RECEIVE_TIME_NS, POSITION);
 
-    EXPECT_EQ(GLOBAL_SEQ_NO, event.globalSeqNo);
+    EXPECT_EQ(CLUSTER_SEQ_NO, event.clusterSeqNo);
     EXPECT_EQ(SOURCE_ID, event.sourceId);
     EXPECT_EQ(CONNECTION_ID, event.connectionId);
     EXPECT_EQ(SESSION_ID, event.sourceSessionId);
@@ -133,7 +133,7 @@ TEST(SequencedEventFactory, SystemFrameNamesItsEventAndNoPayloadId)
     EXPECT_TRUE(event.system);
     EXPECT_EQ(GATEWAY_STARTED, event.systemEventType);
     EXPECT_EQ(0, event.payloadId);
-    EXPECT_EQ(GLOBAL_SEQ_NO, event.globalSeqNo);
+    EXPECT_EQ(CLUSTER_SEQ_NO, event.clusterSeqNo);
     EXPECT_EQ(SOURCE_ID, event.sourceId);
     EXPECT_EQ(CONNECTION_ID, event.connectionId);
     EXPECT_EQ(SESSION_ID, event.sourceSessionId);
@@ -149,7 +149,7 @@ TEST(SequencedEventFactory, LifecycleEventCarriesTheIdentityAndThePayload)
 
     const LifecycleEvent event = lifecycleEventOf(view, RECEIVE_TIME_NS);
 
-    EXPECT_EQ(GLOBAL_SEQ_NO, event.globalSeqNo);
+    EXPECT_EQ(CLUSTER_SEQ_NO, event.clusterSeqNo);
     EXPECT_EQ(SOURCE_ID, event.sourceId);
     EXPECT_EQ(CONNECTION_ID, event.connectionId);
     EXPECT_EQ(SESSION_ID, event.sourceSessionId);

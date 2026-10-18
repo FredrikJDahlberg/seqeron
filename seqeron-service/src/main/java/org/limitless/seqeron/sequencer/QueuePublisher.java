@@ -58,7 +58,7 @@ public final class QueuePublisher {
         Integer memberId();
 
         /** Where sequencing has reached, for the log lines. */
-        long globalSeqNo();
+        long clusterSeqNo();
     }
 
     /**
@@ -139,7 +139,7 @@ public final class QueuePublisher {
         if (wasStalled && !fatalSignalled) {
             actions.queueStalled(false);
             Logger.info(Logger.CoreComponent.Sequencer, actions.memberId(),
-                        "RECOVERED: queue back-pressure cleared at globalSeqNo=%d", actions.globalSeqNo());
+                        "RECOVERED: queue back-pressure cleared at clusterSeqNo=%d", actions.clusterSeqNo());
         }
     }
 
@@ -199,7 +199,7 @@ public final class QueuePublisher {
             return;
         }
         Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.QueueBackpressure, actions.memberId(),
-                     "ALERT: queue back-pressure at globalSeqNo=%d", actions.globalSeqNo());
+                     "ALERT: queue back-pressure at clusterSeqNo=%d", actions.clusterSeqNo());
         actions.queueBackPressureAlert();
         if (!actions.recordingActive()) {
             fatalQueueFailure("the local archive stopped recording the queue (recording " + actions.recordingId() + ")",
@@ -224,8 +224,8 @@ public final class QueuePublisher {
             actions.queueStalled(true);
             Logger.error(
                 Logger.CoreComponent.Sequencer, Logger.CoreEventCode.QueueBackpressure, actions.memberId(),
-                "STALLED: queue back-pressure sustained beyond %dms with no recording progress at globalSeqNo=%d",
-                TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), actions.globalSeqNo());
+                "STALLED: queue back-pressure sustained beyond %dms with no recording progress at clusterSeqNo=%d",
+                TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), actions.clusterSeqNo());
         }
     }
 
@@ -256,9 +256,9 @@ public final class QueuePublisher {
         }
         fatalSignalled = true;
         Logger.fault(Logger.CoreComponent.SequencerService, code, actions.memberId(),
-                     "FATAL: %s at globalSeqNo=%d — terminating this node; its peers keep quorum and its restart "
+                     "FATAL: %s at clusterSeqNo=%d — terminating this node; its peers keep quorum and its restart "
                          + "replays the full log",
-                     reason, actions.globalSeqNo());
+                     reason, actions.clusterSeqNo());
         if (inSpin) {
             actions.halt();
         } else {

@@ -20,7 +20,7 @@ namespace {
 using Bytes = std::vector<std::uint8_t>;
 
 // Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1, cut at
-// globalSeqNo 42, position 43008, timestamp 42000.
+// clusterSeqNo 42, position 43008, timestamp 42000.
 const std::string GOLDEN_TRAILER = "0300000000000000"
                                    "ca0b000000000000"
                                    "04000000"
@@ -31,7 +31,7 @@ const std::string GOLDEN_TRAILER = "0300000000000000"
                                    "10a4000000000000"
                                    "534e5032";
 
-constexpr std::int64_t CUT_GLOBAL_SEQ_NO = 42;
+constexpr std::int64_t CUT_CLUSTER_SEQ_NO = 42;
 constexpr std::int64_t CUT_POSITION = 43008;
 constexpr std::int64_t CUT_TIMESTAMP_NS = 42000;
 
@@ -51,7 +51,7 @@ std::vector<Bytes> records()
 
 void begin(SnapshotStore& store, const std::int64_t round)
 {
-    store.begin(round, CUT_GLOBAL_SEQ_NO, CUT_POSITION, CUT_TIMESTAMP_NS);
+    store.begin(round, CUT_CLUSTER_SEQ_NO, CUT_POSITION, CUT_TIMESTAMP_NS);
 }
 
 // Writes a round's file, as the instance does before the log confirms it.
@@ -143,7 +143,7 @@ TEST(SnapshotStore, AConfirmedRoundReadsBackRecordByRecordItsTrailerTheSharedGol
     EXPECT_EQ(3018U, reader->length());
     EXPECT_EQ(0x6c24f56bU, reader->crc32c());
     EXPECT_EQ(1U, reader->formatVersion());
-    EXPECT_EQ(CUT_GLOBAL_SEQ_NO, reader->cutGlobalSeqNo());
+    EXPECT_EQ(CUT_CLUSTER_SEQ_NO, reader->cutClusterSeqNo());
     EXPECT_EQ(CUT_POSITION, reader->cutPosition());
     EXPECT_EQ(CUT_TIMESTAMP_NS, reader->cutTimestampNs());
     std::span<const std::uint8_t> record;

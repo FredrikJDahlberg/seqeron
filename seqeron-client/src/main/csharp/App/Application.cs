@@ -29,7 +29,7 @@ namespace Org.Limitless.Seqeron.App;
 /// one whose gate is open then submits the round's <c>SnapshotEnd</c>. A replica whose snapshot differs from the one
 /// sequenced is fenced with <see cref="ClusterError.SnapshotDiverged"/>. On start, a replica given a listener
 /// restores the newest snapshot of its own that the log confirms and resumes after its cut, or replays from
-/// <c>globalSeqNo</c> 1 without one; one it cannot restore is fenced with
+/// <c>clusterSeqNo</c> 1 without one; one it cannot restore is fenced with
 /// <see cref="ClusterError.SnapshotUnrestorable"/>.</para>
 /// <para>Single-threaded: every member belongs to the caller's one duty-cycle thread, which calls
 /// <see cref="DoWork"/> each iteration. <c>Application.java</c> and <c>app/Application.hpp</c> are its twins; keep
@@ -199,7 +199,7 @@ public sealed class Application : IDisposable
 
     public bool IsCaughtUp => _session.IsCaughtUp;
 
-    public long LastGlobalSeqNo => _session.LastGlobalSeqNo;
+    public long LastClusterSeqNo => _session.LastClusterSeqNo;
 
     /// <summary>Closes the cluster session and the queue. The Aeron client is the caller's and is left open.</summary>
     public void Dispose()
@@ -278,7 +278,7 @@ public sealed class Application : IDisposable
                     _started.WrapForDecode(_view, 0, Frame.SnapshotStarted.BlockLength,
                                            Frame.SnapshotStarted.SchemaVersion);
                     _app._snapshots.OnSnapshotStarted(
-                        _started.Round, sequencedEvent.GlobalSeqNo, sequencedEvent.Position,
+                        _started.Round, sequencedEvent.ClusterSeqNo, sequencedEvent.Position,
                         sequencedEvent.ClusterTimestampNs,
                         new SnapshotHeader(_app._session.LeadershipTermId, _app._session.CurrentLeaderMemberId, null),
                         _app._gate.IsOpen);
@@ -293,8 +293,8 @@ public sealed class Application : IDisposable
                     if (!_app._snapshots.OnSnapshotEnd(_end.Round, _end.RecordCount, _end.Length, _end.Crc32c))
                     {
                         _app._session.Fence(ClusterError.SnapshotDiverged,
-                                            "round " + _end.Round + "'s sequenced snapshot at globalSeqNo " +
-                                                sequencedEvent.GlobalSeqNo + " differs from this replica's");
+                                            "round " + _end.Round + "'s sequenced snapshot at clusterSeqNo " +
+                                                sequencedEvent.ClusterSeqNo + " differs from this replica's");
                     }
                     break;
                 default:
@@ -318,9 +318,9 @@ public sealed class Application : IDisposable
             _app._listener.OnSequenced(payload);
         }
 
-        public void OnCaughtUp(long globalSeqNo)
+        public void OnCaughtUp(long clusterSeqNo)
         {
-            _app._listener.OnCaughtUp(globalSeqNo);
+            _app._listener.OnCaughtUp(clusterSeqNo);
         }
 
         public void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs)

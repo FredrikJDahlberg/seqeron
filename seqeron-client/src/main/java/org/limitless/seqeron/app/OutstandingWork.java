@@ -7,7 +7,7 @@ import java.util.Set;
 
 /**
  * Leader-only request/reply work tracked across a failover. Every replica feeds it the same
- * {@code globalSeqNo}-ordered stream, so all replicas hold the same outstanding set.
+ * {@code clusterSeqNo}-ordered stream, so all replicas hold the same outstanding set.
  *
  * <ul>
  *   <li><b>Outstanding is replicated:</b> a request is outstanding from its sequenced request
@@ -17,10 +17,10 @@ import java.util.Set;
  * </ul>
  *
  * <p>Emission is at-least-once: a reply lost in an election is dispatched again by the next leader. Key on
- * the request's {@code globalSeqNo} and make the reply a pure function of the request, so a re-emission is
+ * the request's {@code clusterSeqNo} and make the reply a pure function of the request, so a re-emission is
  * identical to the one it may duplicate and consumers can drop it.
  *
- * <p>Dispatch runs in request order, which is {@code globalSeqNo} order, so emission order is the same on
+ * <p>Dispatch runs in request order, which is {@code clusterSeqNo} order, so emission order is the same on
  * every replica. The C++ twin is {@code app/OutstandingWork.hpp}; keep the two in step.
  *
  * @param <K> the request key

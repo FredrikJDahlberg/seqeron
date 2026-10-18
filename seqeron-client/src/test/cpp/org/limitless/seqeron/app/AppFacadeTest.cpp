@@ -85,7 +85,7 @@ TEST(ApplicationFacade, ShutGateDeclinesAndLeadsNothing)
     EXPECT_FALSE(app.isLeading()) << "no LeadershipChanged has named this member yet";
     EXPECT_FALSE(app.canPublish()) << "a shut gate publishes nothing whatever ingress is doing";
     EXPECT_EQ(3, app.sourceId());
-    EXPECT_EQ(0, app.lastGlobalSeqNo()) << "nothing has been dispatched";
+    EXPECT_EQ(0, app.lastClusterSeqNo()) << "nothing has been dispatched";
 }
 
 TEST(GatewayFacade, UndesignatedInstanceServesNothing)
@@ -112,11 +112,11 @@ TEST(Facade, ListenerMayOwnItsFacade)
 TEST(Facade, MakePayloadViewsTheEvent)
 {
     const protocol::SequencedEvent event{
-        .globalSeqNo = 7, .sourceId = 12, .connectionId = 4, .payloadId = 6, .templateId = 2
+        .clusterSeqNo = 7, .sourceId = 12, .connectionId = 4, .payloadId = 6, .templateId = 2
     };
     const Payload payload = detail::makePayload(event);
 
-    EXPECT_EQ(7, payload.globalSeqNo());
+    EXPECT_EQ(7, payload.clusterSeqNo());
     EXPECT_EQ(12, payload.sourceId());
     EXPECT_EQ(4, payload.connectionId());
     EXPECT_EQ(6, payload.payloadId());
