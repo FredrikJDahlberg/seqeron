@@ -143,7 +143,7 @@ version or the encoded one; only the former protects a reader compiled against t
   a message alike: one that acts on a new field while another of its source ignores it diverges, and A-7
   fences one of them.
 - **The compatibility class is `BACKWARD_TRANSITIVE`**, consumers first (`upgrades.md` §5.3), back to
-  `globalSeqNo` 1 today and back to the floor `F` under cluster snapshots ([`snapshot.md`](snapshot.md)
+  `clusterSeqNo` 1 today and back to the floor `F` under cluster snapshots ([`snapshot.md`](snapshot.md)
   §10.6). A check of a schema's IR against every version since `F` would enforce it as a registry does.
 - **Retirement follows `F`, not a calendar.** A payload version can be retired once `F` passes its last
   frame, about 256 rounds after its cutover marker. `LOG_VERSION` (`snapshot.md` §10.2) is the `schemaId` of

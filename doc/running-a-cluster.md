@@ -19,7 +19,7 @@ hosts that run applications but no member.
 | `MetricsExporter` | once per member, optionally | serves the member's counters to Prometheus ([`ops.md`](ops.md)) |
 
 Inside the member, `Sequencer` is the replicated state machine: it stamps each ingress frame with the
-next `globalSeqNo` and the Raft consensus timestamp, and synthesizes the frames the cluster owns
+next `clusterSeqNo` and the Raft consensus timestamp, and synthesizes the frames the cluster owns
 (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`, `SnapshotStarted`, `SessionClosed`). It has no Aeron dependency
 and is unit-tested directly. `SequencerService` is its Aeron adapter and holds no replicated state of its
 own. Every member publishes every sequenced frame on a node-local queue (`aeron:ipc`, stream 205), which its
@@ -66,7 +66,7 @@ a developer wants:
 ```bash
 ./seqeron-service/src/main/scripts/start-cluster.sh
 # [cluster.sh] SequencerServer is running
-# [ReplayerService/0] ready — queue recording 0 live and verified from globalSeqNo 1; serving replay
+# [ReplayerService/0] ready — queue recording 0 live and verified from clusterSeqNo 1; serving replay
 # [ClusterProbe/0] Caught up — following live
 ```
 
@@ -145,7 +145,7 @@ The Replayer runs in the member's JVM, on its media driver, and takes no configu
 ## Restart and failover
 
 A member keeps its archive and cluster directories across restarts (`deleteArchiveOnStart=false`,
-`deleteDirOnStart=false`), rejoins, and replays the Raft log from `globalSeqNo` 1. The cluster takes no
+`deleteDirOnStart=false`), rejoins, and replays the Raft log from `clusterSeqNo` 1. The cluster takes no
 snapshots, which is what keeps every member's recording a complete copy of history, and for the same
 reason `clusterctl shutdown` stops the cluster with `ABORT`, which takes none. To start clean, delete the
 `archive-<id>` and `cluster-<id>` directories under `baseDir`, or run `purgelog.sh`.

@@ -52,7 +52,7 @@ is what an entry added by a later Aeron version looks like.
 
 An archive directory holds several recordings, and by default the printer prints them all. Stream 100 is
 the Raft log. Each recording on stream 205 is one generation of the queue: a member that restarts replays
-its whole log onto a new queue recording, which starts again at `globalSeqNo` 1, so every earlier
+its whole log onto a new queue recording, which starts again at `clusterSeqNo` 1, so every earlier
 generation is a prefix of the newest.
 
 `--stream 205` prints only the newest recording on the stream: one complete copy of the sequenced
@@ -68,8 +68,8 @@ that is all header, such as `ClusterHeartbeat`, would otherwise be indistinguish
 indented form:
 
 ```
-LeadershipChanged = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 5, "globalSeqNo": 1, "timestamp": 1789409115713932000 }, "newLeaderMemberId": 0, "leadershipTermId": 0 }
-ClusterHeartbeat = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 16, "globalSeqNo": 2, "timestamp": 1789409116715140000 } }
+LeadershipChanged = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 5, "clusterSeqNo": 1, "timestamp": 1789409115713932000 }, "newLeaderMemberId": 0, "leadershipTermId": 0 }
+ClusterHeartbeat = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 16, "clusterSeqNo": 2, "timestamp": 1789409116715140000 } }
 ```
 
 The output as a whole is not a JSON document, because the `[Catalog]` and separator lines sit between
@@ -88,7 +88,7 @@ decoder that holds their schema ([`seqeron-protocol-spec.md`](seqeron-protocol-s
 
 - **Standard output carries the payloads alone.** Every text line moves to standard error: the
   `[Catalog]` lines, the frame dump and the errors. Redirected as above, the frames sit beside the
-  payloads in the same order, and each frame line carries its `globalSeqNo`.
+  payloads in the same order, and each frame line carries its `clusterSeqNo`.
 - **The payload stream has no framing of its own.** An SBE payload declares its own block and var-data
   lengths, so the decoder that holds the schema delimits it.
 - **It reads the Raft log too.** With `--stream 100` it exports the same payloads as they arrived on

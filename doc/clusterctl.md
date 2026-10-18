@@ -7,9 +7,9 @@ frame on the log, so the action is ordered with everything else and every replic
 the cluster cleanly and reads a member's counters. It does not launch or restart processes; that is
 `start-cluster.sh`'s job, or the deployment's own supervisor's.
 
-It runs on a cluster member. It reaches that member's queue through the member's Aeron directory, over
-`aeron:ipc`, and reads its cluster directory for Aeron's `io.aeron.cluster.ClusterTool`, which works only
-on local files. It is one class, `org.limitless.seqeron.tools.ClusterCtl`, launched by
+It runs on a cluster member. It reaches that member's default queue (spec §3.1), which the member's replayer
+names when asked (spec **R-6**), through the member's Aeron directory, over `aeron:ipc`, and reads its
+cluster directory for Aeron's `io.aeron.cluster.ClusterTool`, which works only on local files. It is one class, `org.limitless.seqeron.tools.ClusterCtl`, launched by
 `seqeron-service/src/main/scripts/clusterctl.sh`. "spec §n" refers to `doc/seqeron-protocol-spec.md`.
 
 ## Configuration
@@ -45,8 +45,11 @@ A command that publishes works the same way every time:
 1. It connects to the cluster, first over the member's own `aeron:ipc` ingress (500 ms), then over the
    configured UDP endpoints, and fails if no leader answers.
 2. It publishes its frame with `sourceId` 2, which spec §5 reserves for `clusterctl`, and `connectionId` −1.
-3. It waits up to 5 s for the frame, or the frame the sequencer answers it with, to appear on the local
+3. It waits up to 5 s for the frame, or the frame the sequencer answers it with, to appear on the default
    queue.
+
+Until a topology is loaded, the sequencer refuses every frame but the `<groups>` section's (spec §9.2
+condition 13), so every publishing command but `load-topology` exits 1 after the timeout, `start` included.
 
 It exits 0 on success; 1 if the cluster is unreachable, no leader answers, the frame does not appear in
 time, or the abort fails; 2 for a usage error or an invalid topology file.
@@ -54,7 +57,7 @@ time, or the abort fails; 2 for a usage error or an invalid topology file.
 ### start
 
 Publishes `ClusterStarted` with a fresh `correlationId`, waits for it on the queue and prints its
-`globalSeqNo`. It starts nothing: it records that the cluster is up and accepting ingress. Its success
+`clusterSeqNo`. It starts nothing: it records that the cluster is up and accepting ingress. Its success
 shows that a leader is elected and ingress works, which a running process alone does not.
 
 ### shutdown
@@ -78,21 +81,21 @@ marker, so a supervisor should not send it to a follower during a `clusterctl sh
 
 **Why `ABORT` and not `SHUTDOWN`.** Aeron's `SHUTDOWN` takes a cluster snapshot before stopping, and the
 next start would recover from that snapshot instead of replaying the log. The cluster never snapshots:
-replaying from `globalSeqNo` 1 is what keeps every member's recording complete
+replaying from `clusterSeqNo` 1 is what keeps every member's recording complete
 ([`fault-tolerance.md`](fault-tolerance.md) §0). `ABORT` takes none. Aeron's default termination hook does
 nothing, which would leave `SequencerServer` waiting after the consensus module stopped, so
 `SequencerServer` sets it to release its shutdown barrier. On `ABORT` every member then closes its archive
-through the normal shutdown path, and `SequencerService.onTerminate` closes the queue publication, giving
-the recording a valid stop position.
+through the normal shutdown path, and `SequencerService.onTerminate` closes the queue publications, giving
+each recording a valid stop position.
 
-After a shutdown any member's archive holds the complete log, since every queue is identical, and
-`sbe-log-printer.sh` reads it offline.
+After a shutdown every member's archive holds the same queues (spec **F-2**), one per group, and
+`sbe-log-printer.sh` reads them offline, one queue at a time.
 
 ### activate
 
 Makes a named gateway instance the active one, for a planned handover or a pair whose bootstrap is
 already spent. It publishes `GatewayActivationRequested(gatewayId)`, waits for the `GatewayActive` the
-sequencer synthesizes in answer, matched on `gatewayId`, and prints its `globalSeqNo`. The sequencer checks
+sequencer synthesizes in answer, matched on `gatewayId`, and prints its `clusterSeqNo`. The sequencer checks
 the request against the gateway list; for an unlisted `gatewayId` it synthesizes nothing, and the command
 exits 1 after the timeout. The instance named opens its external connections, and its siblings stand by
 (spec §7.2).
@@ -100,21 +103,21 @@ exits 1 after the timeout. The instance named opens its external connections, an
 ### request-snapshot
 
 Starts an application snapshot round now, rather than at the next interval. It publishes
-`SnapshotRequested`, waits for the `SnapshotStarted` the sequencer synthesizes at the next `globalSeqNo`,
-and prints the round and that `globalSeqNo`, which is the round's cut. A round still open is superseded.
+`SnapshotRequested`, waits for the `SnapshotStarted` the sequencer synthesizes at the next `clusterSeqNo`,
+and prints the round and that `clusterSeqNo`, which is the round's cut. A round still open is superseded.
 If the loaded topology has no `<snapshots>` element, nothing answers the request and the command exits 1
 after the timeout. What the participating sources then do is [`snapshot.md`](snapshot.md) §4.
 
 ### load-topology
 
 Publishes the deployment's topology document (spec §6.4): an XML file validated against the
-`topology.xsd` packaged in the jar. It becomes a sequence of frames, and the command waits for the last
-gateway row on the queue:
+`topology.xsd` packaged in the jar. It becomes a sequence of frames, in this order:
 
 | section | frames | the sequencer |
 | --- | --- | --- |
-| `<gateways>` | one `GatewayRegistered` per row, `remaining` counting down to 0 on the last | builds the gateway list, and after the last row designates the rank-0 instance of each gateway |
-| `<applications>` (optional) | one `ApplicationRegistered` per row | reads nothing; the `snapshot` attribute is the façades' ([`snapshot.md`](snapshot.md) §1) |
+| `<groups>` | one `GroupsRegistered` | on the first load, activates the groups, each with its own queue (spec §7.4); on a later one, must equal them. Either way it makes the command's session the topology session (spec **S-9**) |
+| `<gateways>` (optional) | one `GatewayRegistered` per row, `remaining` counting down to 0 on the last | builds the gateway list, and after the last row designates the rank-0 instance of each gateway not designated before |
+| `<applications>` (optional) | one `ApplicationRegistered` per row | records the source's group; the `snapshot` attribute is the façades' ([`snapshot.md`](snapshot.md) §1) |
 | `<protocols>` (optional) | one `PayloadIdRegistered` per row | reads nothing; the rows label payloads for the log printer |
 | `<snapshots>` (optional) | one `SnapshotPolicyRegistered` | turns snapshot rounds on (spec §7.3) |
 
@@ -122,23 +125,46 @@ gateway row on the queue:
 published.
 
 - The schema checks field widths, name format (1–32 printable US-ASCII characters), `sourceId` ≥ 0,
-  `payloadId` ≥ 2, the required attributes, and the uniqueness of gateway `id` and `name`, application
-  `name` and `sourceId`, and `payloadId`.
+  `payloadId` ≥ 2, group `id` 1–16, the required attributes, at least one group, that every gateway and
+  application names a declared group, and the uniqueness of group `id` and `name`, gateway `id` and
+  `name`, application `name` and `sourceId`, and `payloadId`.
 - The loader (`TopologyDocument`) checks what one row cannot express: exactly one `rank="0"` per gateway
   `sourceId`; no reserved `sourceId` (spec §5); no application `sourceId` a gateway also uses; the same
-  `snapshot` value on every row of one gateway `sourceId`; and at least one row with `snapshot="true"`
-  when `<snapshots>` is present.
+  `snapshot` and `group` on every row of one gateway `sourceId`; and at least one row with
+  `snapshot="true"` when `<snapshots>` is present.
 - A row may carry a `description` attribute for readers of the file; it is not published.
+
+**Checks against the log.** The schema cannot see what is already loaded, and a row the sequencer refuses
+would leave the load partial, so the command checks the file against the default queue before it publishes
+a row (spec §6.4):
+
+1. On a cluster whose groups are active, it compares the file's `<groups>` with the active table, and
+   publishes nothing if they differ (spec **S-8**).
+2. It publishes the `GroupsRegistered` and stops unless that frame appears: the sequencer refuses it while
+   another `load-topology` holds the topology session, or when its groups differ from the active ones.
+3. It reads the default queue up to its `GroupsRegistered` and stops if a source in the file was registered
+   with another group: a source's group never changes (spec **S-8**). The topology session keeps any other
+   load from registering rows until the command closes its session.
+4. It publishes the rows, waits for every frame to appear on the default queue, in order, reports the first
+   that does not as refused, and closes its session.
+
+A command that dies holds the topology session until the cluster times its session out; a second
+`load-topology` before then stops at step 2.
 
 **Parsing.** The schema always comes from the jar: a `schemaLocation` in the document is ignored, since a
 document that chose its own schema could choose a weaker one. DOCTYPE declarations are rejected and
 external DTD and schema access is disabled, which blocks external-entity and entity-expansion attacks.
 Anyone who can edit the file already has a shell on the member, but the JDK's defaults are unsafe.
 
-**When to run it.** Once per cluster lifetime, after `start` and before any gateway starts: a
-`GatewayStarted` that arrives before the list is rejected (spec **S-6**), and a gateway publishes nothing
-until it finds its own row. Running it again is safe. The sequencer de-duplicates rows on `gatewayId` and
-designates bootstrap instances only once.
+**When to run it.** First, before `start` and before any gateway starts: the cluster refuses every other
+command until its groups are active, a `GatewayStarted` that arrives before the list is rejected (spec
+**S-6**), and a gateway publishes nothing until it finds its own row. Running it again is safe, and is how
+a deployment grows. A later file may add gateways, applications and protocols; its `<groups>` must equal
+the active ones, and it may not move a source to another group (spec **S-8**). Adding groups to a running
+cluster is proposed (spec §7.4). The sequencer de-duplicates rows on
+`gatewayId` and designates a gateway's bootstrap instance only once, so a file loaded again changes
+nothing. The first load holds up every member's queues for as long as its archive takes to start
+recording them, at most 5 s (spec §7.4).
 
 **List only what the deployment runs.** A listed pair that no process starts is designated, times out
 after `GATEWAY_ACTIVATION_TIMEOUT_MS` (5 s), passes the role to its standby, and times out again, adding a

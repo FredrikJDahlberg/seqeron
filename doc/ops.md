@@ -110,7 +110,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | metric | type | meaning |
 |---|---|---|
 | `up` | gauge | Prometheus's own, not a counter: 1 if its last scrape of that member's exporter succeeded, else 0 |
-| `seqeron_sequencer_global_seq_no` | gauge | the last `globalSeqNo` on this member's queue |
+| `seqeron_sequencer_cluster_seq_no` | gauge | the last `clusterSeqNo` on this member's queue |
 | `seqeron_sequencer_queue_backpressure_alerts_total` | counter | times the queue's back-pressure alert has fired |
 | `seqeron_sequencer_rejected_ingress_total` | counter | ingress frames refused by spec §9.2, and messages with no client session |
 | `seqeron_sequencer_leadership_change_total` | counter | leadership changes this member has observed and sequenced |
@@ -441,7 +441,7 @@ and 70 is this repository's convention for "fenced, restart me". A gateway is no
 | `QUEUE_STALLED` | no `ClusterHeartbeat` on the co-located queue for 20 s, usually because that member's `SequencerServer` terminated (above); they share the queue. A standby instance or a replica not on the leader's member logs `QueueStalled` instead and keeps running |
 | `RECOVERY_STALLED` | recovery delivered nothing for 60 s after the instance had been caught up; see `seqeron_app_recovery_stalled`. A standby or non-leader replica logs `RecoveryStalled` instead and keeps running |
 | `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced: its state is not the log's (spec §16 A-7). A restart rebuilds the state; an instance that diverges again has broken determinism (A-6) |
-| `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot: a `formatVersion` or header version its build does not read, or records that fail the file's trailer, which means a damaged file ([`snapshot.md`](snapshot.md) §7). The log line `SnapshotRestoreFailed` names the round. A restart repeats it until the build is fixed or the file, `<round>.snapshot` in the instance's snapshot directory, is removed; the instance then replays from `globalSeqNo` 1 |
+| `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot: a `formatVersion` or header version its build does not read, or records that fail the file's trailer, which means a damaged file ([`snapshot.md`](snapshot.md) §7). The log line `SnapshotRestoreFailed` names the round. A restart repeats it until the build is fixed or the file, `<round>.snapshot` in the instance's snapshot directory, is removed; the instance then replays from `clusterSeqNo` 1 |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the queue did not match the oldest pending one, most often because the sequencer rejected one (`seqeron_sequencer_rejected_ingress_total`) |
 
 - **The standby takes over by itself**, if one is running. A fenced instance looks to the cluster like a
