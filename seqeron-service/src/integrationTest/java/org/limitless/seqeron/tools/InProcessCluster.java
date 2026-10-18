@@ -76,14 +76,14 @@ final class InProcessCluster implements AutoCloseable {
         nodes.set(m, SequencerServer.launch(config, () -> terminated.set(true), () -> isFatal.set(true), udpFaults));
     }
 
-    /** Launches the gateway host: its own driver and archive, relaying a member's queue onto its own. */
+    /** Launches the gateway host: its own driver and archive, relaying a member's queue of group 1 onto its own. */
     void startGatewayHost() {
         final List<String> archives = IntStream.range(0, MEMBERS)
                                           .mapToObj(m -> PortLayout.DEFAULT_HOST + ":" + PortLayout.archivePort(m))
                                           .toList();
         gatewayHost = ReplayerServer.launchGatewayHost(
             new ReplayerServer.GatewayHostConfig(GATEWAY_HOST, aeronDir(GATEWAY_HOST), baseDir.toString(), archives,
-                                                 PortLayout.DEFAULT_HOST, BackoffIdleStrategy::new),
+                                                 PortLayout.DEFAULT_HOST, List.of(1), BackoffIdleStrategy::new),
             () -> fatal[GATEWAY_HOST].set(true));
     }
 

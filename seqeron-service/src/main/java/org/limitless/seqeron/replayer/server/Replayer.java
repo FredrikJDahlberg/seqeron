@@ -25,11 +25,12 @@ public interface Replayer {
     record QueueBacklog(long bytes, long window) { }
 
     /**
-     * Every queue recording the local archive holds, in whatever order it listed them; which one is served is
-     * {@code ReplayerService}'s decision.
+     * Every recording of one group's queue the local archive holds, in whatever order it listed them; which one is
+     * served is {@code ReplayerService}'s decision.
+     * @param groupId the queue's group
      * @return the recordings, possibly empty
      */
-    List<RecordingSpan> listQueueRecordings();
+    List<RecordingSpan> listQueueRecordings(int groupId);
 
     /**
      * Where a still-recording recording has reached. On every request's path, so read off the node's counters
@@ -47,11 +48,12 @@ public interface Replayer {
     long stopPosition(long recordingId);
 
     /**
-     * How far the active queue recording trails the queue, read off this node's counters.
-     * @param span the active queue recording
+     * How far an active queue recording trails its queue, read off this node's counters.
+     * @param groupId the queue's group
+     * @param span the queue's active recording
      * @return its backlog, or {@code null} when the counters show no queue publication it records
      */
-    QueueBacklog queueBacklog(RecordingSpan span);
+    QueueBacklog queueBacklog(int groupId, RecordingSpan span);
 
     /**
      * Starts a bounded replay onto a node-local IPC stream.

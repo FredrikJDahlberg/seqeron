@@ -51,10 +51,10 @@ public final class AeronReplayer implements Replayer {
     }
 
     @Override
-    public List<Replayer.RecordingSpan> listQueueRecordings() {
+    public List<Replayer.RecordingSpan> listQueueRecordings(final int groupId) {
         final List<Replayer.RecordingSpan> spans = new ArrayList<>();
         archive.listRecordingsForUri(
-            0, Integer.MAX_VALUE, "", FrameLayer.QUEUE_STREAM_ID,
+            0, Integer.MAX_VALUE, "", FrameLayer.queueStreamId(groupId),
             (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp, startPosition, stopPosition,
              initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
              originalChannel, sourceIdentity)
@@ -64,7 +64,7 @@ public final class AeronReplayer implements Replayer {
     }
 
     @Override
-    public Replayer.QueueBacklog queueBacklog(final Replayer.RecordingSpan span) {
+    public Replayer.QueueBacklog queueBacklog(final int groupId, final Replayer.RecordingSpan span) {
         final CountersReader counters = aeron.countersReader();
         final DirectBuffer metaData = counters.metaDataBuffer();
         for (int counterId = 0, maxId = counters.maxCounterId(); counterId <= maxId; counterId++) {
@@ -73,7 +73,7 @@ public final class AeronReplayer implements Replayer {
                 continue;
             }
             final int key = CountersReader.metaDataOffset(counterId) + CountersReader.KEY_OFFSET;
-            if (metaData.getInt(key + StreamCounter.STREAM_ID_OFFSET) != FrameLayer.QUEUE_STREAM_ID ||
+            if (metaData.getInt(key + StreamCounter.STREAM_ID_OFFSET) != FrameLayer.queueStreamId(groupId) ||
                 !FrameLayer.QUEUE_CHANNEL.equals(metaData.getStringAscii(key + StreamCounter.CHANNEL_OFFSET))) {
                 continue;
             }

@@ -31,6 +31,9 @@ public sealed class ReplayerStreamReceiver : IDisposable
     // Scratch for the two control messages this client sends; each is well under 64 bytes.
     private const int RequestBufferLength = 64;
 
+    // No queue is resolved yet (spec R-6), so the replayer answers every request ReplayPending.
+    private const int UnresolvedQueueId = 0;
+
     private readonly int _clientId;
     private readonly ReplayerRecovery _recovery;
     private readonly Func<bool> _queueFaults;
@@ -255,6 +258,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
             request.ClientId = _receiver._replyId;
             request.RequestId = requestId;
             request.FromPosition = fromPosition;
+            request.QueueId = UnresolvedQueueId;
             Offer(Replay.MessageHeader.Size + request.Size);
         }
 

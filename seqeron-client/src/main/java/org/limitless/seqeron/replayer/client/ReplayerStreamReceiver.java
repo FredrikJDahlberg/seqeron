@@ -41,6 +41,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     /** Scratch for the two control messages this client sends; each is well under 64 bytes. */
     private static final int REQUEST_BUFFER_LENGTH = 64;
 
+    /** No queue is resolved yet (spec R-6), so the replayer answers every request ReplayPending. */
+    private static final int UNRESOLVED_QUEUE_ID = 0;
+
     private final int clientId;
     private final Actions actions = new Actions();
     private final ReplayerRecovery recovery;
@@ -261,9 +264,10 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                 return; // Replayer not up yet; the resend timer retries
             }
             replayRequest.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
-                         .clientId(replyId)
-                         .requestId(requestId)
-                         .fromPosition(fromPosition);
+                .clientId(replyId)
+                .requestId(requestId)
+                .fromPosition(fromPosition)
+                .queueId(UNRESOLVED_QUEUE_ID);
             requestPublication.offer(requestBuffer, 0,
                                      MessageHeaderEncoder.ENCODED_LENGTH + replayRequest.encodedLength());
         }

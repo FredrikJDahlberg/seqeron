@@ -38,6 +38,7 @@ public class SequencedFrameDecoder {
     private int connectionId;
     private long sourceSessionId;
     private long clusterSeqNo;
+    private long groupSeqNo;
     private long clusterTimestampNs;
     private int templateId;
     private int blockLength;
@@ -91,7 +92,7 @@ public class SequencedFrameDecoder {
         payloadId = frameHeader.payloadId();
         systemEventType = 0;
         readIdentity(frameHeader.sourceId(), frameHeader.connectionId(), frameHeader.sessionId(),
-                     frameHeader.clusterSeqNo(), frameHeader.timestamp());
+                     frameHeader.clusterSeqNo(), frameHeader.timestamp(), frameHeader.groupSeqNo());
 
         payloadLength = source.getShort(prefixOffset, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
         payloadOffset = prefixOffset + SequencedDecoder.payloadHeaderLength();
@@ -150,16 +151,17 @@ public class SequencedFrameDecoder {
         blockLength = 0;
         version = 0;
         readIdentity(systemHeader.sourceId(), systemHeader.connectionId(), systemHeader.sessionId(),
-                     systemHeader.clusterSeqNo(), systemHeader.timestamp());
+                     systemHeader.clusterSeqNo(), systemHeader.timestamp(), systemHeader.groupSeqNo());
     }
 
     private void readIdentity(final int frameSourceId, final int frameConnectionId, final long frameSessionId,
-                              final long frameClusterSeqNo, final long frameTimestamp) {
+                              final long frameClusterSeqNo, final long frameTimestamp, final long frameGroupSeqNo) {
         sourceId = frameSourceId;
         connectionId = frameConnectionId;
         sourceSessionId = frameSessionId;
         clusterSeqNo = frameClusterSeqNo;
         clusterTimestampNs = frameTimestamp;
+        groupSeqNo = frameGroupSeqNo;
     }
 
     /** Whether this frame is one of the six system templates; if so {@link #payloadId()} means nothing. */
@@ -192,9 +194,14 @@ public class SequencedFrameDecoder {
         return sourceSessionId;
     }
 
-    /** Cluster-wide monotone sequence number; increments by exactly one per frame. */
+    /** Cluster-wide monotone sequence number; along one queue it increases, but not by one (F-6). */
     public long clusterSeqNo() {
         return clusterSeqNo;
+    }
+
+    /** This frame's place on its queue: 1 for the queue's first frame, increasing by exactly one per frame. */
+    public long groupSeqNo() {
+        return groupSeqNo;
     }
 
     /** Cluster consensus time (epoch ns) at which the frame was committed ({@code header.timestamp}). */

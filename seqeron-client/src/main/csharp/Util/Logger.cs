@@ -112,6 +112,10 @@ public static class Logger
         /// <summary>A gateway host's relay stopped reading one member's archive and moved to the next.</summary>
         RelaySourceLost,
 
+        /// <summary>A replayer could not tell an instance which queue it reads; the instance waits until it
+        /// can.</summary>
+        QueueUnresolved,
+
         /// <summary>The live queue skipped a <c>clusterSeqNo</c>; recovery replays the hole.</summary>
         QueueGap,
 

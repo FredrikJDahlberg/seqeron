@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
     /// </summary>
     public sealed partial class ReplayRequest
     {
-        public const ushort BlockLength = (ushort)24;
+        public const ushort BlockLength = (ushort)28;
         public const ushort TemplateId = (ushort)6;
         public const ushort SchemaId = (ushort)212;
         public const ushort SchemaVersion = (ushort)0;
@@ -224,6 +224,49 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         }
 
 
+        public const int QueueIdId = 20016;
+        public const int QueueIdSinceVersion = 0;
+        public const int QueueIdDeprecated = 0;
+        public bool QueueIdInActingVersion()
+        {
+            return _actingVersion >= QueueIdSinceVersion;
+        }
+
+        public const int QueueIdOffset = 24;
+
+        public static string QueueIdMetaAttribute(MetaAttribute metaAttribute)
+        {
+            switch (metaAttribute)
+            {
+                case MetaAttribute.Epoch: return "";
+                case MetaAttribute.TimeUnit: return "";
+                case MetaAttribute.SemanticType: return "";
+                case MetaAttribute.Presence: return "required";
+            }
+
+            return "";
+        }
+
+        public const int QueueIdNullValue = -2147483648;
+        public const int QueueIdMinValue = -2147483647;
+        public const int QueueIdMaxValue = 2147483647;
+
+        /// <summary>
+        /// The queue the request is for, by its groupId (R-5): the one a QueueResolved named
+        /// </summary>
+        public int QueueId
+        {
+            get
+            {
+                return _buffer.Int32GetLittleEndian(_offset + 24);
+            }
+            set
+            {
+                _buffer.Int32PutLittleEndian(_offset + 24, value);
+            }
+        }
+
+
         public override string ToString()
         {
             var sb = new StringBuilder(100);
@@ -270,6 +313,9 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             builder.Append('|');
             builder.Append("FromPosition=");
             builder.Append(this.FromPosition);
+            builder.Append('|');
+            builder.Append("QueueId=");
+            builder.Append(this.QueueId);
 
             this.Limit = originalLimit;
 

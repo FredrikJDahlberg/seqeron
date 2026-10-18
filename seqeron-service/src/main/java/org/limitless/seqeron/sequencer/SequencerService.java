@@ -13,6 +13,7 @@ import io.aeron.cluster.service.ClusteredService;
 import io.aeron.logbuffer.Header;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Queue;
 import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
@@ -20,6 +21,7 @@ import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.replayer.server.NodeDriver;
+import org.limitless.seqeron.replayer.server.QueueResolver;
 import org.limitless.seqeron.util.Logger;
 
 /**
@@ -56,6 +58,12 @@ public final class SequencerService implements ClusteredService {
     /** The co-located archive's client settings; {@link #onStart} supplies the cluster's Aeron client. */
     private final AeronArchive.Context archiveContext;
 
+    /** Where a copy of each topology row on the default queue goes, for the co-located replayer. */
+    private final Queue<byte[]> topologyRows;
+
+    /** The lowest active group, whose queue carries every topology row; 0 before activation. */
+    private int defaultGroupId;
+
     // Aeron runtime
     private Cluster cluster;
     private AeronArchive aeronArchive;
@@ -86,24 +94,33 @@ public final class SequencerService implements ClusteredService {
     /**
      * @param memberId       this node's cluster memberId
      * @param archiveContext the co-located archive's client settings; this service owns it
+     * @param topologyRows   receives a copy of each topology row the default queue carries, which the co-located
+     *                       replayer resolves instances' queues from (spec R-6)
      * @param fatalHandler   run once, from a cluster callback, when this node can no longer record its own
      *                       queue. Must not block: it signals a shutdown and returns.
      */
     public SequencerService(final int memberId, final AeronArchive.Context archiveContext,
-                            final Runnable fatalHandler) {
+                            final Queue<byte[]> topologyRows, final Runnable fatalHandler) {
         this.sequencer = new Sequencer(memberId, new Sequencer.FrameSink() {
             @Override
             public void activate(final int[] groupIds) {
+                defaultGroupId = groupIds[0];
                 queue.activate(groupIds);
             }
 
             @Override
             public void publish(final int groupId, final DirectBuffer buffer, final int length) {
                 queue.emit(groupId, buffer, length);
+                if (groupId == defaultGroupId && QueueResolver.isTopologyRow(buffer, 0, length)) {
+                    final byte[] row = new byte[length];
+                    buffer.getBytes(0, row);
+                    topologyRows.add(row);
+                }
             }
         });
         this.memberId = memberId;
         this.archiveContext = archiveContext;
+        this.topologyRows = topologyRows;
         this.fatalHandler = fatalHandler;
     }
 

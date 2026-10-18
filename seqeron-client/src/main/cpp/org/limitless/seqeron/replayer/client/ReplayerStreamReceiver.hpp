@@ -234,6 +234,8 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
   private:
     static constexpr int FRAGMENT_LIMIT = 16;
     static constexpr std::size_t REQUEST_BUFFER_LENGTH = 64;
+    // No queue is resolved yet (spec R-6), so the replayer answers every request ReplayPending.
+    static constexpr std::int32_t UNRESOLVED_QUEUE_ID = 0;
 
     void sendReplayRequest(const std::int64_t requestId, const std::int64_t fromPosition) override
     {
@@ -244,7 +246,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
         sbe::replay::ReplayRequest enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_replyId).requestId(requestId).fromPosition(fromPosition);
+        enc.clientId(m_replyId).requestId(requestId).fromPosition(fromPosition).queueId(UNRESOLVED_QUEUE_ID);
         const auto len =
             static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());

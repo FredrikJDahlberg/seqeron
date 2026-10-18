@@ -1,13 +1,13 @@
 package org.limitless.seqeron.replayer.server;
 
 /**
- * What a gateway host's relay decides, free of Aeron: which member's queue recording it reads, where a
- * replay of it starts, which frames it republishes onto the local queue, and when it gives up on a member
- * or on itself. {@link AeronQueueRelay} is the adapter.
+ * What a gateway host's relay of one group's queue decides, free of Aeron: which member's recording of that
+ * queue it reads, where a replay of it starts, which frames it republishes onto the local queue, and when it
+ * gives up on a member or on itself. {@link AeronQueueRelay} is the adapter.
  *
- * <p>It republishes exactly the frame after the last one it published, so the local queue holds the log
- * frame for frame whichever member each frame came from. Every member's active recording starts at
- * {@code clusterSeqNo} 1 and its positions follow from the frames alone, so a replay on the next member
+ * <p>It republishes exactly the frame after the last one it published, so the local queue holds the member's
+ * queue frame for frame whichever member each frame came from. Every member's active recording of the queue
+ * starts at {@code groupSeqNo} 1 and its positions follow from the frames alone, so a replay on the next member
  * normally resumes at the position the last one reached. Nothing depends on that: a frame past the
  * next one means the position did not line up there, and the replay starts again from that
  * recording's start, skipping what is already published.
@@ -45,7 +45,7 @@ final class QueueRelay {
     private long nextAttemptMs;
     private long lastFrameMs;
 
-    private long lastClusterSeqNo;
+    private long lastGroupSeqNo;
     private long resumePosition = NOT_SUITABLE;
     private boolean fromStart;
     private boolean forceStart;
@@ -71,9 +71,9 @@ final class QueueRelay {
         return sourceIndex;
     }
 
-    /** The last {@code clusterSeqNo} republished; 0 before the first. */
-    long lastClusterSeqNo() {
-        return lastClusterSeqNo;
+    /** The last {@code groupSeqNo} republished; 0 before the first. */
+    long lastGroupSeqNo() {
+        return lastGroupSeqNo;
     }
 
     /** Whether an attempt on {@link #sourceIndex} may start now. */
@@ -107,16 +107,16 @@ final class QueueRelay {
     /**
      * Judges one frame off the replay.
      *
-     * @param clusterSeqNo the frame's
-     * @param nowMs       the clock; any frame proves the member alive
+     * @param groupSeqNo the frame's
+     * @param nowMs      the clock; any frame proves the member alive
      */
-    Verdict onFrame(final long clusterSeqNo, final long nowMs) {
+    Verdict onFrame(final long groupSeqNo, final long nowMs) {
         lastFrameMs = nowMs;
-        if (clusterSeqNo <= lastClusterSeqNo) {
+        if (groupSeqNo <= lastGroupSeqNo) {
             failedAttempts = 0;
             return Verdict.SKIP;
         }
-        if (clusterSeqNo == lastClusterSeqNo + 1) {
+        if (groupSeqNo == lastGroupSeqNo + 1) {
             return Verdict.PUBLISH;
         }
         return onHole();
@@ -130,11 +130,11 @@ final class QueueRelay {
     /**
      * The frame {@link #onFrame} said to publish is on the local queue.
      *
-     * @param clusterSeqNo   its {@code clusterSeqNo}
+     * @param groupSeqNo     its {@code groupSeqNo}
      * @param sourcePosition the member recording's position just past it
      */
-    void onPublished(final long clusterSeqNo, final long sourcePosition) {
-        lastClusterSeqNo = clusterSeqNo;
+    void onPublished(final long groupSeqNo, final long sourcePosition) {
+        lastGroupSeqNo = groupSeqNo;
         resumePosition = sourcePosition;
         failedAttempts = 0;
         backPressured = false;

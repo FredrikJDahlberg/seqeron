@@ -13,6 +13,7 @@ import io.aeron.archive.status.RecordingPos;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
 import io.aeron.logbuffer.Header;
 import java.util.List;
+import java.util.Queue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.CloseHelper;
@@ -27,10 +28,11 @@ import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The Aeron adapter for {@link QueueRelay}: on a gateway host, reads a member's queue recording over UDP with
- * one replay that follows it live, and republishes each frame onto this host's own queue, which the local
- * archive records and {@link ReplayerService} serves exactly as it does on a member. Nothing on the
- * member changes: its archive already takes remote clients, and a replay costs its sequencer nothing.
+ * The Aeron adapter for {@link QueueRelay}: on a gateway host, reads a member's recording of one group's queue
+ * over UDP with one replay that follows it live, and republishes each frame onto this host's own queue of the
+ * same stream, which the local archive records and {@link ReplayerService} serves exactly as it does on a
+ * member. Nothing on the member changes: its archive already takes remote clients, and a replay costs its
+ * sequencer nothing. A host runs one per group it relays, all on one thread ({@link #run}).
  *
  * <p>A back-pressured local queue is not spun on: the fragment is aborted and offered again next cycle, and
  * the member's replay waits behind it under Aeron's flow control.
@@ -57,6 +59,9 @@ final class AeronQueueRelay implements AutoCloseable {
     private final List<String> archiveEndpoints;
     private final String host;
     private final int nodeId;
+    private final int groupId;
+    private final int streamId;
+    private final Queue<byte[]> topologyRows;
     private final IdleStrategy idleStrategy;
     private final Runnable fatalHandler;
     private final QueueRelay relay;
@@ -86,31 +91,38 @@ final class AeronQueueRelay implements AutoCloseable {
      * @param archiveEndpoints the members' archive control endpoints, {@code host:port}, tried in order
      * @param host             this host's name as the members reach it
      * @param nodeId           this host's id, for the log
+     * @param groupId          the group whose queue this relays
+     * @param topologyRows     where to hand a copy of each topology row it publishes, or {@code null}: the
+     *                         relay of the host's default queue feeds its {@link ReplayerService}
      * @param idleStrategy     what a wait on the driver or the archive does between checks
      * @param fatalHandler     run once, from the duty cycle, when the relay can no longer keep the local
      *                         history; it must signal a shutdown and return
      */
     AeronQueueRelay(final Aeron aeron, final AeronArchive localArchive, final List<String> archiveEndpoints,
-                    final String host, final int nodeId, final IdleStrategy idleStrategy, final Runnable fatalHandler) {
+                    final String host, final int nodeId, final int groupId, final Queue<byte[]> topologyRows,
+                    final IdleStrategy idleStrategy, final Runnable fatalHandler) {
         this.aeron = aeron;
         this.localArchive = localArchive;
         this.archiveEndpoints = archiveEndpoints;
         this.host = host;
         this.nodeId = nodeId;
+        this.groupId = groupId;
+        this.streamId = FrameLayer.queueStreamId(groupId);
+        this.topologyRows = topologyRows;
         this.idleStrategy = idleStrategy;
         this.fatalHandler = fatalHandler;
         this.relay = new QueueRelay(archiveEndpoints.size());
         this.counters = aeron.countersReader();
 
-        queue = aeron.addExclusivePublication(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
-        localArchive.startRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID, SourceLocation.LOCAL);
+        queue = aeron.addExclusivePublication(FrameLayer.QUEUE_CHANNEL, streamId);
+        localArchive.startRecording(FrameLayer.QUEUE_CHANNEL, streamId, SourceLocation.LOCAL);
         final long deadlineMs = Clocks.monotonicMs() + RECORDING_START_TIMEOUT_MS;
         int counterId;
         while ((counterId = RecordingPos.findCounterIdBySession(
                     counters, queue.sessionId(), localArchive.archiveId())) == CountersReader.NULL_COUNTER_ID) {
             if (Clocks.monotonicMs() >= deadlineMs) {
-                throw new IllegalStateException("the local archive did not start recording the queue within " +
-                                                RECORDING_START_TIMEOUT_MS + "ms");
+                throw new IllegalStateException("the local archive did not start recording group " + groupId +
+                                                "'s queue within " + RECORDING_START_TIMEOUT_MS + "ms");
             }
             idleStrategy.idle();
         }
@@ -119,23 +131,38 @@ final class AeronQueueRelay implements AutoCloseable {
     }
 
     /**
-     * Runs the duty cycle until {@code running} goes false or the relay gives up. An uncaught exception
-     * brings the process down like a lost recording does: supervision restarts it.
+     * Runs every relay's duty cycle on the calling thread until {@code running} goes false or one gives up. An
+     * uncaught exception brings the process down like a lost recording does: supervision restarts it.
      *
-     * @param running true while running
+     * @param relays       one per relayed group
+     * @param running      true while running
+     * @param idleStrategy the shared duty cycle's
      */
-    void run(final AtomicBoolean running) {
-        Logger.info(Logger.CoreComponent.QueueRelay, nodeId, "relaying from member archives %s onto local recording %d",
-                    archiveEndpoints, recordingId);
+    static void run(final List<AeronQueueRelay> relays, final AtomicBoolean running, final IdleStrategy idleStrategy) {
+        for (final AeronQueueRelay relay : relays) {
+            Logger.info(Logger.CoreComponent.QueueRelay, relay.nodeId,
+                        "relaying group %d's queue from member archives %s onto local recording %d", relay.groupId,
+                        relay.archiveEndpoints, relay.recordingId);
+        }
+        AeronQueueRelay current = null;
         try {
-            while (running.get() && !fatal) {
-                idleStrategy.idle(doWork());
+            while (running.get()) {
+                int work = 0;
+                for (final AeronQueueRelay relay : relays) {
+                    current = relay;
+                    work += relay.doWork();
+                    if (relay.fatal) {
+                        return;
+                    }
+                }
+                idleStrategy.idle(work);
             }
         } catch (final RuntimeException ex) {
-            fatal = true;
-            Logger.fault(Logger.CoreComponent.QueueRelay, Logger.CoreEventCode.ReplayDutyCycleFailure, nodeId,
-                         "FATAL: relay duty cycle terminated by an uncaught exception (%s)", ex.toString());
-            fatalHandler.run();
+            current.fatal = true;
+            Logger.fault(Logger.CoreComponent.QueueRelay, Logger.CoreEventCode.ReplayDutyCycleFailure, current.nodeId,
+                         "FATAL: group %d's relay duty cycle terminated by an uncaught exception (%s)", current.groupId,
+                         ex.toString());
+            current.fatalHandler.run();
         }
     }
 
@@ -169,7 +196,8 @@ final class AeronQueueRelay implements AutoCloseable {
             restartReplay();
         } else if (pending == QueueRelay.Verdict.DROP_SOURCE) {
             pending = null;
-            dropSource("its queue recording has a hole where this relay needs frame " + (relay.lastClusterSeqNo() + 1));
+            dropSource("its queue recording has a hole where this relay needs groupSeqNo " +
+                       (relay.lastGroupSeqNo() + 1));
         } else if (work == 0) {
             imageSeen |= replay.imageCount() > 0;
             if (imageSeen && replay.imageCount() == 0) {
@@ -184,13 +212,13 @@ final class AeronQueueRelay implements AutoCloseable {
     @Override
     public void close() {
         closeSource();
-        CloseHelper.quietClose(() -> localArchive.stopRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID));
+        CloseHelper.quietClose(() -> localArchive.stopRecording(FrameLayer.QUEUE_CHANNEL, streamId));
         CloseHelper.quietClose(queue);
     }
 
     private Action onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header) {
         final QueueRelay.Verdict verdict =
-            view.wrap(buffer, offset, length) ? relay.onFrame(view.clusterSeqNo(), nowMs) : relay.onUnreadable();
+            view.wrap(buffer, offset, length) ? relay.onFrame(view.groupSeqNo(), nowMs) : relay.onUnreadable();
         switch (verdict) {
         case SKIP:
             return Action.CONTINUE;
@@ -205,11 +233,16 @@ final class AeronQueueRelay implements AutoCloseable {
     private Action publish(final DirectBuffer buffer, final int offset, final int length, final Header header) {
         final long result = queue.offer(buffer, offset, length);
         if (result > 0) {
-            relay.onPublished(view.clusterSeqNo(), header.position());
+            relay.onPublished(view.groupSeqNo(), header.position());
+            if (topologyRows != null && QueueResolver.isTopologyRow(buffer, offset, length)) {
+                final byte[] row = new byte[length];
+                buffer.getBytes(offset, row);
+                topologyRows.add(row);
+            }
             return Action.CONTINUE;
         }
         if (result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED) {
-            fatal("the local queue refused frame " + view.clusterSeqNo() + " for good (" + result + ")");
+            fatal("the local queue refused groupSeqNo " + view.groupSeqNo() + " for good (" + result + ")");
             return Action.BREAK;
         }
         if (relay.onBackPressured(nowMs, counters.getCounterValue(recordingCounterId))) {
@@ -262,7 +295,7 @@ final class AeronQueueRelay implements AutoCloseable {
     private void startReplay() {
         // The newest recording still recording; an unclean shutdown can leave an older one looking active too.
         final long[] newest = { NULL_VALUE, 0 };
-        source.listRecordingsForUri(0, Integer.MAX_VALUE, "", FrameLayer.QUEUE_STREAM_ID,
+        source.listRecordingsForUri(0, Integer.MAX_VALUE, "", streamId,
                                     (controlSessionId, correlationId, id, startTimestamp, stopTimestamp, start,
                                      stopPosition, initialTermId, segmentFileLength, termBufferLength, mtuLength,
                                      sessionId, streamId, strippedChannel, originalChannel, sourceIdentity) -> {
@@ -274,13 +307,13 @@ final class AeronQueueRelay implements AutoCloseable {
         final long activeId = newest[0];
         final long startPosition = newest[1];
         if (activeId == NULL_VALUE) {
-            dropSource("it is not recording a queue");
+            dropSource("it is not recording group " + groupId + "'s queue");
             return;
         }
 
         final long from = relay.replayFrom(startPosition, source.getRecordingPosition(activeId), nowMs);
         if (from == QueueRelay.NOT_SUITABLE) {
-            dropSource("its recording is behind this relay's frame " + relay.lastClusterSeqNo());
+            dropSource("its recording is behind this relay's groupSeqNo " + relay.lastGroupSeqNo());
             return;
         }
 
@@ -290,8 +323,8 @@ final class AeronQueueRelay implements AutoCloseable {
         replaySessionId =
             source.startReplay(activeId, from, AeronArchive.REPLAY_ALL_AND_FOLLOW, channel, REPLAY_STREAM_ID);
         Logger.info(Logger.CoreComponent.QueueRelay, nodeId,
-                    "following member archive %s: recording %d from position %d, after clusterSeqNo %d",
-                    archiveEndpoints.get(relay.sourceIndex()), activeId, from, relay.lastClusterSeqNo());
+                    "following member archive %s: group %d's recording %d from position %d, after groupSeqNo %d",
+                    archiveEndpoints.get(relay.sourceIndex()), groupId, activeId, from, relay.lastGroupSeqNo());
     }
 
     /** The subscription's channel with the port the driver bound, which is where the member replays to. */
@@ -310,7 +343,8 @@ final class AeronQueueRelay implements AutoCloseable {
 
     private void dropSource(final String reason) {
         Logger.error(Logger.CoreComponent.QueueRelay, Logger.CoreEventCode.RelaySourceLost, nodeId,
-                     "left member archive %s: %s", archiveEndpoints.get(relay.sourceIndex()), reason);
+                     "group %d's relay left member archive %s: %s", groupId, archiveEndpoints.get(relay.sourceIndex()),
+                     reason);
         closeSource();
         relay.onSourceLost(nowMs);
     }
@@ -334,8 +368,8 @@ final class AeronQueueRelay implements AutoCloseable {
     private void fatal(final String reason) {
         fatal = true;
         Logger.fault(Logger.CoreComponent.QueueRelay, Logger.CoreEventCode.QueueRecordingFailure, nodeId,
-                     "FATAL: %s at clusterSeqNo=%d, so this host can no longer keep the history it serves", reason,
-                     relay.lastClusterSeqNo());
+                     "FATAL: %s at group %d's groupSeqNo=%d, so this host can no longer keep the history it serves",
+                     reason, groupId, relay.lastGroupSeqNo());
         fatalHandler.run();
     }
 }

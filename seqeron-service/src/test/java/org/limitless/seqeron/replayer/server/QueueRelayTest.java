@@ -13,15 +13,15 @@ import org.junit.jupiter.api.Test;
  * and when it leaves a member or stops. {@link QueueRelay} holds no Aeron runtime and no clock, so each case
  * drives it with the frames and times a member's replay would produce.
  *
- * <p>The property every case protects is the local queue's: each {@code clusterSeqNo} exactly once, in order,
+ * <p>The property every case protects is the local queue's: each {@code groupSeqNo} exactly once, in order,
  * across any number of member changes. A duplicate or a hole there is served to every client on the host.
  */
 class QueueRelayTest {
     private static final long START = 0;
 
     /** Where frame {@code n} ends in every member's recording, when the layouts agree. */
-    private static long end(final long clusterSeqNo) {
-        return clusterSeqNo * 64;
+    private static long end(final long groupSeqNo) {
+        return groupSeqNo * 64;
     }
 
     private final QueueRelay relay = new QueueRelay(3);
@@ -39,7 +39,7 @@ class QueueRelayTest {
     void coldStartReplaysFromTheStart() {
         assertEquals(START, relay.replayFrom(START, end(100), 0));
         publish(1, 3, 0);
-        assertEquals(3, relay.lastClusterSeqNo());
+        assertEquals(3, relay.lastGroupSeqNo());
     }
 
     @Test

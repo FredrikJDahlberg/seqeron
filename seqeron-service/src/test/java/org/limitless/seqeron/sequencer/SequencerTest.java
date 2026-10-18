@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.sun.management.ThreadMXBean;
 import io.aeron.archive.client.AeronArchive;
 import java.lang.management.ManagementFactory;
+import java.util.ArrayDeque;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.DisplayName;
@@ -619,8 +620,9 @@ class SequencerTest {
         // clusterSeqNo alone and drop the six other replicated fields, so a restored node re-emitted the
         // bootstrap GatewayActive and stopped producing frames identical to its peers'
         // Recovery is full-log replay, which rebuilds all of it.
-        assertThrows(UnsupportedOperationException.class,
-                     () -> new SequencerService(0, new AeronArchive.Context(), () -> { }).onTakeSnapshot(null));
+        final SequencerService service =
+            new SequencerService(0, new AeronArchive.Context(), new ArrayDeque<>(), () -> { });
+        assertThrows(UnsupportedOperationException.class, () -> service.onTakeSnapshot(null));
     }
 
     // ── Snapshot rounds (doc/snapshot.md §3) ──────────────────────────────────

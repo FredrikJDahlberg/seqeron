@@ -19,6 +19,8 @@ import io.aeron.protocol.HeaderFlyweight;
 import java.io.File;
 import java.nio.ByteOrder;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -322,7 +324,9 @@ public final class SequencerServer {
             consensusCtx.maxConcurrentSessions(DEFAULT_MAX_CONCURRENT_SESSIONS);
         }
 
-        final SequencerService service = new SequencerService(memberId, localArchiveCtx.clone(), fatalHandler);
+        final Queue<byte[]> topologyRows = new ConcurrentLinkedQueue<>();
+        final SequencerService service =
+            new SequencerService(memberId, localArchiveCtx.clone(), topologyRows, fatalHandler);
 
         final ClusteredServiceContainer.Context serviceCtx =
             new ClusteredServiceContainer.Context()
@@ -341,8 +345,9 @@ public final class SequencerServer {
         try {
             driver = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
             container = ClusteredServiceContainer.launch(serviceCtx);
-            return new SequencerServer(driver, container,
-                                       ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, fatalHandler));
+            return new SequencerServer(
+                driver, container,
+                ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, topologyRows, fatalHandler));
         } catch (final RuntimeException ex) {
             CloseHelper.quietCloseAll(container, driver);
             throw ex;

@@ -90,6 +90,8 @@ public final class Logger {
         ShutdownTimeout,
         /** A gateway host's relay stopped reading one member's archive and moved to the next. */
         RelaySourceLost,
+        /** A replayer could not tell an instance which queue it reads; the instance waits until it can. */
+        QueueUnresolved,
         /** The live queue skipped a {@code clusterSeqNo}; recovery replays the hole. */
         QueueGap,
         /** Recovery has dispatched nothing for longer than its deadline. */
