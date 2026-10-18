@@ -143,6 +143,22 @@ public class SequencedFrameDecoderTest
         }
     }
 
+    [Fact(DisplayName = "a frame's groupMask and groupSeqNo are read off its header")]
+    public void GroupMaskAndGroupSeqNo()
+    {
+        byte[] payload = Frames.OnQueue(Frames.Payload(9, 8), 9 + 100);
+        var header = new SequencedHeader();
+        header.Wrap(new Org.SbeTool.Sbe.Dll.DirectBuffer(payload), MessageHeader.Size, MessageHeader.SbeSchemaVersion);
+        header.GroupMask = 5;
+        Assert.True(Wrap(payload));
+        Assert.Equal(5, _view.GroupMask);
+        Assert.Equal(9 + 100, _view.GroupSeqNo);
+
+        Assert.True(Wrap(Frames.OnQueue(Frames.ClusterHeartbeat(10), 10 + 100)));
+        Assert.Equal(0, _view.GroupMask); // a system frame addresses no group
+        Assert.Equal(10 + 100, _view.GroupSeqNo);
+    }
+
     [Fact(DisplayName = "the bounds are taken from the fragment, not from the buffer behind it")]
     public void BoundsAreRelativeToTheFragment()
     {

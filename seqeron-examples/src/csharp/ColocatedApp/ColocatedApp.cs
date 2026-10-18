@@ -146,6 +146,11 @@ public sealed class ColocatedApp : IApplicationListener
                payload.Buffer.GetLong(payload.PayloadOffset, ByteOrder.LittleEndian) == _pingSentTicks;
     }
 
+    // Publishes to its own group alone; one that addresses others takes their masks from here.
+    public void OnGroupsResolved(GroupDirectory directory)
+    {
+    }
+
     // The whole election, for the producer kind nothing elects. False is also where a replica keeping outstanding
     // work calls OutstandingWork.OnNotLeader() — every leadership change shuts an open gate, and a payload submitted
     // during the election may have gone with it.

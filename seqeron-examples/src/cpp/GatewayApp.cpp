@@ -66,6 +66,10 @@ void onSignal(int)
 // The edge: what a gateway does that the façade cannot do for it. Here, one simulated client.
 struct Edge
 {
+    // Publishes to its own group alone; one that addresses others takes their masks from here.
+    void onGroupsResolved(const app::GroupDirectory&)
+    {}
+
     // Designated: open the edge. A real gateway binds its listen socket here; false would be retried.
     bool onActivated(const std::int32_t firstConnectionId)
     {

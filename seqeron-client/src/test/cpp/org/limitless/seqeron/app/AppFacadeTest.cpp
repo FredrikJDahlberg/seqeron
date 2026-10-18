@@ -21,6 +21,9 @@ static_assert(!std::is_constructible_v<Payload, const protocol::SequencedEvent&>
 // Records what the façade asked of its consumer; none of it fires before start().
 struct StubListener
 {
+    void onGroupsResolved(const GroupDirectory&)
+    {}
+
     bool onActivated(std::int32_t)
     {
         return true;
@@ -60,6 +63,7 @@ static_assert(GatewayListener<StubListener> && ApplicationListener<StubListener>
 // Everything a co-located application needs, and none of a gateway's election or connection callbacks.
 struct ColocatedOnlyListener
 {
+    void onGroupsResolved(const GroupDirectory&);
     void onLeadershipChanged(bool);
     void onSequenced(const Payload&);
     void onCaughtUp(std::int64_t);

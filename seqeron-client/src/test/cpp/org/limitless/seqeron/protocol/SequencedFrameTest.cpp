@@ -34,6 +34,7 @@ constexpr std::int32_t CONNECTION_ID = 42;
 constexpr std::int64_t SESSION_ID = 0x5EE51000LL;
 constexpr std::int64_t TIMESTAMP = 1700000000000LL;
 constexpr std::uint16_t PAYLOAD_ID = 2;
+constexpr std::uint16_t GROUP_MASK = 5;
 
 // Offsets inside the outer MessageHeader.
 constexpr std::uint64_t TEMPLATE_ID_OFFSET = 2;
@@ -63,8 +64,10 @@ std::vector<char> payloadFrame(std::int64_t clusterSeqNo, std::uint16_t payloadL
         .connectionId(CONNECTION_ID)
         .sessionId(SESSION_ID)
         .payloadId(PAYLOAD_ID)
+        .groupMask(GROUP_MASK)
         .clusterSeqNo(clusterSeqNo)
-        .timestamp(TIMESTAMP);
+        .timestamp(TIMESTAMP)
+        .groupSeqNo(clusterSeqNo + 100);
     frame.putPayload(payload.data(), payloadLength);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
@@ -99,7 +102,8 @@ std::vector<char> clusterHeartbeatFrame(std::int64_t clusterSeqNo)
         .sessionId(-1)
         .systemEventType(CLUSTER_HEARTBEAT)
         .clusterSeqNo(clusterSeqNo)
-        .timestamp(TIMESTAMP);
+        .timestamp(TIMESTAMP)
+        .groupSeqNo(clusterSeqNo + 100);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
 }
@@ -238,6 +242,21 @@ TEST(SequencedFrame, ASystemFrameDeclaresNoBlockLengthOrVersion)
         EXPECT_EQ(0, view.blockLength);
         EXPECT_EQ(0, view.version);
     }
+}
+
+TEST(SequencedFrame, GroupMaskAndGroupSeqNo)
+{
+    const std::vector<char> payload = payloadFrame(9, 8);
+    FrameView view = unwrapFrame(payload.data(), payload.size());
+    ASSERT_TRUE(view.valid);
+    EXPECT_EQ(GROUP_MASK, view.groupMask);
+    EXPECT_EQ(9 + 100, view.groupSeqNo);
+
+    const std::vector<char> heartbeat = clusterHeartbeatFrame(10);
+    view = unwrapFrame(heartbeat.data(), heartbeat.size());
+    ASSERT_TRUE(view.valid);
+    EXPECT_EQ(0, view.groupMask) << "a system frame addresses no group";
+    EXPECT_EQ(10 + 100, view.groupSeqNo);
 }
 
 } // namespace

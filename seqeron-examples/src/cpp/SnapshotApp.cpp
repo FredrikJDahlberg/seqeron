@@ -165,6 +165,9 @@ struct Ledger final : app::SnapshotListener
         }
     }
 
+    void onGroupsResolved(const app::GroupDirectory&) const
+    {}
+
     void onLeadershipChanged(const bool leading) const
     {
         std::puts(leading ? "# leading — submitting transfers" : "# not leading — silent");

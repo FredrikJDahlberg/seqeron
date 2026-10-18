@@ -11,6 +11,7 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.protocol.Publish;
 
@@ -145,6 +146,11 @@ public final class ColocatedApp implements Application.Listener {
         return pingSentNs != 0 && payload.sourceId() == SOURCE_ID && payload.payloadId() == PING_PAYLOAD_ID
             && payload.payloadLength() == Long.BYTES
             && payload.buffer().getLong(payload.payloadOffset(), ByteOrder.LITTLE_ENDIAN) == pingSentNs;
+    }
+
+    @Override
+    public void onGroupsResolved(final GroupDirectory directory) {
+        // Publishes to its own group alone; one that addresses others takes their masks from here.
     }
 
     /**

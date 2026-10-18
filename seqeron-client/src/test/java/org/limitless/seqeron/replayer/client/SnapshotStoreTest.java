@@ -32,8 +32,20 @@ class SnapshotStoreTest {
      * Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1, cut at
      * clusterSeqNo 42, position 43008, timestamp 42000.
      */
-    private static final String GOLDEN_TRAILER = "0300000000000000" + "ca0b000000000000" + "04000000" + "6bf5246c"
-        + "01000000" + "2a00000000000000" + "00a8000000000000" + "10a4000000000000" + "534e5032";
+    private static final String GOLDEN_TRAILER = "0300000000000000"
+        + "0d0c000000000000"
+        + "04000000"
+        + "8fa54a8a"
+        + "01000000"
+        + "2a00000000000000"
+        + "00a8000000000000"
+        + "10a4000000000000"
+        + "534e5032";
+
+    /** The shared application header, groups 1 "orders" and 3 "risk". */
+    private static final SnapshotHeader HEADER = new SnapshotHeader(
+        7, 2, List.of(new SnapshotHeader.Group(1, "orders"), new SnapshotHeader.Group(3, "risk")), null);
+    private static final int HEADER_LENGTH = 85;
 
     private static final long CUT_CLUSTER_SEQ_NO = 42;
     private static final long CUT_POSITION = 43008;
@@ -50,7 +62,7 @@ class SnapshotStoreTest {
         write(store, 3, records);
 
         final byte[] file = Files.readAllBytes(directory.resolve("3.snapshot"));
-        assertEquals(3018 + 2 * 4 + SnapshotStore.TRAILER_LENGTH, file.length);
+        assertEquals(3085 + 2 * 4 + SnapshotStore.TRAILER_LENGTH, file.length);
         assertEquals(GOLDEN_TRAILER,
                      HexFormat.of().formatHex(Arrays.copyOfRange(file, file.length - SnapshotStore.TRAILER_LENGTH,
                                                                  file.length)));
@@ -58,8 +70,8 @@ class SnapshotStoreTest {
         final SnapshotStore.Reader reader = store.open(3);
         assertNotNull(reader);
         assertEquals(4, reader.recordCount());
-        assertEquals(3018, reader.length());
-        assertEquals(0x6c24f56bL, reader.crc32c());
+        assertEquals(3085, reader.length());
+        assertEquals(0x8a4aa58fL, reader.crc32c());
         assertEquals(1, reader.formatVersion());
         assertEquals(CUT_CLUSTER_SEQ_NO, reader.cutClusterSeqNo());
         assertEquals(CUT_POSITION, reader.cutPosition());
@@ -116,21 +128,21 @@ class SnapshotStoreTest {
         assertNull(store.open(2), "cut short: no trailer");
 
         final byte[] flipped = intact.clone();
-        flipped[2 + SnapshotHeader.APPLICATION_LENGTH + 2 + 5] ^= 1; // a body byte of record 1
+        flipped[2 + HEADER_LENGTH + 2 + 5] ^= 1; // a body byte of record 1
         Files.write(file, flipped);
-        assertEquals(List.of(18, 1000, 1302, 698, SnapshotStore.Reader.DAMAGED), readAll(store.open(2)));
+        assertEquals(List.of(HEADER_LENGTH, 1000, 1302, 698, SnapshotStore.Reader.DAMAGED), readAll(store.open(2)));
 
         final byte[] oversized = intact.clone();
-        oversized[2 + SnapshotHeader.APPLICATION_LENGTH + 1] = (byte)0xFF; // record 1's length, past the file's records
+        oversized[2 + HEADER_LENGTH + 1] = (byte)0xFF; // record 1's length, past the file's records
         Files.write(file, oversized);
-        assertEquals(List.of(18, SnapshotStore.Reader.DAMAGED), readAll(store.open(2)));
+        assertEquals(List.of(HEADER_LENGTH, SnapshotStore.Reader.DAMAGED), readAll(store.open(2)));
 
         try (RandomAccessFile cut = new RandomAccessFile(file.toFile(), "rw")) {
             cut.write(intact);
             cut.seek(intact.length - SnapshotStore.TRAILER_LENGTH + 16);
             cut.write(5); // a recordCount the records do not reach
         }
-        assertEquals(List.of(18, 1000, 1302, 698, SnapshotStore.Reader.DAMAGED), readAll(store.open(2)));
+        assertEquals(List.of(HEADER_LENGTH, 1000, 1302, 698, SnapshotStore.Reader.DAMAGED), readAll(store.open(2)));
     }
 
     @Test
@@ -183,8 +195,8 @@ class SnapshotStoreTest {
 
     /** The application header, then the 3000-byte body as records of 1000, 1302 and 698 bytes. */
     private static List<byte[]> records() {
-        final UnsafeBuffer header = new UnsafeBuffer(new byte[SnapshotHeader.APPLICATION_LENGTH]);
-        new SnapshotHeader(7, 2, null).encode(header, 0);
+        final UnsafeBuffer header = new UnsafeBuffer(new byte[HEADER_LENGTH]);
+        HEADER.encode(header, 0);
         final byte[] body = new byte[3000];
         for (int i = 0; i < body.length; i++) {
             body[i] = (byte)(i * 31 + 7);

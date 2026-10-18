@@ -133,7 +133,7 @@ inline void write(SnapshotStore& store, const std::int64_t round, const std::int
 // An application's header record.
 inline Bytes header(const std::int64_t leadershipTermId, const std::int32_t leaderMemberId)
 {
-    const protocol::SnapshotHeader header{ leadershipTermId, leaderMemberId, std::nullopt };
+    const protocol::SnapshotHeader header{ leadershipTermId, leaderMemberId, {}, std::nullopt };
     Bytes out(header.encodedLength());
     header.encode(out.data());
     return out;

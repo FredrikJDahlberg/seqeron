@@ -29,14 +29,21 @@ public sealed class Payload
         _event = sequencedEvent;
     }
 
-    /// <summary>Cluster-wide monotone sequence number; increments by exactly one per frame.</summary>
+    /// <summary>Cluster-wide monotone sequence number; along this queue it increases, but not by one (spec
+    /// F-6).</summary>
     public long ClusterSeqNo => _event.ClusterSeqNo;
+
+    /// <summary>This frame's place on this instance's queue, increasing by exactly one per frame.</summary>
+    public long GroupSeqNo => _event.GroupSeqNo;
 
     /// <summary>The producer that submitted this frame (spec §5).</summary>
     public int SourceId => _event.SourceId;
 
     /// <summary>The producer's connection this frame belongs to, or -1 for a producer-scoped one.</summary>
     public int ConnectionId => _event.ConnectionId;
+
+    /// <summary>The groups whose queues carry it; a reply to it takes this mask (spec A-2, A-9).</summary>
+    public ushort GroupMask => (ushort)_event.GroupMask;
 
     /// <summary>The cluster session it was submitted on; a gateway pair shares its <c>SourceId</c> but not
     /// this.</summary>

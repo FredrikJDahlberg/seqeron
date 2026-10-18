@@ -13,6 +13,7 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Gateway;
+import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.protocol.Publish;
 
@@ -120,6 +121,11 @@ public final class GatewayApp implements Gateway.Listener {
             }
             idle.idle(work);
         }
+    }
+
+    @Override
+    public void onGroupsResolved(final GroupDirectory directory) {
+        // Publishes to its own group alone; one that addresses others takes their masks from here.
     }
 
     /** Designated: open the edge. A real gateway binds its listen socket here; false would be retried. */

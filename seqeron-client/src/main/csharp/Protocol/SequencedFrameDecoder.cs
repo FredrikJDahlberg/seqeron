@@ -78,7 +78,7 @@ public class SequencedFrameDecoder
         _frameHeader.Wrap(_view, BlockOffset, Frame.Sequenced.SchemaVersion);
         PayloadId = _frameHeader.PayloadId;
         SystemEventType = 0;
-        ReadIdentity(_frameHeader.SourceId, _frameHeader.ConnectionId, _frameHeader.SessionId,
+        ReadIdentity(_frameHeader.SourceId, _frameHeader.ConnectionId, _frameHeader.GroupMask, _frameHeader.SessionId,
                      _frameHeader.ClusterSeqNo, _frameHeader.Timestamp, _frameHeader.GroupSeqNo);
 
         PayloadLength = source.GetShort(offset + prefixOffset, ByteOrder.LittleEndian) & 0xFFFF;
@@ -143,15 +143,17 @@ public class SequencedFrameDecoder
         TemplateId = 0;
         BlockLength = 0;
         Version = 0;
-        ReadIdentity(_systemHeader.SourceId, _systemHeader.ConnectionId, _systemHeader.SessionId,
-                     _systemHeader.ClusterSeqNo, _systemHeader.Timestamp, _systemHeader.GroupSeqNo);
+        ReadIdentity(_systemHeader.SourceId, _systemHeader.ConnectionId, _systemHeader.GroupMask,
+                     _systemHeader.SessionId, _systemHeader.ClusterSeqNo, _systemHeader.Timestamp,
+                     _systemHeader.GroupSeqNo);
     }
 
-    private void ReadIdentity(int sourceId, int connectionId, long sessionId, long clusterSeqNo, long timestamp,
-                              long groupSeqNo)
+    private void ReadIdentity(int sourceId, int connectionId, int groupMask, long sessionId, long clusterSeqNo,
+                              long timestamp, long groupSeqNo)
     {
         SourceId = sourceId;
         ConnectionId = connectionId;
+        GroupMask = groupMask;
         SourceSessionId = sessionId;
         ClusterSeqNo = clusterSeqNo;
         ClusterTimestampNs = timestamp;
@@ -174,6 +176,10 @@ public class SequencedFrameDecoder
 
     /// <summary>Connection at that producer (<c>header.connectionId</c>); routes the reply.</summary>
     public int ConnectionId { get; private set; }
+
+    /// <summary>The groups whose queues carry the frame (<c>header.groupMask</c>); 0 on a system frame
+    /// (§7.4).</summary>
+    public int GroupMask { get; private set; }
 
     /// <summary>Cluster session the frame was submitted on (<c>header.sessionId</c>), as the sequencer stamped
     /// it.</summary>

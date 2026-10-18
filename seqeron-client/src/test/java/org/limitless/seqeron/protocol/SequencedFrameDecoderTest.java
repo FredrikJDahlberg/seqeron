@@ -40,6 +40,7 @@ class SequencedFrameDecoderTest {
     private static final int CONNECTION_ID = 42;
     private static final long SESSION_ID = 0x5EE5_1000L;
     private static final long TIMESTAMP = 1_700_000_000_000_000_000L;
+    private static final int GROUP_MASK = 5;
 
     /** Offsets inside the outer {@code MessageHeader}. */
     private static final int TEMPLATE_ID_OFFSET = 2;
@@ -169,6 +170,18 @@ class SequencedFrameDecoderTest {
         }
     }
 
+    @Test
+    @DisplayName("a frame's groupMask and groupSeqNo are read off its header")
+    void groupMaskAndGroupSeqNo() {
+        assertTrue(wrap(payloadFrame(9, 8)));
+        assertEquals(GROUP_MASK, view.groupMask());
+        assertEquals(9 + 100, view.groupSeqNo());
+
+        assertTrue(wrap(clusterHeartbeatFrame(10)));
+        assertEquals(0, view.groupMask(), "a system frame addresses no group");
+        assertEquals(10 + 100, view.groupSeqNo());
+    }
+
     /** Java only: {@code unwrapFrame} takes a pointer, so its caller does the offsetting. */
     @Test
     @DisplayName("the bounds are taken from the fragment, not from the buffer behind it")
@@ -202,8 +215,15 @@ class SequencedFrameDecoderTest {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(payloadLength + 64);
         final SequencedEncoder encoder = new SequencedEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(PAYLOAD_ID)
-            .clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
+        encoder.header()
+            .sourceId(SOURCE_ID)
+            .connectionId(CONNECTION_ID)
+            .sessionId(SESSION_ID)
+            .payloadId(PAYLOAD_ID)
+            .groupMask(GROUP_MASK)
+            .clusterSeqNo(clusterSeqNo)
+            .timestamp(TIMESTAMP)
+            .groupSeqNo(clusterSeqNo + 100);
         encoder.putPayload(new UnsafeBuffer(filler(payloadLength)), 0, payloadLength);
         return copy(frame, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
@@ -222,8 +242,14 @@ class SequencedFrameDecoderTest {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(64);
         final ClusterHeartbeatEncoder encoder = new ClusterHeartbeatEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(-1).connectionId(-1).sessionId(-1)
-            .systemEventType(SystemFrame.CLUSTER_HEARTBEAT).clusterSeqNo(clusterSeqNo).timestamp(TIMESTAMP);
+        encoder.header()
+            .sourceId(-1)
+            .connectionId(-1)
+            .sessionId(-1)
+            .systemEventType(SystemFrame.CLUSTER_HEARTBEAT)
+            .clusterSeqNo(clusterSeqNo)
+            .timestamp(TIMESTAMP)
+            .groupSeqNo(clusterSeqNo + 100);
         return copy(frame, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 

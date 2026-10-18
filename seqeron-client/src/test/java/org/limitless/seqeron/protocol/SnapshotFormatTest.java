@@ -13,6 +13,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.protocol.SnapshotHeader.GatewayRow;
 import org.limitless.seqeron.protocol.SnapshotHeader.GatewayState;
+import org.limitless.seqeron.protocol.SnapshotHeader.Group;
 
 /**
  * The snapshot byte format (doc/snapshot.md §2, §6). The golden vectors are shared with the C++
@@ -20,15 +21,30 @@ import org.limitless.seqeron.protocol.SnapshotHeader.GatewayState;
  * each other and not merely with themselves.
  */
 class SnapshotFormatTest {
-    /** An application's header: term 7, leader 2. */
-    static final String APPLICATION_HEADER = "010012000000070000000000000002000000";
+    /** Groups 1 "orders" and 3 "risk". */
+    static final List<Group> GROUPS = List.of(new Group(1, "orders"), new Group(3, "risk"));
 
-    /** A gateway's header: term 7, leader 2, source 9, active 10, highest connection 42, rows GW-A and GW-B. */
-    static final String GATEWAY_HEADER = "01006a000000070000000000000002000000090000000a0000002a0000000200"
-        + "0a0000000047572d41" + "00".repeat(28) + "0b0000000147572d42" + "00".repeat(28);
+    /** {@link #GROUPS} as a header carries them. */
+    static final String GROUPS_BYTES = "02"
+        + "016f7264657273"
+        + "00".repeat(26) + "037269736b"
+        + "00".repeat(28);
+
+    /** An application's header: term 7, leader 2, {@link #GROUPS}. */
+    static final String APPLICATION_HEADER = "020055000000070000000000000002000000" + GROUPS_BYTES;
+
+    /** A gateway's: the same, then source 9, active 10, highest connection 42, rows GW-A and GW-B. */
+    static final String GATEWAY_HEADER = "0200ad000000070000000000000002000000" + GROUPS_BYTES +
+        "090000000a0000002a0000000200"
+        + "0a0000000047572d41"
+        + "00".repeat(28) + "0b0000000147572d42"
+        + "00".repeat(28);
+
+    /** A version 1 application header, cut from a log before groups. */
+    static final String VERSION_1_HEADER = "010012000000070000000000000002000000";
 
     /** CRC-32C of {@link #APPLICATION_HEADER} followed by {@link #body}. */
-    static final long APPLICATION_SNAPSHOT_CRC = 0x6c24f56bL;
+    static final long APPLICATION_SNAPSHOT_CRC = 0x8a4aa58fL;
 
     /** A 3000-byte body; any split of it into records gives the same CRC. */
     static byte[] body() {
@@ -40,8 +56,9 @@ class SnapshotFormatTest {
     }
 
     static SnapshotHeader gatewayHeader() {
-        return new SnapshotHeader(7, 2, new GatewayState(9, 10, 42, List.of(new GatewayRow(10, 0, "GW-A"),
-                                                                            new GatewayRow(11, 1, "GW-B"))));
+        return new SnapshotHeader(
+            7, 2, GROUPS,
+            new GatewayState(9, 10, 42, List.of(new GatewayRow(10, 0, "GW-A"), new GatewayRow(11, 1, "GW-B"))));
     }
 
     @Test
@@ -57,7 +74,7 @@ class SnapshotFormatTest {
     @Test
     @DisplayName("both headers encode to the shared golden bytes and decode back")
     void headersEncodeToTheGoldenBytes() {
-        final SnapshotHeader application = new SnapshotHeader(7, 2, null);
+        final SnapshotHeader application = new SnapshotHeader(7, 2, GROUPS, null);
         assertArrayEquals(HexFormat.of().parseHex(APPLICATION_HEADER), encode(application));
         assertArrayEquals(HexFormat.of().parseHex(GATEWAY_HEADER), encode(gatewayHeader()));
 
@@ -72,20 +89,29 @@ class SnapshotFormatTest {
     void foreignOrShortHeadersDoNotDecode() {
         final byte[] gateway = encode(gatewayHeader());
         assertNull(SnapshotHeader.decode(new UnsafeBuffer(gateway), 0, gateway.length - 1), "truncated");
-        assertNull(SnapshotHeader.decode(new UnsafeBuffer(gateway), 0, 17), "shorter than any header");
+        assertNull(SnapshotHeader.decode(new UnsafeBuffer(gateway), 0, 18), "shorter than any header");
 
-        gateway[0] = 2;
-        assertEquals(2, SnapshotHeader.version(new UnsafeBuffer(gateway), 0, gateway.length));
+        final byte[] version1 = HexFormat.of().parseHex(VERSION_1_HEADER);
+        assertEquals(1, SnapshotHeader.version(new UnsafeBuffer(version1), 0, version1.length));
+        assertNull(SnapshotHeader.decode(new UnsafeBuffer(version1), 0, version1.length), "cut before groups");
+
+        gateway[0] = 3;
+        assertEquals(3, SnapshotHeader.version(new UnsafeBuffer(gateway), 0, gateway.length));
         assertNull(SnapshotHeader.decode(new UnsafeBuffer(gateway), 0, gateway.length), "a later headerVersion");
 
+        final byte[] groups = encode(new SnapshotHeader(7, 2, GROUPS, null));
+        groups[18] = 3;
+        assertNull(SnapshotHeader.decode(new UnsafeBuffer(groups), 0, groups.length),
+                   "groupCount disagrees with length");
+
         final byte[] rows = encode(gatewayHeader());
-        rows[30] = 3;
+        rows[85 + 12] = 3;
         assertNull(SnapshotHeader.decode(new UnsafeBuffer(rows), 0, rows.length), "rowCount disagrees with length");
     }
 
     private static byte[] snapshot() {
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
-        final int headerLength = new SnapshotHeader(7, 2, null).encode(buffer, 0);
+        final int headerLength = new SnapshotHeader(7, 2, GROUPS, null).encode(buffer, 0);
         buffer.putBytes(headerLength, body());
         final byte[] snapshot = new byte[headerLength + 3000];
         buffer.getBytes(0, snapshot);

@@ -96,7 +96,8 @@ public sealed class Application : IDisposable
         SnapshotStore store = options.SnapshotListener == null ? null : new SnapshotStore(options.SnapshotDirectory);
         _snapshots = new SnapshotTaker(options.SnapshotListener, store, KeepAlive);
         _session = new Session(options.ClientId, options.PendingCapacity, options.QueueStallTimeoutMs,
-                               options.RecoveryStallTimeoutMs, options.SourceId, null, new SessionDispatch(this));
+                               options.RecoveryStallTimeoutMs, options.SourceId, null, options.AddressedGroups,
+                               new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _sourceId);
         if (store != null)
         {
@@ -159,8 +160,8 @@ public sealed class Application : IDisposable
     /// needs.</summary>
     public bool IsLeading => _gate.IsOpen;
 
-    /// <summary>Submits one payload of this application's own, stamped with its <c>sourceId</c> and belonging to no
-    /// connection.</summary>
+    /// <summary>Submits one payload of this application's own to its own group, stamped with its <c>sourceId</c>
+    /// and belonging to no connection.</summary>
     /// <param name="payloadId">which protocol the payload speaks</param>
     /// <param name="payload">the payload's bytes from offset 0, its own <c>MessageHeader</c> included</param>
     /// <param name="length">bytes of <paramref name="payload"/></param>
@@ -168,30 +169,50 @@ public sealed class Application : IDisposable
     /// it; <c>Refused</c> is permanent</returns>
     public Publish Publish(int payloadId, IDirectBuffer payload, int length)
     {
-        return Submit(_sourceId, NoConnection, payloadId, payload, length);
+        return Submit(_sourceId, NoConnection, 0, payloadId, payload, length);
     }
 
     /// <summary>The same from a span, copied once into a buffer this replica owns.</summary>
     public Publish Publish(int payloadId, ReadOnlySpan<byte> payload)
     {
-        return Submit(_sourceId, NoConnection, payloadId, Stage(payload), payload.Length);
+        return Submit(_sourceId, NoConnection, 0, payloadId, Stage(payload), payload.Length);
     }
 
-    /// <summary>
-    /// The same on behalf of the producer that asked for it: a reply carries the <b>requester's</b> <c>sourceId</c>
-    /// and <c>connectionId</c>, which is how the gateway that took the request routes the answer back out of it. Keep
-    /// those two off the request rather than the request itself — a <see cref="Payload"/> is valid only during its
-    /// callback, and a reply is usually dispatched later.
-    /// </summary>
-    public Publish Reply(int requesterSourceId, int connectionId, int payloadId, IDirectBuffer payload, int length)
+    /// <summary>The same to the groups <paramref name="groupMask"/> names as well as its own.</summary>
+    /// <param name="groupMask">bits from the <see cref="GroupDirectory"/>; one the table lacks is
+    /// <c>Refused</c></param>
+    /// <param name="payloadId">which protocol the payload speaks</param>
+    /// <param name="payload">the payload's bytes from offset 0, its own <c>MessageHeader</c> included</param>
+    /// <param name="length">bytes of <paramref name="payload"/></param>
+    public Publish Publish(ushort groupMask, int payloadId, IDirectBuffer payload, int length)
     {
-        return Submit(requesterSourceId, connectionId, payloadId, payload, length);
+        return Submit(_sourceId, NoConnection, groupMask, payloadId, payload, length);
     }
 
     /// <summary>The same from a span, copied once into a buffer this replica owns.</summary>
-    public Publish Reply(int requesterSourceId, int connectionId, int payloadId, ReadOnlySpan<byte> payload)
+    public Publish Publish(ushort groupMask, int payloadId, ReadOnlySpan<byte> payload)
     {
-        return Submit(requesterSourceId, connectionId, payloadId, Stage(payload), payload.Length);
+        return Submit(_sourceId, NoConnection, groupMask, payloadId, Stage(payload), payload.Length);
+    }
+
+    /// <summary>
+    /// The same on behalf of the producer that asked for it: a reply carries the <b>requester's</b> <c>sourceId</c>,
+    /// <c>connectionId</c> and <c>groupMask</c>, which is how the gateway that took the request routes the answer
+    /// back out of it, and how every group that saw the request sees the answer. Keep those three off the request
+    /// rather than the request itself — a <see cref="Payload"/> is valid only during its callback, and a reply is
+    /// usually dispatched later.
+    /// </summary>
+    public Publish Reply(int requesterSourceId, int connectionId, ushort groupMask, int payloadId,
+                         IDirectBuffer payload, int length)
+    {
+        return Submit(requesterSourceId, connectionId, groupMask, payloadId, payload, length);
+    }
+
+    /// <summary>The same from a span, copied once into a buffer this replica owns.</summary>
+    public Publish Reply(int requesterSourceId, int connectionId, ushort groupMask, int payloadId,
+                         ReadOnlySpan<byte> payload)
+    {
+        return Submit(requesterSourceId, connectionId, groupMask, payloadId, Stage(payload), payload.Length);
     }
 
     /// <summary>This replica's own <c>sourceId</c>, the one its topology row gives it.</summary>
@@ -234,13 +255,14 @@ public sealed class Application : IDisposable
     }
 
     // A shut gate declines rather than submits: only the leading replica's copy of the work is the one sent.
-    private Publish Submit(int frameSourceId, int connectionId, int payloadId, IDirectBuffer payload, int length)
+    private Publish Submit(int frameSourceId, int connectionId, ushort groupMask, int payloadId, IDirectBuffer payload,
+                           int length)
     {
         if (!_gate.IsOpen)
         {
             return Protocol.Publish.Declined;
         }
-        return _session.PublishPayload(frameSourceId, connectionId, payloadId, payload, length);
+        return _session.PublishPayload(frameSourceId, connectionId, groupMask, payloadId, payload, length);
     }
 
     // What comes off the queue, and the one frame the gate is driven by.
@@ -277,11 +299,12 @@ public sealed class Application : IDisposable
                     Wrap(sequencedEvent);
                     _started.WrapForDecode(_view, 0, Frame.SnapshotStarted.BlockLength,
                                            Frame.SnapshotStarted.SchemaVersion);
-                    _app._snapshots.OnSnapshotStarted(
-                        _started.Round, sequencedEvent.ClusterSeqNo, sequencedEvent.Position,
-                        sequencedEvent.ClusterTimestampNs,
-                        new SnapshotHeader(_app._session.LeadershipTermId, _app._session.CurrentLeaderMemberId, null),
-                        _app._gate.IsOpen);
+                    _app._snapshots.OnSnapshotStarted(_started.Round, sequencedEvent.ClusterSeqNo,
+                                                      sequencedEvent.Position, sequencedEvent.ClusterTimestampNs,
+                                                      new SnapshotHeader(_app._session.LeadershipTermId,
+                                                                         _app._session.CurrentLeaderMemberId,
+                                                                         _app._session.GroupTable, null),
+                                                      _app._gate.IsOpen);
                     break;
                 case SystemFrame.SnapshotEnd:
                     if (sequencedEvent.SourceId != _app._sourceId)
@@ -316,6 +339,11 @@ public sealed class Application : IDisposable
         public void OnPayload(Payload payload)
         {
             _app._listener.OnSequenced(payload);
+        }
+
+        public void OnGroupsResolved(GroupDirectory directory)
+        {
+            _app._listener.OnGroupsResolved(directory);
         }
 
         public void OnCaughtUp(long clusterSeqNo)

@@ -6,9 +6,11 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "org/limitless/seqeron/app/ClusterError.hpp"
 #include "org/limitless/seqeron/app/Defaults.hpp"
+#include "org/limitless/seqeron/app/GroupDirectory.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
 #include "org/limitless/seqeron/app/SnapshotListener.hpp"
 #include "org/limitless/seqeron/app/detail/LeaderGate.hpp"
@@ -30,18 +32,20 @@ namespace org::limitless::seqeron::app {
 
 /** What an Application's Listener provides. */
 template<typename L>
-concept ApplicationListener =
-    requires(L& listener, const Payload& payload, bool leading, std::int64_t clusterSeqNo, std::int64_t clusterTimeNs,
-             std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
-        // The gate crossed an edge. False is where OutstandingWork::onNotLeader() belongs: every leadership
-        // change shuts an open gate, and the work may have gone with the election. False also comes before
-        // onFenced when this replica fences with its gate open.
-        listener.onLeadershipChanged(leading);
-        listener.onSequenced(payload);
-        listener.onCaughtUp(clusterSeqNo);
-        listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
-        listener.onFenced(fence, detail);
-    };
+concept ApplicationListener = requires(L& listener, const GroupDirectory& directory, const Payload& payload,
+                                       bool leading, std::int64_t clusterSeqNo, std::int64_t clusterTimeNs,
+                                       std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
+    // The log's group table, once, before the gate first opens: what publish takes its masks from.
+    listener.onGroupsResolved(directory);
+    // The gate crossed an edge. False is where OutstandingWork::onNotLeader() belongs: every leadership
+    // change shuts an open gate, and the work may have gone with the election. False also comes before
+    // onFenced when this replica fences with its gate open.
+    listener.onLeadershipChanged(leading);
+    listener.onSequenced(payload);
+    listener.onCaughtUp(clusterSeqNo);
+    listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
+    listener.onFenced(fence, detail);
+};
 
 /**
  * One replica of a co-located application — the kind of producer nothing elects. One runs per node, the
@@ -83,6 +87,9 @@ class Application
         // This application's sourceId, the one its <applications> row declares — required, because spec §5
         // is one id space, and never -1, which ingress refuses.
         std::int32_t sourceId = -1;
+        // The names of the groups this application publishes to besides its own; one the log's group table lacks
+        // fences it with ClusterError::GroupUnknown.
+        std::vector<std::string> addressedGroups;
         // This replica's client id, its counters' label; unique among the co-located apps on its node.
         std::int32_t clientId = 0;
         // The node this replica runs on: whose queue it follows, and whose leadership opens its gate.
@@ -127,6 +134,7 @@ class Application
                  m_config.recoveryStallTimeoutMs,
                  m_config.sourceId,
                  "",
+                 m_config.addressedGroups,
                  m_dispatch },
       m_snapshotFrames{ m_session, [this] { return m_config.sourceId; } }
     {
@@ -207,8 +215,8 @@ class Application
     }
 
     /**
-     * Encodes and submits one payload of this application's own, stamped with its sourceId and belonging to
-     * no connection.
+     * Encodes and submits one payload of this application's own to its own group, stamped with its sourceId and
+     * belonging to no connection.
      *
      * @tparam Encoder  the payload's SBE encoder
      * @param payloadId the payload's protocol
@@ -219,7 +227,22 @@ class Application
     template<typename Encoder, typename Fill>
     [[nodiscard]] protocol::Publish publish(const std::uint16_t payloadId, Fill&& fill)
     {
-        return submit<Encoder>(m_config.sourceId, NO_CONNECTION, payloadId, std::forward<Fill>(fill));
+        return submit<Encoder>(m_config.sourceId, NO_CONNECTION, 0, payloadId, std::forward<Fill>(fill));
+    }
+
+    /**
+     * The same to the groups groupMask names as well as its own.
+     *
+     * @tparam Encoder  the payload's SBE encoder
+     * @param groupMask bits from the GroupDirectory; one the table lacks is Refused
+     * @param payloadId the payload's protocol
+     * @param fill      called with the encoder, its messageHeader already applied, to stamp the fields
+     * @return as publish(payloadId, fill)
+     */
+    template<typename Encoder, typename Fill>
+    [[nodiscard]] protocol::Publish publish(const std::uint16_t groupMask, const std::uint16_t payloadId, Fill&& fill)
+    {
+        return submit<Encoder>(m_config.sourceId, NO_CONNECTION, groupMask, payloadId, std::forward<Fill>(fill));
     }
 
     /**
@@ -236,18 +259,34 @@ class Application
     [[nodiscard]] protocol::Publish publish(const std::uint16_t payloadId, const std::uint8_t* payload,
                                             const std::uint16_t payloadLength)
     {
-        return submit(m_config.sourceId, NO_CONNECTION, payloadId, payload, payloadLength);
+        return submit(m_config.sourceId, NO_CONNECTION, 0, payloadId, payload, payloadLength);
+    }
+
+    /**
+     * The same to the groups groupMask names as well as its own.
+     *
+     * @param groupMask     bits from the GroupDirectory; one the table lacks is Refused
+     * @param payloadId     the payload's protocol
+     * @param payload       the payload's first byte, its own messageHeader included if it has one
+     * @param payloadLength the payload's length
+     * @return as publish(payloadId, payload, payloadLength)
+     */
+    [[nodiscard]] protocol::Publish publish(const std::uint16_t groupMask, const std::uint16_t payloadId,
+                                            const std::uint8_t* payload, const std::uint16_t payloadLength)
+    {
+        return submit(m_config.sourceId, NO_CONNECTION, groupMask, payloadId, payload, payloadLength);
     }
 
     /**
      * Encodes and submits a reply on behalf of the producer that asked for it. It carries the requester's
-     * sourceId and connectionId, which is how the gateway that took the request routes the answer back out.
-     * Keep those two off the request rather than the request itself — a Payload is valid only during its
-     * callback, and a reply is usually dispatched later.
+     * sourceId, connectionId and groupMask, which is how the gateway that took the request routes the answer back
+     * out, and how every group that saw the request sees the answer. Keep those three off the request rather than
+     * the request itself — a Payload is valid only during its callback, and a reply is usually dispatched later.
      *
      * @tparam Encoder          the reply's SBE encoder
      * @param requesterSourceId the request's sourceId
      * @param connectionId      the request's connectionId
+     * @param groupMask         the request's groupMask
      * @param payloadId         the reply's protocol
      * @param fill              called with the encoder, its messageHeader already applied, to stamp the fields
      * @return Published; Declined while the gate is shut, ingress is held or the transport is back-pressured
@@ -255,9 +294,9 @@ class Application
      */
     template<typename Encoder, typename Fill>
     [[nodiscard]] protocol::Publish reply(const std::int32_t requesterSourceId, const std::int32_t connectionId,
-                                          const std::uint16_t payloadId, Fill&& fill)
+                                          const std::uint16_t groupMask, const std::uint16_t payloadId, Fill&& fill)
     {
-        return submit<Encoder>(requesterSourceId, connectionId, payloadId, std::forward<Fill>(fill));
+        return submit<Encoder>(requesterSourceId, connectionId, groupMask, payloadId, std::forward<Fill>(fill));
     }
 
     /**
@@ -265,6 +304,7 @@ class Application
      *
      * @param requesterSourceId the request's sourceId
      * @param connectionId      the request's connectionId
+     * @param groupMask         the request's groupMask
      * @param payloadId         the reply's protocol
      * @param payload           the reply's first byte, its own messageHeader included if it has one
      * @param payloadLength     the reply's length
@@ -272,10 +312,10 @@ class Application
      *         — retry it; Refused, permanently
      */
     [[nodiscard]] protocol::Publish reply(const std::int32_t requesterSourceId, const std::int32_t connectionId,
-                                          const std::uint16_t payloadId, const std::uint8_t* payload,
-                                          const std::uint16_t payloadLength)
+                                          const std::uint16_t groupMask, const std::uint16_t payloadId,
+                                          const std::uint8_t* payload, const std::uint16_t payloadLength)
     {
-        return submit(requesterSourceId, connectionId, payloadId, payload, payloadLength);
+        return submit(requesterSourceId, connectionId, groupMask, payloadId, payload, payloadLength);
     }
 
     // This replica's own sourceId, the one its topology row gives it.
@@ -318,25 +358,25 @@ class Application
     // A shut gate declines rather than submits: only the leading replica's copy of the work is the one sent.
     template<typename Encoder, typename Fill>
     [[nodiscard]] protocol::Publish submit(const std::int32_t frameSourceId, const std::int32_t connectionId,
-                                           const std::uint16_t payloadId, Fill&& fill)
+                                           const std::uint16_t groupMask, const std::uint16_t payloadId, Fill&& fill)
     {
         if (!m_gate.isOpen())
         {
             return protocol::Publish::Declined;
         }
-        return m_session.template publishPayload<Encoder>(frameSourceId, connectionId, payloadId,
+        return m_session.template publishPayload<Encoder>(frameSourceId, connectionId, groupMask, payloadId,
                                                           std::forward<Fill>(fill));
     }
 
     [[nodiscard]] protocol::Publish submit(const std::int32_t frameSourceId, const std::int32_t connectionId,
-                                           const std::uint16_t payloadId, const std::uint8_t* payload,
-                                           const std::uint16_t payloadLength)
+                                           const std::uint16_t groupMask, const std::uint16_t payloadId,
+                                           const std::uint8_t* payload, const std::uint16_t payloadLength)
     {
         if (!m_gate.isOpen())
         {
             return protocol::Publish::Declined;
         }
-        return m_session.publishPayload(frameSourceId, connectionId, payloadId, payload, payloadLength);
+        return m_session.publishPayload(frameSourceId, connectionId, groupMask, payloadId, payload, payloadLength);
     }
 
     // What comes off the queue, and the one frame the gate is driven by.
@@ -365,7 +405,8 @@ class Application
                     m_app.m_snapshots.onSnapshotStarted(
                         started.round(), event.clusterSeqNo, event.position, event.clusterTimestampNs,
                         protocol::SnapshotHeader{ m_app.m_session.leadershipTermId(),
-                                                  m_app.m_session.currentLeaderMemberId(), std::nullopt },
+                                                  m_app.m_session.currentLeaderMemberId(), m_app.m_session.groupTable(),
+                                                  std::nullopt },
                         m_app.m_gate.isOpen());
                     break;
                 }
@@ -402,6 +443,11 @@ class Application
         void onPayload(const Payload& payload)
         {
             m_app.m_listener.onSequenced(payload);
+        }
+
+        void onGroupsResolved(const GroupDirectory& directory)
+        {
+            m_app.m_listener.onGroupsResolved(directory);
         }
 
         void onCaughtUp(const std::int64_t clusterSeqNo)

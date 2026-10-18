@@ -117,6 +117,11 @@ public sealed class GatewayApp : IGatewayListener
         _running = false;
     }
 
+    // Publishes to its own group alone; one that addresses others takes their masks from here.
+    public void OnGroupsResolved(GroupDirectory directory)
+    {
+    }
+
     // Designated: open the edge. A real gateway binds its listen socket here; false would be retried.
     public bool OnActivated(int firstConnectionId)
     {

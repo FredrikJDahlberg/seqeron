@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Adaptive.Aeron;
 using Adaptive.Aeron.LogBuffer;
 using Adaptive.Agrona;
@@ -36,10 +37,6 @@ internal sealed class Session : IDisposable
     /// <summary>How often an attempt to replace a lost session begins while the façade allows it.</summary>
     internal const long ReconnectIntervalMs = 1_000;
 
-    /// <summary>No group is resolved yet (spec A-9), so a frame addresses none and §9.2 condition 14 refuses
-    /// it.</summary>
-    private const int UnresolvedGroupMask = 0;
-
     // Untethered, as the receiver's is: a reply this instance does not read must not hold up the Replayer.
     private const string ControlChannel = ReplayProtocol.IpcChannel + "|tether=false";
 
@@ -66,6 +63,9 @@ internal sealed class Session : IDisposable
         /// <summary>The cluster clock's tick, once a second.</summary>
         void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
 
+        /// <summary>The group table, once, at the first catch-up: before anything may be published.</summary>
+        void OnGroupsResolved(GroupDirectory directory);
+
         /// <summary>Once, latched: this producer may no longer act.</summary>
         void OnFenced(ClusterError fence, string detail);
 
@@ -83,6 +83,7 @@ internal sealed class Session : IDisposable
     private readonly IngressPublisher _publisher;
     private readonly ClusterStreamSender _sender = new ClusterStreamSender();
     private readonly ReplayerStreamReceiver _receiver;
+    private readonly GroupResolution _groups;
     private readonly RecoveryStallFence _recoveryStall;
     private readonly QueueStallFence _queueStall;
     private readonly Payload _payload = new Payload();
@@ -132,11 +133,13 @@ internal sealed class Session : IDisposable
     /// <param name="sourceId">the application's <c>sourceId</c> its row names, or
     /// <see cref="ReplayProtocol.NoSourceId"/> for a gateway instance</param>
     /// <param name="gatewayName">the gateway instance's row name, or null for an application</param>
+    /// <param name="addressedGroups">the names of the other groups the instance publishes to</param>
     /// <param name="dispatch">what the façade does with what comes off the queue</param>
     internal Session(int clientId, int pendingCapacity, long queueStallTimeoutMs, long recoveryStallTimeoutMs,
-                     int sourceId, string gatewayName, IDispatch dispatch)
+                     int sourceId, string gatewayName, IReadOnlyList<string> addressedGroups, IDispatch dispatch)
     {
         _dispatch = dispatch;
+        _groups = new GroupResolution(addressedGroups);
         _queueSourceId = sourceId;
         _queueGatewayName = gatewayName ?? "";
         _queueResolution = new QueueResolution(new QueueResolutionActions(this));
@@ -155,7 +158,7 @@ internal sealed class Session : IDisposable
     /// <summary>Restores the newest snapshot in <paramref name="store"/> first; call before starting.</summary>
     internal void RestoreFrom(SnapshotStore store, ISnapshotRestoreHandler handler)
     {
-        _receiver.RestoreFrom(store, handler);
+        _receiver.RestoreFrom(store, new GroupsRestore(_groups, handler));
     }
 
     /// <summary>Opens the cluster session over UDP and asks this node's Replayer which queue to follow.</summary>
@@ -224,7 +227,10 @@ internal sealed class Session : IDisposable
         }
         int work = _queueResolution.GroupId == QueueResolution.Unresolved ? PollQueueResolution() : _receiver.Poll();
         CheckCaughtUp();
-        CheckFences();
+        if (!_fenced)
+        {
+            CheckFences();
+        }
         if (_fenced)
         {
             // Here rather than at the fence, which may be raised from inside that poll. Nothing polls the receiver
@@ -239,11 +245,25 @@ internal sealed class Session : IDisposable
         return work;
     }
 
-    internal Publish PublishPayload(int sourceId, int connectionId, int payloadId, IDirectBuffer body, int bodyLength)
+    /// <summary>Declined until the groups are resolved, since nothing may be published before (A-9).</summary>
+    /// <param name="sourceId">the frame's <c>sourceId</c></param>
+    /// <param name="connectionId">the frame's <c>connectionId</c></param>
+    /// <param name="groupMask">the groups addressed besides the own one, 0 for none</param>
+    /// <param name="payloadId">which protocol the payload speaks</param>
+    /// <param name="body">the payload's bytes from offset 0</param>
+    /// <param name="bodyLength">bytes of <paramref name="body"/></param>
+    /// <returns><c>Refused</c> for a mask naming a group the table lacks</returns>
+    internal Publish PublishPayload(int sourceId, int connectionId, ushort groupMask, int payloadId, IDirectBuffer body,
+                                    int bodyLength)
     {
-        return _fenced ? Publish.Declined
-                       : _publisher.PublishPayload(_sender, sourceId, connectionId, payloadId, UnresolvedGroupMask,
-                                                   body, bodyLength);
+        if (_fenced || _groups.Directory == null)
+        {
+            return Publish.Declined;
+        }
+        int frameMask = _groups.FrameMask(groupMask);
+        return frameMask == GroupResolution.NotAddressable
+                   ? Publish.Refused
+                   : _publisher.PublishPayload(_sender, sourceId, connectionId, payloadId, frameMask, body, bodyLength);
     }
 
     internal Publish PublishSystem(int sourceId, int connectionId, int systemEventType, IDirectBuffer body,
@@ -276,6 +296,9 @@ internal sealed class Session : IDisposable
 
     internal long LeadershipTermId => _leadershipTermId;
 
+    /// <summary>The group table so far, for a snapshot header.</summary>
+    internal IReadOnlyList<SnapshotHeader.Group> GroupTable => _groups.Table;
+
     /// <summary>Whether a cluster session is open. The recorded fault and <c>IsConnected</c> as well as the sender's
     /// latch: <c>AeronCluster</c> also closes itself, with no event at all, when a new leader does not arrive before
     /// its timeout. And the queue, whose <c>SessionClosed</c> is the cluster's own word.</summary>
@@ -287,6 +310,35 @@ internal sealed class Session : IDisposable
         _receiver.Dispose();
         CloseQueueResolution();
         _sender.Dispose();
+    }
+
+    // Takes a restore's group table before the façade's handler takes the header.
+    private sealed class GroupsRestore : ISnapshotRestoreHandler
+    {
+        private readonly GroupResolution _groups;
+        private readonly ISnapshotRestoreHandler _handler;
+
+        public GroupsRestore(GroupResolution groups, ISnapshotRestoreHandler handler)
+        {
+            _groups = groups;
+            _handler = handler;
+        }
+
+        public bool SupportsFormatVersion(long formatVersion)
+        {
+            return _handler.SupportsFormatVersion(formatVersion);
+        }
+
+        public void OnSnapshotHeader(SnapshotHeader header)
+        {
+            _groups.OnSnapshotHeader(header.Groups);
+            _handler.OnSnapshotHeader(header);
+        }
+
+        public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex)
+        {
+            _handler.OnSnapshotRecord(record, length, recordIndex);
+        }
     }
 
     // The Aeron half of QueueResolution.
@@ -339,6 +391,16 @@ internal sealed class Session : IDisposable
         long nowMs = Clocks.MonotonicMs();
         _recoveryStall.OnCaughtUp();
         _queueStall.OnCaughtUp(nowMs);
+        if (_groups.Directory == null)
+        {
+            string unknown = _groups.Resolve(_queueResolution.GroupId);
+            if (unknown != null)
+            {
+                Fence(ClusterError.GroupUnknown, "group " + unknown + " is not in the log's group table");
+                return;
+            }
+            _dispatch.OnGroupsResolved(_groups.Directory);
+        }
         _dispatch.OnCaughtUp(_receiver.LastClusterSeqNo);
     }
 
@@ -488,7 +550,12 @@ internal sealed class Session : IDisposable
         _pending.OnSequenced(sequencedEvent);
         if (sequencedEvent.IsSystem)
         {
-            if (sequencedEvent.SystemEventType == SystemFrame.ClusterHeartbeat)
+            if (sequencedEvent.SystemEventType == SystemFrame.GroupsRegistered)
+            {
+                _groups.OnGroupsRegistered(sequencedEvent.Buffer, sequencedEvent.PayloadOffset,
+                                           sequencedEvent.PayloadLength);
+            }
+            else if (sequencedEvent.SystemEventType == SystemFrame.ClusterHeartbeat)
             {
                 _queueStall.OnClusterHeartbeat(Clocks.MonotonicMs());
                 _dispatch.OnClusterHeartbeat(sequencedEvent.ClusterTimestampNs, sequencedEvent.ReceiveTimeNs);

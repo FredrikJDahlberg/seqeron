@@ -7,10 +7,13 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "org/limitless/seqeron/app/ClusterError.hpp"
 #include "org/limitless/seqeron/app/Defaults.hpp"
+#include "org/limitless/seqeron/app/GroupDirectory.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
+#include "org/limitless/seqeron/app/detail/GroupResolution.hpp"
 #include "org/limitless/seqeron/app/detail/QueueResolution.hpp"
 #include "org/limitless/seqeron/app/detail/QueueStallFence.hpp"
 #include "org/limitless/seqeron/app/detail/RecoveryStallFence.hpp"
@@ -40,6 +43,7 @@ namespace org::limitless::seqeron::app::detail {
  *   void onPayload(const Payload& payload)
  *   void onCaughtUp(std::int64_t clusterSeqNo)           // every transition to caught-up, the first included
  *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs) // the cluster clock's tick
+ *   void onGroupsResolved(const GroupDirectory& directory) // once, at the first catch-up: before any publish
  *   void onFenced(ClusterError fence, const std::string& detail) // once, latched
  *   bool mayReconnect() const // whether a session the cluster closed may be replaced rather than fenced
  *   bool isActing() const     // whether this instance acts for its producer: a stall fences only one that does
@@ -49,14 +53,17 @@ class Session
 {
   public:
     /**
-     * @param sourceId    the application's sourceId its row names, or protocol::REPLAYER_NO_SOURCE_ID for a gateway
-     *                    instance
-     * @param gatewayName the gateway instance's row name, or empty for an application
+     * @param sourceId        the application's sourceId its row names, or protocol::REPLAYER_NO_SOURCE_ID for a
+     *                        gateway instance
+     * @param gatewayName     the gateway instance's row name, or empty for an application
+     * @param addressedGroups the names of the other groups the instance publishes to
      */
     Session(const std::int32_t clientId, const std::size_t pendingCapacity, const std::int64_t queueStallTimeoutMs,
             const std::int64_t recoveryStallTimeoutMs, const std::int32_t sourceId, std::string gatewayName,
-            Dispatch& dispatch) :
+            std::vector<std::string> addressedGroups, Dispatch& dispatch) :
       m_dispatch{ dispatch },
+      m_groups{ std::move(addressedGroups) },
+      m_groupsRestore{ *this },
       m_pending{ pendingCapacity },
       m_recoveryStall{ recoveryStallTimeoutMs },
       m_queueStall{ queueStallTimeoutMs },
@@ -88,7 +95,8 @@ class Session
      */
     void restoreFrom(replayer::client::SnapshotStore& store, replayer::client::SnapshotRestoreHandler& handler)
     {
-        m_receiver.restoreFrom(store, handler);
+        m_groupsRestore.m_handler = &handler;
+        m_receiver.restoreFrom(store, m_groupsRestore);
     }
 
     // Opens the cluster session over UDP and asks this node's Replayer which queue to follow.
@@ -120,7 +128,10 @@ class Session
         int work =
             m_queueResolution.groupId() == QueueResolution::UNRESOLVED ? pollQueueResolution() : m_receiver.poll();
         checkCaughtUp();
-        checkFences();
+        if (!m_fenced)
+        {
+            checkFences();
+        }
         if (m_fenced)
         {
             // Here rather than at the fence, which may be raised from inside that poll. Nothing polls the receiver
@@ -137,29 +148,42 @@ class Session
         return work;
     }
 
-    // The same for a payload a caller encoded into a buffer of its own; the Java twin's only publish.
-    [[nodiscard]] protocol::Publish publishPayload(const std::int32_t sourceId, const std::int32_t connectionId,
-                                                   const std::uint16_t payloadId, const std::uint8_t* payload,
-                                                   const std::uint16_t payloadLength)
-    {
-        if (m_fenced)
-        {
-            return protocol::Publish::Declined;
-        }
-        return sequencer::client::publishPayload(m_sender, &m_pending, sourceId, connectionId, payloadId,
-                                                 UNRESOLVED_GROUP_MASK, payload, payloadLength);
-    }
-
+    /**
+     * Encodes and submits a payload; declined until the groups are resolved, since nothing may be published before
+     * (A-9).
+     *
+     * @param groupMask the groups addressed besides the own one, 0 for none
+     * @return Refused for a mask naming a group the table lacks
+     */
     template<typename Encoder, typename Fill>
     [[nodiscard]] protocol::Publish publishPayload(const std::int32_t sourceId, const std::int32_t connectionId,
-                                                   const std::uint16_t payloadId, Fill&& fill)
+                                                   const std::uint16_t groupMask, const std::uint16_t payloadId,
+                                                   Fill&& fill)
     {
-        if (m_fenced)
+        const std::int32_t frameMask = frameMaskFor(groupMask);
+        if (frameMask < 0)
         {
-            return protocol::Publish::Declined;
+            return frameMask == GroupResolution::NOT_ADDRESSABLE ? protocol::Publish::Refused
+                                                                 : protocol::Publish::Declined;
         }
         return sequencer::client::publishPayload<Encoder>(m_sender, &m_pending, sourceId, connectionId, payloadId,
-                                                          UNRESOLVED_GROUP_MASK, std::forward<Fill>(fill));
+                                                          static_cast<std::uint16_t>(frameMask),
+                                                          std::forward<Fill>(fill));
+    }
+
+    // The same for a payload a caller encoded into a buffer of its own; the Java twin's only publish.
+    [[nodiscard]] protocol::Publish publishPayload(const std::int32_t sourceId, const std::int32_t connectionId,
+                                                   const std::uint16_t groupMask, const std::uint16_t payloadId,
+                                                   const std::uint8_t* payload, const std::uint16_t payloadLength)
+    {
+        const std::int32_t frameMask = frameMaskFor(groupMask);
+        if (frameMask < 0)
+        {
+            return frameMask == GroupResolution::NOT_ADDRESSABLE ? protocol::Publish::Refused
+                                                                 : protocol::Publish::Declined;
+        }
+        return sequencer::client::publishPayload(m_sender, &m_pending, sourceId, connectionId, payloadId,
+                                                 static_cast<std::uint16_t>(frameMask), payload, payloadLength);
     }
 
     template<typename Encoder, typename Fill>
@@ -216,6 +240,12 @@ class Session
         return m_leadershipTermId;
     }
 
+    // The group table so far, for a snapshot header.
+    [[nodiscard]] const std::vector<protocol::SnapshotGroup>& groupTable() const
+    {
+        return m_groups.table();
+    }
+
     /**
      * Latches the first fence and releases the cluster session, so a designated instance's sibling is promoted now
      * rather than when the application exits; a façade raises its own, such as a diverged snapshot, through this too.
@@ -267,10 +297,45 @@ class Session
     // How often an attempt to replace a lost session begins while the façade allows it.
     static constexpr std::int64_t RECONNECT_INTERVAL_MS = 1'000;
 
-    // No group is resolved yet (spec A-9), so a frame addresses none and §9.2 condition 14 refuses it.
-    static constexpr std::uint16_t UNRESOLVED_GROUP_MASK = 0;
+    // What frameMaskFor returns while the groups are unresolved or the session fenced.
+    static constexpr std::int32_t DECLINED = -2;
 
     static constexpr int QUEUE_CONTROL_FRAGMENT_LIMIT = 16;
+
+    // Takes a restore's group table before the façade's handler takes the header.
+    class GroupsRestore final : public replayer::client::SnapshotRestoreHandler
+    {
+      public:
+        explicit GroupsRestore(Session& session) : m_session{ session }
+        {}
+
+        bool supportsFormatVersion(const std::uint32_t formatVersion) override
+        {
+            return m_handler->supportsFormatVersion(formatVersion);
+        }
+
+        void onSnapshotHeader(const protocol::SnapshotHeader& header) override
+        {
+            m_session.m_groups.onSnapshotHeader(header.groups);
+            m_handler->onSnapshotHeader(header);
+        }
+
+        void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
+        {
+            m_handler->onSnapshotRecord(record, recordIndex);
+        }
+
+        replayer::client::SnapshotRestoreHandler* m_handler = nullptr;
+
+      private:
+        Session& m_session;
+    };
+
+    // The mask a frame carries, GroupResolution::NOT_ADDRESSABLE, or DECLINED.
+    [[nodiscard]] std::int32_t frameMaskFor(const std::uint16_t groupMask) const
+    {
+        return m_fenced || m_groups.directory() == nullptr ? DECLINED : m_groups.frameMask(groupMask);
+    }
 
     // The Aeron half of QueueResolution.
     class QueueResolutionActions final : public QueueResolution::Actions
@@ -392,6 +457,15 @@ class Session
         }
         m_recoveryStall.onCaughtUp();
         m_queueStall.onCaughtUp(monotonicMs());
+        if (m_groups.directory() == nullptr)
+        {
+            if (const std::optional<std::string> unknown = m_groups.resolve(m_queueResolution.groupId()))
+            {
+                fence(ClusterError::GroupUnknown, "group " + *unknown + " is not in the log's group table");
+                return;
+            }
+            m_dispatch.onGroupsResolved(*m_groups.directory());
+        }
         m_dispatch.onCaughtUp(m_receiver.lastClusterSeqNo());
     }
 
@@ -516,7 +590,11 @@ class Session
         m_pending.onSequenced(event);
         if (event.system)
         {
-            if (event.systemEventType == protocol::CLUSTER_HEARTBEAT)
+            if (event.systemEventType == protocol::GROUPS_REGISTERED)
+            {
+                m_groups.onGroupsRegistered(event.payload, event.payloadLength);
+            }
+            else if (event.systemEventType == protocol::CLUSTER_HEARTBEAT)
             {
                 m_queueStall.onClusterHeartbeat(monotonicMs());
                 m_dispatch.onClusterHeartbeat(event.clusterTimestampNs, event.receiveTimeNs);
@@ -528,6 +606,8 @@ class Session
     }
 
     Dispatch& m_dispatch;
+    GroupResolution m_groups;
+    GroupsRestore m_groupsRestore;
     sequencer::client::PendingSends m_pending;
     sequencer::client::ClusterStreamSender m_sender;
     RecoveryStallFence m_recoveryStall;

@@ -7,11 +7,13 @@ import io.aeron.cluster.client.EgressListener;
 import io.aeron.cluster.codecs.EventCode;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
+import java.util.List;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.ReplayProtocol;
+import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
@@ -46,9 +48,6 @@ final class Session implements AutoCloseable {
     /** How often an attempt to replace a lost session begins while the façade allows it. */
     static final long RECONNECT_INTERVAL_MS = 1_000;
 
-    /** No group is resolved yet (spec A-9), so a frame addresses none and §9.2 condition 14 refuses it. */
-    private static final int UNRESOLVED_GROUP_MASK = 0;
-
     /** Untethered, as the receiver's is: a reply this instance does not read must not hold up the Replayer. */
     private static final String CONTROL_CHANNEL = ReplayProtocol.IPC_CHANNEL + "|tether=false";
 
@@ -70,6 +69,9 @@ final class Session implements AutoCloseable {
         /** The cluster clock's tick, once a second. */
         void onClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
 
+        /** The group table, once, at the first catch-up: before anything may be published. */
+        void onGroupsResolved(GroupDirectory directory);
+
         /** Once, latched: this producer may no longer act. */
         void onFenced(ClusterError fence, String detail);
 
@@ -89,6 +91,7 @@ final class Session implements AutoCloseable {
     private final ClusterStreamSender sender = new ClusterStreamSender();
     private final ReplayerStreamReceiver receiver;
     private final QueueResolution queueResolution = new QueueResolution(new QueueResolutionActions());
+    private final GroupResolution groups;
     private final RecoveryStallFence recoveryStall;
     private final QueueStallFence queueStall;
     private final Payload payload = new Payload();
@@ -130,13 +133,16 @@ final class Session implements AutoCloseable {
         new UnsafeBuffer(new byte[MessageHeaderEncoder.ENCODED_LENGTH + QueueRequestEncoder.BLOCK_LENGTH]);
 
     /**
-     * @param sourceId    the application's {@code sourceId} its row names, or {@link ReplayProtocol#NO_SOURCE_ID}
-     *                    for a gateway instance
-     * @param gatewayName the gateway instance's row name, or null for an application
+     * @param sourceId        the application's {@code sourceId} its row names, or {@link
+     *                        ReplayProtocol#NO_SOURCE_ID} for a gateway instance
+     * @param gatewayName     the gateway instance's row name, or null for an application
+     * @param addressedGroups the names of the other groups the instance publishes to
      */
     Session(final int clientId, final int pendingCapacity, final long queueStallTimeoutMs,
-            final long recoveryStallTimeoutMs, final int sourceId, final String gatewayName, final Dispatch dispatch) {
+            final long recoveryStallTimeoutMs, final int sourceId, final String gatewayName,
+            final List<String> addressedGroups, final Dispatch dispatch) {
         this.dispatch = dispatch;
+        this.groups = new GroupResolution(addressedGroups);
         this.queueSourceId = sourceId;
         this.queueGatewayName = gatewayName == null ? "" : gatewayName;
         this.queueStallTimeoutMs = queueStallTimeoutMs;
@@ -151,7 +157,23 @@ final class Session implements AutoCloseable {
 
     /** Restores the newest snapshot in {@code store} first; call before starting. */
     void restoreFrom(final SnapshotStore store, final SnapshotRestoreHandler handler) {
-        receiver.restoreFrom(store, handler);
+        receiver.restoreFrom(store, new SnapshotRestoreHandler() {
+            @Override
+            public boolean supportsFormatVersion(final long formatVersion) {
+                return handler.supportsFormatVersion(formatVersion);
+            }
+
+            @Override
+            public void onSnapshotHeader(final SnapshotHeader header) {
+                groups.onSnapshotHeader(header.groups());
+                handler.onSnapshotHeader(header);
+            }
+
+            @Override
+            public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
+                handler.onSnapshotRecord(record, length, recordIndex);
+            }
+        });
     }
 
     /** Opens the cluster session over UDP and asks this node's Replayer which queue to follow. */
@@ -219,7 +241,9 @@ final class Session implements AutoCloseable {
         }
         int work = queueResolution.groupId() == QueueResolution.UNRESOLVED ? pollQueueResolution() : receiver.poll();
         checkCaughtUp();
-        checkFences();
+        if (!fenced) {
+            checkFences();
+        }
         if (fenced) {
             // Here rather than at the fence, which may be raised from inside that poll. Nothing polls the receiver
             // again, and a replay left open would hold one of the member's Replayer slots.
@@ -233,11 +257,20 @@ final class Session implements AutoCloseable {
         return work;
     }
 
-    Publish publishPayload(final int sourceId, final int connectionId, final int payloadId,
+    /**
+     * Declined until the groups are resolved, since nothing may be published before (A-9).
+     * @param groupMask the groups addressed besides the own one, 0 for none
+     * @return {@code Refused} for a mask naming a group the table lacks
+     */
+    Publish publishPayload(final int sourceId, final int connectionId, final int groupMask, final int payloadId,
                            final DirectBuffer body, final int bodyLength) {
-        return fenced ? Publish.Declined
-                      : publisher.publishPayload(sender, sourceId, connectionId, payloadId, UNRESOLVED_GROUP_MASK,
-                                                 body, bodyLength);
+        if (fenced || groups.directory() == null) {
+            return Publish.Declined;
+        }
+        final int frameMask = groups.frameMask(groupMask);
+        return frameMask == GroupResolution.NOT_ADDRESSABLE
+            ? Publish.Refused
+            : publisher.publishPayload(sender, sourceId, connectionId, payloadId, frameMask, body, bodyLength);
     }
 
     Publish publishSystem(final int sourceId, final int connectionId, final int systemEventType,
@@ -281,6 +314,11 @@ final class Session implements AutoCloseable {
         return leadershipTermId;
     }
 
+    /** The group table so far, for a snapshot header. */
+    List<SnapshotHeader.Group> groupTable() {
+        return groups.table();
+    }
+
     @Override
     public void close() {
         receiver.close();
@@ -301,6 +339,14 @@ final class Session implements AutoCloseable {
         final long nowMs = Clocks.monotonicMs();
         recoveryStall.onCaughtUp();
         queueStall.onCaughtUp(nowMs);
+        if (groups.directory() == null) {
+            final String unknown = groups.resolve(queueResolution.groupId());
+            if (unknown != null) {
+                fence(ClusterError.GROUP_UNKNOWN, "group " + unknown + " is not in the log's group table");
+                return;
+            }
+            dispatch.onGroupsResolved(groups.directory());
+        }
         dispatch.onCaughtUp(receiver.lastClusterSeqNo());
     }
 
@@ -435,7 +481,9 @@ final class Session implements AutoCloseable {
     private void onSequenced(final SequencedEvent event) {
         pending.onSequenced(event);
         if (event.isSystem()) {
-            if (event.systemEventType() == SystemFrame.CLUSTER_HEARTBEAT) {
+            if (event.systemEventType() == SystemFrame.GROUPS_REGISTERED) {
+                groups.onGroupsRegistered(event.buffer(), event.payloadOffset());
+            } else if (event.systemEventType() == SystemFrame.CLUSTER_HEARTBEAT) {
                 queueStall.onClusterHeartbeat(Clocks.monotonicMs());
                 dispatch.onClusterHeartbeat(event.clusterTimestampNs(), event.receiveTimeNs());
             }

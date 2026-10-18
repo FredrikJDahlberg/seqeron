@@ -178,6 +178,7 @@ struct SequencedEvent
     std::int64_t groupSeqNo;         ///< this frame's place on its queue: 1 for the first, then one per frame (F-6)
     std::int32_t sourceId;           ///< Fixed constant identifying the submitting producer process (header.sourceId)
     std::int32_t connectionId;       ///< Connection id at that producer; routes the reply (header.connectionId)
+    std::uint16_t groupMask;         ///< the groups whose queues carry it (header.groupMask); 0 on a system frame
     std::int64_t sourceSessionId;    ///< Aeron Cluster client session id (header.sessionId)
     std::int64_t clusterTimestampNs; ///< cluster consensus time (epoch ns) when message was committed
     std::int64_t receiveTimeNs;      ///< wall-clock ns at receipt by this client
@@ -209,6 +210,7 @@ struct FrameView
     std::uint16_t systemEventType;
     std::int32_t sourceId;
     std::int32_t connectionId;
+    std::uint16_t groupMask;      ///< the groups whose queues carry it (header.groupMask, §7.4)
     std::int64_t sourceSessionId; ///< Aeron Cluster client session id (header.sessionId)
     std::int64_t clusterSeqNo;
     std::int64_t groupSeqNo;         ///< this frame's place on its queue (header.groupSeqNo, F-6)
@@ -237,6 +239,7 @@ inline void readSystemHeader(FrameView& view, sbe::frame::SequencedSystemHeader&
     view.systemEventType = header.systemEventType();
     view.sourceId = header.sourceId();
     view.connectionId = header.connectionId();
+    view.groupMask = header.groupMask();
     view.sourceSessionId = header.sessionId();
     view.clusterSeqNo = header.clusterSeqNo();
     view.groupSeqNo = header.groupSeqNo();
@@ -284,6 +287,7 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
         view.payloadId = header.payloadId();
         view.sourceId = header.sourceId();
         view.connectionId = header.connectionId();
+        view.groupMask = header.groupMask();
         view.sourceSessionId = header.sessionId();
         view.clusterSeqNo = header.clusterSeqNo();
         view.groupSeqNo = header.groupSeqNo();
@@ -488,6 +492,7 @@ inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t
                            .groupSeqNo = view.groupSeqNo,
                            .sourceId = view.sourceId,
                            .connectionId = view.connectionId,
+                           .groupMask = view.groupMask,
                            .sourceSessionId = view.sourceSessionId,
                            .clusterTimestampNs = view.clusterTimestampNs,
                            .receiveTimeNs = receiveTimeNs,

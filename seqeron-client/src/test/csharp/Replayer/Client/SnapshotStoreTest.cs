@@ -18,9 +18,14 @@ public class SnapshotStoreTest : IDisposable
 {
     // Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1, cut at
     // clusterSeqNo 42, position 43008, timestamp 42000.
-    private const string GoldenTrailer = "0300000000000000" + "ca0b000000000000" + "04000000" + "6bf5246c" +
+    private const string GoldenTrailer = "0300000000000000" + "0d0c000000000000" + "04000000" + "8fa54a8a" +
                                          "01000000" + "2a00000000000000" + "00a8000000000000" + "10a4000000000000" +
                                          "534e5032";
+
+    // The shared application header, groups 1 "orders" and 3 "risk".
+    private static readonly SnapshotHeader Header = new SnapshotHeader(
+        7, 2, new[] { new SnapshotHeader.Group(1, "orders"), new SnapshotHeader.Group(3, "risk") }, null);
+    private const int HeaderLength = 85;
 
     private const long CutClusterSeqNo = 42;
     private const long CutPosition = 43008;
@@ -41,14 +46,14 @@ public class SnapshotStoreTest : IDisposable
         Write(store, 3, records);
 
         byte[] file = File.ReadAllBytes(FileOf(3));
-        Assert.Equal(3018 + 2 * 4 + SnapshotStore.TrailerLength, file.Length);
+        Assert.Equal(3085 + 2 * 4 + SnapshotStore.TrailerLength, file.Length);
         Assert.Equal(GoldenTrailer, Convert.ToHexStringLower(file[^SnapshotStore.TrailerLength..]));
 
         using SnapshotStore.Reader reader = store.Open(3);
         Assert.NotNull(reader);
         Assert.Equal(4, reader.RecordCount);
-        Assert.Equal(3018, reader.Length);
-        Assert.Equal(0x6c24f56bU, reader.Crc32C);
+        Assert.Equal(3085, reader.Length);
+        Assert.Equal(0x8a4aa58fU, reader.Crc32C);
         Assert.Equal(1, reader.FormatVersion);
         Assert.Equal(CutClusterSeqNo, reader.CutClusterSeqNo);
         Assert.Equal(CutPosition, reader.CutPosition);
@@ -107,19 +112,21 @@ public class SnapshotStoreTest : IDisposable
         Assert.Null(store.Open(2)); // cut short: no trailer
 
         byte[] flipped = (byte[])intact.Clone();
-        flipped[2 + SnapshotHeader.ApplicationLength + 2 + 5] ^= 1; // a body byte of record 1
+        flipped[2 + HeaderLength + 2 + 5] ^= 1; // a body byte of record 1
         File.WriteAllBytes(file, flipped);
-        Assert.Equal(new List<int> { 18, 1000, 1302, 698, SnapshotStore.Reader.Damaged }, ReadAll(store.Open(2)));
+        Assert.Equal(new List<int> { HeaderLength, 1000, 1302, 698, SnapshotStore.Reader.Damaged },
+                     ReadAll(store.Open(2)));
 
         byte[] oversized = (byte[])intact.Clone();
-        oversized[2 + SnapshotHeader.ApplicationLength + 1] = 0xFF; // record 1's length, past the file's records
+        oversized[2 + HeaderLength + 1] = 0xFF; // record 1's length, past the file's records
         File.WriteAllBytes(file, oversized);
-        Assert.Equal(new List<int> { 18, SnapshotStore.Reader.Damaged }, ReadAll(store.Open(2)));
+        Assert.Equal(new List<int> { HeaderLength, SnapshotStore.Reader.Damaged }, ReadAll(store.Open(2)));
 
         byte[] miscounted = (byte[])intact.Clone();
         miscounted[intact.Length - SnapshotStore.TrailerLength + 16] = 5; // a recordCount the records do not reach
         File.WriteAllBytes(file, miscounted);
-        Assert.Equal(new List<int> { 18, 1000, 1302, 698, SnapshotStore.Reader.Damaged }, ReadAll(store.Open(2)));
+        Assert.Equal(new List<int> { HeaderLength, 1000, 1302, 698, SnapshotStore.Reader.Damaged },
+                     ReadAll(store.Open(2)));
     }
 
     [Fact(DisplayName = "a confirmation replaces every older file, and any write a crash left behind")]
@@ -184,7 +191,11 @@ public class SnapshotStoreTest : IDisposable
     // The application header, then the 3000-byte body as records of 1000, 1302 and 698 bytes.
     private static List<byte[]> Records()
     {
-        byte[] header = RestoreFrames.Header(7, 2);
+        var header = new byte[HeaderLength];
+        using (var buffer = new UnsafeBuffer(header))
+        {
+            Header.Encode(buffer, 0);
+        }
         byte[] body = Frames.Filler(3000);
         return new List<byte[]> { header, body[..1000], body[1000..2302], body[2302..] };
     }

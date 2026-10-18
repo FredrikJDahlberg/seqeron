@@ -295,6 +295,7 @@ if(SEQERON_BUILD_TESTS)
     add_executable(core_tests
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/AppFacadeTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/GatewayLifecycleTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/GroupResolutionTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/LeaderGateTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkPropertyTest.cpp

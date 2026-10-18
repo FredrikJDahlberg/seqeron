@@ -3,6 +3,7 @@ package org.limitless.seqeron.app;
 import io.aeron.Aeron;
 import io.aeron.Counter;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
 import org.limitless.seqeron.protocol.PortLayout;
@@ -63,6 +64,12 @@ public final class Application implements AutoCloseable {
     /** What an application does that this class cannot do for it. */
     public interface Listener {
         /**
+         * The log's group table, once, before the gate first opens: what {@link #publish(int, int, DirectBuffer,
+         * int)} takes its masks from.
+         */
+        void onGroupsResolved(GroupDirectory directory);
+
+        /**
          * The leader gate crossed an edge: true when this replica may do leader-only work — caught up, and
          * its own node leads, or off the cluster caught up alone — false when it may not. <b>Every
          * leadership change closes an open gate</b>, so false is where {@link OutstandingWork#onNotLeader()}
@@ -117,7 +124,8 @@ public final class Application implements AutoCloseable {
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
         this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.queueStallTimeoutMs,
-                                   builder.recoveryStallTimeoutMs, builder.sourceId, null, new SessionDispatch());
+                                   builder.recoveryStallTimeoutMs, builder.sourceId, null, builder.addressedGroups,
+                                   new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, () -> sourceId);
         if (store != null) {
             session.restoreFrom(store, snapshots);
@@ -180,26 +188,36 @@ public final class Application implements AutoCloseable {
     }
 
     /**
-     * Submits one payload of this application's own, stamped with its {@code sourceId} and belonging to no
-     * connection.
+     * Submits one payload of this application's own to its own group, stamped with its {@code sourceId} and
+     * belonging to no connection.
      *
      * @param payload the payload's bytes, its own {@code MessageHeader} included
      * @return {@code Declined} while the gate is shut, ingress is held or the transport is back-pressured —
      *     retry it; {@code Refused} is permanent
      */
     public Publish publish(final int payloadId, final DirectBuffer payload, final int length) {
-        return submit(sourceId, NO_CONNECTION, payloadId, payload, length);
+        return submit(sourceId, NO_CONNECTION, 0, payloadId, payload, length);
+    }
+
+    /**
+     * The same to the groups {@code groupMask} names as well as its own.
+     *
+     * @param groupMask bits from the {@link GroupDirectory}; one the table lacks is {@code Refused}
+     */
+    public Publish publish(final int groupMask, final int payloadId, final DirectBuffer payload, final int length) {
+        return submit(sourceId, NO_CONNECTION, groupMask, payloadId, payload, length);
     }
 
     /**
      * The same on behalf of the producer that asked for it: a reply carries the <b>requester's</b>
-     * {@code sourceId} and {@code connectionId}, which is how the gateway that took the request routes the
-     * answer back out of it. Keep those two off the request rather than the request itself — a
-     * {@link Payload} is valid only during its callback, and a reply is usually dispatched later.
+     * {@code sourceId}, {@code connectionId} and {@code groupMask}, which is how the gateway that took the request
+     * routes the answer back out of it, and how every group that saw the request sees the answer. Keep those three
+     * off the request rather than the request itself — a {@link Payload} is valid only during its callback, and a
+     * reply is usually dispatched later.
      */
-    public Publish reply(final int requesterSourceId, final int connectionId, final int payloadId,
+    public Publish reply(final int requesterSourceId, final int connectionId, final int groupMask, final int payloadId,
                          final DirectBuffer payload, final int length) {
-        return submit(requesterSourceId, connectionId, payloadId, payload, length);
+        return submit(requesterSourceId, connectionId, groupMask, payloadId, payload, length);
     }
 
     /** This replica's own {@code sourceId}, the one its topology row gives it. */
@@ -230,12 +248,12 @@ public final class Application implements AutoCloseable {
     }
 
     /** A shut gate declines rather than submits: only the leading replica's copy of the work is the one sent. */
-    private Publish submit(final int frameSourceId, final int connectionId, final int payloadId,
+    private Publish submit(final int frameSourceId, final int connectionId, final int groupMask, final int payloadId,
                            final DirectBuffer payload, final int length) {
         if (!gate.isOpen()) {
             return Publish.Declined;
         }
-        return session.publishPayload(frameSourceId, connectionId, payloadId, payload, length);
+        return session.publishPayload(frameSourceId, connectionId, groupMask, payloadId, payload, length);
     }
 
     /** What comes off the queue, and the one frame the gate is driven by. */
@@ -262,11 +280,11 @@ public final class Application implements AutoCloseable {
             case SystemFrame.SNAPSHOT_STARTED -> {
                 started.wrap(event.buffer(), event.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
                              SnapshotStartedDecoder.SCHEMA_VERSION);
-                snapshots.onSnapshotStarted(started.round(), event.clusterSeqNo(), event.position(),
-                                            event.clusterTimestampNs(),
-                                            new SnapshotHeader(session.leadershipTermId(),
-                                                               session.currentLeaderMemberId(), null),
-                                            gate.isOpen());
+                snapshots.onSnapshotStarted(
+                    started.round(), event.clusterSeqNo(), event.position(), event.clusterTimestampNs(),
+                    new SnapshotHeader(session.leadershipTermId(), session.currentLeaderMemberId(),
+                                       session.groupTable(), null),
+                    gate.isOpen());
             }
             case SystemFrame.SNAPSHOT_END -> {
                 if (event.sourceId() != sourceId) {
@@ -297,6 +315,11 @@ public final class Application implements AutoCloseable {
         @Override
         public void onPayload(final Payload payload) {
             listener.onSequenced(payload);
+        }
+
+        @Override
+        public void onGroupsResolved(final GroupDirectory directory) {
+            listener.onGroupsResolved(directory);
         }
 
         @Override
@@ -334,6 +357,7 @@ public final class Application implements AutoCloseable {
     /** Everything one replica needs to join its deployment. */
     public static final class Builder {
         private int sourceId;
+        private List<String> addressedGroups = List.of();
         private int clientId;
         private int memberId;
         private boolean offCluster;
@@ -353,6 +377,15 @@ public final class Application implements AutoCloseable {
          */
         public Builder sourceId(final int sourceId) {
             this.sourceId = sourceId;
+            return this;
+        }
+
+        /**
+         * The names of the groups this application publishes to besides its own; one the log's group table lacks
+         * fences it with {@link ClusterError#GROUP_UNKNOWN}.
+         */
+        public Builder addressedGroups(final String... addressedGroups) {
+            this.addressedGroups = List.of(addressedGroups);
             return this;
         }
 

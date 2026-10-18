@@ -5,6 +5,10 @@ namespace Org.Limitless.Seqeron.App;
 /// <summary>What a gateway does that <see cref="Gateway"/> cannot do for it.</summary>
 public interface IGatewayListener
 {
+    /// <summary>The log's group table, once, before the first <see cref="OnActivated"/>: what
+    /// <see cref="Gateway.Publish(int, ushort, int, IDirectBuffer, int)"/> takes its masks from.</summary>
+    void OnGroupsResolved(GroupDirectory directory);
+
     /// <summary>This instance has been designated, has announced itself and may now serve: open the edge.</summary>
     /// <param name="firstConnectionId">the id <see cref="Gateway.OpenConnection()"/> will allocate first, resumed
     /// past whatever a predecessor issued — a gateway that numbers its own sessions starts here</param>

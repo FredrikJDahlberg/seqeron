@@ -22,14 +22,18 @@ using Bytes = std::vector<std::uint8_t>;
 // Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1, cut at
 // clusterSeqNo 42, position 43008, timestamp 42000.
 const std::string GOLDEN_TRAILER = "0300000000000000"
-                                   "ca0b000000000000"
+                                   "0d0c000000000000"
                                    "04000000"
-                                   "6bf5246c"
+                                   "8fa54a8a"
                                    "01000000"
                                    "2a00000000000000"
                                    "00a8000000000000"
                                    "10a4000000000000"
                                    "534e5032";
+
+// The shared application header, groups 1 "orders" and 3 "risk".
+const protocol::SnapshotHeader HEADER{ 7, 2, { { 1, "orders" }, { 3, "risk" } }, std::nullopt };
+constexpr std::int32_t HEADER_LENGTH = 85;
 
 constexpr std::int64_t CUT_CLUSTER_SEQ_NO = 42;
 constexpr std::int64_t CUT_POSITION = 43008;
@@ -38,8 +42,8 @@ constexpr std::int64_t CUT_TIMESTAMP_NS = 42000;
 // The application header, then the 3000-byte body as records of 1000, 1302 and 698 bytes.
 std::vector<Bytes> records()
 {
-    Bytes header(protocol::SnapshotHeader::APPLICATION_LENGTH);
-    protocol::SnapshotHeader{ 7, 2, std::nullopt }.encode(header.data());
+    Bytes header(HEADER_LENGTH);
+    HEADER.encode(header.data());
     Bytes body(3000);
     for (std::size_t i = 0; i < body.size(); ++i)
     {
@@ -134,14 +138,14 @@ TEST(SnapshotStore, AConfirmedRoundReadsBackRecordByRecordItsTrailerTheSharedGol
     write(store, 3, all);
 
     const Bytes file = readFile(directory.path() / "3.snapshot");
-    ASSERT_EQ(3018 + 2 * 4 + SnapshotStore::TRAILER_LENGTH, file.size());
+    ASSERT_EQ(3085 + 2 * 4 + SnapshotStore::TRAILER_LENGTH, file.size());
     EXPECT_EQ(GOLDEN_TRAILER, hex(file.end() - SnapshotStore::TRAILER_LENGTH, file.end()));
 
     std::optional<SnapshotStore::Reader> reader = store.open(3);
     ASSERT_TRUE(reader.has_value());
     EXPECT_EQ(4, reader->recordCount());
-    EXPECT_EQ(3018U, reader->length());
-    EXPECT_EQ(0x6c24f56bU, reader->crc32c());
+    EXPECT_EQ(3085U, reader->length());
+    EXPECT_EQ(0x8a4aa58fU, reader->crc32c());
     EXPECT_EQ(1U, reader->formatVersion());
     EXPECT_EQ(CUT_CLUSTER_SEQ_NO, reader->cutClusterSeqNo());
     EXPECT_EQ(CUT_POSITION, reader->cutPosition());
@@ -190,7 +194,7 @@ TEST(SnapshotStore, AFileCutShortOrOfAnotherRoundDoesNotOpenRecordsThatFailItsTr
     write(store, 2, records());
     const std::filesystem::path file = directory.path() / "2.snapshot";
     const Bytes intact = readFile(file);
-    const std::size_t record1 = 2 + protocol::SnapshotHeader::APPLICATION_LENGTH;
+    const std::size_t record1 = 2 + HEADER_LENGTH;
     constexpr auto DAMAGED = SnapshotStore::Reader::DAMAGED;
 
     std::filesystem::copy_file(file, directory.path() / "3.snapshot");
@@ -202,17 +206,17 @@ TEST(SnapshotStore, AFileCutShortOrOfAnotherRoundDoesNotOpenRecordsThatFailItsTr
     Bytes flipped = intact;
     flipped[record1 + 2 + 5] ^= 1; // a body byte of record 1
     writeFile(file, flipped);
-    EXPECT_EQ((std::vector<std::int32_t>{ 18, 1000, 1302, 698, DAMAGED }), readAll(store.open(2)));
+    EXPECT_EQ((std::vector<std::int32_t>{ HEADER_LENGTH, 1000, 1302, 698, DAMAGED }), readAll(store.open(2)));
 
     Bytes oversized = intact;
     oversized[record1 + 1] = 0xFF; // record 1's length, past the file's records
     writeFile(file, oversized);
-    EXPECT_EQ((std::vector<std::int32_t>{ 18, DAMAGED }), readAll(store.open(2)));
+    EXPECT_EQ((std::vector<std::int32_t>{ HEADER_LENGTH, DAMAGED }), readAll(store.open(2)));
 
     Bytes miscounted = intact;
     miscounted[intact.size() - SnapshotStore::TRAILER_LENGTH + 16] = 5; // a recordCount the records do not reach
     writeFile(file, miscounted);
-    EXPECT_EQ((std::vector<std::int32_t>{ 18, 1000, 1302, 698, DAMAGED }), readAll(store.open(2)));
+    EXPECT_EQ((std::vector<std::int32_t>{ HEADER_LENGTH, 1000, 1302, 698, DAMAGED }), readAll(store.open(2)));
 }
 
 TEST(SnapshotStore, AConfirmationReplacesEveryOlderFileAndAnyWriteACrashLeftBehind)

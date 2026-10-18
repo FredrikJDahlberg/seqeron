@@ -75,6 +75,10 @@ bool isOwnPing(const app::Payload& payload)
 // What an application does that the façade cannot do for it — the whole of it, for this example.
 struct PingListener
 {
+    // Publishes to its own group alone; one that addresses others takes their masks from here.
+    void onGroupsResolved(const app::GroupDirectory&) const
+    {}
+
     // The whole election, for the producer kind nothing elects. False is also where a replica keeping
     // outstanding work calls OutstandingWork::onNotLeader(): every leadership change shuts an open gate, and
     // a payload submitted during the election may have gone with it.

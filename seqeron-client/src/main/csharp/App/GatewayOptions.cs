@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Org.Limitless.Seqeron.Protocol;
 
 namespace Org.Limitless.Seqeron.App;
@@ -8,6 +10,10 @@ public sealed class GatewayOptions
 {
     /// <summary>The <c>GatewayRegistered</c> row name this instance joins on.</summary>
     public required string GatewayName { get; init; }
+
+    /// <summary>The names of the groups this gateway publishes to besides its own; one the log's group table lacks
+    /// fences it with <see cref="ClusterError.GroupUnknown"/>.</summary>
+    public IReadOnlyList<string> AddressedGroups { get; init; } = Array.Empty<string>();
 
     /// <summary>The logical gateway's <c>sourceId</c>, the one its rows declare. Required with a
     /// <see cref="SnapshotListener"/>, whose snapshot counter it labels.</summary>

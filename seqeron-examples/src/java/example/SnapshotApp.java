@@ -15,6 +15,7 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.app.SnapshotListener;
 
@@ -194,6 +195,10 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
             System.out.printf("# restored after %d transfers, %d rejected %s%n", applied, rejected,
                               Arrays.toString(balances));
         }
+    }
+
+    @Override
+    public void onGroupsResolved(final GroupDirectory directory) {
     }
 
     @Override

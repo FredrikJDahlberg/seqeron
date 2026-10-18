@@ -17,7 +17,7 @@
 namespace org::limitless::seqeron::app::detail {
 namespace {
 
-const protocol::SnapshotHeader HEADER{ 3, 1, std::nullopt };
+const protocol::SnapshotHeader HEADER{ 3, 1, { { 1, "orders" } }, std::nullopt };
 
 // Encodes `records` records of 1000 bytes, each filled with its index, then answers 0.
 struct State final : SnapshotListener
@@ -180,7 +180,7 @@ TEST(SnapshotTaker, TheRoundsFileHoldsTheHeaderTheRecordsAndTheCutThePublisherSu
     const Frames::End end = t.frames.ends[0];
     EXPECT_EQ(7, end.round);
     EXPECT_EQ(3, end.recordCount);
-    EXPECT_EQ(2018, end.length);
+    EXPECT_EQ(2052, end.length);
     EXPECT_EQ(5U, end.formatVersion) << "the listener's formatVersion";
     EXPECT_FALSE(t.lastStore().open(7).has_value()) << "not confirmed before its end is sequenced";
     EXPECT_TRUE(taker.onSnapshotEnd(7, end.recordCount, end.length, end.crc32c)) << "its own end agrees with it";
@@ -321,7 +321,7 @@ TEST(SnapshotTaker, AHeaderLongerThanARecordDropsTheRound)
     protocol::SnapshotGatewayState rows{ 9, 10, 42, {} };
     rows.rows.assign(1771, protocol::SnapshotGatewayRow{ 10, 0, "GW" });
     SnapshotTaker& taker = t.participating();
-    started(taker, 3, protocol::SnapshotHeader{ 7, 2, rows }, true);
+    started(taker, 3, protocol::SnapshotHeader{ 7, 2, {}, rows }, true);
     EXPECT_EQ(0, t.state.serialized) << "1771 rows outgrow a record";
     EXPECT_FALSE(taker.isPublishing());
     EXPECT_FALSE(t.lastStore().open(3).has_value());

@@ -31,5 +31,7 @@ public enum ClusterError {
      * This instance has a snapshot it cannot restore: a format or header version this build does not read, or a file
      * whose records fail the {@code SnapshotEnd} the log holds for them.
      */
-    SNAPSHOT_UNRESTORABLE
+    SNAPSHOT_UNRESTORABLE,
+    /** A group this instance addresses is not in the log's group table (A-9). */
+    GROUP_UNKNOWN
 }

@@ -1,5 +1,6 @@
 package org.limitless.seqeron.replayer.client;
 
+import java.util.List;
 import java.util.zip.CRC32C;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -94,7 +95,7 @@ final class RestoreFrames {
 
     /** An application's header record. */
     static byte[] header(final long leadershipTermId, final int leaderMemberId) {
-        final SnapshotHeader header = new SnapshotHeader(leadershipTermId, leaderMemberId, null);
+        final SnapshotHeader header = new SnapshotHeader(leadershipTermId, leaderMemberId, List.of(), null);
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[header.encodedLength()]);
         header.encode(buffer, 0);
         return buffer.byteArray();

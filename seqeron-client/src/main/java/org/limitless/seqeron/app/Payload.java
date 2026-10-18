@@ -29,9 +29,14 @@ public final class Payload {
         this.event = event;
     }
 
-    /** Cluster-wide monotone sequence number; increments by exactly one per frame. */
+    /** Cluster-wide monotone sequence number; along this queue it increases, but not by one (spec F-6). */
     public long clusterSeqNo() {
         return event.clusterSeqNo();
+    }
+
+    /** This frame's place on this instance's queue, increasing by exactly one per frame. */
+    public long groupSeqNo() {
+        return event.groupSeqNo();
     }
 
     /** The producer that submitted this frame (spec §5). */
@@ -42,6 +47,11 @@ public final class Payload {
     /** The producer's connection this frame belongs to, or -1 for a producer-scoped one. */
     public int connectionId() {
         return event.connectionId();
+    }
+
+    /** The groups whose queues carry it; a reply to it takes this mask (spec A-2, A-9). */
+    public int groupMask() {
+        return event.groupMask();
     }
 
     /** The cluster session it was submitted on; a gateway pair shares its {@code sourceId} but not this. */

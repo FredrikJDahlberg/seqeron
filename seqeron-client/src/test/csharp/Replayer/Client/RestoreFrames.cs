@@ -92,7 +92,7 @@ internal static class RestoreFrames
     /// <summary>An application's header record.</summary>
     public static byte[] Header(long leadershipTermId, int leaderMemberId)
     {
-        var header = new SnapshotHeader(leadershipTermId, leaderMemberId, null);
+        var header = new SnapshotHeader(leadershipTermId, leaderMemberId, Array.Empty<SnapshotHeader.Group>(), null);
         var bytes = new byte[header.EncodedLength];
         using var buffer = new UnsafeBuffer(bytes);
         header.Encode(buffer, 0);

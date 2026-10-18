@@ -9,6 +9,7 @@ import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
@@ -112,6 +113,11 @@ public final class TestApplication implements Application.Listener, SnapshotList
             onFenced(null, ex.getMessage());
         }
         return fenced ? EXIT_FENCED : 0;
+    }
+
+    @Override
+    public void onGroupsResolved(final GroupDirectory directory) {
+        // It publishes to its own group alone, so it addresses no other.
     }
 
     @Override

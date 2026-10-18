@@ -186,6 +186,15 @@ inline std::uint32_t crc32c(const std::uint8_t* data, const std::size_t length, 
     return hardware ? detail::crc32cHardware(data, length, crc) : detail::crc32cTable(data, length, crc);
 }
 
+// One active group, in a snapshot header.
+struct SnapshotGroup
+{
+    std::int32_t groupId;  ///< 1 to MAX_GROUPS
+    std::string groupName; ///< at most 32 US-ASCII characters
+
+    bool operator==(const SnapshotGroup&) const = default;
+};
+
 // One instance's list row, in a gateway's snapshot header.
 struct SnapshotGatewayRow
 {
@@ -214,15 +223,17 @@ struct SnapshotGatewayState
  */
 struct SnapshotHeader
 {
-    static constexpr std::uint16_t VERSION = 1;
-    static constexpr std::size_t APPLICATION_LENGTH = 18;
+    static constexpr std::uint16_t VERSION = 2;
     static constexpr std::int32_t NO_GATEWAY = -1;
+    static constexpr std::size_t FIXED_LENGTH = 19;
+    static constexpr std::size_t NAME_LENGTH = 32;
+    static constexpr std::size_t GROUP_LENGTH = 1 + NAME_LENGTH;
     static constexpr std::size_t GATEWAY_FIXED_LENGTH = 14;
-    static constexpr std::size_t GATEWAY_NAME_LENGTH = 32;
-    static constexpr std::size_t GATEWAY_ROW_LENGTH = 5 + GATEWAY_NAME_LENGTH;
+    static constexpr std::size_t GATEWAY_ROW_LENGTH = 5 + NAME_LENGTH;
 
     std::int64_t leadershipTermId;
     std::int32_t leaderMemberId;
+    std::vector<SnapshotGroup> groups;           ///< the active groups before the cut, in ascending groupId
     std::optional<SnapshotGatewayState> gateway; ///< empty for an application's header
 
     bool operator==(const SnapshotHeader&) const = default;
@@ -230,8 +241,9 @@ struct SnapshotHeader
     // Bytes encode writes; the value of headerLength.
     std::size_t encodedLength() const
     {
-        return gateway ? APPLICATION_LENGTH + GATEWAY_FIXED_LENGTH + GATEWAY_ROW_LENGTH * gateway->rows.size()
-                       : APPLICATION_LENGTH;
+        const std::size_t applicationLength = FIXED_LENGTH + GROUP_LENGTH * groups.size();
+        return gateway ? applicationLength + GATEWAY_FIXED_LENGTH + GATEWAY_ROW_LENGTH * gateway->rows.size()
+                       : applicationLength;
     }
 
     /**
@@ -247,20 +259,26 @@ struct SnapshotHeader
         detail::putLe(out + 2, length, 4);
         detail::putLe(out + 6, static_cast<std::uint64_t>(leadershipTermId), 8);
         detail::putLe(out + 14, static_cast<std::uint32_t>(leaderMemberId), 4);
+        out[18] = static_cast<std::uint8_t>(groups.size());
+        std::uint8_t* group = out + FIXED_LENGTH;
+        for (const SnapshotGroup& each : groups)
+        {
+            group[0] = static_cast<std::uint8_t>(each.groupId);
+            putName(group + 1, each.groupName);
+            group += GROUP_LENGTH;
+        }
         if (gateway)
         {
-            detail::putLe(out + 18, static_cast<std::uint32_t>(gateway->gatewaySourceId), 4);
-            detail::putLe(out + 22, static_cast<std::uint32_t>(gateway->activeGatewayId), 4);
-            detail::putLe(out + 26, static_cast<std::uint32_t>(gateway->highestConnectionId), 4);
-            detail::putLe(out + 30, gateway->rows.size(), 2);
-            std::uint8_t* row = out + APPLICATION_LENGTH + GATEWAY_FIXED_LENGTH;
+            detail::putLe(group, static_cast<std::uint32_t>(gateway->gatewaySourceId), 4);
+            detail::putLe(group + 4, static_cast<std::uint32_t>(gateway->activeGatewayId), 4);
+            detail::putLe(group + 8, static_cast<std::uint32_t>(gateway->highestConnectionId), 4);
+            detail::putLe(group + 12, gateway->rows.size(), 2);
+            std::uint8_t* row = group + GATEWAY_FIXED_LENGTH;
             for (const SnapshotGatewayRow& each : gateway->rows)
             {
                 detail::putLe(row, static_cast<std::uint32_t>(each.gatewayId), 4);
                 row[4] = each.preferenceRank;
-                const std::size_t nameLength = std::min(each.gatewayName.size(), GATEWAY_NAME_LENGTH);
-                std::copy_n(each.gatewayName.data(), nameLength, row + 5);
-                std::fill_n(row + 5 + nameLength, GATEWAY_NAME_LENGTH - nameLength, std::uint8_t{ 0 });
+                putName(row + 5, each.gatewayName);
                 row += GATEWAY_ROW_LENGTH;
             }
         }
@@ -288,41 +306,67 @@ struct SnapshotHeader
      */
     static std::optional<SnapshotHeader> decode(const std::uint8_t* in, const std::size_t length)
     {
-        if (length < APPLICATION_LENGTH || version(in, length) != VERSION)
+        if (length < FIXED_LENGTH || version(in, length) != VERSION)
         {
             return std::nullopt;
         }
         const std::uint64_t headerLength = detail::getLe(in + 2, 4);
+        const std::size_t groupCount = in[18];
+        const std::size_t applicationLength = FIXED_LENGTH + GROUP_LENGTH * groupCount;
+        if (headerLength > length || headerLength < applicationLength)
+        {
+            return std::nullopt;
+        }
         SnapshotHeader header{ static_cast<std::int64_t>(detail::getLe(in + 6, 8)),
-                               static_cast<std::int32_t>(detail::getLe(in + 14, 4)), std::nullopt };
-        if (headerLength == APPLICATION_LENGTH)
+                               static_cast<std::int32_t>(detail::getLe(in + 14, 4)),
+                               {},
+                               std::nullopt };
+        const std::uint8_t* group = in + FIXED_LENGTH;
+        for (std::size_t i = 0; i < groupCount; ++i)
+        {
+            header.groups.push_back(SnapshotGroup{ group[0], getName(group + 1) });
+            group += GROUP_LENGTH;
+        }
+        if (headerLength == applicationLength)
         {
             return header;
         }
-        if (headerLength > length || headerLength < APPLICATION_LENGTH + GATEWAY_FIXED_LENGTH)
+        if (headerLength < applicationLength + GATEWAY_FIXED_LENGTH)
         {
             return std::nullopt;
         }
-        const std::size_t rowCount = detail::getLe(in + 30, 2);
-        if (headerLength != APPLICATION_LENGTH + GATEWAY_FIXED_LENGTH + GATEWAY_ROW_LENGTH * rowCount)
+        const std::size_t rowCount = detail::getLe(group + 12, 2);
+        if (headerLength != applicationLength + GATEWAY_FIXED_LENGTH + GATEWAY_ROW_LENGTH * rowCount)
         {
             return std::nullopt;
         }
-        SnapshotGatewayState state{ static_cast<std::int32_t>(detail::getLe(in + 18, 4)),
-                                    static_cast<std::int32_t>(detail::getLe(in + 22, 4)),
-                                    static_cast<std::int32_t>(detail::getLe(in + 26, 4)),
+        SnapshotGatewayState state{ static_cast<std::int32_t>(detail::getLe(group, 4)),
+                                    static_cast<std::int32_t>(detail::getLe(group + 4, 4)),
+                                    static_cast<std::int32_t>(detail::getLe(group + 8, 4)),
                                     {} };
-        const std::uint8_t* row = in + APPLICATION_LENGTH + GATEWAY_FIXED_LENGTH;
+        const std::uint8_t* row = group + GATEWAY_FIXED_LENGTH;
         for (std::size_t i = 0; i < rowCount; ++i)
         {
-            const auto* name = reinterpret_cast<const char*>(row + 5);
-            const std::size_t nameLength = std::find(name, name + GATEWAY_NAME_LENGTH, '\0') - name;
-            state.rows.push_back(SnapshotGatewayRow{ static_cast<std::int32_t>(detail::getLe(row, 4)), row[4],
-                                                     std::string(name, nameLength) });
+            state.rows.push_back(
+                SnapshotGatewayRow{ static_cast<std::int32_t>(detail::getLe(row, 4)), row[4], getName(row + 5) });
             row += GATEWAY_ROW_LENGTH;
         }
         header.gateway = std::move(state);
         return header;
+    }
+
+  private:
+    static void putName(std::uint8_t* out, const std::string& name)
+    {
+        const std::size_t nameLength = std::min(name.size(), NAME_LENGTH);
+        std::copy_n(name.data(), nameLength, out);
+        std::fill_n(out + nameLength, NAME_LENGTH - nameLength, std::uint8_t{ 0 });
+    }
+
+    static std::string getName(const std::uint8_t* in)
+    {
+        const auto* name = reinterpret_cast<const char*>(in);
+        return std::string(name, std::find(name, name + NAME_LENGTH, '\0') - name);
     }
 };
 

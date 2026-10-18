@@ -5,6 +5,7 @@ import io.aeron.Counter;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import org.agrona.DirectBuffer;
@@ -81,6 +82,12 @@ public final class Gateway implements AutoCloseable {
 
     /** What a gateway does that this class cannot do for it. */
     public interface Listener {
+        /**
+         * The log's group table, once, before the first {@link #onActivated}: what {@link #publish(int, int, int,
+         * DirectBuffer, int)} takes its masks from.
+         */
+        void onGroupsResolved(GroupDirectory directory);
+
         /**
          * This instance has been designated, has announced itself and may now serve: open the edge.
          *
@@ -175,7 +182,7 @@ public final class Gateway implements AutoCloseable {
         this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.queueStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, ReplayProtocol.NO_SOURCE_ID, builder.gatewayName,
-                                   new SessionDispatch());
+                                   builder.addressedGroups, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, lifecycle::gatewaySourceId);
         if (store != null) {
             session.restoreFrom(store, new Restore());
@@ -299,7 +306,8 @@ public final class Gateway implements AutoCloseable {
     }
 
     /**
-     * Submits one application payload on a connection, stamped with this gateway's {@code sourceId}.
+     * Submits one application payload on a connection to this gateway's own group, stamped with its {@code
+     * sourceId}.
      *
      * @param payload the payload's bytes, its own {@code MessageHeader} included
      * @return {@code Declined} while ingress is held, back-pressured, or the connection's
@@ -307,10 +315,20 @@ public final class Gateway implements AutoCloseable {
      */
     public Publish publish(final int connectionId, final int payloadId, final DirectBuffer payload,
                            final int length) {
+        return publish(connectionId, 0, payloadId, payload, length);
+    }
+
+    /**
+     * The same to the groups {@code groupMask} names as well as its own.
+     *
+     * @param groupMask bits from the {@link GroupDirectory}; one the table lacks is {@code Refused}
+     */
+    public Publish publish(final int connectionId, final int groupMask, final int payloadId, final DirectBuffer payload,
+                           final int length) {
         if (unopened.contains(connectionId)) {
             return Publish.Declined;
         }
-        return session.publishPayload(lifecycle.gatewaySourceId(), connectionId, payloadId, payload, length);
+        return session.publishPayload(lifecycle.gatewaySourceId(), connectionId, groupMask, payloadId, payload, length);
     }
 
     /** Whether the last {@code GatewayActive} for this pair named this instance. */
@@ -418,7 +436,7 @@ public final class Gateway implements AutoCloseable {
 
     /** What this instance derives from the frames before a cut, for the round it starts (§6). */
     private SnapshotHeader snapshotHeader() {
-        return new SnapshotHeader(session.leadershipTermId(), session.currentLeaderMemberId(),
+        return new SnapshotHeader(session.leadershipTermId(), session.currentLeaderMemberId(), session.groupTable(),
                                   new SnapshotHeader.GatewayState(lifecycle.gatewaySourceId(),
                                                                   lifecycle.activeGatewayId(), highestConnectionId,
                                                                   lifecycle.pairRows()));
@@ -553,6 +571,11 @@ public final class Gateway implements AutoCloseable {
         }
 
         @Override
+        public void onGroupsResolved(final GroupDirectory directory) {
+            listener.onGroupsResolved(directory);
+        }
+
+        @Override
         public void onCaughtUp(final long clusterSeqNo) {
             lifecycle.onCaughtUp();
             listener.onCaughtUp(clusterSeqNo);
@@ -590,6 +613,7 @@ public final class Gateway implements AutoCloseable {
     /** Everything one instance needs to join its pair. */
     public static final class Builder {
         private String gatewayName;
+        private List<String> addressedGroups = List.of();
         private int sourceId = UNRESOLVED;
         private SnapshotListener snapshotListener;
         private Path snapshotDirectory;
@@ -605,6 +629,15 @@ public final class Gateway implements AutoCloseable {
         /** The {@code GatewayRegistered} row name this instance joins on. */
         public Builder gatewayName(final String gatewayName) {
             this.gatewayName = gatewayName;
+            return this;
+        }
+
+        /**
+         * The names of the groups this gateway publishes to besides its own; one the log's group table lacks fences
+         * it with {@link ClusterError#GROUP_UNKNOWN}.
+         */
+        public Builder addressedGroups(final String... addressedGroups) {
+            this.addressedGroups = List.of(addressedGroups);
             return this;
         }
 
