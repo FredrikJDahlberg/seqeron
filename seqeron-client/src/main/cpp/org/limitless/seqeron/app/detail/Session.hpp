@@ -297,8 +297,8 @@ class Session
     // How often an attempt to replace a lost session begins while the façade allows it.
     static constexpr std::int64_t RECONNECT_INTERVAL_MS = 1'000;
 
-    // What frameMaskFor returns while the groups are unresolved or the session fenced.
-    static constexpr std::int32_t DECLINED = -2;
+    // What frameMaskFor returns while the session is fenced; GroupResolution::UNRESOLVED declines the same way.
+    static constexpr std::int32_t DECLINED = -3;
 
     static constexpr int QUEUE_CONTROL_FRAGMENT_LIMIT = 16;
 
@@ -331,10 +331,10 @@ class Session
         Session& m_session;
     };
 
-    // The mask a frame carries, GroupResolution::NOT_ADDRESSABLE, or DECLINED.
+    // The mask a frame carries, GroupResolution::NOT_ADDRESSABLE, or a negative value that declines it.
     [[nodiscard]] std::int32_t frameMaskFor(const std::uint16_t groupMask) const
     {
-        return m_fenced || m_groups.directory() == nullptr ? DECLINED : m_groups.frameMask(groupMask);
+        return m_fenced ? DECLINED : m_groups.frameMask(groupMask);
     }
 
     // The Aeron half of QueueResolution.
@@ -464,13 +464,14 @@ class Session
         }
         m_recoveryStall.onCaughtUp();
         m_queueStall.onCaughtUp(monotonicMs());
-        if (m_groups.directory() == nullptr)
+        const GroupResolution::Outcome resolution = m_groups.onCaughtUp(m_queueResolution.groupId());
+        if (resolution == GroupResolution::Outcome::GroupUnknown)
         {
-            if (const std::optional<std::string> unknown = m_groups.resolve(m_queueResolution.groupId()))
-            {
-                fence(ClusterError::GroupUnknown, "group " + *unknown + " is not in the log's group table");
-                return;
-            }
+            fence(ClusterError::GroupUnknown, "group " + m_groups.unknownGroup() + " is not in the log's group table");
+            return;
+        }
+        if (resolution == GroupResolution::Outcome::Resolved)
+        {
             m_dispatch.onGroupsResolved(*m_groups.directory());
         }
         m_dispatch.onCaughtUp(m_receiver.lastClusterSeqNo());

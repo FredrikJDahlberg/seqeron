@@ -71,6 +71,7 @@ class FailoverConfirmTest {
                        "PendingSends still held " + producer.held() + " frame(s) after the drain timeout");
             assertNotEquals(leader, producer.lastLeader(), "no new leader took over from member " + leader);
             producer.assertExactlyOnceInOrder();
+            producer.assertOtherQueueShowsEveryEvenFrame();
 
             cluster.start(leader); // its recording rebuilds over the full-log replay
             QueueRecordings.assertOneLog(cluster.archives(), producer.lastClusterSeqNo());

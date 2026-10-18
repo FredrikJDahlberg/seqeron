@@ -256,11 +256,11 @@ internal sealed class Session : IDisposable
     internal Publish PublishPayload(int sourceId, int connectionId, ushort groupMask, int payloadId, IDirectBuffer body,
                                     int bodyLength)
     {
-        if (_fenced || _groups.Directory == null)
+        int frameMask = _fenced ? GroupResolution.Unresolved : _groups.FrameMask(groupMask);
+        if (frameMask == GroupResolution.Unresolved)
         {
             return Publish.Declined;
         }
-        int frameMask = _groups.FrameMask(groupMask);
         return frameMask == GroupResolution.NotAddressable
                    ? Publish.Refused
                    : _publisher.PublishPayload(_sender, sourceId, connectionId, payloadId, frameMask, body, bodyLength);
@@ -391,14 +391,14 @@ internal sealed class Session : IDisposable
         long nowMs = Clocks.MonotonicMs();
         _recoveryStall.OnCaughtUp();
         _queueStall.OnCaughtUp(nowMs);
-        if (_groups.Directory == null)
+        GroupResolution.Outcome resolution = _groups.OnCaughtUp(_queueResolution.GroupId);
+        if (resolution == GroupResolution.Outcome.GroupUnknown)
         {
-            string unknown = _groups.Resolve(_queueResolution.GroupId);
-            if (unknown != null)
-            {
-                Fence(ClusterError.GroupUnknown, "group " + unknown + " is not in the log's group table");
-                return;
-            }
+            Fence(ClusterError.GroupUnknown, "group " + _groups.UnknownGroup + " is not in the log's group table");
+            return;
+        }
+        if (resolution == GroupResolution.Outcome.Resolved)
+        {
             _dispatch.OnGroupsResolved(_groups.Directory);
         }
         _dispatch.OnCaughtUp(_receiver.LastClusterSeqNo);

@@ -653,6 +653,9 @@ class ReplayerServiceTest {
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID,
                      queueRequest(CLIENT, 2, ReplayProtocol.NO_SOURCE_ID, "GW-A").templateId());
         assertTrue(loggedOnce(Logger.CoreEventCode.QueueUnresolved), "one line per source, not one per resend");
+        queueRequest(OTHER_CLIENT, 1, 16, "");
+        queueRequest(OTHER_CLIENT, 2, 16, "");
+        assertEquals(2, logCount(Logger.CoreEventCode.QueueUnresolved), "and one more for each other source");
 
         final int handedOver = load.rows().size();
         load.gatewayRow(5, 9, "GW-A", OTHER_GROUP_ID);

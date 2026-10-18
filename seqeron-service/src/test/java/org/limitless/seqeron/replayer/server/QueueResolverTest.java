@@ -81,6 +81,7 @@ class QueueResolverTest {
 
         assertFalse(resolver.serves(0));
         assertFalse(resolver.serves(FrameLayer.MAX_GROUPS + 1));
+        assertFalse(resolver.serves(33), "its shift wraps onto group 1's bit");
     }
 
     private QueueResolver fed(final int relayedGroups) {

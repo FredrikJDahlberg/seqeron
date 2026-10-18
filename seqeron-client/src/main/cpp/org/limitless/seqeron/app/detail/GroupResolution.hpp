@@ -26,6 +26,20 @@ class GroupResolution
     // What frameMask returns for a mask naming a group the table lacks.
     static constexpr std::int32_t NOT_ADDRESSABLE = -1;
 
+    // What frameMask returns before the groups are resolved: nothing may be published (A-9).
+    static constexpr std::int32_t UNRESOLVED = -2;
+
+    // What a catch-up did to the groups.
+    enum class Outcome
+    {
+        // Resolved before: nothing to do.
+        Unchanged,
+        // Resolved now: hand directory() to the listener before the publish gate opens.
+        Resolved,
+        // An addressed name the table lacks, unknownGroup(): the producer fences.
+        GroupUnknown
+    };
+
     // @param addressedGroups the names of the other groups the producer publishes to
     explicit GroupResolution(std::vector<std::string> addressedGroups) : m_addressedGroups{ std::move(addressedGroups) }
     {}
@@ -66,24 +80,30 @@ class GroupResolution
     }
 
     /**
-     * Resolves the addressed names against the table.
+     * Resolves the addressed names against the table at the first catch-up, and never again: the groups are fixed
+     * (S-8).
      *
      * @param ownGroupId the group whose queue the producer reads
-     * @return the first addressed name the table lacks, which leaves this unresolved, or empty
+     * @return what this catch-up did
      */
-    std::optional<std::string> resolve(const std::int32_t ownGroupId)
+    Outcome onCaughtUp(const std::int32_t ownGroupId)
     {
+        if (m_directory)
+        {
+            return Outcome::Unchanged;
+        }
         GroupDirectory resolved{ m_table };
         for (const std::string& name : m_addressedGroups)
         {
             if (resolved.mask(name) == 0)
             {
-                return name;
+                m_unknownGroup = name;
+                return Outcome::GroupUnknown;
             }
         }
         m_directory = std::move(resolved);
         m_ownBit = GroupDirectory::bit(ownGroupId);
-        return std::nullopt;
+        return Outcome::Resolved;
     }
 
     // The resolved directory, or null.
@@ -92,15 +112,25 @@ class GroupResolution
         return m_directory ? &*m_directory : nullptr;
     }
 
+    // The addressed name the table lacked, once onCaughtUp has said so.
+    [[nodiscard]] const std::string& unknownGroup() const
+    {
+        return m_unknownGroup;
+    }
+
     /**
      * The mask a frame carries: the groups it addresses and the producer's own, since confirmed ingress watches the
-     * own queue. Only once resolved.
+     * own queue.
      *
      * @param groupMask the groups addressed, 0 for the own group alone
-     * @return the frame's mask, or NOT_ADDRESSABLE
+     * @return the frame's mask, NOT_ADDRESSABLE or UNRESOLVED
      */
     [[nodiscard]] std::int32_t frameMask(const std::uint16_t groupMask) const
     {
+        if (!m_directory)
+        {
+            return UNRESOLVED;
+        }
         return (groupMask & ~m_directory->m_activeMask) != 0 ? NOT_ADDRESSABLE : groupMask | m_ownBit;
     }
 
@@ -110,6 +140,7 @@ class GroupResolution
     std::vector<std::string> m_addressedGroups;
     std::vector<protocol::SnapshotGroup> m_table;
     std::optional<GroupDirectory> m_directory;
+    std::string m_unknownGroup;
     std::uint16_t m_ownBit = 0;
 };
 

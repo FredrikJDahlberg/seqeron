@@ -5,6 +5,7 @@ import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.ElectionState;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.test.Tests;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -18,6 +19,7 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.MutableLong;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
@@ -37,8 +39,12 @@ final class InProcessCluster implements AutoCloseable {
     static final int NO_MEMBER = -1;
     /** The gateway host's node id, one no member uses. */
     static final int GATEWAY_HOST = MEMBERS;
-    /** The cluster's one group, whose queue every archive holds. */
+    /** The producer's group, and the lowest: the default queue. */
     static final int GROUP_ID = 1;
+    /** The group a producer also addresses, frame by frame, so that a second queue is recorded and relayed. */
+    static final int OTHER_GROUP_ID = 2;
+    /** Every group, ascending: each one's queue is on every archive. */
+    static final List<Integer> GROUP_IDS = List.of(GROUP_ID, OTHER_GROUP_ID);
     private static final long ACTIVATION_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
 
     private final Path baseDir;
@@ -62,18 +68,24 @@ final class InProcessCluster implements AutoCloseable {
         }
     }
 
-    /** Launches every member and activates the group, since the cluster sequences nothing before it (spec §7.4). */
+    /** Launches every member and activates the groups, since the cluster sequences nothing before them (spec §7.4). */
     void startAll() {
         for (int m = 0; m < MEMBERS; m++) {
             start(m);
         }
-        activateGroup();
+        activateGroups();
     }
 
-    /** Publishes the one-group table from a session of its own, and waits until every member's Replayer serves it. */
-    private void activateGroup() {
+    /** Publishes the group table from a session of its own, and waits until every member's Replayer serves it. */
+    private void activateGroups() {
+        final byte[] names = new byte[GroupsRegisteredEncoder.groupNamesLength()];
+        final int slot = names.length / FrameLayer.MAX_GROUPS;
+        for (final int groupId : GROUP_IDS) {
+            final byte[] name = ("group-" + groupId).getBytes(StandardCharsets.US_ASCII);
+            System.arraycopy(name, 0, names, (groupId - 1) * slot, name.length);
+        }
         final ExpandableArrayBuffer body = new ExpandableArrayBuffer(GroupsRegisteredEncoder.BLOCK_LENGTH);
-        final int length = new GroupsRegisteredEncoder().wrap(body, 0).groupNames("test").encodedLength();
+        final int length = new GroupsRegisteredEncoder().wrap(body, 0).putGroupNames(names, 0).encodedLength();
         final IngressPublisher publisher = new IngressPublisher();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir(awaitLeader())));
              ClusterStreamSender sender = new ClusterStreamSender()) {
@@ -111,14 +123,14 @@ final class InProcessCluster implements AutoCloseable {
         nodes.set(m, SequencerServer.launch(config, () -> terminated.set(true), () -> isFatal.set(true), udpFaults));
     }
 
-    /** Launches the gateway host: its own driver and archive, relaying a member's queue of group 1 onto its own. */
+    /** Launches the gateway host: its own driver and archive, relaying a member's queue of each group onto its own. */
     void startGatewayHost() {
         final List<String> archives = IntStream.range(0, MEMBERS)
                                           .mapToObj(m -> PortLayout.DEFAULT_HOST + ":" + PortLayout.archivePort(m))
                                           .toList();
         gatewayHost = ReplayerServer.launchGatewayHost(
             new ReplayerServer.GatewayHostConfig(GATEWAY_HOST, aeronDir(GATEWAY_HOST), baseDir.toString(), archives,
-                                                 PortLayout.DEFAULT_HOST, List.of(GROUP_ID), BackoffIdleStrategy::new),
+                                                 PortLayout.DEFAULT_HOST, GROUP_IDS, BackoffIdleStrategy::new),
             () -> fatal[GATEWAY_HOST].set(true));
     }
 

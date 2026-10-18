@@ -33,6 +33,7 @@ class ReplayerServerTest {
     @Test
     void aGatewayHostRelaysTheGroupsItNamesAscendingAndMustNameOne() {
         assertEquals(List.of(2, 5), ReplayerServer.parseGroups(" 5, 2 ,"));
+        assertEquals(List.of(1, 16), ReplayerServer.parseGroups("16,1"));
         assertThrows(IllegalArgumentException.class, () -> ReplayerServer.parseGroups(""));
         assertThrows(IllegalArgumentException.class, () -> ReplayerServer.parseGroups("1,1"));
         assertThrows(IllegalArgumentException.class, () -> ReplayerServer.parseGroups("0"));

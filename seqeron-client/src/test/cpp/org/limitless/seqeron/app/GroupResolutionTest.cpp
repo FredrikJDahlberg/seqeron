@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -51,11 +52,12 @@ TEST(GroupResolution, TheDirectoryNamesEveryGroupOfTheTable)
     GroupResolution resolution{ { "risk" } };
     resolution.onSnapshotHeader(TABLE);
 
-    EXPECT_FALSE(resolution.resolve(1));
+    EXPECT_EQ(GroupResolution::Outcome::Resolved, resolution.onCaughtUp(1));
     const GroupDirectory& directory = *resolution.directory();
     EXPECT_EQ(1, directory.mask("orders"));
     EXPECT_EQ(4, directory.mask("risk"));
     EXPECT_EQ(0, directory.mask("audit"));
+    EXPECT_EQ(0, directory.mask("")) << "no slot's name is empty";
     EXPECT_EQ("risk", directory.name(3));
     EXPECT_TRUE(directory.name(2).empty());
     EXPECT_TRUE(directory.name(0).empty());
@@ -67,15 +69,17 @@ TEST(GroupResolution, AnAddressedNameTheTableLacksLeavesTheGroupsUnresolved)
     GroupResolution resolution{ { "risk", "audit" } };
     resolution.onSnapshotHeader(TABLE);
 
-    EXPECT_EQ("audit", resolution.resolve(1));
+    EXPECT_EQ(GroupResolution::Outcome::GroupUnknown, resolution.onCaughtUp(1));
+    EXPECT_EQ("audit", resolution.unknownGroup());
     EXPECT_EQ(nullptr, resolution.directory());
+    EXPECT_EQ(GroupResolution::UNRESOLVED, resolution.frameMask(0)) << "nothing is published";
 }
 
 TEST(GroupResolution, EveryFrameCarriesTheOwnGroupsBit)
 {
     GroupResolution resolution{ {} };
     resolution.onSnapshotHeader(TABLE);
-    resolution.resolve(3);
+    resolution.onCaughtUp(3);
 
     EXPECT_EQ(4, resolution.frameMask(0));
     EXPECT_EQ(5, resolution.frameMask(1));
@@ -86,10 +90,45 @@ TEST(GroupResolution, AMaskNamingAGroupTheTableLacksIsNotAddressable)
 {
     GroupResolution resolution{ {} };
     resolution.onSnapshotHeader(TABLE);
-    resolution.resolve(1);
+    resolution.onCaughtUp(1);
 
     EXPECT_EQ(GroupResolution::NOT_ADDRESSABLE, resolution.frameMask(2));
     EXPECT_EQ(GroupResolution::NOT_ADDRESSABLE, resolution.frameMask(1U << 15 | 1U));
+}
+
+TEST(GroupResolution, NothingIsAddressableBeforeTheFirstCatchUp)
+{
+    GroupResolution resolution{ {} };
+    resolution.onSnapshotHeader(TABLE);
+
+    EXPECT_EQ(GroupResolution::UNRESOLVED, resolution.frameMask(0));
+    EXPECT_EQ(GroupResolution::UNRESOLVED, resolution.frameMask(1));
+}
+
+TEST(GroupResolution, OnlyTheFirstCatchUpResolves)
+{
+    GroupResolution resolution{ {} };
+    resolution.onSnapshotHeader(TABLE);
+    EXPECT_EQ(GroupResolution::Outcome::Resolved, resolution.onCaughtUp(1));
+    const GroupDirectory* const directory = resolution.directory();
+
+    groupsRegistered(resolution, { { 2, "audit" } });
+    EXPECT_EQ(GroupResolution::Outcome::Unchanged, resolution.onCaughtUp(1));
+    EXPECT_EQ(directory, resolution.directory());
+    EXPECT_EQ(GroupResolution::NOT_ADDRESSABLE, resolution.frameMask(2)) << "the mask resolved once still holds";
+}
+
+TEST(GroupResolution, TheHighestGroupWithANameThatFillsItsSlotResolves)
+{
+    const std::string name(32, 'g');
+    GroupResolution resolution{ { name } };
+    groupsRegistered(resolution, { { 1, "orders" }, { 16, name } });
+
+    EXPECT_EQ(GroupResolution::Outcome::Resolved, resolution.onCaughtUp(16));
+    EXPECT_EQ(1U << 15, resolution.directory()->mask(name));
+    EXPECT_EQ(name, resolution.directory()->name(16));
+    EXPECT_EQ(1 << 15, resolution.frameMask(0));
+    EXPECT_EQ(1 << 15 | 1, resolution.frameMask(1));
 }
 
 } // namespace

@@ -22,6 +22,22 @@ internal sealed class GroupResolution
     /// <summary>What <see cref="FrameMask"/> returns for a mask naming a group the table lacks.</summary>
     internal const int NotAddressable = -1;
 
+    /// <summary>What <see cref="FrameMask"/> returns before the groups are resolved: nothing may be published
+    /// (A-9).</summary>
+    internal const int Unresolved = -2;
+
+    /// <summary>What a catch-up did to the groups.</summary>
+    internal enum Outcome
+    {
+        /// <summary>Resolved before: nothing to do.</summary>
+        Unchanged,
+        /// <summary>Resolved now: hand <see cref="Directory"/> to the listener before the publish gate
+        /// opens.</summary>
+        Resolved,
+        /// <summary>An addressed name the table lacks, <see cref="UnknownGroup"/>: the producer fences.</summary>
+        GroupUnknown
+    }
+
     private const int NameLength = Frame.GroupsRegistered.GroupNamesLength / FrameLayer.MaxGroups;
 
     private readonly IReadOnlyList<string> _addressedGroups;
@@ -40,6 +56,9 @@ internal sealed class GroupResolution
 
     /// <summary>The resolved directory, or null.</summary>
     internal GroupDirectory Directory { get; private set; }
+
+    /// <summary>The addressed name the table lacked, once <see cref="OnCaughtUp"/> has said so.</summary>
+    internal string UnknownGroup { get; private set; }
 
     /// <summary>A <c>GroupsRegistered</c> off the queue; the latest is the table.</summary>
     /// <param name="buffer">holding the message</param>
@@ -71,30 +90,40 @@ internal sealed class GroupResolution
         Table = groups;
     }
 
-    /// <summary>Resolves the addressed names against the table.</summary>
+    /// <summary>Resolves the addressed names against the table at the first catch-up, and never again: the groups
+    /// are fixed (S-8).</summary>
     /// <param name="ownGroupId">the group whose queue the producer reads</param>
-    /// <returns>the first addressed name the table lacks, which leaves this unresolved, or null</returns>
-    internal string Resolve(int ownGroupId)
+    /// <returns>what this catch-up did</returns>
+    internal Outcome OnCaughtUp(int ownGroupId)
     {
+        if (Directory != null)
+        {
+            return Outcome.Unchanged;
+        }
         var resolved = new GroupDirectory(Table);
         foreach (string name in _addressedGroups)
         {
             if (resolved.Mask(name) == 0)
             {
-                return name;
+                UnknownGroup = name;
+                return Outcome.GroupUnknown;
             }
         }
         Directory = resolved;
         _ownBit = GroupDirectory.Bit(ownGroupId);
-        return null;
+        return Outcome.Resolved;
     }
 
     /// <summary>The mask a frame carries: the groups it addresses and the producer's own, since confirmed ingress
-    /// watches the own queue. Only once resolved.</summary>
+    /// watches the own queue.</summary>
     /// <param name="groupMask">the groups addressed, 0 for the own group alone</param>
-    /// <returns>the frame's mask, or <see cref="NotAddressable"/></returns>
+    /// <returns>the frame's mask, <see cref="NotAddressable"/> or <see cref="Unresolved"/></returns>
     internal int FrameMask(ushort groupMask)
     {
+        if (Directory == null)
+        {
+            return Unresolved;
+        }
         return (groupMask & ~Directory.ActiveMask) != 0 ? NotAddressable : groupMask | _ownBit;
     }
 }

@@ -25,7 +25,7 @@ import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 
 /**
- * The recordings of the in-process cluster's queue on each archive, read straight off the archive rather than through
+ * The recordings of the in-process cluster's queues on each archive, read straight off the archive rather than through
  * {@code ReplayerRecovery}, which drops a repeated frame and replays over a gap: what a client sees can be whole while
  * a recording is not.
  */
@@ -35,8 +35,8 @@ final class QueueRecordings {
     private static final int REPLAY_STREAM_ID = 1205;
     private static final long TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
 
-    /** One recording: a digest of each frame it holds, groupSeqNo 1 first. */
-    record Recording(String archive, long recordingId, boolean active, LongArrayList digests) { }
+    /** One recording of a group's queue: a digest of each frame it holds, groupSeqNo 1 first. */
+    record Recording(String archive, int groupId, long recordingId, boolean active, LongArrayList digests) { }
 
     private record Span(long recordingId, long startPosition, boolean active) { }
 
@@ -44,16 +44,16 @@ final class QueueRecordings {
     }
 
     /**
-     * Every recording of the queue on every archive is one log: each holds groupSeqNo 1 onwards, each once and in
-     * order, each archive's active recording holds every frame up to {@code untilClusterSeqNo}, and every recording
-     * holding a groupSeqNo holds the same frame for it.
+     * Every recording of each group's queue on every archive is one log: each holds groupSeqNo 1 onwards, each once
+     * and in order, each archive's active recording holds every frame up to {@code untilClusterSeqNo}, and every
+     * recording of a queue holding a groupSeqNo holds the same frame for it.
      * @param aeronDirs each archive's driver directory, by the name a failure gives it
      * @param untilClusterSeqNo the clusterSeqNo each active recording must reach, waited for
      */
     static void assertOneLog(final Map<String, String> aeronDirs, final long untilClusterSeqNo) {
         final List<Recording> recordings = new ArrayList<>();
         aeronDirs.forEach((name, aeronDir) -> recordings.addAll(read(name, aeronDir, untilClusterSeqNo)));
-        assertOneLog(recordings);
+        assertEachQueueOneLog(recordings);
     }
 
     /**
@@ -64,7 +64,13 @@ final class QueueRecordings {
         final List<Recording> recordings = new ArrayList<>();
         aeronDirs.forEach((name, aeronDir) -> recordings.addAll(read(name, aeronDir, untilClusterSeqNo)));
         recordings.removeIf(recording -> !recording.active());
-        assertOneLog(recordings);
+        assertEachQueueOneLog(recordings);
+    }
+
+    private static void assertEachQueueOneLog(final List<Recording> recordings) {
+        for (final int groupId : InProcessCluster.GROUP_IDS) {
+            assertOneLog(recordings.stream().filter(recording -> recording.groupId() == groupId).toList());
+        }
     }
 
     private static void assertOneLog(final List<Recording> recordings) {
@@ -84,7 +90,7 @@ final class QueueRecordings {
         }
     }
 
-    /** The queue recordings on the archive behind {@code aeronDir}: stopped ones whole, the active one to the given. */
+    /** Each queue's recordings on the archive behind {@code aeronDir}: stopped ones whole, active ones to the given. */
     private static List<Recording> read(final String name, final String aeronDir, final long untilClusterSeqNo) {
         final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
         final AeronArchive archive =
@@ -97,8 +103,10 @@ final class QueueRecordings {
                                      .controlResponseStreamId(RESPONSE_STREAM_ID));
         try {
             final List<Recording> recordings = new ArrayList<>();
-            for (final Span span : awaitSpans(name, archive)) {
-                recordings.add(readOne(name, aeron, archive, span, untilClusterSeqNo));
+            for (final int groupId : InProcessCluster.GROUP_IDS) {
+                for (final Span span : awaitSpans(name, archive, groupId)) {
+                    recordings.add(readOne(name, aeron, archive, groupId, span, untilClusterSeqNo));
+                }
             }
             return recordings;
         } finally {
@@ -107,15 +115,15 @@ final class QueueRecordings {
     }
 
     /**
-     * Each queue recording, once exactly one is active: a restarted member's
+     * Each recording of a group's queue, once exactly one is active: a restarted member's
      * service starts its recording after {@code launch} returns.
      */
-    private static List<Span> awaitSpans(final String name, final AeronArchive archive) {
+    private static List<Span> awaitSpans(final String name, final AeronArchive archive, final int groupId) {
         final long deadline = System.nanoTime() + TIMEOUT_NS;
         while (true) {
             final List<Span> spans = new ArrayList<>();
             archive.listRecordingsForUri(
-                0, Integer.MAX_VALUE, "", FrameLayer.queueStreamId(InProcessCluster.GROUP_ID),
+                0, Integer.MAX_VALUE, "", FrameLayer.queueStreamId(groupId),
                 (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp, startPosition,
                  stopPosition, initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId,
                  strippedChannel, originalChannel, sourceIdentity)
@@ -125,18 +133,18 @@ final class QueueRecordings {
                 return spans;
             }
             if (System.nanoTime() > deadline) {
-                assertEquals(1, active, name + "'s archive holds no single active queue recording");
+                assertEquals(1, active, name + "'s archive holds no single active recording of group " + groupId);
             }
             Tests.sleep(50);
         }
     }
 
-    private static Recording readOne(final String name, final Aeron aeron, final AeronArchive archive, final Span span,
-                                     final long untilClusterSeqNo) {
+    private static Recording readOne(final String name, final Aeron aeron, final AeronArchive archive,
+                                     final int groupId, final Span span, final long untilClusterSeqNo) {
         final long recordingId = span.recordingId();
         final long startPosition = span.startPosition();
         final boolean active = span.active();
-        final Reader reader = new Reader(new Recording(name, recordingId, active, new LongArrayList()));
+        final Reader reader = new Reader(new Recording(name, groupId, recordingId, active, new LongArrayList()));
         final long stopPosition = active ? AeronArchive.NULL_POSITION : archive.getStopPosition(recordingId);
         if (!active && stopPosition == startPosition) {
             return reader.recording;
@@ -176,7 +184,7 @@ final class QueueRecordings {
 
     private static String describe(final Recording recording) {
         return recording.archive + "'s " + (recording.active ? "active" : "stopped") + " recording " +
-            recording.recordingId;
+            recording.recordingId + " of group " + recording.groupId;
     }
 
     /** Checks each frame is the next groupSeqNo and digests it; records a failure, since a poll swallows a throw. */
