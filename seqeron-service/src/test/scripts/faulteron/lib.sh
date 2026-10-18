@@ -63,6 +63,26 @@ start_cluster() {
         exit 1
     fi
     load_groups
+    local silent
+    if ! silent="$(await_every_queue "$(deadline 60)")"; then
+        echo "cluster did not form: member ${silent}'s queue does not answer; see ${LOG_DIR}/node-${silent}.log"
+        exit 1
+    fi
+}
+
+# await_every_queue <deadline-secs> — every member's queue answers a ping, or prints the first that does not. The
+# healthcheck passes on a member whose service then fails to start, which would leave a fault judged on two members.
+await_every_queue() {
+    local end=$((SECONDS + $1)) m
+    for ((m = 0; m < NODE_COUNT; m++)); do
+        until ping_queue "${m}" >> "${LOG_DIR}/ping-start.log" 2>&1; do
+            if ((SECONDS >= end)); then
+                echo "${m}"
+                return 1
+            fi
+            sleep 1
+        done
+    done
 }
 
 # The cluster sequences nothing before its groups are active, so the test topology's load first.

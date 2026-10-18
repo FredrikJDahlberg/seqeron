@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Org.Limitless.Seqeron.Protocol;
 
@@ -29,8 +30,10 @@ public sealed class GroupDirectory
     /// <summary>A group's bit.</summary>
     /// <param name="name">the group's name in the topology</param>
     /// <returns>its bit of <c>groupMask</c>, or 0 if the table names no such group</returns>
+    /// <exception cref="ArgumentNullException">for a null name</exception>
     public ushort Mask(string name)
     {
+        ArgumentNullException.ThrowIfNull(name);
         for (int slot = 0; slot < _names.Length; slot++)
         {
             if (name == _names[slot])

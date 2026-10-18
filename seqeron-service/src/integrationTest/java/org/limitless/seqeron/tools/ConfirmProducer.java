@@ -19,7 +19,7 @@ import org.limitless.seqeron.sequencer.client.PendingSends;
 /**
  * ClusterProbe confirm's producer, driven one duty cycle at a time: it sends seqNo 1..count through
  * {@link PendingSends} while following its member's queue, replaces a lost session, and resends what a leadership
- * change or a closed session lost.
+ * change or a closed session lost. Each even seqNo also addresses the other group, whose queue it follows too.
  */
 final class ConfirmProducer implements AutoCloseable {
     /** ClusterProbe confirm's: how long a run may go without sending, resending or seeing an own frame. */
@@ -27,10 +27,14 @@ final class ConfirmProducer implements AutoCloseable {
 
     private static final int CLIENT_ID = 9;
 
-    /** The queue it confirms on, the in-process cluster's one group's. */
+    /** The queue it confirms on, its own group's. */
     private static final int GROUP_ID = InProcessCluster.GROUP_ID;
     private static final int GROUP_MASK = 1 << (GROUP_ID - 1);
+    /** An even seqNo's mask: the own group's bit, which confirmed ingress needs, and the other group's. */
+    private static final int BOTH_MASK = GROUP_MASK | 1 << (InProcessCluster.OTHER_GROUP_ID - 1);
+    private static final int OTHER_CLIENT_ID = 10;
     private static final int NO_ID = -1;
+    private static final long NOT_PROBE = -1;
     private static final byte[] NO_FILLER = new byte[0];
 
     private long count;
@@ -38,10 +42,12 @@ final class ConfirmProducer implements AutoCloseable {
     private final Aeron aeron;
     private final ClusterStreamSender sender = new ClusterStreamSender();
     private final ReplayerStreamReceiver receiver;
+    private final ReplayerStreamReceiver otherReceiver;
     private final PendingSends pending = new PendingSends(4096);
     private final ClusterProbe.MarkerEncoder marker = new ClusterProbe.MarkerEncoder();
     private final ProbeMarkerDecoder decoder = new ProbeMarkerDecoder();
     private final LongArrayList seqNos = new LongArrayList();
+    private final LongArrayList otherSeqNos = new LongArrayList();
     private volatile int lastLeader = InProcessCluster.NO_MEMBER;
     private long lastClusterSeqNo;
     private boolean caughtUp;
@@ -60,8 +66,11 @@ final class ConfirmProducer implements AutoCloseable {
             lastLeader = leaderMemberId;
         }, () -> caughtUp = true);
         receiver.start(aeron, memberId, GROUP_ID);
+        otherReceiver = new ReplayerStreamReceiver(OTHER_CLIENT_ID, this::onOtherSequenced, null, null);
+        otherReceiver.start(aeron, memberId, InProcessCluster.OTHER_GROUP_ID);
         while (!caughtUp) {
             receiver.poll();
+            otherReceiver.poll();
             Tests.yield();
         }
         sender.setIngressHold(pending);
@@ -72,13 +81,29 @@ final class ConfirmProducer implements AutoCloseable {
 
     private void onSequenced(final SequencedEvent event) {
         pending.onSequenced(event);
-        if (!event.isSystem() && event.payloadId() == ClusterProbe.PROBE_PAYLOAD_ID &&
-            event.templateId() == ProbeMarkerDecoder.TEMPLATE_ID) {
-            decoder.wrap(event.buffer(), event.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH,
-                         event.blockLength(), event.version());
-            seqNos.addLong(decoder.seqNo());
+        final long seqNo = probeSeqNo(event);
+        if (seqNo != NOT_PROBE) {
+            seqNos.addLong(seqNo);
             lastClusterSeqNo = event.clusterSeqNo();
         }
+    }
+
+    private void onOtherSequenced(final SequencedEvent event) {
+        final long seqNo = probeSeqNo(event);
+        if (seqNo != NOT_PROBE) {
+            otherSeqNos.addLong(seqNo);
+        }
+    }
+
+    /** The seqNo of a probe frame, or {@link #NOT_PROBE}. */
+    private long probeSeqNo(final SequencedEvent event) {
+        if (event.isSystem() || event.payloadId() != ClusterProbe.PROBE_PAYLOAD_ID ||
+            event.templateId() != ProbeMarkerDecoder.TEMPLATE_ID) {
+            return NOT_PROBE;
+        }
+        decoder.wrap(event.buffer(), event.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH, event.blockLength(),
+                     event.version());
+        return decoder.seqNo();
     }
 
     /** One duty cycle: poll, keep the session alive, resend what was lost, and send the next frame if it may. */
@@ -86,6 +111,7 @@ final class ConfirmProducer implements AutoCloseable {
         final long now = System.nanoTime();
         final int seen = seqNos.size();
         receiver.poll();
+        otherReceiver.poll();
         sender.pollEgress();
         sender.keepAlive();
         if (pending.isFaulted()) {
@@ -99,7 +125,8 @@ final class ConfirmProducer implements AutoCloseable {
         final int resentNow = pending.resendMissing(sender);
         resent += resentNow;
         if (next <= count && !pending.isHolding() && !pending.isFull() && now >= nextSendNs) {
-            final int length = marker.encode(next, NO_ID, ClusterProbe.PROBE_SOURCE_ID, GROUP_MASK, NO_FILLER);
+            final int length = marker.encode(next, NO_ID, ClusterProbe.PROBE_SOURCE_ID,
+                                             next % 2 == 0 ? BOTH_MASK : GROUP_MASK, NO_FILLER);
             if (sender.send(marker.frame(), length)) {
                 pending.track(marker.frame(), length, sender.clusterSessionId(), sender.leadershipTermId());
                 next++;
@@ -160,8 +187,27 @@ final class ConfirmProducer implements AutoCloseable {
                          " in order; resent " + resent);
     }
 
+    /**
+     * The other group's queue showed every even seqNo up to count, each once, in order: a resend that duplicated a
+     * frame there would show twice (spec A-9). Waits for that queue, which the producer does not confirm on.
+     */
+    void assertOtherQueueShowsEveryEvenFrame() {
+        final LongArrayList expected = new LongArrayList();
+        for (long seqNo = 2; seqNo <= count; seqNo += 2) {
+            expected.addLong(seqNo);
+        }
+        final long deadline = System.nanoTime() + DRAIN_TIMEOUT_NS;
+        while (otherSeqNos.size() < expected.size() && System.nanoTime() < deadline) {
+            otherReceiver.poll();
+            Tests.yield();
+        }
+        assertEquals(expected, otherSeqNos,
+                     "group " + InProcessCluster.OTHER_GROUP_ID + "'s queue showed " + otherSeqNos.size() + " of " +
+                         expected.size() + " even frame(s), not each once in order");
+    }
+
     @Override
     public void close() {
-        CloseHelper.closeAll(receiver::close, sender, aeron);
+        CloseHelper.closeAll(receiver::close, otherReceiver::close, sender, aeron);
     }
 }

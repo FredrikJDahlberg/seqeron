@@ -18,8 +18,8 @@ import org.limitless.seqeron.sbe.frame.UnsequencedSystemEncoder;
 import org.limitless.seqeron.sequencer.Sequencer;
 
 /**
- * A topology load through a real {@link Sequencer}, keeping what a member hands its replayer: copies of the
- * topology rows on the default queue, picked out by {@link QueueResolver#isTopologyRow} as SequencerService does.
+ * A topology load through a real {@link Sequencer}, keeping what a member hands its replayer: the rows {@link
+ * DefaultQueueRows} copies off its default queue, as SequencerService's do.
  */
 final class TopologyLoad {
     private static final long LOADER_SESSION = 0x70_0001L;
@@ -29,21 +29,17 @@ final class TopologyLoad {
     private final MutableDirectBuffer ingress = new ExpandableArrayBuffer(1024);
     private final MutableDirectBuffer body = new ExpandableArrayBuffer(GroupsRegisteredEncoder.BLOCK_LENGTH);
     private final List<byte[]> rows = new ArrayList<>();
-    private int defaultGroupId;
+    private final DefaultQueueRows defaultQueueRows = new DefaultQueueRows(rows::add);
 
     private final Sequencer sequencer = new Sequencer(0, new Sequencer.FrameSink() {
         @Override
         public void activate(final int[] groupIds) {
-            defaultGroupId = groupIds[0];
+            defaultQueueRows.onActivate(groupIds);
         }
 
         @Override
         public void publish(final int groupId, final DirectBuffer buffer, final int length) {
-            if (groupId == defaultGroupId && QueueResolver.isTopologyRow(buffer, 0, length)) {
-                final byte[] row = new byte[length];
-                buffer.getBytes(0, row);
-                rows.add(row);
-            }
+            defaultQueueRows.onPublish(groupId, buffer, length);
         }
     });
 

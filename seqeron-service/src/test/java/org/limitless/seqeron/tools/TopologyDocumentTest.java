@@ -148,6 +148,17 @@ class TopologyDocumentTest {
     }
 
     @Test
+    @DisplayName("a group's name fills at most its 32-byte groupNames slot")
+    void groupNameLongerThanItsSlotIsRefused() throws Exception {
+        final String full = "g".repeat(32);
+        assertEquals(
+            full, read(document("<group name=\"" + full + "\" id=\"16\"/>", null, null, null, null)).groupNames()[15]);
+        refusedBySchema(document("<group name=\""
+                                     + "g".repeat(33) + "\" id=\"16\"/>",
+                                 null, null, null, null));
+    }
+
+    @Test
     @DisplayName("two groups may not share an id or a name")
     void duplicateGroupIsRefused() {
         refusedBySchema(document("""

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.aeron.cluster.client.ClusterEvent;
 import java.util.List;
+import org.agrona.concurrent.AgentTerminationException;
 import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.protocol.PortLayout;
 
@@ -30,6 +31,25 @@ class SequencerServerTest {
         assertFalse(
             SequencerServer.truncatesAppliedLog(new ClusterEvent("new leader detected due to commit position")));
         assertFalse(SequencerServer.truncatesAppliedLog(new IllegalStateException(truncation(192, 96).getMessage())));
+    }
+
+    @Test
+    void anErrorIsLoggedWithEveryCauseBeneathIt() {
+        final IllegalStateException why = new IllegalStateException("the co-located archive is unreachable");
+        assertEquals("org.agrona.concurrent.AgentTerminationException: failed to start service=0; caused by "
+                         + "java.lang.IllegalStateException: the co-located archive is unreachable",
+                     SequencerServer.describe(new AgentTerminationException("failed to start service=0", why)));
+        assertEquals("java.lang.IllegalStateException: the co-located archive is unreachable",
+                     SequencerServer.describe(why));
+    }
+
+    @Test
+    void aCauseChainThatCyclesIsCutShort() {
+        final RuntimeException first = new RuntimeException("first");
+        final RuntimeException second = new RuntimeException("second", first);
+        first.initCause(second);
+
+        assertEquals(8, SequencerServer.describe(first).split("; caused by ", -1).length - 1);
     }
 
     @Test

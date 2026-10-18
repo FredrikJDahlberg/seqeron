@@ -264,10 +264,10 @@ final class Session implements AutoCloseable {
      */
     Publish publishPayload(final int sourceId, final int connectionId, final int groupMask, final int payloadId,
                            final DirectBuffer body, final int bodyLength) {
-        if (fenced || groups.directory() == null) {
+        final int frameMask = fenced ? GroupResolution.UNRESOLVED : groups.frameMask(groupMask);
+        if (frameMask == GroupResolution.UNRESOLVED) {
             return Publish.Declined;
         }
-        final int frameMask = groups.frameMask(groupMask);
         return frameMask == GroupResolution.NOT_ADDRESSABLE
             ? Publish.Refused
             : publisher.publishPayload(sender, sourceId, connectionId, payloadId, frameMask, body, bodyLength);
@@ -339,12 +339,12 @@ final class Session implements AutoCloseable {
         final long nowMs = Clocks.monotonicMs();
         recoveryStall.onCaughtUp();
         queueStall.onCaughtUp(nowMs);
-        if (groups.directory() == null) {
-            final String unknown = groups.resolve(queueResolution.groupId());
-            if (unknown != null) {
-                fence(ClusterError.GROUP_UNKNOWN, "group " + unknown + " is not in the log's group table");
-                return;
-            }
+        final GroupResolution.Outcome resolution = groups.onCaughtUp(queueResolution.groupId());
+        if (resolution == GroupResolution.Outcome.GROUP_UNKNOWN) {
+            fence(ClusterError.GROUP_UNKNOWN, "group " + groups.unknownGroup() + " is not in the log's group table");
+            return;
+        }
+        if (resolution == GroupResolution.Outcome.RESOLVED) {
             dispatch.onGroupsResolved(groups.directory());
         }
         dispatch.onCaughtUp(receiver.lastClusterSeqNo());

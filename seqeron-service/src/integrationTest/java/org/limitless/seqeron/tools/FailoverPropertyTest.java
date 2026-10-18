@@ -97,6 +97,7 @@ class FailoverPropertyTest {
             assertTrue(producer.isDrained(),
                        "PendingSends still held " + producer.held() + " frame(s) after the drain timeout");
             producer.assertExactlyOnceInOrder();
+            producer.assertOtherQueueShowsEveryEvenFrame();
             QueueRecordings.assertOneLog(cluster.archives(), producer.lastClusterSeqNo());
         }
         for (int m = 0; m < InProcessCluster.MEMBERS; m++) {

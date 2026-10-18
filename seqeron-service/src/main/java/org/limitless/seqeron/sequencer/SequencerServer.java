@@ -119,6 +119,9 @@ public final class SequencerServer {
     private static final Pattern TRUNCATION =
         Pattern.compile("Truncating Cluster Log - .* this\\.logPosition=(-?\\d+) .* newPosition=(-?\\d+)$");
 
+    /** How many causes {@link #describe} follows below the exception itself. */
+    private static final int MAX_CAUSES = 8;
+
     private final ClusteredMediaDriver driver;
     private final ClusteredServiceContainer container;
     private final ReplayerServer replayer;
@@ -311,7 +314,7 @@ public final class SequencerServer {
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t -> {
                     Logger.error(Logger.CoreComponent.ConsensusModule, Logger.CoreEventCode.ConsensusModuleError,
-                                 memberId, "%s", t.toString());
+                                 memberId, "%s", describe(t));
                     if (truncatesAppliedLog(t)) {
                         Logger.fault(Logger.CoreComponent.SequencerServer, Logger.CoreEventCode.AppliedLogTruncated,
                                      memberId,
@@ -338,7 +341,7 @@ public final class SequencerServer {
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
                               -> Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError,
-                                              memberId, "%s", t.toString()));
+                                              memberId, "%s", describe(t)));
 
         ClusteredMediaDriver driver = null;
         ClusteredServiceContainer container = null;
@@ -425,6 +428,20 @@ public final class SequencerServer {
         }
         final Matcher truncation = TRUNCATION.matcher(t.getMessage());
         return truncation.find() && Long.parseLong(truncation.group(2)) < Long.parseLong(truncation.group(1));
+    }
+
+    /**
+     * {@code t} and every cause beneath it, on one line: Aeron wraps a failed {@code onStart} in an exception whose
+     * own message does not say why. Bounded, since a cause chain may cycle.
+     */
+    static String describe(final Throwable t) {
+        final StringBuilder text = new StringBuilder(t.toString());
+        Throwable cause = t.getCause();
+        for (int depth = 0; cause != null && depth < MAX_CAUSES; depth++) {
+            text.append("; caused by ").append(cause);
+            cause = cause.getCause();
+        }
+        return text.toString();
     }
 
     private static String udp(final String host, final int port) {

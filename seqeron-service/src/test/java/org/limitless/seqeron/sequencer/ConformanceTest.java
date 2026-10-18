@@ -466,11 +466,21 @@ class ConformanceTest {
     @Test
     @DisplayName("row 4 condition 14: a groupMask that is 0, names an inactive group or lacks the gateway's own")
     void conditionFourteenApplicationGroupMask() {
-        for (final int groupMask : new int[] {0, 0b10}) {
+        // 0b11 names an inactive group beside the active one: one inactive bit refuses the whole frame.
+        for (final int groupMask : new int[] { 0, 0b10, 0b11 }) {
             final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4), groupMask);
             assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
                            "groupMask " + groupMask);
         }
+
+        // Groups 1 and 3 active: the slot between them is no group.
+        final FrameRecorder gapRecorded = new FrameRecorder();
+        final Sequencer gap = activated(new Sequencer(0, gapRecorded), gapRecorded, GROUP, null, "group-3");
+        final int hole = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4), 0b010);
+        assertRejected(gap, gapRecorded,
+                       ()
+                           -> gap.sequenceMessage(ingress, 0, hole, SESSION_ID, TIMESTAMP),
+                       "groupMask 0b010, the undeclared slot between two groups");
 
         // A gateway in group 2, bound: its frames must reach its own queue, whatever else they address.
         final FrameRecorder recorded = new FrameRecorder();
@@ -895,6 +905,35 @@ class ConformanceTest {
         }
     }
 
+    @Test
+    @DisplayName("row 10: group 16 is bit 15, and a name that fills its slot is compared whole")
+    void theHighestGroupAndANameThatFillsItsSlot() {
+        final String[] names = new String[FrameLayer.MAX_GROUPS];
+        names[0] = "a";
+        names[15] = "p".repeat(32);
+        final FrameRecorder recorded = new FrameRecorder();
+        final Sequencer target = activated(new Sequencer(0, recorded), recorded, names);
+        assertArrayEquals(new int[] { 1, 16 }, recorded.activated());
+
+        for (final int groupMask : new int[] { 0x8000, 0x8001 }) {
+            final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(8), groupMask);
+            final int before = recorded.count();
+            assertTrue(target.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+            assertArrayEquals(groupsOf(groupMask), queuesSince(recorded, before),
+                              "mask " + Integer.toHexString(groupMask));
+        }
+
+        final int again = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID, groupsRegisteredBody(names));
+        assertTrue(target.sequenceMessage(ingress, 0, again, SESSION_ID, TIMESTAMP), "the same table again");
+        names[15] = "p".repeat(31) + "q";
+        final int lastByte =
+            systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID, groupsRegisteredBody(names));
+        assertRejected(target, recorded,
+                       ()
+                           -> target.sequenceMessage(ingress, 0, lastByte, SESSION_ID, TIMESTAMP),
+                       "a table differing only in a full slot's last byte");
+    }
+
     // ── Row 11. Group activation (S-8, S-9, S-3, F-2) ────────────────────────────────────────────
 
     @Test
@@ -948,6 +987,21 @@ class ConformanceTest {
                                          applicationRegisteredBody(3, 3));
         assertRejected(target, recorded, () -> target.sequenceMessage(ingress, 0, inactive, SESSION_ID, TIMESTAMP),
                        "case 3: a row naming a group that is not active");
+        final int inactiveGateway = systemFrame(SystemFrame.GATEWAY_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                                gatewayRegisteredBody(13, 6, (short)0, 1, 3));
+        assertRejected(target, recorded,
+                       ()
+                           -> target.sequenceMessage(ingress, 0, inactiveGateway, SESSION_ID, TIMESTAMP),
+                       "case 3: a gateway row naming a group that is not active");
+        // Outside 1..16 there is no bit; 33 is the one whose shift wraps onto group 1's.
+        for (final int groupId : new int[] { 0, 17, 33 }) {
+            final int outside = systemFrame(SystemFrame.APPLICATION_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                            applicationRegisteredBody(3, groupId));
+            assertRejected(target, recorded,
+                           ()
+                               -> target.sequenceMessage(ingress, 0, outside, SESSION_ID, TIMESTAMP),
+                           "case 3: a row naming groupId " + groupId);
+        }
 
         register(target, 11, LISTED_SOURCE_ID, (short)0, 1, 2);
         final int moved = systemFrame(SystemFrame.GATEWAY_REGISTERED, CLUSTERCTL_SOURCE_ID,
@@ -958,13 +1012,29 @@ class ConformanceTest {
                                         applicationRegisteredBody(LISTED_SOURCE_ID, 1));
         assertRejected(target, recorded, () -> target.sequenceMessage(ingress, 0, claimed, SESSION_ID, TIMESTAMP),
                        "case 4: an application row giving a gateway's source another group");
+        final int application =
+            systemFrame(SystemFrame.APPLICATION_REGISTERED, CLUSTERCTL_SOURCE_ID, applicationRegisteredBody(3, 1));
+        assertTrue(target.sequenceMessage(ingress, 0, application, SESSION_ID, TIMESTAMP));
+        final int movedApplication =
+            systemFrame(SystemFrame.APPLICATION_REGISTERED, CLUSTERCTL_SOURCE_ID, applicationRegisteredBody(3, 2));
+        assertRejected(target, recorded,
+                       ()
+                           -> target.sequenceMessage(ingress, 0, movedApplication, SESSION_ID, TIMESTAMP),
+                       "case 4: an application row moving its source to another group");
 
+        // Each sequenced once and onto both queues, as any system frame is, with nothing synthesized behind it.
         final long before = target.clusterSeqNo();
+        final int published = recorded.count();
         final int again = systemFrame(SystemFrame.GROUPS_REGISTERED, CLUSTERCTL_SOURCE_ID, groupsRegisteredBody("a", "b"));
         assertTrue(target.sequenceMessage(ingress, 0, again, SESSION_ID, TIMESTAMP), "the same table again");
-        register(target, 11, LISTED_SOURCE_ID, (short)0, 0, 2);
-        assertTrue(before + 2 < target.clusterSeqNo(), "the same row again, under its source's group");
-        assertArrayEquals(new int[] {1, 2}, recorded.activated(), "neither activated anything again");
+        register(target, 11, LISTED_SOURCE_ID, (short)0, 1, 2);
+        final int applicationAgain =
+            systemFrame(SystemFrame.APPLICATION_REGISTERED, CLUSTERCTL_SOURCE_ID, applicationRegisteredBody(3, 1));
+        assertTrue(target.sequenceMessage(ingress, 0, applicationAgain, SESSION_ID, TIMESTAMP),
+                   "the same application row again, under its source's group");
+        assertEquals(before + 3, target.clusterSeqNo());
+        assertEquals(published + 3 * 2, recorded.count());
+        assertArrayEquals(new int[] { 1, 2 }, recorded.activated(), "none activated anything again");
     }
 
     @Test
