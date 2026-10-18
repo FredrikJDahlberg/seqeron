@@ -138,11 +138,11 @@ struct Client final : ReplayerRecoveryActions
     ReplayerRecovery recovery;
 };
 
-// One frame carrying a core ClusterHeartbeat payload (template id 16) at the given clusterSeqNo — clear
+// One frame carrying a core ClusterHeartbeat payload (template id 16) at the given clusterSeqNo and groupSeqNo — clear
 // of the ConnectionOpened/ConnectionClosed/LeadershipChanged special ids (1/2/5), so it always reaches
 // onSequenced rather than being intercepted as a lifecycle/leadership event. The twin of the Java
 // ReplayerRecoveryTest's heartbeatBuffer; keep the two in step.
-std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t clusterSeqNo)
+std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t clusterSeqNo, const std::int64_t groupSeqNo)
 {
     std::vector<std::uint8_t> buf(256, 0);
     frm::ClusterHeartbeat frame;
@@ -153,9 +153,16 @@ std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t clusterSeqNo)
         .sessionId(0)
         .systemEventType(protocol::CLUSTER_HEARTBEAT)
         .clusterSeqNo(clusterSeqNo)
-        .timestamp(clusterSeqNo * 1000);
+        .timestamp(clusterSeqNo * 1000)
+        .groupSeqNo(groupSeqNo);
     buf.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return buf;
+}
+
+// The same on a queue that carries every frame, so its groupSeqNo is its clusterSeqNo.
+std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t clusterSeqNo)
+{
+    return encodeHeartbeat(clusterSeqNo, clusterSeqNo);
 }
 
 // Feeds one Heartbeat frame in exactly as the receiver would off the live queue. framePosition is where
@@ -198,6 +205,15 @@ void deliverReplay(Client& client, const std::int64_t clusterSeqNo)
     auto buf = encodeHeartbeat(clusterSeqNo);
     client.recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), /*framePosition=*/0, /*receiveNs=*/0,
                             /*fromReplay=*/true);
+}
+
+// A frame at groupSeqNo on a queue that does not carry every frame, starting at its 1024s.
+void deliverOnQueue(Client& client, const std::int64_t clusterSeqNo, const std::int64_t groupSeqNo,
+                    const bool fromReplay)
+{
+    auto buf = encodeHeartbeat(clusterSeqNo, groupSeqNo);
+    client.recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), groupSeqNo * 1024, /*receiveNs=*/0,
+                            fromReplay);
 }
 
 // requestId must be the client's CURRENT one (recovery.requestId()) for a reply to be acted on — see
@@ -267,7 +283,7 @@ TEST(ReplayerRecoveryBaseline, FirstFrameNotAtClusterSeqNoOneAbortsTheProcess)
 {
     Client client{ [](const SequencedEvent&) {} };
 
-    EXPECT_DEATH(deliverLive(client, 57), "clusterSeqNo=57, expected 1")
+    EXPECT_DEATH(deliverLive(client, 57), "groupSeqNo=57, expected 1")
         << "must not silently adopt a mid-stream baseline";
 }
 
@@ -304,6 +320,71 @@ TEST(ReplayerRecoveryBaseline, LiveQueueMayNotEstablishTheBaselineWhileTheColdSt
     EXPECT_EQ(1, delivered);
 }
 
+// ── A queue's continuity: groupSeqNo, across jumps in clusterSeqNo (spec §14 row 12) ─────────────────────────
+
+TEST(ReplayerRecoveryContinuity, AFirstFrameAtGroupSeqNoOneIsTheBaselineWhateverItsClusterSeqNo)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&](const SequencedEvent& event) { dispatched.push_back(event.clusterSeqNo); } };
+
+    deliverOnQueue(client, 40, 1, /*fromReplay=*/false);
+
+    EXPECT_EQ((std::vector<std::int64_t>{ 40 }), dispatched);
+    EXPECT_TRUE(client.recovery.isCaughtUp());
+}
+
+TEST(ReplayerRecoveryContinuity, AFirstFrameNotAtGroupSeqNoOneAbortsEvenAtClusterSeqNoOne)
+{
+    Client client{ [](const SequencedEvent&) {} };
+    deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), 11, 4096));
+
+    EXPECT_DEATH(deliverOnQueue(client, 1, 2, /*fromReplay=*/true), "groupSeqNo=2, expected 1");
+}
+
+TEST(ReplayerRecoveryContinuity, ContinuityFollowsGroupSeqNoSoAJumpInClusterSeqNoIsNoGap)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&](const SequencedEvent& event) { dispatched.push_back(event.clusterSeqNo); } };
+
+    deliverOnQueue(client, 1, 1, false);
+    deliverOnQueue(client, 5, 2, false);
+    deliverOnQueue(client, 9, 3, false);
+
+    EXPECT_EQ((std::vector<std::int64_t>{ 1, 5, 9 }), dispatched);
+    EXPECT_TRUE(client.recovery.isCaughtUp());
+    EXPECT_EQ(0, client.requestsSent) << "nothing to recover";
+}
+
+TEST(ReplayerRecoveryContinuity, AMissingGroupSeqNoIsAGapResumedAtTheLastDispatchedFrameAndDrainedInOrder)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&](const SequencedEvent& event) { dispatched.push_back(event.clusterSeqNo); } };
+
+    deliverOnQueue(client, 1, 1, false);
+    deliverOnQueue(client, 9, 3, false);
+
+    EXPECT_FALSE(client.recovery.isCaughtUp());
+    EXPECT_EQ(1024, client.recovery.requestFromPosition()) << "resumes at frame 1, where it starts";
+
+    deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), 21, 3 * 1024));
+    deliverOnQueue(client, 1, 1, true); // the anchor, already dispatched
+    deliverOnQueue(client, 5, 2, true);
+
+    EXPECT_EQ((std::vector<std::int64_t>{ 1, 5, 9 }), dispatched);
+}
+
+TEST(ReplayerRecoveryContinuity, AFrameWhoseClusterSeqNoIsAlreadyPassedIsDropped)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&](const SequencedEvent& event) { dispatched.push_back(event.clusterSeqNo); } };
+
+    deliverOnQueue(client, 1, 1, false);
+    deliverOnQueue(client, 5, 2, false);
+    deliverOnQueue(client, 5, 2, false);
+
+    EXPECT_EQ((std::vector<std::int64_t>{ 1, 5 }), dispatched);
+}
+
 TEST(ReplayerRecoveryGapRecovery, MidStreamGapTriggersReplayRequestAndWithholdsTheOutOfOrderFrame)
 {
     int delivered = 0;
@@ -336,7 +417,7 @@ TEST(ReplayerRecoveryGapRecovery, QueueGapReportsAStructuredDiagnosticEvent)
     EXPECT_EQ(diag::Severity::Warn, event.severity);
     EXPECT_EQ(diag::eventCode::QueueGap, event.code);
     const std::string text(event.text.data(), event.textLen);
-    EXPECT_EQ("queue gap: expected clusterSeqNo=3 got 5 — resuming the recording at clusterSeqNo=2", text);
+    EXPECT_EQ("queue gap: expected groupSeqNo=3 got 5 — resuming the recording at clusterSeqNo=2", text);
 }
 
 // A queue frame that is non-contiguous only because the queue runs ahead of an in-flight replay must not be
@@ -1276,7 +1357,8 @@ std::vector<std::uint8_t> encodeLeadershipChanged(const std::int64_t clusterSeqN
         .sessionId(-1)
         .systemEventType(protocol::LEADERSHIP_CHANGED)
         .clusterSeqNo(clusterSeqNo)
-        .timestamp(clusterSeqNo * 1000);
+        .timestamp(clusterSeqNo * 1000)
+        .groupSeqNo(clusterSeqNo);
     frame.newLeaderMemberId(2).leadershipTermId(3);
     buf.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return buf;
@@ -1501,6 +1583,21 @@ TEST(ReplayerRecoveryRestore, ASnapshotWhoseCutTheRecordingHoldsIsRestoredFromIt
     deliverReplayFrame(r.client, encodeHeartbeat(11), 11);
     deliverReplayFrame(r.client, encodeHeartbeat(12), 12);
     EXPECT_EQ((std::vector<std::int64_t>{ 11, 12 }), r.dispatched);
+}
+
+TEST(ReplayerRecoveryRestore, AfterARestoreTheQueuesContinuityResumesAtTheCutFramesGroupSeqNo)
+{
+    Restoring r;
+    r.writeSnapshot(2);
+    r.start();
+    attachRestoreReplay(r.client, 21);
+    deliverReplayFrame(r.client, rf::started(CUT, 4, 2, CUT * 1000), 4); // the queue's fourth frame
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+
+    attachRestoreReplay(r.client, 22);
+    deliverReplayFrame(r.client, rf::started(CUT, 4, 2, CUT * 1000), 4);
+    deliverReplayFrame(r.client, encodeHeartbeat(CUT + 3, 5), 5);
+    EXPECT_EQ((std::vector<std::int64_t>{ CUT + 3 }), r.dispatched) << "groupSeqNo 5 follows the cut's 4";
 }
 
 TEST(ReplayerRecoveryRestore, AReplayOfTheCutThatStopsAdvancingIsRequestedAgainAtTheCut)

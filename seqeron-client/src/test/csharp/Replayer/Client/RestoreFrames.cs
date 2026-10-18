@@ -66,6 +66,7 @@ internal static class RestoreFrames
         header.SystemEventType = SystemFrame.SnapshotEnd;
         header.ClusterSeqNo = clusterSeqNo;
         header.Timestamp = clusterSeqNo * 1000;
+        header.GroupSeqNo = clusterSeqNo;
         frame.SetBody(body);
         return bytes[..(Frame.MessageHeader.Size + frame.Size)];
     }

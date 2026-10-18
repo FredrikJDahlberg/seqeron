@@ -107,23 +107,27 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     }
 
     /**
-     * Subscribes the queue and control streams, opens the request publication and the convergence counter,
-     * and requests the cold-start replay, or the snapshot to restore first.
+     * Subscribes the queue of a group and the control stream, opens the request publication and the convergence
+     * counter, and requests the cold-start replay, or the snapshot to restore first.
      *
      * @param aeron    the client, on the co-located member's Aeron directory
      * @param memberId this app's node, to label the counter
+     * @param groupId  the group whose queue to read: a consumer names its own, a façade passes the one the
+     *                 Replayer resolved (spec R-6)
      */
-    void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId)
+    void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId, const std::int32_t groupId)
     {
         m_aeron = std::move(aeron);
+        m_groupId = groupId;
         m_replyId = m_aeron->nextCorrelationId();
-        util::Logger::info(util::component::ReplayerStreamReceiver, "clientId %d requests replays as client %lld",
-                           static_cast<int>(m_clientId), static_cast<long long>(m_replyId));
+        util::Logger::info(util::component::ReplayerStreamReceiver,
+                           "clientId %d reads group %d's queue and requests replays as client %lld",
+                           static_cast<int>(m_clientId), static_cast<int>(groupId), static_cast<long long>(m_replyId));
         m_recoveryStalledCounterRegId = protocol::addAppCounter(
             m_aeron, protocol::APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + std::to_string(memberId) + " client=" + std::to_string(m_clientId),
             memberId, m_clientId);
-        m_queueSubRegId = m_aeron->addSubscription(QUEUE_CONSUMER_CHANNEL, protocol::QUEUE_STREAM_ID);
+        m_queueSubRegId = m_aeron->addSubscription(QUEUE_CONSUMER_CHANNEL, protocol::queueStreamId(groupId));
         // No standing replay subscription: openReplay opens one per episode, filtered to its session id.
         m_controlSubRegId = m_aeron->addSubscription(REPLAYER_CONTROL_CHANNEL, protocol::REPLAYER_CONTROL_STREAM_ID);
         m_requestPubRegId =
@@ -234,8 +238,6 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
   private:
     static constexpr int FRAGMENT_LIMIT = 16;
     static constexpr std::size_t REQUEST_BUFFER_LENGTH = 64;
-    // No queue is resolved yet (spec R-6), so the replayer answers every request ReplayPending.
-    static constexpr std::int32_t UNRESOLVED_QUEUE_ID = 0;
 
     void sendReplayRequest(const std::int64_t requestId, const std::int64_t fromPosition) override
     {
@@ -246,7 +248,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
         sbe::replay::ReplayRequest enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_replyId).requestId(requestId).fromPosition(fromPosition).queueId(UNRESOLVED_QUEUE_ID);
+        enc.clientId(m_replyId).requestId(requestId).fromPosition(fromPosition).queueId(m_groupId);
         const auto len =
             static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
@@ -362,6 +364,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
 
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::int64_t m_replyId = -1; // the id the Replayer addresses this receiver's replies to, drawn at start
+    std::int32_t m_groupId = 0;  // the group whose queue this reads, named at start
     std::int64_t m_queueSubRegId = -1;
     std::int64_t m_replaySubRegId = -1;
     std::int64_t m_controlSubRegId = -1;

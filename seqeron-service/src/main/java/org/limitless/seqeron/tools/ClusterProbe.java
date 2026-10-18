@@ -89,6 +89,9 @@ public final class ClusterProbe {
 
     private static final int MEMBER_ID = Integer.getInteger("probe.memberId", 0);
 
+    /** The queue the probe reads: group 1's, the first the harnesses' topologies declare. */
+    private static final int GROUP_ID = 1;
+
     /** The duty-cycle idle strategy {@code follow} and {@code TestGateway} poll with. */
     static final String IDLE_STRATEGY_PROPERTY = "probe.idleStrategy";
 
@@ -341,7 +344,7 @@ public final class ClusterProbe {
                 own.onSequenced(event);
             }, (leaderMemberId, leadershipTermId, clusterSeqNo) -> pending.onLeadershipChanged(leadershipTermId),
                 () -> caughtUp.set(true));
-            receiver.start(aeron, MEMBER_ID);
+            receiver.start(aeron, MEMBER_ID, GROUP_ID);
             final IdleStrategy idle = new YieldingIdleStrategy();
             while (!caughtUp.get()) {
                 idle.idle(receiver.poll());
@@ -483,7 +486,7 @@ public final class ClusterProbe {
         }, queueFaults);
         self.set(receiver);
         stats.receiver = receiver;
-        receiver.start(aeron, MEMBER_ID);
+        receiver.start(aeron, MEMBER_ID, GROUP_ID);
         Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                     "Following the node queue — replaying history via the Replayer, then live");
 
@@ -609,14 +612,14 @@ public final class ClusterProbe {
     /** Subscribes this node's queue, untethered, and waits for it to connect. */
     private static Subscription awaitQueue(final AeronCluster cluster) {
         final Subscription queue = cluster.context().aeron().addSubscription(
-            ReplayerStreamReceiver.QUEUE_CONSUMER_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
+            ReplayerStreamReceiver.QUEUE_CONSUMER_CHANNEL, FrameLayer.queueStreamId(GROUP_ID));
         final IdleStrategy idle = new YieldingIdleStrategy();
         final long deadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!queue.isConnected()) {
             if (System.nanoTime() >= deadline) {
                 Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
                              "queue (aeron:ipc/%d) not available — co-located with a SequencerServer?",
-                             FrameLayer.QUEUE_STREAM_ID);
+                             FrameLayer.queueStreamId(GROUP_ID));
                 return null;
             }
             cluster.pollEgress();

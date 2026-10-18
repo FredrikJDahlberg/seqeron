@@ -31,7 +31,8 @@ public sealed class FollowStream
     private const int PingSourceId = 10;
 
     // Group 1, the examples' topology's first: the queue this example follows, where its pings must appear.
-    private const int PingGroupMask = 1;
+    private const int GroupId = 1;
+    private const int PingGroupMask = 1 << (GroupId - 1);
 
     // The one connection this example models: announced at start-up, and what every ping rides.
     private const int ConnectionId = 1;
@@ -83,7 +84,7 @@ public sealed class FollowStream
             new ReplayerStreamReceiver(clientId, OnSequenced, OnLeadershipChanged,
                                        () => Console.WriteLine("# caught up — following the queue live"));
         sender.ConnectColocated(aeron, memberId, IpcConnectTimeoutMs, EgressChannel, PortLayout.IngressEndpoints());
-        receiver.Start(aeron, memberId);
+        receiver.Start(aeron, memberId, GroupId);
         Console.WriteLine($"# following member {memberId} via {aeronDir}");
 
         // The one duty cycle. Every receiver and sender method belongs to this thread.

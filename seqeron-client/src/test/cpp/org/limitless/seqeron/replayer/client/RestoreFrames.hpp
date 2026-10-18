@@ -39,8 +39,9 @@ struct Digest
     }
 };
 
-// A SnapshotStarted stamped timestampNs: another log's, when it is not the file's.
-inline Bytes started(const std::int64_t clusterSeqNo, const std::int64_t round, const std::int64_t timestampNs)
+// A SnapshotStarted at groupSeqNo on its queue, stamped timestampNs.
+inline Bytes started(const std::int64_t clusterSeqNo, const std::int64_t groupSeqNo, const std::int64_t round,
+                     const std::int64_t timestampNs)
 {
     Bytes out(128, 0);
     sbe::frame::SnapshotStarted frame;
@@ -51,19 +52,27 @@ inline Bytes started(const std::int64_t clusterSeqNo, const std::int64_t round, 
         .sessionId(-1)
         .systemEventType(protocol::SNAPSHOT_STARTED)
         .clusterSeqNo(clusterSeqNo)
-        .timestamp(timestampNs);
+        .timestamp(timestampNs)
+        .groupSeqNo(groupSeqNo);
     frame.round(round);
     out.resize(sbe::frame::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
 }
 
-inline Bytes started(const std::int64_t clusterSeqNo, const std::int64_t round)
+// A SnapshotStarted stamped timestampNs: another log's, when it is not the file's. On a queue that carries every
+// frame, so its groupSeqNo is its clusterSeqNo.
+inline Bytes started(const std::int64_t clusterSeqNo, const std::int64_t round, const std::int64_t timestampNs)
 {
-    return started(clusterSeqNo, round, clusterSeqNo * 1000);
+    return started(clusterSeqNo, clusterSeqNo, round, timestampNs);
 }
 
-inline Bytes system(const std::int64_t clusterSeqNo, const std::int32_t sourceId, const std::uint16_t systemEventType,
-                    const char* body, const std::uint16_t bodyLength)
+inline Bytes started(const std::int64_t clusterSeqNo, const std::int64_t round)
+{
+    return started(clusterSeqNo, clusterSeqNo, round, clusterSeqNo * 1000);
+}
+
+inline Bytes system(const std::int64_t clusterSeqNo, const std::int64_t groupSeqNo, const std::int32_t sourceId,
+                    const std::uint16_t systemEventType, const char* body, const std::uint16_t bodyLength)
 {
     Bytes out(256, 0);
     sbe::frame::SequencedSystem frame;
@@ -74,15 +83,16 @@ inline Bytes system(const std::int64_t clusterSeqNo, const std::int32_t sourceId
         .sessionId(5)
         .systemEventType(systemEventType)
         .clusterSeqNo(clusterSeqNo)
-        .timestamp(clusterSeqNo * 1000);
+        .timestamp(clusterSeqNo * 1000)
+        .groupSeqNo(groupSeqNo);
     frame.putBody(body, bodyLength);
     out.resize(sbe::frame::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
 }
 
-// The end the records match.
-inline Bytes end(const std::int64_t clusterSeqNo, const std::int32_t sourceId, const std::int64_t round,
-                 const std::uint32_t formatVersion, const std::vector<Bytes>& records)
+// The end the records match, at groupSeqNo on its queue.
+inline Bytes end(const std::int64_t clusterSeqNo, const std::int64_t groupSeqNo, const std::int32_t sourceId,
+                 const std::int64_t round, const std::uint32_t formatVersion, const std::vector<Bytes>& records)
 {
     const Digest digest = Digest::of(records);
     std::array<char, 64> body{};
@@ -93,8 +103,15 @@ inline Bytes end(const std::int64_t clusterSeqNo, const std::int32_t sourceId, c
         .length(digest.length)
         .crc32c(digest.crc32c)
         .formatVersion(formatVersion);
-    return system(clusterSeqNo, sourceId, protocol::SNAPSHOT_END, body.data(),
+    return system(clusterSeqNo, groupSeqNo, sourceId, protocol::SNAPSHOT_END, body.data(),
                   static_cast<std::uint16_t>(encoder.encodedLength()));
+}
+
+// The same on a queue that carries every frame.
+inline Bytes end(const std::int64_t clusterSeqNo, const std::int32_t sourceId, const std::int64_t round,
+                 const std::uint32_t formatVersion, const std::vector<Bytes>& records)
+{
+    return end(clusterSeqNo, clusterSeqNo, sourceId, round, formatVersion, records);
 }
 
 // Writes records as a round's file and confirms it, as the instance did when it serialized them and the log's end

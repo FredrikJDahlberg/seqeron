@@ -121,8 +121,13 @@ class Application
       m_store{ snapshotStore(m_config) },
       m_snapshots{ m_config.snapshotListener, m_store.get(), [this] { m_session.keepAlive(); } },
       m_dispatch{ *this },
-      m_session{ m_config.clientId, m_config.pendingCapacity, m_config.queueStallTimeoutMs,
-                 m_config.recoveryStallTimeoutMs, m_dispatch },
+      m_session{ m_config.clientId,
+                 m_config.pendingCapacity,
+                 m_config.queueStallTimeoutMs,
+                 m_config.recoveryStallTimeoutMs,
+                 m_config.sourceId,
+                 "",
+                 m_dispatch },
       m_snapshotFrames{ m_session, [this] { return m_config.sourceId; } }
     {
         // Here rather than on the template parameter, where a listener that owns its Application is incomplete.

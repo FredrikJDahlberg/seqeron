@@ -2,8 +2,8 @@ package org.limitless.seqeron.app;
 
 import io.aeron.Aeron;
 import io.aeron.Counter;
-import java.util.ArrayDeque;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
@@ -11,6 +11,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
@@ -173,7 +174,8 @@ public final class Gateway implements AutoCloseable {
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
         this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.queueStallTimeoutMs,
-                                   builder.recoveryStallTimeoutMs, new SessionDispatch());
+                                   builder.recoveryStallTimeoutMs, ReplayProtocol.NO_SOURCE_ID, builder.gatewayName,
+                                   new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, lifecycle::gatewaySourceId);
         if (store != null) {
             session.restoreFrom(store, new Restore());

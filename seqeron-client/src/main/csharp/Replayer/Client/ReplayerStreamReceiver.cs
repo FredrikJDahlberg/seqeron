@@ -31,9 +31,6 @@ public sealed class ReplayerStreamReceiver : IDisposable
     // Scratch for the two control messages this client sends; each is well under 64 bytes.
     private const int RequestBufferLength = 64;
 
-    // No queue is resolved yet (spec R-6), so the replayer answers every request ReplayPending.
-    private const int UnresolvedQueueId = 0;
-
     private readonly int _clientId;
     private readonly ReplayerRecovery _recovery;
     private readonly Func<bool> _queueFaults;
@@ -49,6 +46,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
     private Aeron _aeron;
     private int? _memberId;
+    private int _groupId;
 
     // The id the Replayer addresses this receiver's replies to, drawn from the driver at start; -1 before.
     private long _replyId = -1;
@@ -91,21 +89,26 @@ public sealed class ReplayerStreamReceiver : IDisposable
         _recovery.RestoreFrom(store, handler);
     }
 
-    /// <summary>Subscribes the queue and control streams, opens the request publication and the convergence counter,
-    /// and requests the cold-start replay from the recording's start, or the snapshot to restore first.</summary>
+    /// <summary>Subscribes the queue of a group and the control stream, opens the request publication and the
+    /// convergence counter, and requests the cold-start replay from the recording's start, or the snapshot to restore
+    /// first.</summary>
     /// <param name="aeron">client sharing the co-located node's media driver</param>
     /// <param name="memberId">this app's node, to label the counter</param>
-    public void Start(Aeron aeron, int memberId)
+    /// <param name="groupId">the group whose queue to read: a consumer names its own, a façade passes the one the
+    /// Replayer resolved (spec R-6)</param>
+    public void Start(Aeron aeron, int memberId, int groupId)
     {
         _aeron = aeron;
         _memberId = memberId;
+        _groupId = groupId;
         _replyId = aeron.NextCorrelationId();
         Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, memberId,
-                    "clientId {0} requests replays as client {1}", _clientId, _replyId);
+                    "clientId {0} reads group {1}'s queue and requests replays as client {2}", _clientId, groupId,
+                    _replyId);
         _recoveryStalledCounter = SeqeronCounters.AddAppCounter(
             aeron, SeqeronCounters.AppRecoveryStalledTypeId,
             $"seqeron.app.recoveryStalled member={memberId} client={_clientId}", memberId, _clientId);
-        _queueSubscription = aeron.AddSubscription(QueueConsumerChannel, FrameLayer.QueueStreamId);
+        _queueSubscription = aeron.AddSubscription(QueueConsumerChannel, FrameLayer.QueueStreamIdOf(groupId));
         _controlSubscription = aeron.AddSubscription(ControlChannel, ReplayProtocol.ControlStreamId);
         _requestPublication = aeron.AddPublication(ReplayProtocol.IpcChannel, ReplayProtocol.RequestStreamId);
         _recovery.Start();
@@ -258,7 +261,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
             request.ClientId = _receiver._replyId;
             request.RequestId = requestId;
             request.FromPosition = fromPosition;
-            request.QueueId = UnresolvedQueueId;
+            request.QueueId = _receiver._groupId;
             Offer(Replay.MessageHeader.Size + request.Size);
         }
 

@@ -135,8 +135,13 @@ class Gateway
       m_snapshots{ m_config.snapshotListener, m_store.get(), [this] { m_session.keepAlive(); } },
       m_restore{ *this },
       m_dispatch{ *this },
-      m_session{ m_config.clientId, m_config.pendingCapacity, m_config.queueStallTimeoutMs,
-                 m_config.recoveryStallTimeoutMs, m_dispatch },
+      m_session{ m_config.clientId,
+                 m_config.pendingCapacity,
+                 m_config.queueStallTimeoutMs,
+                 m_config.recoveryStallTimeoutMs,
+                 protocol::REPLAYER_NO_SOURCE_ID,
+                 m_config.gatewayName,
+                 m_dispatch },
       m_snapshotFrames{ m_session, [this] { return m_lifecycle.gatewaySourceId(); } }
     {
         // Here rather than on the template parameter, where a listener that owns its Gateway is incomplete.

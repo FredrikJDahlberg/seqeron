@@ -51,6 +51,8 @@ constexpr std::int32_t PROBE_SOURCE_ID = 8;
 constexpr std::int32_t NO_CONNECTION = -1;
 // The probe resolves no group yet (spec A-9), so its frames address none and §9.2 condition 14 refuses them.
 constexpr std::uint16_t UNRESOLVED_GROUP_MASK = 0;
+// The queue the probe reads: group 1's, the first the harnesses' topologies declare.
+constexpr std::int32_t GROUP_ID = 1;
 
 // ProbeMarker's MessageHeader, then seqNo uint64, then filler as uint16-length var data.
 constexpr std::uint16_t PROBE_MARKER_TEMPLATE_ID = 1;
@@ -240,7 +242,7 @@ int confirm(const Options& options)
         },
         {}, {}, [&](std::int32_t, const std::int64_t term, std::int64_t) { pending.onLeadershipChanged(term); },
         [&] { caughtUp = true; });
-    receiver.start(aeron, options.memberId());
+    receiver.start(aeron, options.memberId(), GROUP_ID);
     while (!caughtUp)
     {
         idle.idle(receiver.poll());
@@ -351,7 +353,7 @@ int follow(const Options& options)
             }
             caughtUp = true;
         });
-    receiver.start(aeron, options.memberId());
+    receiver.start(aeron, options.memberId(), GROUP_ID);
     util::Logger::info(CLUSTER_PROBE, "Following the node queue — replaying history via the Replayer, then live");
     std::int64_t deadlineMs = INT64_MAX;
     while (monotonicMs() < deadlineMs)

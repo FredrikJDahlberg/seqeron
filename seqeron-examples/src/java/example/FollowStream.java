@@ -42,7 +42,8 @@ public final class FollowStream {
     private static final int PING_SOURCE_ID = 10;
 
     /** Group 1, the examples' topology's first: the queue this example follows, where its pings must appear. */
-    private static final int PING_GROUP_MASK = 1;
+    private static final int GROUP_ID = 1;
+    private static final int PING_GROUP_MASK = 1 << (GROUP_ID - 1);
 
     /** The one connection this example models: announced at start-up, and what every ping rides. */
     private static final int CONNECTION_ID = 1;
@@ -97,7 +98,7 @@ public final class FollowStream {
                                             () -> System.out.println("# caught up — following the queue live"))) {
             sender.connectColocated(aeron, memberId, IPC_CONNECT_TIMEOUT_MS, EGRESS_CHANNEL,
                                     PortLayout.ingressEndpoints());
-            receiver.start(aeron, memberId);
+            receiver.start(aeron, memberId, GROUP_ID);
             System.out.printf("# following member %d via %s%n", memberId, aeronDir);
 
             // The one duty cycle. Every receiver and sender method belongs to this thread.

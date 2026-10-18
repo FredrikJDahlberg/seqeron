@@ -48,7 +48,8 @@ using org::limitless::seqeron::protocol::SequencedEvent;
 constexpr std::uint16_t PING_PAYLOAD_ID = 6;
 constexpr std::int32_t PING_SOURCE_ID = 10;
 // Group 1, the examples' topology's first: the queue this example follows, where its pings must appear.
-constexpr std::uint16_t PING_GROUP_MASK = 1;
+constexpr std::int32_t GROUP_ID = 1;
+constexpr std::uint16_t PING_GROUP_MASK = 1U << (GROUP_ID - 1);
 
 // The one connection this example models: announced at start-up, and what every ping rides.
 constexpr std::int32_t CONNECTION_ID = 1;
@@ -282,7 +283,7 @@ int main()
 
     replayer::ReplayerStreamReceiver receiver(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged,
                                               [] { std::puts("# caught up — following the queue live"); });
-    receiver.start(aeron, memberId);
+    receiver.start(aeron, memberId, GROUP_ID);
     std::printf("# following member %d via %s\n", memberId, aeronDir.c_str());
 
     // The one duty cycle. Every receiver and sender method belongs to this thread.

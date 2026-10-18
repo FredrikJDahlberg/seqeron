@@ -198,6 +198,64 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(new List<long> { 1 }, _dispatched);
     }
 
+    // ── a queue's continuity: groupSeqNo, across jumps in clusterSeqNo (spec §14 row 12) ──────────────────────
+
+    [Fact(DisplayName = "a first frame at groupSeqNo 1 is the baseline, whatever its clusterSeqNo")]
+    public void FirstFrameAtGroupSeqNoOneIsAcceptedWhateverItsClusterSeqNo()
+    {
+        DeliverOnQueue(40, 1, false);
+
+        Assert.Equal(new List<long> { 40 }, _dispatched);
+        Assert.True(_receiver.IsCaughtUp);
+    }
+
+    [Fact(DisplayName = "a first frame that is not groupSeqNo 1 is fatal, even at clusterSeqNo 1")]
+    public void FirstFrameMustBeGroupSeqNoOne()
+    {
+        AttachReplay(11, 4096);
+
+        Assert.Throws<InvalidOperationException>(() => DeliverOnQueue(1, 2, true));
+    }
+
+    [Fact(DisplayName = "continuity follows groupSeqNo, so a jump in clusterSeqNo is no gap")]
+    public void ContinuityFollowsGroupSeqNoAcrossJumpsInClusterSeqNo()
+    {
+        DeliverOnQueue(1, 1, false);
+        DeliverOnQueue(5, 2, false);
+        DeliverOnQueue(9, 3, false);
+
+        Assert.Equal(new List<long> { 1, 5, 9 }, _dispatched);
+        Assert.True(_receiver.IsCaughtUp);
+        Assert.True(_actions.RequestsSent == 0, "nothing to recover");
+    }
+
+    [Fact(DisplayName = "a missing groupSeqNo is a gap, resumed at the last dispatched frame and drained in order")]
+    public void AMissingGroupSeqNoIsAGap()
+    {
+        DeliverOnQueue(1, 1, false);
+        DeliverOnQueue(9, 3, false);
+
+        Assert.False(_receiver.IsCaughtUp);
+        Assert.True(_receiver.RequestFromPosition == 1024, "resumes at frame 1, where it starts");
+        Assert.Equal(1, _receiver.RetainedFrameCount);
+
+        AttachReplay(21, 3 * 1024);
+        DeliverOnQueue(1, 1, true); // the anchor, already dispatched
+        DeliverOnQueue(5, 2, true);
+
+        Assert.Equal(new List<long> { 1, 5, 9 }, _dispatched);
+    }
+
+    [Fact(DisplayName = "a frame whose clusterSeqNo is already passed is dropped")]
+    public void AFrameWhoseClusterSeqNoIsPassedIsDropped()
+    {
+        DeliverOnQueue(1, 1, false);
+        DeliverOnQueue(5, 2, false);
+        DeliverOnQueue(5, 2, false);
+
+        Assert.Equal(new List<long> { 1, 5 }, _dispatched);
+    }
+
     // ── gap detection and the replay-to-live seam ─────────────────────────────────────────────────
 
     [Fact(DisplayName = "a mid-stream gap withholds the out-of-order frame and requests a replay")]
@@ -228,7 +286,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(Logger.CoreComponent.ReplayerStreamReceiver, loggerEvent.Component);
         Assert.Equal(Logger.Severity.Warn, loggerEvent.Severity);
         Assert.Equal(Logger.CoreEventCode.QueueGap, loggerEvent.Code);
-        Assert.Equal("queue gap: expected clusterSeqNo=3 got 5 — resuming the recording at clusterSeqNo=2",
+        Assert.Equal("queue gap: expected groupSeqNo=3 got 5 — resuming the recording at clusterSeqNo=2",
                      loggerEvent.Message);
     }
 
@@ -1166,6 +1224,21 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(new List<long> { 11, 12 }, _dispatched);
     }
 
+    [Fact(DisplayName = "after a restore, the queue's continuity resumes at the cut frame's groupSeqNo")]
+    public void AfterARestoreContinuityResumesAtTheCutsGroupSeqNo()
+    {
+        WriteSnapshot(2);
+        StartRestoring();
+        AttachReplay(21, 64 * 1024);
+        DeliverReplayFrame(Frames.OnQueue(RestoreFrames.Started(Cut, 2), 4), 4); // the queue's fourth frame
+        _receiver.DoTimers(false);
+
+        AttachReplay(22, 64 * 1024);
+        DeliverReplayFrame(Frames.OnQueue(RestoreFrames.Started(Cut, 2), 4), 4);
+        DeliverOnQueue(Cut + 3, 5, true);
+        Assert.Equal(new List<long> { Cut + 3 }, _dispatched); // groupSeqNo 5 follows the cut's 4
+    }
+
     [Fact(DisplayName = "a replay of the cut that stops advancing is requested again at the cut")]
     public void StalledCutReplayIsRequestedAgain()
     {
@@ -1399,6 +1472,14 @@ public class ReplayerRecoveryTest : IDisposable
     private void DeliverQueue(long clusterSeqNo)
     {
         DeliverQueueAt(clusterSeqNo, clusterSeqNo * 1024);
+    }
+
+    // A frame at groupSeqNo on a queue that does not carry every frame, starting at its 1024s.
+    private void DeliverOnQueue(long clusterSeqNo, long groupSeqNo, bool fromReplay)
+    {
+        byte[] frame = Frames.OnQueue(Frames.ClusterHeartbeat(clusterSeqNo), groupSeqNo);
+        _wire.Wrap(frame);
+        _receiver.OnFrame(_wire, 0, frame.Length, groupSeqNo * 1024, ReceiveNs, fromReplay);
     }
 
     private void DeliverQueueAt(long clusterSeqNo, long position)

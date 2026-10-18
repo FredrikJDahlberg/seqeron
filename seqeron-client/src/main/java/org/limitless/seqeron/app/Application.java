@@ -117,7 +117,7 @@ public final class Application implements AutoCloseable {
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
         this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.queueStallTimeoutMs,
-                                   builder.recoveryStallTimeoutMs, new SessionDispatch());
+                                   builder.recoveryStallTimeoutMs, builder.sourceId, null, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, () -> sourceId);
         if (store != null) {
             session.restoreFrom(store, snapshots);

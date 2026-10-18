@@ -32,30 +32,48 @@ final class RestoreFrames {
     private RestoreFrames() {
     }
 
+    /** A {@code SnapshotStarted} on a queue that carries every frame, so its groupSeqNo is its clusterSeqNo. */
     static Frame started(final long clusterSeqNo, final long round) {
-        return started(clusterSeqNo, round, clusterSeqNo * 1000);
+        return started(clusterSeqNo, clusterSeqNo, round, clusterSeqNo * 1000);
     }
 
     /** A {@code SnapshotStarted} stamped {@code timestampNs}: another log's, when it is not the file's. */
     static Frame started(final long clusterSeqNo, final long round, final long timestampNs) {
+        return started(clusterSeqNo, clusterSeqNo, round, timestampNs);
+    }
+
+    /** A {@code SnapshotStarted} at {@code groupSeqNo} on its queue. */
+    static Frame started(final long clusterSeqNo, final long groupSeqNo, final long round, final long timestampNs) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[128]);
         final SnapshotStartedEncoder encoder = new SnapshotStartedEncoder();
         encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(-1).connectionId(-1).sessionId(-1).systemEventType(SystemFrame.SNAPSHOT_STARTED)
-            .clusterSeqNo(clusterSeqNo).timestamp(timestampNs);
+        encoder.header()
+            .sourceId(-1)
+            .connectionId(-1)
+            .sessionId(-1)
+            .systemEventType(SystemFrame.SNAPSHOT_STARTED)
+            .clusterSeqNo(clusterSeqNo)
+            .timestamp(timestampNs)
+            .groupSeqNo(groupSeqNo);
         encoder.round(round);
         return new Frame(buffer, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    /** The end the records {@code records} match. */
+    /** The end the records {@code records} match, on a queue that carries every frame. */
     static Frame end(final long clusterSeqNo, final int sourceId, final long round, final int formatVersion,
                      final byte[]... records) {
+        return end(clusterSeqNo, clusterSeqNo, sourceId, round, formatVersion, records);
+    }
+
+    /** The same at {@code groupSeqNo} on its queue. */
+    static Frame end(final long clusterSeqNo, final long groupSeqNo, final int sourceId, final long round,
+                     final int formatVersion, final byte[]... records) {
         final Digest digest = Digest.of(records);
         final MutableDirectBuffer body = new ExpandableArrayBuffer(64);
         final SnapshotEndEncoder encoder = new SnapshotEndEncoder();
         encoder.wrap(body, 0).round(round).recordCount(digest.recordCount()).length(digest.length())
             .crc32c(digest.crc32c()).formatVersion(formatVersion);
-        return system(clusterSeqNo, sourceId, SystemFrame.SNAPSHOT_END, body, encoder.encodedLength());
+        return system(clusterSeqNo, groupSeqNo, sourceId, SystemFrame.SNAPSHOT_END, body, encoder.encodedLength());
     }
 
     /**
@@ -89,13 +107,19 @@ final class RestoreFrames {
         return buffer.byteArray();
     }
 
-    private static Frame system(final long clusterSeqNo, final int sourceId, final int systemEventType,
-                                final MutableDirectBuffer body, final int bodyLength) {
+    private static Frame system(final long clusterSeqNo, final long groupSeqNo, final int sourceId,
+                                final int systemEventType, final MutableDirectBuffer body, final int bodyLength) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         final SequencedSystemEncoder encoder = new SequencedSystemEncoder();
         encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(sourceId).connectionId(-1).sessionId(5).systemEventType(systemEventType)
-            .clusterSeqNo(clusterSeqNo).timestamp(clusterSeqNo * 1000);
+        encoder.header()
+            .sourceId(sourceId)
+            .connectionId(-1)
+            .sessionId(5)
+            .systemEventType(systemEventType)
+            .clusterSeqNo(clusterSeqNo)
+            .timestamp(clusterSeqNo * 1000)
+            .groupSeqNo(groupSeqNo);
         encoder.putBody(body, 0, bodyLength);
         return new Frame(buffer, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }

@@ -1,17 +1,24 @@
 package org.limitless.seqeron.app;
 
 import io.aeron.Aeron;
+import io.aeron.Publication;
+import io.aeron.Subscription;
 import io.aeron.cluster.client.EgressListener;
 import io.aeron.cluster.codecs.EventCode;
+import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.replayer.client.SnapshotRestoreHandler;
 import org.limitless.seqeron.replayer.client.SnapshotStore;
+import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
+import org.limitless.seqeron.sbe.replay.QueueRequestEncoder;
 import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.client.IngressPublisher;
 import org.limitless.seqeron.sequencer.client.PendingSends;
@@ -41,6 +48,11 @@ final class Session implements AutoCloseable {
 
     /** No group is resolved yet (spec A-9), so a frame addresses none and §9.2 condition 14 refuses it. */
     private static final int UNRESOLVED_GROUP_MASK = 0;
+
+    /** Untethered, as the receiver's is: a reply this instance does not read must not hold up the Replayer. */
+    private static final String CONTROL_CHANNEL = ReplayProtocol.IPC_CHANNEL + "|tether=false";
+
+    private static final int CONTROL_FRAGMENT_LIMIT = 16;
 
     /** What the façade above does with what comes off the queue, and with a fence. */
     interface Dispatch {
@@ -76,6 +88,7 @@ final class Session implements AutoCloseable {
     private final IngressPublisher publisher;
     private final ClusterStreamSender sender = new ClusterStreamSender();
     private final ReplayerStreamReceiver receiver;
+    private final QueueResolution queueResolution = new QueueResolution(new QueueResolutionActions());
     private final RecoveryStallFence recoveryStall;
     private final QueueStallFence queueStall;
     private final Payload payload = new Payload();
@@ -99,9 +112,33 @@ final class Session implements AutoCloseable {
     /** The term of the last {@code LeadershipChanged} applied; -1 before the first. */
     private long leadershipTermId = -1;
 
+    /** What the {@code QueueRequest} names: the instance's topology row (spec R-6). */
+    private final int queueSourceId;
+    private final String queueGatewayName;
+
+    // The queue's resolution, until the receiver starts on it.
+    private Aeron aeron;
+    private int memberId;
+    private long queueClientId = -1;
+    private Publication queueRequestPublication;
+    private Subscription queueControlSubscription;
+    private final FragmentHandler queueControlHandler =
+        (buffer, offset, length, header) -> queueResolution.onControl(buffer, offset, length);
+    private final MessageHeaderEncoder queueRequestHeader = new MessageHeaderEncoder();
+    private final QueueRequestEncoder queueRequest = new QueueRequestEncoder();
+    private final UnsafeBuffer queueRequestBuffer =
+        new UnsafeBuffer(new byte[MessageHeaderEncoder.ENCODED_LENGTH + QueueRequestEncoder.BLOCK_LENGTH]);
+
+    /**
+     * @param sourceId    the application's {@code sourceId} its row names, or {@link ReplayProtocol#NO_SOURCE_ID}
+     *                    for a gateway instance
+     * @param gatewayName the gateway instance's row name, or null for an application
+     */
     Session(final int clientId, final int pendingCapacity, final long queueStallTimeoutMs,
-            final long recoveryStallTimeoutMs, final Dispatch dispatch) {
+            final long recoveryStallTimeoutMs, final int sourceId, final String gatewayName, final Dispatch dispatch) {
         this.dispatch = dispatch;
+        this.queueSourceId = sourceId;
+        this.queueGatewayName = gatewayName == null ? "" : gatewayName;
         this.queueStallTimeoutMs = queueStallTimeoutMs;
         this.recoveryStallTimeoutMs = recoveryStallTimeoutMs;
         this.pending = new PendingSends(pendingCapacity);
@@ -117,10 +154,10 @@ final class Session implements AutoCloseable {
         receiver.restoreFrom(store, handler);
     }
 
-    /** Opens the cluster session over UDP and starts following this node's queue. */
+    /** Opens the cluster session over UDP and asks this node's Replayer which queue to follow. */
     void start(final Aeron aeron, final int memberId, final String egressChannel, final String ingressEndpoints) {
         sender.connect(aeron, egressChannel, ingressEndpoints, new SessionListener());
-        receiver.start(aeron, memberId);
+        resolveQueue(aeron, memberId);
     }
 
     /**
@@ -131,7 +168,44 @@ final class Session implements AutoCloseable {
                         final String egressChannel, final String ingressEndpoints) {
         sender.connectColocated(aeron, memberId, ipcConnectTimeoutMs, egressChannel, ingressEndpoints,
                                 new SessionListener());
-        receiver.start(aeron, memberId);
+        resolveQueue(aeron, memberId);
+    }
+
+    /** The receiver starts once the Replayer has said which queue this instance reads (spec R-6). */
+    private void resolveQueue(final Aeron aeron, final int memberId) {
+        this.aeron = aeron;
+        this.memberId = memberId;
+        queueClientId = aeron.nextCorrelationId();
+        queueControlSubscription = aeron.addSubscription(CONTROL_CHANNEL, ReplayProtocol.CONTROL_STREAM_ID);
+        queueRequestPublication = aeron.addPublication(ReplayProtocol.IPC_CHANNEL, ReplayProtocol.REQUEST_STREAM_ID);
+        queueResolution.start();
+    }
+
+    /** Waits for the Replayer's answer, unfenced, then starts the receiver on that queue. */
+    private int pollQueueResolution() {
+        if (queueControlSubscription == null) {
+            return 0;
+        }
+        int work = queueControlSubscription.poll(queueControlHandler, CONTROL_FRAGMENT_LIMIT);
+        queueResolution.doTimers(!queueRequestPublication.isConnected());
+        final int groupId = queueResolution.groupId();
+        if (groupId != QueueResolution.UNRESOLVED) {
+            receiver.start(aeron, memberId, groupId);
+            closeQueueResolution();
+            ++work;
+        }
+        return work;
+    }
+
+    private void closeQueueResolution() {
+        if (queueControlSubscription != null) {
+            queueControlSubscription.close();
+            queueControlSubscription = null;
+        }
+        if (queueRequestPublication != null) {
+            queueRequestPublication.close();
+            queueRequestPublication = null;
+        }
     }
 
     /**
@@ -143,13 +217,14 @@ final class Session implements AutoCloseable {
         if (fenced) {
             return 0;
         }
-        int work = receiver.poll();
+        int work = queueResolution.groupId() == QueueResolution.UNRESOLVED ? pollQueueResolution() : receiver.poll();
         checkCaughtUp();
         checkFences();
         if (fenced) {
             // Here rather than at the fence, which may be raised from inside that poll. Nothing polls the receiver
             // again, and a replay left open would hold one of the member's Replayer slots.
             receiver.close();
+            closeQueueResolution();
             return work;
         }
         work += sender.pollEgress();
@@ -209,6 +284,7 @@ final class Session implements AutoCloseable {
     @Override
     public void close() {
         receiver.close();
+        closeQueueResolution();
         sender.close();
     }
 
@@ -368,6 +444,33 @@ final class Session implements AutoCloseable {
         }
         payload.wrap(event);
         dispatch.onPayload(payload);
+    }
+
+    /** The Aeron half of {@link QueueResolution}. */
+    private final class QueueResolutionActions implements QueueResolution.Actions {
+        @Override
+        public void sendQueueRequest(final long requestId) {
+            if (queueRequestPublication == null || !queueRequestPublication.isConnected()) {
+                return; // Replayer not up yet; the resend timer retries
+            }
+            queueRequest.wrapAndApplyHeader(queueRequestBuffer, 0, queueRequestHeader)
+                .clientId(queueClientId)
+                .requestId(requestId)
+                .sourceId(queueSourceId)
+                .gatewayName(queueGatewayName);
+            queueRequestPublication.offer(queueRequestBuffer, 0,
+                                          MessageHeaderEncoder.ENCODED_LENGTH + queueRequest.encodedLength());
+        }
+
+        @Override
+        public long clientId() {
+            return queueClientId;
+        }
+
+        @Override
+        public long nowMs() {
+            return Clocks.monotonicMs();
+        }
     }
 
     /** Records why the cluster ended this session; {@link #checkFences} is where it becomes a fence. */

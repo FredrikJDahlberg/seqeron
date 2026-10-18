@@ -26,6 +26,9 @@ final class ConfirmProducer implements AutoCloseable {
     static final long DRAIN_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(15);
 
     private static final int CLIENT_ID = 9;
+
+    /** The queue it confirms on: group 1's, the in-process cluster's only group. */
+    private static final int GROUP_ID = 1;
     private static final int NO_ID = -1;
     private static final byte[] NO_FILLER = new byte[0];
 
@@ -55,7 +58,7 @@ final class ConfirmProducer implements AutoCloseable {
             pending.onLeadershipChanged(leadershipTermId);
             lastLeader = leaderMemberId;
         }, () -> caughtUp = true);
-        receiver.start(aeron, memberId);
+        receiver.start(aeron, memberId, GROUP_ID);
         while (!caughtUp) {
             receiver.poll();
             Tests.yield();

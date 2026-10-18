@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -10,14 +11,18 @@
 #include "org/limitless/seqeron/app/ClusterError.hpp"
 #include "org/limitless/seqeron/app/Defaults.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
+#include "org/limitless/seqeron/app/detail/QueueResolution.hpp"
 #include "org/limitless/seqeron/app/detail/QueueStallFence.hpp"
 #include "org/limitless/seqeron/app/detail/RecoveryStallFence.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
+#include "org/limitless/seqeron/protocol/ReplayProtocol.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/replayer/client/ReplayerStreamReceiver.hpp"
 #include "org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
 #include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
+
+#include "org_limitless_seqeron_sbe_replay/QueueRequest.h"
 
 namespace org::limitless::seqeron::app::detail {
 
@@ -43,8 +48,14 @@ template<typename Dispatch>
 class Session
 {
   public:
+    /**
+     * @param sourceId    the application's sourceId its row names, or protocol::REPLAYER_NO_SOURCE_ID for a gateway
+     *                    instance
+     * @param gatewayName the gateway instance's row name, or empty for an application
+     */
     Session(const std::int32_t clientId, const std::size_t pendingCapacity, const std::int64_t queueStallTimeoutMs,
-            const std::int64_t recoveryStallTimeoutMs, Dispatch& dispatch) :
+            const std::int64_t recoveryStallTimeoutMs, const std::int32_t sourceId, std::string gatewayName,
+            Dispatch& dispatch) :
       m_dispatch{ dispatch },
       m_pending{ pendingCapacity },
       m_recoveryStall{ recoveryStallTimeoutMs },
@@ -57,7 +68,11 @@ class Session
                   {},
                   [this](std::int32_t, std::int64_t leadershipTermId, std::int64_t) {
                       onLeadershipChanged(leadershipTermId);
-                  } }
+                  } },
+      m_queueSourceId{ sourceId },
+      m_queueGatewayName{ std::move(gatewayName) },
+      m_queueResolutionActions{ *this },
+      m_queueResolution{ m_queueResolutionActions }
     {
         m_sender.setIngressHold(&m_pending);
     }
@@ -76,12 +91,12 @@ class Session
         m_receiver.restoreFrom(store, handler);
     }
 
-    // Opens the cluster session over UDP and starts following this node's queue.
+    // Opens the cluster session over UDP and asks this node's Replayer which queue to follow.
     void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId, const std::string& egressChannel,
                const std::string& ingressEndpoints)
     {
         m_sender.connect(aeron, egressChannel, ingressEndpoints);
-        m_receiver.start(std::move(aeron), memberId);
+        resolveQueue(std::move(aeron), memberId);
     }
 
     // The same for a client sharing this member's media driver: ingress over its own aeron:ipc while that
@@ -91,7 +106,7 @@ class Session
                         const std::string& ingressEndpoints)
     {
         m_sender.connectColocated(aeron, memberId, ipcConnectTimeoutMs, egressChannel, ingressEndpoints);
-        m_receiver.start(std::move(aeron), memberId);
+        resolveQueue(std::move(aeron), memberId);
     }
 
     // One duty cycle, in the order the parts require: the queue first, so a fence is judged on what this cycle
@@ -102,7 +117,8 @@ class Session
         {
             return 0;
         }
-        int work = m_receiver.poll();
+        int work =
+            m_queueResolution.groupId() == QueueResolution::UNRESOLVED ? pollQueueResolution() : m_receiver.poll();
         checkCaughtUp();
         checkFences();
         if (m_fenced)
@@ -110,6 +126,7 @@ class Session
             // Here rather than at the fence, which may be raised from inside that poll. Nothing polls the receiver
             // again, and a replay left open would hold one of the member's Replayer slots.
             m_receiver.close();
+            closeQueueResolution();
             return work;
         }
         // Nothing is addressed to a producer on egress: everything it publishes comes back on the queue. Unlike
@@ -252,6 +269,105 @@ class Session
 
     // No group is resolved yet (spec A-9), so a frame addresses none and §9.2 condition 14 refuses it.
     static constexpr std::uint16_t UNRESOLVED_GROUP_MASK = 0;
+
+    static constexpr int QUEUE_CONTROL_FRAGMENT_LIMIT = 16;
+
+    // The Aeron half of QueueResolution.
+    class QueueResolutionActions final : public QueueResolution::Actions
+    {
+      public:
+        explicit QueueResolutionActions(Session& session) : m_session{ session }
+        {}
+
+        void sendQueueRequest(const std::int64_t requestId) override
+        {
+            const auto& publication = m_session.m_queueRequestPub;
+            if (!publication || !publication->isConnected())
+            {
+                return; // Replayer not up yet; the resend timer retries
+            }
+            alignas(16) std::array<std::uint8_t, 64> buffer{};
+            sbe::replay::QueueRequest request;
+            request.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
+            request.clientId(m_session.m_queueClientId).requestId(requestId).sourceId(m_session.m_queueSourceId);
+            request.putGatewayName(m_session.m_queueGatewayName);
+            const auto length = static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() +
+                                                                  request.encodedLength());
+            aeron::concurrent::AtomicBuffer atomic(buffer.data(), buffer.size());
+            publication->offer(atomic, 0, length);
+        }
+
+        std::int64_t clientId() override
+        {
+            return m_session.m_queueClientId;
+        }
+
+        std::int64_t nowMs() override
+        {
+            return monotonicMs();
+        }
+
+      private:
+        Session& m_session;
+    };
+
+    // The receiver starts once the Replayer has said which queue this instance reads (spec R-6).
+    void resolveQueue(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId)
+    {
+        m_aeron = std::move(aeron);
+        m_memberId = memberId;
+        m_queueClientId = m_aeron->nextCorrelationId();
+        m_queueControlSubRegId =
+            m_aeron->addSubscription(replayer::client::REPLAYER_CONTROL_CHANNEL, protocol::REPLAYER_CONTROL_STREAM_ID);
+        m_queueRequestPubRegId =
+            m_aeron->addPublication(protocol::REPLAYER_IPC_CHANNEL, protocol::REPLAYER_REQUEST_STREAM_ID);
+        m_queueControlPoll = [this](const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
+                                    const aeron::util::index_t length, const aeron::Header&) {
+            m_queueResolution.onControl(reinterpret_cast<char*>(buffer.buffer()) + offset,
+                                        static_cast<std::uint64_t>(length));
+        };
+        m_queueResolution.start();
+    }
+
+    // Waits for the Replayer's answer, unfenced, then starts the receiver on that queue.
+    int pollQueueResolution()
+    {
+        if (!m_aeron || m_queueControlSubRegId < 0)
+        {
+            return 0;
+        }
+        if (!m_queueControlSub)
+        {
+            m_queueControlSub = m_aeron->findSubscription(m_queueControlSubRegId);
+        }
+        if (!m_queueRequestPub)
+        {
+            m_queueRequestPub = m_aeron->findPublication(m_queueRequestPubRegId);
+        }
+        int work = m_queueControlSub ? m_queueControlSub->poll(m_queueControlPoll, QUEUE_CONTROL_FRAGMENT_LIMIT) : 0;
+        m_queueResolution.doTimers(!m_queueRequestPub || !m_queueRequestPub->isConnected());
+        const std::int32_t groupId = m_queueResolution.groupId();
+        if (groupId != QueueResolution::UNRESOLVED)
+        {
+            m_receiver.start(m_aeron, m_memberId, groupId);
+            closeQueueResolution();
+            ++work;
+        }
+        return work;
+    }
+
+    void closeQueueResolution()
+    {
+        if (m_aeron && m_queueControlSubRegId >= 0)
+        {
+            // An add already answered would otherwise stay open with nothing holding it.
+            m_queueControlSub = m_aeron->findSubscription(m_queueControlSubRegId);
+            m_queueRequestPub = m_aeron->findPublication(m_queueRequestPubRegId);
+        }
+        m_queueControlSub.reset();
+        m_queueRequestPub.reset();
+        m_queueControlSubRegId = m_queueRequestPubRegId = -1;
+    }
 
     // The fences are deadlines, so they are measured on a clock no wall-clock step can move.
     static std::int64_t monotonicMs()
@@ -419,6 +535,21 @@ class Session
     std::int64_t m_recoveryStallTimeoutMs;
     std::int64_t m_queueStallTimeoutMs;
     replayer::client::ReplayerStreamReceiver m_receiver;
+
+    // What the QueueRequest names: the instance's topology row (spec R-6).
+    const std::int32_t m_queueSourceId;
+    const std::string m_queueGatewayName;
+    // The queue's resolution, until the receiver starts on it.
+    QueueResolutionActions m_queueResolutionActions;
+    QueueResolution m_queueResolution;
+    std::shared_ptr<aeron::Aeron> m_aeron;
+    std::int32_t m_memberId = 0;
+    std::int64_t m_queueClientId = -1;
+    std::int64_t m_queueControlSubRegId = -1;
+    std::int64_t m_queueRequestPubRegId = -1;
+    std::shared_ptr<aeron::Subscription> m_queueControlSub;
+    std::shared_ptr<aeron::Publication> m_queueRequestPub;
+    aeron::fragment_handler_t m_queueControlPoll;
 
     bool m_caughtUp = false;
     bool m_fenced = false;

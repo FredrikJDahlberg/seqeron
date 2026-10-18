@@ -121,7 +121,8 @@ public sealed class Gateway : IDisposable
         SnapshotStore store = options.SnapshotListener == null ? null : new SnapshotStore(options.SnapshotDirectory);
         _snapshots = new SnapshotTaker(options.SnapshotListener, store, KeepAlive);
         _session = new Session(options.ClientId, options.PendingCapacity, options.QueueStallTimeoutMs,
-                               options.RecoveryStallTimeoutMs, new SessionDispatch(this));
+                               options.RecoveryStallTimeoutMs, ReplayProtocol.NoSourceId, options.GatewayName,
+                               new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _lifecycle.GatewaySourceId);
         if (store != null)
         {

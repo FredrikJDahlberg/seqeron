@@ -36,6 +36,9 @@ public static class ClusterProbe
     // The probe resolves no group yet (spec A-9), so its frames address none and §9.2 condition 14 refuses them.
     private const int UnresolvedGroupMask = 0;
 
+    // The queue the probe reads: group 1's, the first the harnesses' topologies declare.
+    private const int GroupId = 1;
+
     // ProbeMarker's MessageHeader, then seqNo uint64, then filler as uint16-length var data.
     private const int ProbeMarkerTemplateId = 1;
     private const int ProbeSchemaId = 214;
@@ -100,7 +103,7 @@ public static class ClusterProbe
                 own.OnSequenced(sequencedEvent);
             },
             (leader, term, clusterSeqNo) => pending.OnLeadershipChanged(term), () => caughtUp = true);
-        receiver.Start(aeron, options.MemberId);
+        receiver.Start(aeron, options.MemberId, GroupId);
         while (!caughtUp)
         {
             idle.Idle(receiver.Poll());
@@ -215,7 +218,7 @@ public static class ClusterProbe
                                               });
         using (receiver)
         {
-            receiver.Start(aeron, options.MemberId);
+            receiver.Start(aeron, options.MemberId, GroupId);
             Logger.Info(Logger.CoreComponent.ClusterProbe, options.MemberId,
                         "Following the node queue — replaying history via the Replayer, then live");
             long deadlineMs = long.MaxValue;

@@ -195,6 +195,64 @@ class ReplayerRecoveryTest {
         assertEquals(List.of(1L), dispatched);
     }
 
+    // ── a queue's continuity: groupSeqNo, across jumps in clusterSeqNo (spec §14 row 12) ──────────────────────
+
+    @Test
+    @DisplayName("a first frame at groupSeqNo 1 is the baseline, whatever its clusterSeqNo")
+    void firstFrameAtGroupSeqNoOneIsAcceptedWhateverItsClusterSeqNo() {
+        deliverQueueOnQueue(40, 1);
+
+        assertEquals(List.of(40L), dispatched);
+        assertTrue(receiver.isCaughtUp());
+    }
+
+    @Test
+    @DisplayName("a first frame that is not groupSeqNo 1 is fatal, even at clusterSeqNo 1")
+    void firstFrameMustBeGroupSeqNoOne() {
+        attachReplay(11, 4096);
+
+        assertThrows(IllegalStateException.class, () -> deliverReplayOnQueue(1, 2));
+    }
+
+    @Test
+    @DisplayName("continuity follows groupSeqNo, so a jump in clusterSeqNo is no gap")
+    void continuityFollowsGroupSeqNoAcrossJumpsInClusterSeqNo() {
+        deliverQueueOnQueue(1, 1);
+        deliverQueueOnQueue(5, 2);
+        deliverQueueOnQueue(9, 3);
+
+        assertEquals(List.of(1L, 5L, 9L), dispatched);
+        assertTrue(receiver.isCaughtUp());
+        assertEquals(0, actions.requestsSent, "nothing to recover");
+    }
+
+    @Test
+    @DisplayName("a missing groupSeqNo is a gap, resumed at the last dispatched frame and drained in order")
+    void aMissingGroupSeqNoIsAGap() {
+        deliverQueueOnQueue(1, 1);
+        deliverQueueOnQueue(9, 3);
+
+        assertFalse(receiver.isCaughtUp());
+        assertEquals(1024, receiver.requestFromPosition(), "resumes at frame 1, where it starts");
+        assertEquals(1, receiver.retainedFrameCount());
+
+        attachReplay(21, 3 * 1024);
+        deliverReplayOnQueue(1, 1); // the anchor, already dispatched
+        deliverReplayOnQueue(5, 2);
+
+        assertEquals(List.of(1L, 5L, 9L), dispatched);
+    }
+
+    @Test
+    @DisplayName("a frame whose clusterSeqNo is already passed is dropped")
+    void aFrameWhoseClusterSeqNoIsPassedIsDropped() {
+        deliverQueueOnQueue(1, 1);
+        deliverQueueOnQueue(5, 2);
+        deliverQueueOnQueue(5, 2);
+
+        assertEquals(List.of(1L, 5L), dispatched);
+    }
+
     // ── gap detection and the replay-to-live seam ─────────────────────────────────────────────────
 
     @Test
@@ -226,7 +284,7 @@ class ReplayerRecoveryTest {
         assertEquals(Logger.CoreComponent.ReplayerStreamReceiver, event.component());
         assertEquals(Logger.Severity.Warn, event.severity());
         assertEquals(Logger.CoreEventCode.QueueGap, event.code());
-        assertEquals("queue gap: expected clusterSeqNo=3 got 5 — resuming the recording at clusterSeqNo=2",
+        assertEquals("queue gap: expected groupSeqNo=3 got 5 — resuming the recording at clusterSeqNo=2",
                      event.message());
     }
 
@@ -1167,6 +1225,21 @@ class ReplayerRecoveryTest {
     }
 
     @Test
+    @DisplayName("after a restore, the queue's continuity resumes at the cut frame's groupSeqNo")
+    void afterARestoreContinuityResumesAtTheCutsGroupSeqNo() {
+        writeSnapshot(2);
+        startRestoring();
+        attachReplay(21, 64 * 1024);
+        deliverReplayFrame(RestoreFrames.started(CUT, 4, 2, CUT * 1000), 4); // the queue's fourth frame
+        receiver.doTimers(false);
+
+        attachReplay(22, 64 * 1024);
+        deliverReplayFrame(RestoreFrames.started(CUT, 4, 2, CUT * 1000), 4);
+        deliverReplayOnQueue(CUT + 3, 5);
+        assertEquals(List.of(CUT + 3), dispatched, "groupSeqNo 5 follows the cut's 4");
+    }
+
+    @Test
     @DisplayName("a replay of the cut that stops advancing is requested again at the cut")
     void stalledCutReplayIsRequestedAgain() {
         writeSnapshot(2);
@@ -1358,9 +1431,14 @@ class ReplayerRecoveryTest {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         final LeadershipChangedEncoder frame = new LeadershipChangedEncoder();
         frame.wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder());
-        frame.header().sourceId(-1).connectionId(-1).sessionId(-1)
+        frame.header()
+            .sourceId(-1)
+            .connectionId(-1)
+            .sessionId(-1)
             .systemEventType(org.limitless.seqeron.protocol.SystemFrame.LEADERSHIP_CHANGED)
-            .clusterSeqNo(clusterSeqNo).timestamp(clusterSeqNo * 1000);
+            .clusterSeqNo(clusterSeqNo)
+            .timestamp(clusterSeqNo * 1000)
+            .groupSeqNo(clusterSeqNo);
         frame.newLeaderMemberId(2).leadershipTermId(3);
         receiver.onFrame(buffer, 0, org.limitless.seqeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH
             + LeadershipChangedEncoder.BLOCK_LENGTH, clusterSeqNo * 1024, RECEIVE_NS, false);
@@ -1389,6 +1467,18 @@ class ReplayerRecoveryTest {
         receiver.onFrame(heartbeatFrame(clusterSeqNo), 0, heartbeatLength(), clusterSeqNo * 1024, RECEIVE_NS, true);
     }
 
+    /** A replayed frame at {@code groupSeqNo} on a queue that does not carry every frame, starting at its 1024s. */
+    private void deliverReplayOnQueue(final long clusterSeqNo, final long groupSeqNo) {
+        receiver.onFrame(heartbeatFrame(clusterSeqNo, groupSeqNo), 0, heartbeatLength(), groupSeqNo * 1024, RECEIVE_NS,
+                         true);
+    }
+
+    /** The same off the live queue. */
+    private void deliverQueueOnQueue(final long clusterSeqNo, final long groupSeqNo) {
+        receiver.onFrame(heartbeatFrame(clusterSeqNo, groupSeqNo), 0, heartbeatLength(), groupSeqNo * 1024, RECEIVE_NS,
+                         false);
+    }
+
     private void deliverQueue(final long clusterSeqNo) {
         deliverQueueAt(clusterSeqNo, clusterSeqNo * 1024);
     }
@@ -1413,14 +1503,26 @@ class ReplayerRecoveryTest {
         receiver.onFrame(buffer, 0, length, clusterSeqNo * 1024, RECEIVE_NS, false);
     }
 
-    /** One synthesized ClusterHeartbeat — the cheapest well-formed frame there is, at 42 bytes. */
+    /**
+     * One synthesized ClusterHeartbeat — the cheapest well-formed frame there is, at 52 bytes — on a queue that
+     * carries every frame, so its groupSeqNo is its clusterSeqNo.
+     */
     private static UnsafeBuffer heartbeatFrame(final long clusterSeqNo) {
+        return heartbeatFrame(clusterSeqNo, clusterSeqNo);
+    }
+
+    private static UnsafeBuffer heartbeatFrame(final long clusterSeqNo, final long groupSeqNo) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         final ClusterHeartbeatEncoder frame = new ClusterHeartbeatEncoder();
         frame.wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder());
-        frame.header().sourceId(-1).connectionId(-1).sessionId(-1)
+        frame.header()
+            .sourceId(-1)
+            .connectionId(-1)
+            .sessionId(-1)
             .systemEventType(org.limitless.seqeron.protocol.SystemFrame.CLUSTER_HEARTBEAT)
-            .clusterSeqNo(clusterSeqNo).timestamp(clusterSeqNo * 1000);
+            .clusterSeqNo(clusterSeqNo)
+            .timestamp(clusterSeqNo * 1000)
+            .groupSeqNo(groupSeqNo);
         return buffer;
     }
 

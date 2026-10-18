@@ -4,7 +4,8 @@ using Frame = Org.Limitless.Seqeron.Sbe.Frame;
 
 namespace Org.Limitless.Seqeron.Protocol;
 
-// Sequenced frames as the sequencer writes them onto the queue, built with the generated encoders.
+// Sequenced frames as the sequencer writes them onto the queue, built with the generated encoders. Each is on a queue
+// that carries every frame, so its groupSeqNo is its clusterSeqNo; OnQueue moves it onto one that does not.
 internal static class Frames
 {
     public const int SourceId = 7;
@@ -25,6 +26,7 @@ internal static class Frames
         header.PayloadId = (ushort)payloadId;
         header.ClusterSeqNo = clusterSeqNo;
         header.Timestamp = Timestamp;
+        header.GroupSeqNo = clusterSeqNo;
         encoder.SetPayload(Filler(payloadLength));
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
@@ -48,6 +50,7 @@ internal static class Frames
         header.SystemEventType = (ushort)systemEventType;
         header.ClusterSeqNo = clusterSeqNo;
         header.Timestamp = Timestamp;
+        header.GroupSeqNo = clusterSeqNo;
         encoder.SetBody(body);
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
@@ -103,6 +106,15 @@ internal static class Frames
         return bytes[..(Frame.MessageHeader.Size + encoder.Size)];
     }
 
+    // The same frame at groupSeqNo on its queue. The two families' header composites are byte-identical (F-3).
+    public static byte[] OnQueue(byte[] frame, long groupSeqNo)
+    {
+        var header = new Frame.SequencedSystemHeader();
+        header.Wrap(new DirectBuffer(frame), Frame.MessageHeader.Size, Frame.MessageHeader.SbeSchemaVersion);
+        header.GroupSeqNo = groupSeqNo;
+        return frame;
+    }
+
     public static byte[] Filler(int length)
     {
         var bytes = new byte[length];
@@ -121,5 +133,6 @@ internal static class Frames
         header.SystemEventType = (ushort)systemEventType;
         header.ClusterSeqNo = clusterSeqNo;
         header.Timestamp = Timestamp;
+        header.GroupSeqNo = clusterSeqNo;
     }
 }

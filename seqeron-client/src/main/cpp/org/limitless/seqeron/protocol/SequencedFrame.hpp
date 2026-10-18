@@ -175,6 +175,7 @@ constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
 struct SequencedEvent
 {
     std::int64_t clusterSeqNo;
+    std::int64_t groupSeqNo;         ///< this frame's place on its queue: 1 for the first, then one per frame (F-6)
     std::int32_t sourceId;           ///< Fixed constant identifying the submitting producer process (header.sourceId)
     std::int32_t connectionId;       ///< Connection id at that producer; routes the reply (header.connectionId)
     std::int64_t sourceSessionId;    ///< Aeron Cluster client session id (header.sessionId)
@@ -210,6 +211,7 @@ struct FrameView
     std::int32_t connectionId;
     std::int64_t sourceSessionId; ///< Aeron Cluster client session id (header.sessionId)
     std::int64_t clusterSeqNo;
+    std::int64_t groupSeqNo;         ///< this frame's place on its queue (header.groupSeqNo, F-6)
     std::int64_t clusterTimestampNs; ///< cluster consensus time (epoch ns) when committed (header.timestamp)
     std::uint16_t templateId;        ///< application family: the payload's own, never the envelope's
     /// The payload's own, to wrap its decoder with; both 0 on any system frame, whose message carries
@@ -237,6 +239,7 @@ inline void readSystemHeader(FrameView& view, sbe::frame::SequencedSystemHeader&
     view.connectionId = header.connectionId();
     view.sourceSessionId = header.sessionId();
     view.clusterSeqNo = header.clusterSeqNo();
+    view.groupSeqNo = header.groupSeqNo();
     view.clusterTimestampNs = header.timestamp();
 }
 
@@ -283,6 +286,7 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
         view.connectionId = header.connectionId();
         view.sourceSessionId = header.sessionId();
         view.clusterSeqNo = header.clusterSeqNo();
+        view.groupSeqNo = header.groupSeqNo();
         view.clusterTimestampNs = header.timestamp();
 
         const std::uint64_t payloadLength = sequenced.payloadLength();
@@ -481,6 +485,7 @@ inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t
                                        const std::int64_t position)
 {
     return SequencedEvent{ .clusterSeqNo = view.clusterSeqNo,
+                           .groupSeqNo = view.groupSeqNo,
                            .sourceId = view.sourceId,
                            .connectionId = view.connectionId,
                            .sourceSessionId = view.sourceSessionId,
