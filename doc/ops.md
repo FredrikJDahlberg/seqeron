@@ -344,10 +344,10 @@ it with a different term length.
 ## MTU
 
 A frame longer than its stream's MTU less 32 bytes is fragmented, and every seqeron consumer reassembles
-it, so the MTU decides packet sizes, not correctness. Aeron's default of 1408 keeps payloads up to 1,316
+it, so the MTU decides packet sizes, not correctness. Aeron's default of 1408 keeps payloads up to 1,314
 bytes whole everywhere, and suits a deployment whose payloads stay below that.
 
-Larger payloads, up to `MAX_PAYLOAD_LENGTH` (8,884 bytes), stay whole on the queue with
+Larger payloads, up to `MAX_PAYLOAD_LENGTH` (8,874 bytes), stay whole on the queue with
 `-Daeron.ipc.mtu.length=8960`, passed as the term length is. A replay carries its recording's MTU, so every
 UDP replay of the queue — a gateway host's relay, a `ClusterStreamClient` following a member on another host
 — then sends datagrams of up to 8,960 bytes, with small frames batched into them. The network between them
