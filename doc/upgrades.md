@@ -208,7 +208,7 @@ Application.builder()   // Gateway.builder() alike
 - **Deterministic.** An upcaster is part of the consumer's state machine, so it is a pure function of the
   message, like a reply under spec **A-3**.
 - **Allocation-free.** The translation goes into a buffer the façade owns, one copy per translated message.
-  The result never goes back on the wire, so it is not bound by the 8,884-byte payload limit.
+  The result never goes back on the wire, so it is not bound by the 8,874-byte payload limit.
 - **The same in every language**: an interface in Java and C#, a concept in C++, as the listeners are.
 
 ### 5.3 Rollout order and rollback

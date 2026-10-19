@@ -128,7 +128,7 @@ Everything on the wire is one SBE schema (210), in two families sharing one head
 
 Every field sits at the same offset in every template, so a consumer tracks continuity without branching
 on the message type. A consumer splits by family first, then dispatches on `(payloadId, templateId)`.
-Payloads are at most 8,884 bytes, which keeps a message within one 8,960-byte IPC MTU.
+Payloads are at most 8,874 bytes, which keeps a message within one 8,960-byte IPC MTU.
 
 ## Time
 
@@ -254,7 +254,7 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 | | |
 | --- | --- |
 | members | up to seven, bounded by the 70-port cluster block |
-| payload | 8,884 bytes per message; larger payloads are split by the application |
+| payload | 8,874 bytes per message; larger payloads are split by the application |
 | node recovery | full-log replay; time and archive size grow with uptime (the heartbeat alone is about 86,400 messages a day) |
 | concurrent replays | four per member, one while its queue recording falls behind; more clients wait |
 | ingress confirmation | within one producer process: a restarted producer starts with nothing pending |
