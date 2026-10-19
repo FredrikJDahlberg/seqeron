@@ -31,8 +31,15 @@ Features
   exactly one per message with no gaps or reuse, and the Raft consensus timestamp in nanoseconds. A 1 Hz
   `ClusterHeartbeat` gives every consumer the same clock, which keeps advancing while producers are silent.
 - **Replication.** The order is decided by Raft consensus: a message is sequenced once a majority of members
-  hold it. Every member then republishes the sequenced stream onto a node-local queue that its own Aeron
-  Archive records, so each member holds a complete, identical copy of history without copying it from a peer.
+  hold it. Every member then republishes the sequenced stream onto node-local queues, one per group, that its
+  own Aeron Archive records, so each member holds a complete, identical copy of history without copying it
+  from a peer.
+- **Application groups.** The topology declares up to 16 groups, and every gateway and application belongs
+  to one. Each group has its own queue, numbered by its own gap-free `groupSeqNo`. A producer chooses, message
+  by message, which groups an application message reaches by setting their bits in its `groupMask`, and every
+  system message reaches every group. An instance reads, replays and relays only its group's queue, so its
+  read cost and recovery time follow the traffic addressed to its group rather than the whole deployment's.
+  The cost is one archive write per queue a message reaches.
 - **Fault tolerance.** The cluster survives the loss of a minority of its members, and a new leader resumes at
   the next `clusterSeqNo`. Producers confirm their messages on the stream and resend what a failover lost, so
   each is sequenced exactly once, in order. Edge producers run as active/hot-standby pairs that the cluster
@@ -43,7 +50,7 @@ Features
 - **Replay and snapshots.** A client recovers by replaying the log, never by state transfer. A Replayer on
   each host serves cold starts and gaps from the local recording, while consumers read the live stream
   untethered, so a slow consumer is dropped and heals by replay instead of holding up the cluster. To restart
-  from a known point rather than `clusterSeqNo` 1, a client takes snapshots of its own state: at each round's
+  from a known point rather than the start of its queue, a client takes snapshots of its own state: at each round's
   cut in the log every instance writes its state to a local file, and the log carries a digest every
   instance checks its file against. The API hides all of it: an application supplies only a listener that
   writes and reads its records, and a directory; the façade takes, confirms and restores the snapshots, and
@@ -69,6 +76,8 @@ Limitations
 - **No cluster snapshots.** Cluster node snapshots are not yet implemented
   ([design](doc/snapshot.md#10-cluster-snapshots)). A node's recovery is a full replay of the Raft log from
   `clusterSeqNo` 1. 
+- **Groups are fixed at the first topology load.** No group can be added, removed or renamed on an existing
+  archive, and no gateway or application can move to another group.
 - **No authentication or encryption.** Anyone who reaches the cluster's ports can submit messages, operator
   events included, and read or delete recordings. Run it inside a trusted network.
 - **seqeron protocol changes are not rolling.** seqeron's own protocol — the message envelope and system
