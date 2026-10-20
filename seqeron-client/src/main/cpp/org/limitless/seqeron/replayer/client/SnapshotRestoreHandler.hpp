@@ -33,10 +33,12 @@ class SnapshotRestoreHandler
     /**
      * Takes one of the source's own records, in order.
      *
-     * @param record      the record, valid only during this call
-     * @param recordIndex 0 for the record after the header
+     * @param record        the record, valid only during this call
+     * @param recordIndex   0 for the record after the header
+     * @param formatVersion the snapshot's, one supportsFormatVersion accepted
      */
-    virtual void onSnapshotRecord(std::span<const std::uint8_t> record, std::int32_t recordIndex) = 0;
+    virtual void onSnapshotRecord(std::span<const std::uint8_t> record, std::int32_t recordIndex,
+                                  std::uint32_t formatVersion) = 0;
 
   protected:
     ~SnapshotRestoreHandler() = default;

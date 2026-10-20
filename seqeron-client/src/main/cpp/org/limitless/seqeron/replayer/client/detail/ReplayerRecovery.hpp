@@ -632,7 +632,7 @@ class ReplayerRecovery
             }
             else
             {
-                m_restoreHandler->onSnapshotRecord(record, m_restoreRecordIndex - 1);
+                m_restoreHandler->onSnapshotRecord(record, m_restoreRecordIndex - 1, m_reader->formatVersion());
             }
             ++m_restoreRecordIndex;
         }

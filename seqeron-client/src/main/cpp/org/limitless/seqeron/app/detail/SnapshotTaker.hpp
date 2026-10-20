@@ -164,10 +164,10 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         return m_publishing;
     }
 
-    // The build reads only the format it writes (§9).
+    // The listener's to decide (§9).
     bool supportsFormatVersion(const std::uint32_t formatVersion) override
     {
-        return formatVersion == m_listener->formatVersion();
+        return m_listener->supportsFormatVersion(formatVersion);
     }
 
     // The source took part at the cut, and its topology row lies before it, never to be dispatched here.
@@ -176,9 +176,10 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         participating(true);
     }
 
-    void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
+    void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex,
+                          const std::uint32_t formatVersion) override
     {
-        m_listener->onRestore(record, recordIndex);
+        m_listener->onRestore(record, recordIndex, formatVersion);
     }
 
     /**

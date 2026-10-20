@@ -118,8 +118,9 @@ public class ReplayerRecoveryTest : IDisposable
             _restored.Add($"header {header.LeadershipTermId} {header.LeaderMemberId}");
         }
 
-        public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex)
+        public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex, long formatVersion)
         {
+            Assert.Equal(1, formatVersion);
             _restored.Add($"{recordIndex} {record.GetLong(0)}");
         }
     }

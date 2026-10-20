@@ -499,8 +499,10 @@ struct Simulation final
         nextRecordIndex = 0;
     }
 
-    void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
+    void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex,
+                          const std::uint32_t formatVersion) override
     {
+        EXPECT_EQ(FORMAT_VERSION, formatVersion) << tag << ": another format's records";
         EXPECT_EQ(nextRecordIndex++, recordIndex) << tag << ": records out of order";
         if (recordIndex == 0)
         {

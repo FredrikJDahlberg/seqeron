@@ -20,7 +20,7 @@ namespace {
 const protocol::SnapshotHeader HEADER{ 3, 1, { { 1, "orders" } }, std::nullopt };
 
 // Encodes `records` records of 1000 bytes, each filled with its index, then answers 0.
-struct State final : SnapshotListener
+struct State : SnapshotListener
 {
     std::uint32_t formatVersion() const override
     {
@@ -45,16 +45,26 @@ struct State final : SnapshotListener
         return 1000;
     }
 
-    void onRestore(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
+    void onRestore(const std::span<const std::uint8_t> record, const std::int32_t recordIndex,
+                   const std::uint32_t formatVersion) override
     {
         restored.push_back(std::to_string(recordIndex) + ":" + std::to_string(record.size()) + ":" +
-                           std::to_string(record[0]));
+                           std::to_string(record[0]) + ":v" + std::to_string(formatVersion));
     }
 
     std::int32_t records = 2;
     int serialized = 0;
     std::int32_t badLength = 0;
     std::vector<std::string> restored;
+};
+
+// Reads format 4 beside its own 5, as a build that changed its format does.
+struct UpgradedState final : State
+{
+    bool supportsFormatVersion(const std::uint32_t formatVersion) const override
+    {
+        return formatVersion == 4 || formatVersion == 5;
+    }
 };
 
 // Records the ends placed; declines once `budget` have gone.
@@ -337,8 +347,23 @@ TEST(SnapshotTaker, ARestoreReadsOnlyThisBuildsFormatMakesTheSourceTakePartAndHa
     taker.onSnapshotHeader(HEADER);
     EXPECT_TRUE(taker.isParticipating()) << "its topology row lies before the cut";
     const std::vector<std::uint8_t> record = filled(1);
-    taker.onSnapshotRecord(record, 0);
-    EXPECT_EQ((std::vector<std::string>{ "0:1000:1" }), t.state.restored);
+    taker.onSnapshotRecord(record, 0, 5);
+    EXPECT_EQ((std::vector<std::string>{ "0:1000:1:v5" }), t.state.restored);
+}
+
+TEST(SnapshotTaker, ARestoreReadsAnOlderFormatItsListenerReadsAndTellsTheListenerWhich)
+{
+    helpers::TempDirectory directory;
+    UpgradedState upgraded;
+    replayer::client::SnapshotStore store{ directory.path() };
+    SnapshotTaker taker{ &upgraded, &store, [] {} };
+    EXPECT_TRUE(taker.supportsFormatVersion(4));
+    EXPECT_FALSE(taker.supportsFormatVersion(3));
+
+    taker.onSnapshotHeader(HEADER);
+    const std::vector<std::uint8_t> record = filled(1);
+    taker.onSnapshotRecord(record, 0, 4);
+    EXPECT_EQ((std::vector<std::string>{ "0:1000:1:v4" }), upgraded.restored);
 }
 
 TEST(SnapshotTaker, SerializingARoundKeepsTheClusterSessionAliveAfterEveryRecord)

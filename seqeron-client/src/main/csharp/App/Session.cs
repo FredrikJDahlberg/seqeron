@@ -335,9 +335,9 @@ internal sealed class Session : IDisposable
             _handler.OnSnapshotHeader(header);
         }
 
-        public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex)
+        public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex, long formatVersion)
         {
-            _handler.OnSnapshotRecord(record, length, recordIndex);
+            _handler.OnSnapshotRecord(record, length, recordIndex, formatVersion);
         }
     }
 

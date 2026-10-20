@@ -29,7 +29,7 @@ class SnapshotTakerTest {
         new SnapshotHeader(3, 1, List.of(new SnapshotHeader.Group(1, "orders")), null);
 
     /** Encodes {@code records} records of 1000 bytes, each filled with its index, then answers 0. */
-    private static final class State implements SnapshotListener {
+    private static class State implements SnapshotListener {
         int records = 2;
         int serialized;
         int badLength;
@@ -56,8 +56,9 @@ class SnapshotTakerTest {
         }
 
         @Override
-        public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex) {
-            restored.add(recordIndex + ":" + length + ":" + buffer.getByte(0));
+        public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex,
+                              final int formatVersion) {
+            restored.add(recordIndex + ":" + length + ":" + buffer.getByte(0) + ":v" + formatVersion);
         }
     }
 
@@ -308,8 +309,26 @@ class SnapshotTakerTest {
 
         taker.onSnapshotHeader(HEADER);
         assertTrue(taker.isParticipating(), "its topology row lies before the cut");
-        taker.onSnapshotRecord(new UnsafeBuffer(filled(1)), 1000, 0);
-        assertEquals(List.of("0:1000:1"), state.restored);
+        taker.onSnapshotRecord(new UnsafeBuffer(filled(1)), 1000, 0, 5);
+        assertEquals(List.of("0:1000:1:v5"), state.restored);
+    }
+
+    @Test
+    @DisplayName("a restore reads an older format its listener still reads, and tells the listener which")
+    void restoreReadsAnOlderFormatTheListenerReads() {
+        final State upgraded = new State() {
+            @Override
+            public boolean supportsFormatVersion(final int formatVersion) {
+                return formatVersion == 4 || formatVersion == 5;
+            }
+        };
+        final SnapshotTaker taker = new SnapshotTaker(upgraded, store(), keepAlive);
+        assertTrue(taker.supportsFormatVersion(4));
+        assertFalse(taker.supportsFormatVersion(3));
+
+        taker.onSnapshotHeader(HEADER);
+        taker.onSnapshotRecord(new UnsafeBuffer(filled(1)), 1000, 0, 4);
+        assertEquals(List.of("0:1000:1:v4"), upgraded.restored);
     }
 
     @Test

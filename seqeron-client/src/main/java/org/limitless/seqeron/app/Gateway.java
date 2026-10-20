@@ -492,8 +492,9 @@ public final class Gateway implements AutoCloseable {
         }
 
         @Override
-        public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
-            snapshots.onSnapshotRecord(record, length, recordIndex);
+        public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex,
+                                     final long formatVersion) {
+            snapshots.onSnapshotRecord(record, length, recordIndex, formatVersion);
         }
     }
 

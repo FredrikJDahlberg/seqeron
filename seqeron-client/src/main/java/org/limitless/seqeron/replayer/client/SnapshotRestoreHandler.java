@@ -16,9 +16,10 @@ public interface SnapshotRestoreHandler {
 
     /**
      * One of the source's own records, in order.
-     * @param record      holding the record from offset 0; valid only during this call
-     * @param length      the record's length
-     * @param recordIndex 0 for the record after the header
+     * @param record        holding the record from offset 0; valid only during this call
+     * @param length        the record's length
+     * @param recordIndex   0 for the record after the header
+     * @param formatVersion the snapshot's, one {@link #supportsFormatVersion} accepted
      */
-    void onSnapshotRecord(DirectBuffer record, int length, int recordIndex);
+    void onSnapshotRecord(DirectBuffer record, int length, int recordIndex, long formatVersion);
 }

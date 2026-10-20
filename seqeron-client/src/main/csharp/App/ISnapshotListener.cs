@@ -11,9 +11,19 @@ namespace Org.Limitless.Seqeron.App;
 public interface ISnapshotListener
 {
     /// <summary>The version of the record format <see cref="OnSnapshot"/> writes, carried in
-    /// <c>SnapshotEnd.formatVersion</c> and opaque to seqeron. A restore stops on one its build does not
-    /// support.</summary>
+    /// <c>SnapshotEnd.formatVersion</c> and opaque to seqeron.</summary>
     int FormatVersion { get; }
+
+    /// <summary>Whether <see cref="OnRestore"/> reads records of <paramref name="formatVersion"/>. A restore stops
+    /// on a snapshot this refuses (doc/snapshot.md §9), so a build that changes <see cref="FormatVersion"/> keeps
+    /// the formats it replaces readable here until no instance holds a file of them. A subclass that overrides it
+    /// names <see cref="ISnapshotListener"/> among its bases again, or this default is still the one called.</summary>
+    /// <param name="formatVersion">the snapshot's, as its writer's <see cref="FormatVersion"/> returned it</param>
+    /// <returns>by default, whether it is this build's own</returns>
+    bool SupportsFormatVersion(int formatVersion)
+    {
+        return formatVersion == FormatVersion;
+    }
 
     /// <summary>
     /// Encodes the next record of this instance's state as of the round's cut — every frame up to the
@@ -36,5 +46,6 @@ public interface ISnapshotListener
     /// <param name="length">the record's length</param>
     /// <param name="recordIndex">0 on the first record, which is where the state is cleared: a restore that starts
     /// over begins again at 0</param>
-    void OnRestore(IDirectBuffer buffer, int length, int recordIndex);
+    /// <param name="formatVersion">the snapshot's, one <see cref="SupportsFormatVersion"/> accepted</param>
+    void OnRestore(IDirectBuffer buffer, int length, int recordIndex, int formatVersion);
 }

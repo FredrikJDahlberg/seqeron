@@ -450,9 +450,9 @@ public sealed class Gateway : IDisposable
             _gateway._snapshots.OnSnapshotHeader(header);
         }
 
-        public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex)
+        public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex, long formatVersion)
         {
-            _gateway._snapshots.OnSnapshotRecord(record, length, recordIndex);
+            _gateway._snapshots.OnSnapshotRecord(record, length, recordIndex, formatVersion);
         }
     }
 

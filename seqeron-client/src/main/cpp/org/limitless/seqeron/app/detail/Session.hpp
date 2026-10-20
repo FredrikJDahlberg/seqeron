@@ -320,9 +320,10 @@ class Session
             m_handler->onSnapshotHeader(header);
         }
 
-        void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
+        void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex,
+                              const std::uint32_t formatVersion) override
         {
-            m_handler->onSnapshotRecord(record, recordIndex);
+            m_handler->onSnapshotRecord(record, recordIndex, formatVersion);
         }
 
         replayer::client::SnapshotRestoreHandler* m_handler = nullptr;

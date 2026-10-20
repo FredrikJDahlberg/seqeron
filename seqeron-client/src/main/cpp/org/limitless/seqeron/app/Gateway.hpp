@@ -570,9 +570,10 @@ class Gateway
             m_gateway.m_snapshots.onSnapshotHeader(header);
         }
 
-        void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
+        void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex,
+                              const std::uint32_t formatVersion) override
         {
-            m_gateway.m_snapshots.onSnapshotRecord(record, recordIndex);
+            m_gateway.m_snapshots.onSnapshotRecord(record, recordIndex, formatVersion);
         }
 
       private:

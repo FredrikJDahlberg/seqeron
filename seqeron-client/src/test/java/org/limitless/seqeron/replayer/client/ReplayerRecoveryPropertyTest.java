@@ -456,7 +456,9 @@ class ReplayerRecoveryPropertyTest {
         }
 
         @Override
-        public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
+        public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex,
+                                     final long formatVersion) {
+            assertEquals(FORMAT_VERSION, formatVersion, tag + ": another format's records");
             assertEquals(nextRecordIndex++, recordIndex, tag + ": records out of order");
             if (recordIndex == 0) {
                 heartbeats = record.getLong(0);

@@ -59,7 +59,7 @@ That holds only if the snapshot is itself versioned like a payload (§3.1), and 
 
 Today a record is opaque bytes after seqeron's header record ([`snapshot.md`](snapshot.md) §6), and one
 `formatVersion` covers the whole file: only the listener can read it, and a restore stops on any version
-its build does not support.
+its listener does not read.
 
 Proposed: every application record is a message of a declared schema, encoded with a `MessageHeader`
 exactly as a payload is, under a `payloadId` the topology's `<protocols>` section registers (spec §6.3).
@@ -346,7 +346,7 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
 | piece | status |
 | --- | --- |
 | opaque payloads, per-application versioning (spec **V-2**) | implemented |
-| snapshot rounds, confirmation, restore, `formatVersion` checked on restore | implemented ([`snapshot.md`](snapshot.md)) |
+| snapshot rounds, confirmation, restore, `formatVersion` checked on restore by the listener | implemented ([`snapshot.md`](snapshot.md)) |
 | operator-only rounds (`interval="0"`, `clusterctl request-snapshot`) | implemented |
 | snapshots required cluster-wide | proposed: needs a topology attribute and cluster snapshots |
 | cluster snapshots and the floor `F` | proposed ([`snapshot.md`](snapshot.md) §10) |

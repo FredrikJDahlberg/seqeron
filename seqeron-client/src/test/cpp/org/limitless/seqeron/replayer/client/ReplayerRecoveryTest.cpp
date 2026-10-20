@@ -1445,8 +1445,10 @@ struct RestoreRecorder final : SnapshotRestoreHandler
                            std::to_string(header.leaderMemberId));
     }
 
-    void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
+    void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex,
+                          const std::uint32_t formatVersion) override
     {
+        EXPECT_EQ(1U, formatVersion);
         restored.push_back(std::to_string(recordIndex) + " " + std::to_string(rf::valueOf(record.data())));
     }
 
