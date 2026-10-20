@@ -170,8 +170,9 @@ final class Session implements AutoCloseable {
             }
 
             @Override
-            public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
-                handler.onSnapshotRecord(record, length, recordIndex);
+            public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex,
+                                         final long formatVersion) {
+                handler.onSnapshotRecord(record, length, recordIndex, formatVersion);
             }
         });
     }

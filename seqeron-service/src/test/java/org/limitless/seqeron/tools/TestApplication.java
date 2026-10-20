@@ -177,7 +177,7 @@ public final class TestApplication implements Application.Listener, SnapshotList
     }
 
     @Override
-    public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex) {
+    public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex, final int formatVersion) {
         sequencedMarkers = buffer.getLong(0);
         digest = buffer.getLong(Long.BYTES);
     }

@@ -18,9 +18,22 @@ class SnapshotListener
     /**
      * Names the record format onSnapshot writes, carried in SnapshotEnd::formatVersion and opaque to seqeron.
      *
-     * @return the format's version; a restore stops on one its build does not write
+     * @return the format's version
      */
     virtual std::uint32_t formatVersion() const = 0;
+
+    /**
+     * Says whether onRestore reads records of a format. A restore stops on a snapshot this refuses
+     * (doc/snapshot.md §9), so a build that changes formatVersion keeps the formats it replaces readable here
+     * until no instance holds a file of them.
+     *
+     * @param formatVersion the snapshot's, as its writer's formatVersion returned it
+     * @return by default, whether it is this build's own
+     */
+    virtual bool supportsFormatVersion(const std::uint32_t formatVersion) const
+    {
+        return formatVersion == this->formatVersion();
+    }
 
     /**
      * Encodes the next record of this instance's state as of the round's cut — every frame up to the
@@ -40,11 +53,13 @@ class SnapshotListener
      * Decodes the next record of the snapshot this instance restores from, in the order onSnapshot encoded
      * them, before any frame after its cut is dispatched. A snapshot of no records makes no call.
      *
-     * @param record      the record, valid only during this call
-     * @param recordIndex 0 on the first record, which is where the state is cleared: a restore that starts
-     *                    over begins again at 0
+     * @param record        the record, valid only during this call
+     * @param recordIndex   0 on the first record, which is where the state is cleared: a restore that starts
+     *                      over begins again at 0
+     * @param formatVersion the snapshot's, one supportsFormatVersion accepted
      */
-    virtual void onRestore(std::span<const std::uint8_t> record, std::int32_t recordIndex) = 0;
+    virtual void onRestore(std::span<const std::uint8_t> record, std::int32_t recordIndex,
+                           std::uint32_t formatVersion) = 0;
 
   protected:
     ~SnapshotListener() = default;

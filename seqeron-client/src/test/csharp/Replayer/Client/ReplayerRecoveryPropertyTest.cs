@@ -491,8 +491,9 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             _nextRecordIndex = 0;
         }
 
-        public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex)
+        public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex, long formatVersion)
         {
+            Assert.True(formatVersion == FormatVersion, _tag + ": another format's records");
             Assert.True(_nextRecordIndex++ == recordIndex, _tag + ": records out of order");
             if (recordIndex == 0)
             {

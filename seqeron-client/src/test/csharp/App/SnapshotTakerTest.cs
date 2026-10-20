@@ -21,7 +21,7 @@ public class SnapshotTakerTest : IDisposable
         new SnapshotHeader(3, 1, new[] { new SnapshotHeader.Group(1, "orders") }, null);
 
     // Encodes Records records of 1000 bytes, each filled with its index, then answers 0.
-    private sealed class State : ISnapshotListener
+    private class State : ISnapshotListener
     {
         public int Records = 2;
         public int Serialized;
@@ -48,9 +48,18 @@ public class SnapshotTakerTest : IDisposable
             return 1000;
         }
 
-        public void OnRestore(IDirectBuffer buffer, int length, int recordIndex)
+        public void OnRestore(IDirectBuffer buffer, int length, int recordIndex, int formatVersion)
         {
-            Restored.Add($"{recordIndex}:{length}:{buffer.GetByte(0)}");
+            Restored.Add($"{recordIndex}:{length}:{buffer.GetByte(0)}:v{formatVersion}");
+        }
+    }
+
+    // Reads format 4 beside its own 5, as a build that changed its format does.
+    private sealed class UpgradedState : State, ISnapshotListener
+    {
+        public bool SupportsFormatVersion(int formatVersion)
+        {
+            return formatVersion == 4 || formatVersion == 5;
         }
     }
 
@@ -278,8 +287,22 @@ public class SnapshotTakerTest : IDisposable
         taker.OnSnapshotHeader(Header);
         Assert.True(taker.IsParticipating, "its topology row lies before the cut");
         using var record = new UnsafeBuffer(Filled(1));
-        taker.OnSnapshotRecord(record, 1000, 0);
-        Assert.Equal(new List<string> { "0:1000:1" }, _state.Restored);
+        taker.OnSnapshotRecord(record, 1000, 0, 5);
+        Assert.Equal(new List<string> { "0:1000:1:v5" }, _state.Restored);
+    }
+
+    [Fact(DisplayName = "a restore reads an older format its listener still reads, and tells the listener which")]
+    public void RestoreReadsAnOlderFormatTheListenerReads()
+    {
+        var upgraded = new UpgradedState();
+        var taker = new SnapshotTaker(upgraded, Store(), KeepAlive);
+        Assert.True(taker.SupportsFormatVersion(4));
+        Assert.False(taker.SupportsFormatVersion(3));
+
+        taker.OnSnapshotHeader(Header);
+        using var record = new UnsafeBuffer(Filled(1));
+        taker.OnSnapshotRecord(record, 1000, 0, 4);
+        Assert.Equal(new List<string> { "0:1000:1:v4" }, upgraded.Restored);
     }
 
     [Fact(DisplayName = "serializing a round keeps the cluster session alive after every record")]

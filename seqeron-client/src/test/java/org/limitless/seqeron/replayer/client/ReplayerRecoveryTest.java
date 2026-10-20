@@ -1368,7 +1368,9 @@ class ReplayerRecoveryTest {
             }
 
             @Override
-            public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
+            public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex,
+                                         final long formatVersion) {
+                assertEquals(1, formatVersion);
                 restored.add(recordIndex + " " + record.getLong(0));
             }
         });

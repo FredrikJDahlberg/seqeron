@@ -595,7 +595,8 @@ internal sealed class ReplayerRecovery
             }
             else
             {
-                _restoreHandler.OnSnapshotRecord(_restoreRecord, length, _restoreRecordIndex - 1);
+                _restoreHandler.OnSnapshotRecord(_restoreRecord, length, _restoreRecordIndex - 1,
+                                                 (uint)_reader.FormatVersion);
             }
             _restoreRecordIndex++;
         }

@@ -145,10 +145,10 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
         return publishing;
     }
 
-    /** The build reads only the format it writes (§9). */
+    /** The listener's to decide (§9). */
     @Override
     public boolean supportsFormatVersion(final long formatVersion) {
-        return formatVersion == (listener.formatVersion() & 0xFFFF_FFFFL);
+        return listener.supportsFormatVersion((int)formatVersion);
     }
 
     /** The source took part at the cut, and its topology row lies before it, never to be dispatched here. */
@@ -158,8 +158,9 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     }
 
     @Override
-    public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
-        listener.onRestore(record, length, recordIndex);
+    public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex,
+                                 final long formatVersion) {
+        listener.onRestore(record, length, recordIndex, (int)formatVersion);
     }
 
     /**

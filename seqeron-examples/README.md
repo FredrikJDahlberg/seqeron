@@ -100,8 +100,8 @@ against `app` alone and its imports and includes are checked the same way.
 `SnapshotEnd` of the newest round it holds a file for, and checks the file against it. On a match it calls
 `onRestore` with each record in order, then resumes the queue at `R + 1`. A file the log does not confirm, or
 that does not match its end, is passed over for an older one; with none left, it replays from `clusterSeqNo` 1
-as any other replica does. A file whose records are damaged, or whose `formatVersion` the build does not
-support, fences it with `SNAPSHOT_UNRESTORABLE`.
+as any other replica does. A file whose records are damaged, or whose `formatVersion` the listener does not
+read, fences it with `SNAPSHOT_UNRESTORABLE`.
 
 **What the listener owes.** Step 4 holds only if every replica writes the same bytes for the same state:
 
@@ -112,8 +112,10 @@ support, fences it with `SNAPSHOT_UNRESTORABLE`.
 - **Records that fit.** Record 0 is the counters (applied and rejected transfers), then one record per
   account. A record is at most 65535 bytes, but there may be any number of them, so the state is bounded by
   the disk rather than by a buffer.
-- **A `formatVersion`.** It is carried in `SnapshotEnd`, and a restore stops on a file of a version the build
-  does not know. Raise it when the record layout changes.
+- **A `formatVersion`.** It is carried in `SnapshotEnd`, and a restore stops on a file of a version
+  `supportsFormatVersion` refuses, by default any but the build's own. Raise it when the record layout
+  changes, and override `supportsFormatVersion` to accept the old one while files of it remain;
+  `onRestore` is told which it is reading.
 - **`onRestore` at `recordIndex` 0 replaces the state.** A restore that falls back to an older file starts
   over at 0.
 

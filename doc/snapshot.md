@@ -254,7 +254,8 @@ A cold start of an instance with a `SnapshotListener` restores in `ReplayerRecov
 
 1. **Choose.** Take the newest confirmed file in the snapshot directory. One with no trailer gives way to the
    next older; with none, recover from the queue's first frame, `groupSeqNo` 1.
-2. **Check the format.** If `formatVersion` is one this build does not support, stop.
+2. **Check the format.** If the listener's `supportsFormatVersion` refuses the file's `formatVersion`, stop.
+   By default it accepts only the build's own (§9).
 3. **Check the cut.** Request a replay of the recording from the file's `cutPosition`. If its first frame is
    the frame the file names, `clusterSeqNo` `cutClusterSeqNo` stamped `cutTimestamp`, the file is this log's:
    close the replay and read it. If it is any other frame, or the Replayer refuses the position (spec R-2),
@@ -267,8 +268,9 @@ A cold start of an instance with a `SnapshotListener` restores in `ReplayerRecov
    receiver's current leader and its term confirmed ingress's, as the last `LeadershipChanged` before `R`
    would have made them; the source takes part in rounds, as its topology row before `R` said; its
    groups resolve the producer's group names, as the `GroupsRegistered` before `R`
-   would have; and a `Gateway`'s election state is set from it. Every later record goes to the listener's `onRestore`. Records
-   that do not match the trailer are a damaged file, and the instance stops.
+   would have; and a `Gateway`'s election state is set from it. Every later record goes to the listener's
+   `onRestore`, with the file's `formatVersion`. Records that do not match the trailer are a damaged file,
+   and the instance stops.
 5. **Resume** at `cutPosition` with `clusterSeqNo` `R` as the anchor, through the ordinary resume path (spec
    R-1, `requestResume`). The `SnapshotStarted` frame is the anchor and is dropped as a duplicate, so
    dispatch starts at the frame after it on the queue, and the anchor's `groupSeqNo` is where the
@@ -298,10 +300,19 @@ The scheme is sound only if every instance of a source agrees. Two of spec §16'
 ## 9. Versioning
 
 Every instance of a source runs the same build, and so writes the same `formatVersion`. A format change is
-therefore a coordinated upgrade of every instance, and the restore stops on a format its build does not
-support (§7 step 2). Protocol upgrades that change a source's format while it runs are not designed yet;
-they will build on snapshots, and the field and the stop are already in place, so that design needs no
-change to schema 210 (spec V-3). [`upgrades.md`](upgrades.md) proposes one.
+therefore a coordinated upgrade: every instance moves to the new build between two rounds, since one that
+writes another format than its source's publisher is fenced at the next round whenever its bytes differ
+(A-7).
+
+The restore reads what the listener says it reads (§7 step 2). A build that changes its format keeps the
+formats it replaces readable: its `supportsFormatVersion` accepts them, and `onRestore`, which is given the
+file's `formatVersion`, decodes them. Its instances then restore the files the previous build confirmed, and
+write the new format from their first round. A format the listener refuses stops the restore, so the old
+formats stay readable until no instance holds a file of them.
+
+Protocol upgrades that change a source's format while it runs are not designed yet; they will build on
+snapshots, and the field and the stop are already in place, so that design needs no change to schema 210
+(spec V-3). [`upgrades.md`](upgrades.md) proposes one.
 
 ## 10. Cluster snapshots
 
@@ -336,7 +347,7 @@ is history, which a snapshot cannot regenerate, so the recording outlives the re
 | **contents** | Every field of `Sequencer` the log sets: `clusterSeqNo`, `rejectedFrameCount`, the gateway rows, each logical gateway's designated instance, the designations to publish behind the current frame, the pending activations and their deadlines, the bound sessions, the two bootstrap flags, and the policy, the last round with the timestamp of its start, and an unanswered `SnapshotRequested`. Aeron's own snapshot carries the sessions and the heartbeat timer. |
 | **format** | A schema of its own, Java only: a begin message with `formatVersion` and the scalars, one message per entry, maps in key order, and an end message with the counts. Every member writes the same bytes at the same log position. A restored hash map's capacity, and so its iteration order, need not be the original's, so no frame may depend on a map's iteration order. |
 | **test** | `SequencerSnapshotTest` snapshots a `Sequencer` at a random point of a seeded frame sequence, restores a second from it, and feeds both the rest: every frame they encode, and every field, must match. The sequence includes deposed sessions, pending activations and requested rounds, so a field the snapshot misses fails it. |
-| **contract** | `SequencerSnapshot`, a package-private interface in `sequencer` that `Sequencer` implements: `formatVersion`, `onSnapshot(buffer, recordIndex)` and `onRestore(buffer, length, recordIndex)`, the shape of `SnapshotListener`. `SequencerService` drives it from `onTakeSnapshot` and `onStart`. The snapshot point is Aeron's, not a round's cut. |
+| **contract** | `SequencerSnapshot`, a package-private interface in `sequencer` that `Sequencer` implements: `formatVersion`, `onSnapshot(buffer, recordIndex)` and `onRestore(buffer, length, recordIndex, formatVersion)`, the shape of `SnapshotListener`. `SequencerService` drives it from `onTakeSnapshot` and `onStart`. The snapshot point is Aeron's, not a round's cut. |
 | **when** | The leader's service sets the `ClusterControl` toggle to `SNAPSHOT` once the commit position is `X` past the last snapshot's log position in Aeron's recording log, so a new leader carries on where the last one stopped. It asks only while `cluster.role()` is `LEADER`: the consensus module reads the toggle only on the leader and outside an election, so a request set elsewhere would wait and take an extra snapshot once that member leads. The toggle switches only from `NEUTRAL`, by compare-and-set, so a request that meets an operator's `clusterctl snapshot`, or a snapshot in progress, fails and is retried at the next check. `clusterctl snapshot` is allowed, and `clusterctl shutdown` uses `SHUTDOWN`. |
 | **restore** | `onStart` reads the records through a fragment assembler, and refuses a foreign schema, a newer version or a count that differs from the end's, as it refuses any snapshot today. |
 | **version** | Aeron's `appVersion`, on the consensus module's context and the service container's, has `LOG_VERSION` as its major: a seqeron constant raised by every change spec V-3 makes a purge, and by a snapshot format the next release cannot read. Schema 210's own `version` stays 0 (spec §8), so it cannot serve. Aeron compares majors when it loads a snapshot and when it replays a leadership term from the log, so a member started on an archive V-3 says to purge stops with "incompatible version" rather than sequence another history. `LOG_VERSION` starts at 1, and seqeron's validator also accepts Aeron's default major 0, which every earlier log carries, until the first raise, so the release that introduces it needs no purge. |

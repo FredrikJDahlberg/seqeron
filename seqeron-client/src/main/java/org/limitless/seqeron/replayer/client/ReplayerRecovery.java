@@ -574,7 +574,8 @@ final class ReplayerRecovery {
                 }
                 restoreHandler.onSnapshotHeader(restoredHeader);
             } else {
-                restoreHandler.onSnapshotRecord(restoreRecord, length, restoreRecordIndex - 1);
+                restoreHandler.onSnapshotRecord(restoreRecord, length, restoreRecordIndex - 1,
+                                                reader.formatVersion() & 0xFFFF_FFFFL);
             }
             restoreRecordIndex++;
         }

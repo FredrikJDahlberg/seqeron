@@ -41,7 +41,10 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
     private static final long OPENING_BALANCE = 1000;
     private static final int MAX_AMOUNT = 400;
 
-    /** Raised when a record's layout changes; a restore stops on a file of another one. */
+    /**
+     * Raised when a record's layout changes. A restore stops on a file of another one, unless {@code
+     * supportsFormatVersion} is overridden to accept it and {@code onRestore} reads it.
+     */
     private static final int FORMAT_VERSION = 1;
 
     private static final long TRANSFER_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1);
@@ -184,7 +187,7 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
     }
 
     @Override
-    public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex) {
+    public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex, final int formatVersion) {
         if (recordIndex == 0) {
             applied = buffer.getLong(0, ByteOrder.LITTLE_ENDIAN);
             rejected = buffer.getLong(Long.BYTES, ByteOrder.LITTLE_ENDIAN);

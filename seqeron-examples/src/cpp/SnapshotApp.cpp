@@ -53,7 +53,8 @@ constexpr std::int32_t ACCOUNTS = 8;
 constexpr std::int64_t OPENING_BALANCE = 1000;
 constexpr std::int64_t MAX_AMOUNT = 400;
 
-// Raised when a record's layout changes; a restore stops on a file of another one.
+// Raised when a record's layout changes. A restore stops on a file of another one, unless supportsFormatVersion is
+// overridden to accept it and onRestore reads it.
 constexpr std::uint32_t FORMAT_VERSION = 1;
 
 constexpr std::int64_t TRANSFER_INTERVAL_NS = 1'000'000'000;
@@ -148,7 +149,7 @@ struct Ledger final : app::SnapshotListener
         return sizeof(std::int64_t);
     }
 
-    void onRestore(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
+    void onRestore(const std::span<const std::uint8_t> record, const std::int32_t recordIndex, std::uint32_t) override
     {
         if (recordIndex == 0)
         {

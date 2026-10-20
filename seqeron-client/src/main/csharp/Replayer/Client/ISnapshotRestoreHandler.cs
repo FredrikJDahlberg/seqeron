@@ -22,5 +22,6 @@ public interface ISnapshotRestoreHandler
     /// <param name="record">holding the record from offset 0; valid only during this call</param>
     /// <param name="length">the record's length</param>
     /// <param name="recordIndex">0 for the record after the header</param>
-    void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex);
+    /// <param name="formatVersion">the snapshot's, one <see cref="SupportsFormatVersion"/> accepted</param>
+    void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex, long formatVersion);
 }

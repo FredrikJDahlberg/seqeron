@@ -142,10 +142,10 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
 
     internal bool IsPublishing => _publishing;
 
-    /// <summary>The build reads only the format it writes (§9).</summary>
+    /// <summary>The listener's to decide (§9).</summary>
     public bool SupportsFormatVersion(long formatVersion)
     {
-        return formatVersion == (uint)_listener.FormatVersion;
+        return _listener.SupportsFormatVersion((int)formatVersion);
     }
 
     /// <summary>The source took part at the cut, and its topology row lies before it, never to be dispatched
@@ -156,9 +156,9 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     }
 
     /// <inheritdoc/>
-    public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex)
+    public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex, long formatVersion)
     {
-        _listener.OnRestore(record, length, recordIndex);
+        _listener.OnRestore(record, length, recordIndex, (int)formatVersion);
     }
 
     /// <summary>Places the end of the round being published. A declined end is placed again on the next

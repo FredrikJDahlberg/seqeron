@@ -442,7 +442,8 @@ public final class TestGateway {
         }
 
         @Override
-        public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex) {
+        public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex,
+                              final int formatVersion) {
             if (recordIndex == 0) {
                 openConnections.clear();
                 sequencedMarkers = buffer.getLong(0);

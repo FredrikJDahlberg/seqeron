@@ -12,9 +12,21 @@ import org.agrona.MutableDirectBuffer;
 public interface SnapshotListener {
     /**
      * The version of the record format {@link #onSnapshot} writes, carried in {@code SnapshotEnd.formatVersion}
-     * and opaque to seqeron. A restore stops on one its build does not support.
+     * and opaque to seqeron.
      */
     int formatVersion();
+
+    /**
+     * Whether {@link #onRestore} reads records of {@code formatVersion}. A restore stops on a snapshot this refuses
+     * (doc/snapshot.md §9), so a build that changes {@link #formatVersion} keeps the formats it replaces readable
+     * here until no instance holds a file of them.
+     *
+     * @param formatVersion the snapshot's, as its writer's {@link #formatVersion} returned it
+     * @return by default, whether it is this build's own
+     */
+    default boolean supportsFormatVersion(final int formatVersion) {
+        return formatVersion == formatVersion();
+    }
 
     /**
      * Encodes the next record of this instance's state as of the round's cut — every frame up to the {@code
@@ -34,10 +46,11 @@ public interface SnapshotListener {
      * Decodes the next record of the snapshot this instance restores from, in the order {@link #onSnapshot}
      * encoded them, before any frame after its cut is dispatched. A snapshot of no records makes no call.
      *
-     * @param buffer      holding the record from offset 0; valid only during this call
-     * @param length      the record's length
-     * @param recordIndex 0 on the first record, which is where the state is cleared: a restore that starts
-     *                    over begins again at 0
+     * @param buffer        holding the record from offset 0; valid only during this call
+     * @param length        the record's length
+     * @param recordIndex   0 on the first record, which is where the state is cleared: a restore that starts
+     *                      over begins again at 0
+     * @param formatVersion the snapshot's, one {@link #supportsFormatVersion} accepted
      */
-    void onRestore(DirectBuffer buffer, int length, int recordIndex);
+    void onRestore(DirectBuffer buffer, int length, int recordIndex, int formatVersion);
 }
