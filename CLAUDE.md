@@ -380,9 +380,9 @@ there through its façade's `SnapshotListener` into a file in its own directory 
 and the one that may publish submits the round's `SnapshotEnd` — record count, length, CRC — the only snapshot
 frame a producer sends. Every instance compares its own serialization with the sequenced end and fences on a
 difference (spec §16 A-6, A-7); a match confirms its file, which only then is named `<round>.snapshot` and
-replaces every older one. A starting client restores in `ReplayerRecovery` from its newest confirmed file once a
-replay from the file's cut position opens on that cut — a file from a purged log fails it — then resumes after
-the cut; an instance with no such file replays its queue from `groupSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
+replaces every older one but the confirmed round before it. A starting client restores in `ReplayerRecovery` from its
+newest confirmed file whose records match its trailer once a replay from the file's cut position opens on that cut —
+a file from a purged log fails it — then resumes after the cut; an instance with no such file replays its queue from `groupSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,

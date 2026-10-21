@@ -149,10 +149,10 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         m_queueSubRegId = m_controlSubRegId = m_requestPubRegId = m_recoveryStalledCounterRegId = -1;
     }
 
-    // One duty-cycle iteration; returns fragments consumed. Drains control, rides an attached replay image,
-    // and always drains and dispatches the queue: ReplayerRecovery's contiguity check decides what a queue frame
-    // is worth mid-walk. Throws std::runtime_error once this node's recording does not hold what recovery asked of
-    // it.
+    // One duty-cycle iteration; returns fragments consumed and snapshot records restored. Drains control, rides an
+    // attached replay image, and always drains and dispatches the queue: ReplayerRecovery's contiguity check decides
+    // what a queue frame is worth mid-walk. Throws std::runtime_error once this node's recording does not hold what
+    // recovery asked of it.
     int poll()
     {
         resolveResources();
@@ -169,7 +169,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
 
         // The request publication's connect is a short race, so retry every poll while it is pending.
         const bool requestPubPending = m_requestPubRegId >= 0 && (!m_requestPub || !m_requestPub->isConnected());
-        m_recovery.doTimers(requestPubPending);
+        work += m_recovery.doTimers(requestPubPending);
 
         if (m_recovery.replaySessionId() >= 0)
         {

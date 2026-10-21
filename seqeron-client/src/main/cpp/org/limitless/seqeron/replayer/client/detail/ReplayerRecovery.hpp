@@ -115,7 +115,8 @@ class RetainBlockPool
 // Given a snapshot store (restoreFrom), a cold start first restores the newest snapshot it holds (doc/snapshot.md
 // §7): it replays the recording from the snapshot's cut, and if the frame there is the round's SnapshotStarted the
 // file recorded, reads the file's records into the handler, dispatching nothing, then resumes at the cut with it as
-// the anchor. A file whose cut the recording does not hold gives way to the next older one, and the last to a walk.
+// the anchor. A file whose cut the recording does not hold, or whose records do not match its trailer, gives way to
+// the next older one, and the last to a walk.
 class ReplayerRecovery
 {
   public:
@@ -189,6 +190,7 @@ class ReplayerRecovery
     SnapshotStore* m_store = nullptr; // where the snapshot to restore is, or nullptr for none
     bool m_checkingCut = false;       // replaying from the chosen file's cut, to see that the recording holds it
     bool m_restoring = false;         // reading the chosen file's records; nothing is dispatched until its last
+    bool m_recordsChecked = false;    // they match its trailer, so the restore reads them again, into the handler
     std::optional<SnapshotStore::Reader> m_reader;
     std::int32_t m_restoreRecordIndex = 0;
     std::int64_t m_snapshotRound = 0;                         // the chosen snapshot's round
@@ -409,12 +411,10 @@ class ReplayerRecovery
         }
     }
 
-    void doTimers(const bool requestPublicationPending)
+    // Returns the records the restore read, the duty cycle's work; timers are none.
+    std::int32_t doTimers(const bool requestPublicationPending)
     {
-        if (m_restoring)
-        {
-            restoreRecords();
-        }
+        const std::int32_t records = m_restoring ? restoreRecords() : 0;
         const std::int64_t nowMs = m_actions.nowMs();
         if (m_awaitingReplay && (requestPublicationPending || (nowMs - m_lastRequestMs) > RESEND_INTERVAL_MS))
         {
@@ -425,6 +425,7 @@ class ReplayerRecovery
         {
             onReplayStalled();
         }
+        return records;
     }
 
     bool checkRecoveryProgress()
@@ -590,6 +591,7 @@ class ReplayerRecovery
             return;
         }
         m_restoring = true;
+        m_recordsChecked = false;
         m_restoreRecordIndex = 0;
         m_restoredHeader.reset();
         util::Logger::info(util::component::ReplayerStreamReceiver,
@@ -598,11 +600,15 @@ class ReplayerRecovery
                            static_cast<long long>(m_reader->cutPosition()));
     }
 
-    // The next records of the restore, at most MAX_RESTORE_RECORDS_PER_CYCLE. They match the end the log holds by
-    // the file's trailer, so records that fail it are a damaged file.
-    void restoreRecords()
+    // The next records of the restore, at most MAX_RESTORE_RECORDS_PER_CYCLE, once checkRecords has matched them to
+    // the file's trailer; records that fail it now changed underneath the restore. Returns how many it passed on.
+    std::int32_t restoreRecords()
     {
         m_noProgressSinceMs = 0;
+        if (!m_recordsChecked)
+        {
+            return checkRecords();
+        }
         std::span<const std::uint8_t> record;
         for (int i = 0; i < MAX_RESTORE_RECORDS_PER_CYCLE; ++i)
         {
@@ -610,13 +616,13 @@ class ReplayerRecovery
             if (length == SnapshotStore::Reader::END)
             {
                 completeRestore();
-                return;
+                return i;
             }
             if (length == SnapshotStore::Reader::DAMAGED)
             {
                 failRestore("round " + std::to_string(m_snapshotRound) +
                             "'s snapshot file is damaged: its records do not match its trailer");
-                return;
+                return i;
             }
             if (m_restoreRecordIndex == 0)
             {
@@ -626,7 +632,7 @@ class ReplayerRecovery
                     failRestore("round " + std::to_string(m_snapshotRound) + " has a header of version " +
                                 std::to_string(protocol::SnapshotHeader::version(record.data(), record.size())) +
                                 ", which this build does not read");
-                    return;
+                    return i;
                 }
                 m_restoreHandler->onSnapshotHeader(*m_restoredHeader);
             }
@@ -636,6 +642,37 @@ class ReplayerRecovery
             }
             ++m_restoreRecordIndex;
         }
+        return MAX_RESTORE_RECORDS_PER_CYCLE;
+    }
+
+    // Reads the next records of the chosen file without passing them on, at most MAX_RESTORE_RECORDS_PER_CYCLE, so a
+    // damaged file gives way to an older one before the handler has seen any. Returns how many it read.
+    std::int32_t checkRecords()
+    {
+        std::span<const std::uint8_t> record;
+        std::int32_t records = 0;
+        std::int32_t length = 0;
+        while (records < MAX_RESTORE_RECORDS_PER_CYCLE && (length = m_reader->next(record)) >= 0)
+        {
+            ++records;
+        }
+        if (length >= 0)
+        {
+            return records;
+        }
+        m_reader.reset();
+        if (length == SnapshotStore::Reader::END && (m_reader = m_store->open(m_snapshotRound)))
+        {
+            m_recordsChecked = true;
+            return records;
+        }
+        m_restoring = false;
+        util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::SnapshotStoreFailed,
+                           "round %lld's snapshot file is damaged: its records do not match its trailer, or it "
+                           "cannot be opened again; trying an older snapshot",
+                           static_cast<long long>(m_snapshotRound));
+        chooseBelow(m_snapshotRound);
+        return records;
     }
 
     // The snapshot is restored: the state is that after the cut, and so is the leadership its header carries.

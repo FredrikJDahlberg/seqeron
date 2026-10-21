@@ -1571,6 +1571,10 @@ TEST(ReplayerRecoveryRestore, ASnapshotWhoseCutTheRecordingHoldsIsRestoredFromIt
     EXPECT_TRUE(r.dispatched.empty()) << "the cut is not dispatched";
 
     r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+    EXPECT_TRUE(r.handler.restored.empty()) << "the records are checked against the trailer before any is passed on";
+    EXPECT_TRUE(r.client.recovery.isRestoring());
+
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
 
     EXPECT_EQ((std::vector<std::string>{ "header 4 2", "0 7" }), r.handler.restored);
     EXPECT_TRUE(r.dispatched.empty());
@@ -1595,6 +1599,7 @@ TEST(ReplayerRecoveryRestore, AfterARestoreTheQueuesContinuityResumesAtTheCutFra
     attachRestoreReplay(r.client, 21);
     deliverReplayFrame(r.client, rf::started(CUT, 4, 2, CUT * 1000), 4); // the queue's fourth frame
     r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
 
     attachRestoreReplay(r.client, 22);
     deliverReplayFrame(r.client, rf::started(CUT, 4, 2, CUT * 1000), 4);
@@ -1617,7 +1622,8 @@ TEST(ReplayerRecoveryRestore, AReplayOfTheCutThatStopsAdvancingIsRequestedAgainA
     EXPECT_TRUE(r.client.recovery.isRestoring());
 }
 
-TEST(ReplayerRecoveryRestore, ARestoreReadsABoundedNumberOfRecordsPerDutyCycleHoldingTheQueueUntilItsLast)
+TEST(ReplayerRecoveryRestore,
+     ARestoreReadsABoundedNumberOfRecordsPerDutyCycleCountedAsItsWorkHoldingTheQueueUntilItsLast)
 {
     Restoring r;
     std::vector<rf::Bytes> records{ SNAPSHOT_HEADER };
@@ -1627,18 +1633,27 @@ TEST(ReplayerRecoveryRestore, ARestoreReadsABoundedNumberOfRecordsPerDutyCycleHo
     }
     rf::write(r.store, 2, CUT, CUT * 1024, 1, records);
     r.start();
+    EXPECT_EQ(0, r.client.recovery.doTimers(/*requestPublicationPending=*/false)) << "waiting for the cut is no work";
     replayTheCut(r.client);
 
-    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+    EXPECT_EQ(ReplayerRecovery::MAX_RESTORE_RECORDS_PER_CYCLE,
+              r.client.recovery.doTimers(/*requestPublicationPending=*/false));
+    EXPECT_EQ(1, r.client.recovery.doTimers(/*requestPublicationPending=*/false));
+    EXPECT_TRUE(r.handler.restored.empty()) << "the check is paced the same";
+    EXPECT_TRUE(r.client.recovery.isRestoring());
+
+    EXPECT_EQ(ReplayerRecovery::MAX_RESTORE_RECORDS_PER_CYCLE,
+              r.client.recovery.doTimers(/*requestPublicationPending=*/false));
     EXPECT_TRUE(r.client.recovery.isRestoring());
     EXPECT_EQ(static_cast<std::size_t>(ReplayerRecovery::MAX_RESTORE_RECORDS_PER_CYCLE), r.handler.restored.size());
     deliverLive(r.client, 40);
     EXPECT_TRUE(r.dispatched.empty());
 
-    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+    EXPECT_EQ(1, r.client.recovery.doTimers(/*requestPublicationPending=*/false));
     EXPECT_FALSE(r.client.recovery.isRestoring());
     EXPECT_EQ(records.size(), r.handler.restored.size());
     EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
+    EXPECT_EQ(0, r.client.recovery.doTimers(/*requestPublicationPending=*/false)) << "nothing once restored";
 }
 
 TEST(ReplayerRecoveryRestore, ASnapshotWhoseCutTheRecordingDoesNotHoldGivesWayToTheNextOlderOneAndTheLastToAWalk)
@@ -1675,6 +1690,7 @@ TEST(ReplayerRecoveryRestore, AfterARestoreAResumeOpeningAnywhereButTheCutIsFata
     r.writeSnapshot(2);
     r.start();
     replayTheCut(r.client);
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false); // the records' check
     r.client.recovery.doTimers(/*requestPublicationPending=*/false);
     attachRestoreReplay(r.client, 22);
 
@@ -1686,7 +1702,7 @@ TEST(ReplayerRecoveryRestore, AfterARestoreAResumeOpeningAnywhereButTheCutIsFata
     EXPECT_TRUE(r.dispatched.empty()) << "nothing after a wrong cut may be dispatched";
 }
 
-TEST(ReplayerRecoveryRestore, ASnapshotThatCannotBeRestoredStopsRecoveryItsFormatItsHeaderOrItsRecords)
+TEST(ReplayerRecoveryRestore, ASnapshotThatCannotBeRestoredStopsRecoveryItsFormatOrItsHeader)
 {
     {
         Restoring r;
@@ -1706,25 +1722,41 @@ TEST(ReplayerRecoveryRestore, ASnapshotThatCannotBeRestoredStopsRecoveryItsForma
         rf::write(r.store, 2, CUT, CUT * 1024, 1, { header, SNAPSHOT_RECORD });
         r.start();
         replayTheCut(r.client);
+        r.client.recovery.doTimers(/*requestPublicationPending=*/false); // the records' check
         r.client.recovery.doTimers(/*requestPublicationPending=*/false);
         ASSERT_TRUE(r.client.recovery.restoreFailure());
         EXPECT_NE(std::string::npos, r.client.recovery.restoreFailure()->find("header of version 9"));
-    }
-    {
-        Restoring r;
-        r.writeSnapshot(2);
-        rf::Bytes damaged = readFile(r.file(2));
-        damaged[2 + SNAPSHOT_HEADER.size() + 2] ^= 1; // the record's first byte; the trailer still matches
-        writeFile(r.file(2), damaged);
-        r.start();
-        replayTheCut(r.client);
-        r.client.recovery.doTimers(/*requestPublicationPending=*/false);
-        ASSERT_TRUE(r.client.recovery.restoreFailure());
-        EXPECT_NE(std::string::npos, r.client.recovery.restoreFailure()->find("damaged"));
         EXPECT_FALSE(r.client.recovery.isRecovering());
     }
     Client client{ [](const SequencedEvent&) {} };
     EXPECT_FALSE(client.recovery.restoreFailure());
+}
+
+TEST(ReplayerRecoveryRestore, ASnapshotWhoseRecordsDoNotMatchItsTrailerGivesWayToTheNextOlderOneBeforeTheHandlerSeesAny)
+{
+    Restoring r;
+    rf::write(r.store, 1, CUT - 5, (CUT - 5) * 1024, 1, { SNAPSHOT_HEADER, rf::record(5) });
+    r.writeSnapshot(2);
+    rf::Bytes damaged = readFile(r.file(2));
+    damaged[2 + SNAPSHOT_HEADER.size() + 2] ^= 1; // the record's first byte; the trailer still matches
+    writeFile(r.file(2), damaged);
+    r.start();
+    replayTheCut(r.client);
+
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+    EXPECT_FALSE(r.client.recovery.restoreFailure());
+    EXPECT_TRUE(r.handler.restored.empty()) << "nothing of the damaged file reaches the handler";
+    EXPECT_FALSE(r.client.recovery.isRestoring());
+    EXPECT_EQ(2, r.client.requestsSent) << "round 1's cut, next";
+    EXPECT_EQ((CUT - 5) * 1024, r.client.recovery.requestFromPosition());
+
+    attachRestoreReplay(r.client, 22);
+    deliverReplayFrame(r.client, rf::started(CUT - 5, 1), CUT - 5);
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+    EXPECT_EQ((std::vector<std::string>{ "header 4 2", "0 5" }), r.handler.restored);
+    EXPECT_EQ(CUT - 5, r.client.recovery.lastClusterSeqNo());
+    EXPECT_TRUE(std::filesystem::exists(r.file(2))) << "the damaged file stays until its round is confirmed again";
 }
 
 // A lifecycle frame reaches onSequenced when no lifecycle callback was given. This side alone has the

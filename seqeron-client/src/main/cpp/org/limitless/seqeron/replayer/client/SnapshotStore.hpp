@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstdint>
@@ -29,10 +28,11 @@ namespace org::limitless::seqeron::replayer::client {
  * This instance's own snapshots, in a directory no other instance writes (doc/snapshot.md §4.1). A round is written
  * as `<round>.tmp`: the records, each a little-endian uint16 length and its bytes, record 0 the façade's header, then a
  * trailer whose layout is in the Java twin, ending in MAGIC. Once the log confirms the round, a thread of its own
- * forces the file to disk, renames it `<round>.snapshot`, forces the name and deletes every older file, so the caller
- * does not wait for the disk: a `.snapshot` file is confirmed and durable, and the store keeps one. A write that fails
- * leaves no file and is logged. Not thread-safe: one thread calls it, and only its file work runs on the other. The
- * Java twin is replayer/client/SnapshotStore.java; keep the two in step.
+ * forces the file to disk, renames it `<round>.snapshot`, forces the name and deletes every older file but the newest
+ * confirmed one, so the caller does not wait for the disk: a `.snapshot` file is confirmed and durable, and the store
+ * keeps two, the older to restore from when the newer is damaged. A write that fails leaves no file and is logged. Not
+ * thread-safe: one thread calls it, and only its file work runs on the other. The Java twin is
+ * replayer/client/SnapshotStore.java; keep the two in step.
  */
 class SnapshotStore
 {
@@ -300,8 +300,9 @@ class SnapshotStore
     }
 
     /**
-     * The log confirms a round: off this thread, its file is made durable under its name, and every older file, and
-     * any write of one a crash left behind, is deleted. Nothing if its file was not completed.
+     * The log confirms a round: off this thread, its file is made durable under its name, and every older file but the
+     * newest confirmed one, and any write of one a crash left behind, is deleted. Nothing if its file was not
+     * completed.
      *
      * @param round the round last committed
      */
@@ -423,11 +424,13 @@ class SnapshotStore
                                m_directory.c_str(), error.message().c_str());
             return;
         }
+        const std::int64_t kept = latestRound(round);
         for (const auto& entry : std::filesystem::directory_iterator(m_directory, error))
         {
             const std::filesystem::path& path = entry.path();
-            const std::int64_t fileRound = std::max(roundOf(path, SUFFIX), roundOf(path, TEMPORARY_SUFFIX));
-            if (fileRound >= 0 && fileRound < round)
+            const std::int64_t confirmedRound = roundOf(path, SUFFIX);
+            const std::int64_t temporaryRound = roundOf(path, TEMPORARY_SUFFIX);
+            if ((confirmedRound >= 0 && confirmedRound < kept) || (temporaryRound >= 0 && temporaryRound < round))
             {
                 std::filesystem::remove(path, error);
             }

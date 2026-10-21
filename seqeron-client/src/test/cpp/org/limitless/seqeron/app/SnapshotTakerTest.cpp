@@ -250,7 +250,7 @@ TEST(SnapshotTaker, AReplicaThatDoesNotPublishWritesItsFileSubmitsNothingAndComp
     EXPECT_TRUE(otherRound.onSnapshotEnd(4, 99, 0, 0)) << "a late end of an earlier round is no evidence";
 }
 
-TEST(SnapshotTaker, AMatchingEndConfirmsItsRoundsFileWhichReplacesEveryOlderOneAMismatchConfirmsNothing)
+TEST(SnapshotTaker, AMatchingEndConfirmsItsRoundsFileWhichReplacesEveryOlderOneButTheNewestAMismatchConfirmsNothing)
 {
     Instances t;
     SnapshotTaker& taker = t.participating();
@@ -271,7 +271,8 @@ TEST(SnapshotTaker, AMatchingEndConfirmsItsRoundsFileWhichReplacesEveryOlderOneA
     EXPECT_TRUE(taker.onSnapshotEnd(3, end.recordCount, end.length, end.crc32c));
     EXPECT_EQ(3, taker.confirmedRound());
     EXPECT_EQ(3, t.lastStore().latestRound());
-    EXPECT_EQ(-1, t.lastStore().latestRound(3)) << "the older files are gone";
+    EXPECT_EQ(1, t.lastStore().latestRound(3)) << "the round before it stays";
+    EXPECT_EQ(-1, t.lastStore().latestRound(1));
 }
 
 TEST(SnapshotTaker, APublisherThatLosesTheRoleStopsForGoodWithNoEnd)

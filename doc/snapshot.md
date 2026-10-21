@@ -181,9 +181,10 @@ bytes, then a trailer:
   file system's journal commits the rename before the deletions that follow it. A write that fails is logged
   as `SnapshotStoreFailed` and leaves no file; the instance still compares the round, and carries on without
   a copy of it.
-- **Retention.** An instance keeps one confirmed file. Once a confirmed file is durable under its name, every
-  older file is deleted, the `.tmp` of a round whose end never came and one a crash left behind included; a
-  file that never becomes durable deletes nothing.
+- **Retention.** An instance keeps two confirmed files, so a damaged newest one has an older one to give way
+  to (§7). Once a confirmed file is durable under its name, every older file but the newest confirmed one is
+  deleted, the `.tmp` of a round whose end never came and one a crash left behind included; a file that never
+  becomes durable deletes nothing.
 - **Files are portable.** Every instance of a source writes the same bytes for a round (A-6), so a file is
   not tied to the instance that wrote it: a peer's file copied into a new host's directory spares that host
   a full replay.
@@ -262,15 +263,17 @@ A cold start of an instance with a `SnapshotListener` restores in `ReplayerRecov
    the file was cut from another log, and an older one is tried. A recording that has not reached the
    position yet, as while its member replays the log after a restart, is answered `ReplayPending`, and the
    check waits.
-4. **Read the records**, at most 1,024 a duty cycle, dispatching nothing; frames arriving on the live queue
-   meanwhile are held, as in any recovery. Record 0 is the header: if its `headerVersion` is one this build
-   does not support, stop. Otherwise it stands in for the frames before `R`. Its leader becomes the
+4. **Read the records** twice, at most 1,024 a duty cycle, dispatching nothing; frames arriving on the live
+   queue meanwhile are held, as in any recovery. The first read checks them against the trailer and passes
+   none on: records that do not match it are a damaged file, and an older one is tried, before the listener
+   has seen any of it. The second reads them in. Record 0 is the header: if its `headerVersion` is one this
+   build does not support, stop. Otherwise it stands in for the frames before `R`. Its leader becomes the
    receiver's current leader and its term confirmed ingress's, as the last `LeadershipChanged` before `R`
    would have made them; the source takes part in rounds, as its topology row before `R` said; its
    groups resolve the producer's group names, as the `GroupsRegistered` before `R`
    would have; and a `Gateway`'s election state is set from it. Every later record goes to the listener's
-   `onRestore`, with the file's `formatVersion`. Records that do not match the trailer are a damaged file,
-   and the instance stops.
+   `onRestore`, with the file's `formatVersion`. Records that no longer match the trailer stop the
+   instance, since the listener holds part of the state.
 5. **Resume** at `cutPosition` with `clusterSeqNo` `R` as the anchor, through the ordinary resume path (spec
    R-1, `requestResume`). The `SnapshotStarted` frame is the anchor and is dropped as a duplicate, so
    dispatch starts at the frame after it on the queue, and the anchor's `groupSeqNo` is where the
@@ -278,10 +281,10 @@ A cold start of an instance with a `SnapshotListener` restores in `ReplayerRecov
    that round's `SnapshotEnd` changes nothing.
 6. **Go live**, switching to the queue as any resume does.
 
-An instance that stops is fenced with `SNAPSHOT_UNRESTORABLE`, and a damaged file stays for the operator to
-remove ([`ops.md`](ops.md)). After a restore, every fallback that would walk the recording from its start
-resumes at the restored snapshot's `cutPosition` instead, where the first frame is `R`, and drops every
-frame up to the last one dispatched.
+An instance that stops is fenced with `SNAPSHOT_UNRESTORABLE` ([`ops.md`](ops.md)). A damaged file that gave
+way stays until the instance confirms its round again on the way back to the tail, which replaces it. After a
+restore, every fallback that would walk the recording from its start resumes at the restored snapshot's
+`cutPosition` instead, where the first frame is `R`, and drops every frame up to the last one dispatched.
 
 A consumer that publishes nothing has no snapshot of its own. It may restore from source *X*'s files only if
 it runs *X*'s state machine.
@@ -572,7 +575,7 @@ member's archive does to a gateway host's relay.
 2. **Check the format**, as §7 step 2.
 3. **Read the records** from the replay on stream 212 named by `replaySessionId`, as §7 step 4. A replay
    that ends early, because the server stopped, fences the instance with `SNAPSHOT_UNRESTORABLE`, since the
-   listener holds part of the state; unlike a damaged file, a restart retries it with nothing to remove.
+   listener holds part of the state; a restart retries it.
 4. **Resume** and **go live**, as §7 steps 5 and 6.
 
 A server that does not answer holds the restore under the recovery-stall timeout (spec §10.1), after which
@@ -601,8 +604,8 @@ can take far longer than a gateway's activation deadline.
   into the page cache. A host that cannot hold the file's dirty pages writes at disk speed. The cluster
   session stays alive meanwhile, but the queue does not wait, so a pause long enough to drop the subscriber
   heals through replay.
-- **Disk** holds up to three files per serializing instance: its confirmed round, the round being written,
-  and one whose end never came, until the next confirmation deletes it.
+- **Disk** holds up to four files per serializing instance: its two confirmed rounds, the round being
+  written, and one whose end never came, until the next confirmation deletes it.
 - **A crash costs at most a round.** A file is confirmed only when the instance dispatches its round's end, so
   one written by an instance that stopped before then is never restored, and the restart restores the round
   before it.
@@ -617,7 +620,9 @@ can take far longer than a gateway's activation deadline.
 - **Durability is paid off the dispatch thread.** Forcing a file to disk takes milliseconds on local SSDs
   and up to about a hundred on network block storage, on the store's own thread. An OS crash before the
   newest file is durable leaves the previous confirmed one, which is deleted only after it.
-- **A restore costs a replay round trip** before its first record: the check of the cut (§7 step 3).
+- **A restore costs a replay round trip** before its first record, the check of the cut (§7 step 3), and
+  reads the file twice (§7 step 4). Each record read counts as the duty cycle's work, so an idle strategy does
+  not back off mid-file: the restore holds its thread until the last record.
 
 ## 13. Tests
 

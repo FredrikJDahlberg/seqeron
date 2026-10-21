@@ -114,7 +114,7 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     }
 
     /// <summary>The source's own <c>SnapshotEnd</c> was dispatched. One that matches confirms this instance's file
-    /// of the round, which then replaces every older one.</summary>
+    /// of the round, which then replaces every older one but the newest of them.</summary>
     /// <returns>false if it is for the round this instance serialized and disagrees with it: this instance has
     /// diverged from the log (A-7)</returns>
     internal bool OnSnapshotEnd(long endRound, int endRecordCount, long endLength, uint crc32c)

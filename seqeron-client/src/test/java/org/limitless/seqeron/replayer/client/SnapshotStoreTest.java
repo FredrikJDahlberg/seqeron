@@ -146,7 +146,8 @@ class SnapshotStoreTest {
     }
 
     @Test
-    @DisplayName("a confirmation replaces every older file, and any write a crash left behind")
+    @DisplayName("a confirmation replaces every older file but the newest confirmed one, and any write a crash left "
+                 + "behind")
     void confirmationReplacesOlderFiles() throws IOException {
         final SnapshotStore crashed = new SnapshotStore(directory);
         write(crashed, 1, records());
@@ -155,14 +156,30 @@ class SnapshotStoreTest {
 
         final SnapshotStore store = new SnapshotStore(directory);
         write(store, 4, records());
-        assertEquals(List.of("4.snapshot"), names());
+        assertEquals(List.of("1.snapshot", "4.snapshot"), names());
 
         commit(store, 5, records());
         begin(store, 6); // round 5's end never came
         store.abandon();
-        assertEquals(List.of("4.snapshot", "5.tmp"), names());
+        assertEquals(List.of("1.snapshot", "4.snapshot", "5.tmp"), names());
         write(store, 7, records());
-        assertEquals(List.of("7.snapshot"), names());
+        assertEquals(List.of("4.snapshot", "7.snapshot"), names());
+    }
+
+    @Test
+    @DisplayName("a confirmation of a round already on disk replaces its file, and keeps the one before it")
+    void confirmationReplacesItsOwnRound() throws IOException {
+        final SnapshotStore store = new SnapshotStore(directory);
+        write(store, 4, records());
+        write(store, 5, records());
+        final Path file = directory.resolve("5.snapshot");
+        final byte[] damaged = Files.readAllBytes(file);
+        damaged[2 + HEADER_LENGTH + 2 + 5] ^= 1; // a body byte of record 1
+        Files.write(file, damaged);
+
+        write(store, 5, records()); // the round again, on the way back to the tail
+        assertEquals(List.of("4.snapshot", "5.snapshot"), names());
+        assertEquals(List.of(HEADER_LENGTH, 1000, 1302, 698, SnapshotStore.Reader.END), readAll(store.open(5)));
     }
 
     @Test

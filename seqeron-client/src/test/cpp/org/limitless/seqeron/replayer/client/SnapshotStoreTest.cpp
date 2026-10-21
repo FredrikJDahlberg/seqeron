@@ -219,7 +219,7 @@ TEST(SnapshotStore, AFileCutShortOrOfAnotherRoundDoesNotOpenRecordsThatFailItsTr
     EXPECT_EQ((std::vector<std::int32_t>{ HEADER_LENGTH, 1000, 1302, 698, DAMAGED }), readAll(store.open(2)));
 }
 
-TEST(SnapshotStore, AConfirmationReplacesEveryOlderFileAndAnyWriteACrashLeftBehind)
+TEST(SnapshotStore, AConfirmationReplacesEveryOlderFileButTheNewestConfirmedOneAndAnyWriteACrashLeftBehind)
 {
     helpers::TempDirectory directory;
     {
@@ -231,14 +231,31 @@ TEST(SnapshotStore, AConfirmationReplacesEveryOlderFileAndAnyWriteACrashLeftBehi
 
     SnapshotStore store(directory.path());
     write(store, 4, records());
-    EXPECT_EQ((std::vector<std::string>{ "4.snapshot" }), names(directory.path()));
+    EXPECT_EQ((std::vector<std::string>{ "1.snapshot", "4.snapshot" }), names(directory.path()));
 
     commit(store, 5, records());
     begin(store, 6); // round 5's end never came
     store.abandon();
-    EXPECT_EQ((std::vector<std::string>{ "4.snapshot", "5.tmp" }), names(directory.path()));
+    EXPECT_EQ((std::vector<std::string>{ "1.snapshot", "4.snapshot", "5.tmp" }), names(directory.path()));
     write(store, 7, records());
-    EXPECT_EQ((std::vector<std::string>{ "7.snapshot" }), names(directory.path()));
+    EXPECT_EQ((std::vector<std::string>{ "4.snapshot", "7.snapshot" }), names(directory.path()));
+}
+
+TEST(SnapshotStore, AConfirmationOfARoundAlreadyOnDiskReplacesItsFileAndKeepsTheOneBeforeIt)
+{
+    helpers::TempDirectory directory;
+    SnapshotStore store(directory.path());
+    write(store, 4, records());
+    write(store, 5, records());
+    const std::filesystem::path file = directory.path() / "5.snapshot";
+    Bytes damaged = readFile(file);
+    damaged[2 + HEADER_LENGTH + 2 + 5] ^= 1; // a body byte of record 1
+    writeFile(file, damaged);
+
+    write(store, 5, records()); // the round again, on the way back to the tail
+    EXPECT_EQ((std::vector<std::string>{ "4.snapshot", "5.snapshot" }), names(directory.path()));
+    EXPECT_EQ((std::vector<std::int32_t>{ HEADER_LENGTH, 1000, 1302, 698, SnapshotStore::Reader::END }),
+              readAll(store.open(5)));
 }
 
 TEST(SnapshotStore, ARoundWhoseFileNeverBecameDurableDeletesNothingOlder)

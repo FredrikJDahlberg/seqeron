@@ -214,8 +214,8 @@ class SnapshotTakerTest {
     }
 
     @Test
-    @DisplayName("a matching end confirms its round's file, which replaces every older one; a mismatch confirms "
-                 + "nothing")
+    @DisplayName("a matching end confirms its round's file, which replaces every older one but the newest; a "
+                 + "mismatch confirms nothing")
     void matchingEndConfirmsTheRound() {
         final SnapshotTaker taker = participating();
         started(taker, 1, true);
@@ -235,7 +235,8 @@ class SnapshotTakerTest {
         assertTrue(taker.onSnapshotEnd(3, (int)end[1], end[2], end[3]));
         assertEquals(3, taker.confirmedRound());
         assertEquals(3, storeOf(1).latestRound(Long.MAX_VALUE));
-        assertEquals(-1, storeOf(1).latestRound(3), "the older files are gone");
+        assertEquals(1, storeOf(1).latestRound(3), "the round before it stays");
+        assertEquals(-1, storeOf(1).latestRound(1));
     }
 
     @Test

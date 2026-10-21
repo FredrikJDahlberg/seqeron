@@ -118,7 +118,7 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
 
     /**
      * The source's own {@code SnapshotEnd} was dispatched. One that matches confirms this instance's file of the
-     * round, which then replaces every older one.
+     * round, which then replaces every older one but the newest of them.
      * @return false if it is for the round this instance serialized and disagrees with it: this instance has
      *     diverged from the log (A-7)
      */

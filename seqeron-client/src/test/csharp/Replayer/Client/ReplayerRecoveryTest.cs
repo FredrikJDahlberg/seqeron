@@ -1209,6 +1209,10 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_dispatched.Count == 0, "the cut is not dispatched");
 
         _receiver.DoTimers(false);
+        Assert.True(_restored.Count == 0, "the records are checked against the trailer before any is passed on");
+        Assert.True(_receiver.IsRestoring);
+
+        _receiver.DoTimers(false);
 
         Assert.Equal(new List<string> { "header 4 2", "0 7" }, _restored);
         Assert.Empty(_dispatched);
@@ -1233,6 +1237,7 @@ public class ReplayerRecoveryTest : IDisposable
         AttachReplay(21, 64 * 1024);
         DeliverReplayFrame(Frames.OnQueue(RestoreFrames.Started(Cut, 2), 4), 4); // the queue's fourth frame
         _receiver.DoTimers(false);
+        _receiver.DoTimers(false);
 
         AttachReplay(22, 64 * 1024);
         DeliverReplayFrame(Frames.OnQueue(RestoreFrames.Started(Cut, 2), 4), 4);
@@ -1255,7 +1260,9 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.IsRestoring);
     }
 
-    [Fact(DisplayName = "a restore reads a bounded number of records per duty cycle, holding the queue until its last")]
+    [Fact(DisplayName =
+              "a restore reads a bounded number of records per duty cycle, counted as its work, holding the queue " +
+              "until its last")]
     public void RestoreIsPacedAcrossDutyCycles()
     {
         var records = new byte[ReplayerRecovery.MaxRestoreRecordsPerCycle + 1][];
@@ -1266,18 +1273,25 @@ public class ReplayerRecoveryTest : IDisposable
         }
         RestoreFrames.Write(_store, 2, Cut, Cut * 1024, 1, records);
         StartRestoring();
+        Assert.True(_receiver.DoTimers(false) == 0, "waiting for the cut is no work");
         ReplayTheCut();
 
-        _receiver.DoTimers(false);
+        Assert.Equal(ReplayerRecovery.MaxRestoreRecordsPerCycle, _receiver.DoTimers(false));
+        Assert.Equal(1, _receiver.DoTimers(false));
+        Assert.True(_restored.Count == 0, "the check is paced the same");
+        Assert.True(_receiver.IsRestoring);
+
+        Assert.Equal(ReplayerRecovery.MaxRestoreRecordsPerCycle, _receiver.DoTimers(false));
         Assert.True(_receiver.IsRestoring);
         Assert.Equal(ReplayerRecovery.MaxRestoreRecordsPerCycle, _restored.Count);
         DeliverQueue(40);
         Assert.Empty(_dispatched);
 
-        _receiver.DoTimers(false);
+        Assert.Equal(1, _receiver.DoTimers(false));
         Assert.False(_receiver.IsRestoring);
         Assert.Equal(records.Length, _restored.Count);
         Assert.True(_receiver.IsAwaitingReplay);
+        Assert.True(_receiver.DoTimers(false) == 0, "nothing once restored");
     }
 
     [Fact(
@@ -1315,6 +1329,7 @@ public class ReplayerRecoveryTest : IDisposable
         WriteSnapshot(2);
         StartRestoring();
         ReplayTheCut();
+        _receiver.DoTimers(false); // the records' check
         _receiver.DoTimers(false);
         AttachReplay(22, 64 * 1024);
 
@@ -1324,7 +1339,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_dispatched.Count == 0, "nothing after a wrong cut may be dispatched");
     }
 
-    [Fact(DisplayName = "a snapshot that cannot be restored stops recovery: its format, its header, or its records")]
+    [Fact(DisplayName = "a snapshot that cannot be restored stops recovery: its format or its header")]
     public void UnrestorableSnapshotStopsRecovery()
     {
         RestoreFrames.Write(_store, 2, Cut, Cut * 1024, 9, SnapshotHeaderRecord, SnapshotRecord);
@@ -1341,10 +1356,19 @@ public class ReplayerRecoveryTest : IDisposable
         RestoreFrames.Write(_store, 2, Cut, Cut * 1024, 1, header, SnapshotRecord);
         StartRestoring();
         ReplayTheCut();
+        _receiver.DoTimers(false); // the records' check
         _receiver.DoTimers(false);
         Assert.Contains("header of version 9", _receiver.RestoreFailure);
+        Assert.False(_receiver.IsRecovering);
+        Assert.Null(new ReplayerRecovery(_actions, Ignore, null, null).RestoreFailure);
+    }
 
-        SetUp();
+    [Fact(DisplayName =
+              "a snapshot whose records do not match its trailer gives way to the next older one before the handler " +
+              "sees any")]
+    public void DamagedSnapshotGivesWayToAnOlderOne()
+    {
+        RestoreFrames.Write(_store, 1, Cut - 5, (Cut - 5) * 1024, 1, SnapshotHeaderRecord, RestoreFrames.Record(5));
         WriteSnapshot(2);
         string file = StoreFile(2);
         byte[] damaged = File.ReadAllBytes(file);
@@ -1352,10 +1376,21 @@ public class ReplayerRecoveryTest : IDisposable
         File.WriteAllBytes(file, damaged);
         StartRestoring();
         ReplayTheCut();
+
         _receiver.DoTimers(false);
-        Assert.Contains("damaged", _receiver.RestoreFailure);
-        Assert.False(_receiver.IsRecovering);
-        Assert.Null(new ReplayerRecovery(_actions, Ignore, null, null).RestoreFailure);
+        Assert.Null(_receiver.RestoreFailure);
+        Assert.True(_restored.Count == 0, "nothing of the damaged file reaches the handler");
+        Assert.False(_receiver.IsRestoring);
+        Assert.True(_actions.RequestsSent == 2, "round 1's cut, next");
+        Assert.Equal((Cut - 5) * 1024, _receiver.RequestFromPosition);
+
+        AttachReplay(22, 64 * 1024);
+        DeliverReplayFrame(RestoreFrames.Started(Cut - 5, 1), Cut - 5);
+        _receiver.DoTimers(false);
+        _receiver.DoTimers(false);
+        Assert.Equal(new List<string> { "header 4 2", "0 5" }, _restored);
+        Assert.Equal(Cut - 5, _receiver.LastClusterSeqNo);
+        Assert.True(File.Exists(file), "the damaged file stays until its round is confirmed again");
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────

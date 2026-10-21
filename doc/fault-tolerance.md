@@ -333,9 +333,10 @@ with none left, it walks the recording as §3.2 describes.
   trailer and gives way to an older file.
 - **A purged log.** Its rounds start again at 1, so a file from before the purge may name a round the new log
   also has. Its cut is a different frame, or none, in the new recording, so the check of the cut rejects it.
-- **A damaged file.** A file whose records do not match its trailer, or a `formatVersion` or header version
-  the build does not read, fences the client with `SNAPSHOT_UNRESTORABLE`; a restart repeats it until the
-  build is fixed or the file is removed.
+- **A damaged file.** A file whose records do not match its trailer gives way to an older file, the instance
+  keeping two, before the listener sees any of it. A `formatVersion` or header version the build does not
+  read fences the client with `SNAPSHOT_UNRESTORABLE`; a restart repeats it until the build is fixed or the
+  file is removed.
 - **No file.** A new host or a lost disk has nothing to restore, and walks from `clusterSeqNo` 1. Every
   instance of a source writes the same bytes, so a peer's file copied into its directory restores it instead.
 - **Divergence.** At every later round each instance compares its own serialization with the sequenced end.

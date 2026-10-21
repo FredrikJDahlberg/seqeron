@@ -43,10 +43,11 @@ import org.limitless.seqeron.util.Logger;
  * </pre>
  *
  * Once the log confirms the round, a thread of its own forces the file to disk, renames it {@code
- * <round>.snapshot}, forces the name and deletes every older file, so the caller does not wait for the disk: a
- * {@code .snapshot} file is confirmed and durable, and the store keeps one. A write that fails leaves no file and is
- * logged. Not thread-safe: one thread calls it, and only its file work runs on the other. The C++ twin is
- * {@code replayer/client/SnapshotStore.hpp}; keep the two in step.
+ * <round>.snapshot}, forces the name and deletes every older file but the newest confirmed one, so the caller does
+ * not wait for the disk: a {@code .snapshot} file is confirmed and durable, and the store keeps two, the older to
+ * restore from when the newer is damaged. A write that fails leaves no file and is logged. Not thread-safe: one
+ * thread calls it, and only its file work runs on the other. The C++ twin is {@code
+ * replayer/client/SnapshotStore.hpp}; keep the two in step.
  */
 public final class SnapshotStore {
     /** Bytes after the records. */
@@ -74,7 +75,7 @@ public final class SnapshotStore {
     private long cutTimestampNs;
     /** The round whose file was last completed, which {@link #confirm} may name; -1 for none. */
     private long committedRound = -1;
-    /** What runs off the caller's thread, one step after another: confirming files and deleting older ones. */
+    /** What runs off the caller's thread, one step after another: confirming files and deleting what they replace. */
     private CompletableFuture<Void> writes = CompletableFuture.completedFuture(null);
 
     /**
@@ -182,7 +183,8 @@ public final class SnapshotStore {
 
     /**
      * The log confirms {@code round}: off this thread, its file is made durable under its name, and every older
-     * file, and any write of one a crash left behind, is deleted. Nothing if its file was not completed.
+     * file but the newest confirmed one, and any write of one a crash left behind, is deleted. Nothing if its file
+     * was not completed.
      * @param round the round last committed
      */
     public void confirm(final long round) {
@@ -277,11 +279,13 @@ public final class SnapshotStore {
                        round, directory, ex);
             return;
         }
+        final long kept = latestRound(round);
         try (DirectoryStream<Path> files = Files.newDirectoryStream(directory)) {
             for (final Path path : files) {
                 final String name = path.getFileName().toString();
-                final long fileRound = Math.max(roundOf(name, SUFFIX), roundOf(name, TEMPORARY_SUFFIX));
-                if (fileRound >= 0 && fileRound < round) {
+                final long confirmedRound = roundOf(name, SUFFIX);
+                final long temporaryRound = roundOf(name, TEMPORARY_SUFFIX);
+                if ((confirmedRound >= 0 && confirmedRound < kept) || (temporaryRound >= 0 && temporaryRound < round)) {
                     Files.deleteIfExists(path);
                 }
             }

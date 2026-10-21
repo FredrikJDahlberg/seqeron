@@ -27,8 +27,9 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// 52  magic           uint32   Magic
 /// </code>
 /// Once the log confirms the round, a thread of its own forces the file to disk, renames it
-/// <c>&lt;round&gt;.snapshot</c> and deletes every older file, so the caller does not wait for the disk: a
-/// <c>.snapshot</c> file is confirmed and durable, and the store keeps one. .NET forces no directory; a journaling
+/// <c>&lt;round&gt;.snapshot</c> and deletes every older file but the newest confirmed one, so the caller does not wait
+/// for the disk: a <c>.snapshot</c> file is confirmed and durable, and the store keeps two, the older to restore from
+/// when the newer is damaged. .NET forces no directory; a journaling
 /// file system commits the rename before the deletions that follow it. A write that fails leaves no file and is
 /// logged. Not thread-safe: one thread calls it, and only its file work runs on the other. <c>SnapshotStore.java</c>
 /// and <c>SnapshotStore.hpp</c> are its twins; keep the three in step.
@@ -188,8 +189,8 @@ public sealed class SnapshotStore
     }
 
     /// <summary>The log confirms <paramref name="round"/>: off this thread, its file is made durable under its name,
-    /// and every older file, and any write of one a crash left behind, is deleted. Nothing if its file was not
-    /// completed.</summary>
+    /// and every older file but the newest confirmed one, and any write of one a crash left behind, is deleted.
+    /// Nothing if its file was not completed.</summary>
     /// <param name="round">the round last committed</param>
     public void Confirm(long round)
     {
@@ -314,13 +315,15 @@ public sealed class SnapshotStore
                        "cannot make round {0}'s snapshot durable in {1}: {2}", round, _directory, ex.Message);
             return;
         }
+        long kept = LatestRound(round);
         try
         {
             foreach (string path in Directory.EnumerateFiles(_directory))
             {
                 string name = Path.GetFileName(path);
-                long fileRound = Math.Max(RoundOf(name, Suffix), RoundOf(name, TemporarySuffix));
-                if (fileRound >= 0 && fileRound < round)
+                long confirmedRound = RoundOf(name, Suffix);
+                long temporaryRound = RoundOf(name, TemporarySuffix);
+                if ((confirmedRound >= 0 && confirmedRound < kept) || (temporaryRound >= 0 && temporaryRound < round))
                 {
                     File.Delete(path);
                 }
