@@ -93,15 +93,15 @@ against `app` alone and its imports and includes are checked the same way.
 3. The replica whose gate is open — the one on the leader — submits the round's `SnapshotEnd`: that count,
    length and CRC. The state itself never crosses the cluster.
 4. Every replica compares its own count, length and CRC with the sequenced `SnapshotEnd`. On a match its file
-   is confirmed and older ones are deleted. On a difference it is fenced with `SNAPSHOT_DIVERGED`: its state
+   is confirmed and every older one but the newest of them is deleted. On a difference it is fenced with `SNAPSHOT_DIVERGED`: its state
    is not the leader's.
 
 **How it is restored.** A replica given a `SnapshotListener` starts by asking its node's Replayer for the
 `SnapshotEnd` of the newest round it holds a file for, and checks the file against it. On a match it calls
-`onRestore` with each record in order, then resumes the queue at `R + 1`. A file the log does not confirm, or
-that does not match its end, is passed over for an older one; with none left, it replays from `clusterSeqNo` 1
-as any other replica does. A file whose records are damaged, or whose `formatVersion` the listener does not
-read, fences it with `SNAPSHOT_UNRESTORABLE`.
+`onRestore` with each record in order, then resumes the queue at `R + 1`. A file the log does not confirm, that
+does not match its end, or whose records are damaged is passed over for an older one; with none left, it replays
+from `clusterSeqNo` 1 as any other replica does. One whose `formatVersion` the listener does not read fences it
+with `SNAPSHOT_UNRESTORABLE`.
 
 **What the listener owes.** Step 4 holds only if every replica writes the same bytes for the same state:
 

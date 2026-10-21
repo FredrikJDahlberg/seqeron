@@ -254,7 +254,6 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             PublishFrame(Started(NextCut, 3));
             Publish(); // heartbeat 14
 
-            // Newest first: confirming a round deletes the older files, and both are to stay.
             RestoreFrames.Write(_store, 3, ClusterSeqNoOf(NextCut), PositionOf(NextCut - 1), FormatVersion, header,
                                 RestoreFrames.Record(98));
             RestoreFrames.Write(_store, 2, ClusterSeqNoOf(Cut), PositionOf(Cut), FormatVersion, header, count, sum);

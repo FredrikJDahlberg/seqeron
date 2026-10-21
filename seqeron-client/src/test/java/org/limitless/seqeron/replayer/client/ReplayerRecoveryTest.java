@@ -1208,6 +1208,10 @@ class ReplayerRecoveryTest {
         assertTrue(dispatched.isEmpty(), "the cut is not dispatched");
 
         receiver.doTimers(false);
+        assertTrue(restored.isEmpty(), "the records are checked against the trailer before any is passed on");
+        assertTrue(receiver.isRestoring());
+
+        receiver.doTimers(false);
 
         assertEquals(List.of("header 4 2", "0 7"), restored);
         assertTrue(dispatched.isEmpty());
@@ -1232,6 +1236,7 @@ class ReplayerRecoveryTest {
         attachReplay(21, 64 * 1024);
         deliverReplayFrame(RestoreFrames.started(CUT, 4, 2, CUT * 1000), 4); // the queue's fourth frame
         receiver.doTimers(false);
+        receiver.doTimers(false);
 
         attachReplay(22, 64 * 1024);
         deliverReplayFrame(RestoreFrames.started(CUT, 4, 2, CUT * 1000), 4);
@@ -1255,7 +1260,8 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("a restore reads a bounded number of records per duty cycle, holding the queue until its last")
+    @DisplayName("a restore reads a bounded number of records per duty cycle, counted as its work, holding the queue "
+                 + "until its last")
     void restoreIsPacedAcrossDutyCycles() {
         final byte[][] records = new byte[ReplayerRecovery.MAX_RESTORE_RECORDS_PER_CYCLE + 1][];
         records[0] = SNAPSHOT_HEADER;
@@ -1264,18 +1270,25 @@ class ReplayerRecoveryTest {
         }
         RestoreFrames.write(store, 2, CUT, CUT * 1024, 1, records);
         startRestoring();
+        assertEquals(0, receiver.doTimers(false), "waiting for the cut is no work");
         replayTheCut();
 
-        receiver.doTimers(false);
+        assertEquals(ReplayerRecovery.MAX_RESTORE_RECORDS_PER_CYCLE, receiver.doTimers(false));
+        assertEquals(1, receiver.doTimers(false));
+        assertTrue(restored.isEmpty(), "the check is paced the same");
+        assertTrue(receiver.isRestoring());
+
+        assertEquals(ReplayerRecovery.MAX_RESTORE_RECORDS_PER_CYCLE, receiver.doTimers(false));
         assertTrue(receiver.isRestoring());
         assertEquals(ReplayerRecovery.MAX_RESTORE_RECORDS_PER_CYCLE, restored.size());
         deliverQueue(40);
         assertTrue(dispatched.isEmpty());
 
-        receiver.doTimers(false);
+        assertEquals(1, receiver.doTimers(false));
         assertFalse(receiver.isRestoring());
         assertEquals(records.length, restored.size());
         assertTrue(receiver.isAwaitingReplay());
+        assertEquals(0, receiver.doTimers(false), "nothing once restored");
     }
 
     @Test
@@ -1312,6 +1325,7 @@ class ReplayerRecoveryTest {
         writeSnapshot(2);
         startRestoring();
         replayTheCut();
+        receiver.doTimers(false); // the records' check
         receiver.doTimers(false);
         attachReplay(22, 64 * 1024);
 
@@ -1322,8 +1336,8 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("a snapshot that cannot be restored stops recovery: its format, its header, or its records")
-    void unrestorableSnapshotStopsRecovery() throws IOException {
+    @DisplayName("a snapshot that cannot be restored stops recovery: its format or its header")
+    void unrestorableSnapshotStopsRecovery() {
         RestoreFrames.write(store, 2, CUT, CUT * 1024, 9, SNAPSHOT_HEADER, SNAPSHOT_RECORD);
         startRestoring();
         assertTrue(receiver.restoreFailure().contains("formatVersion 9"));
@@ -1338,10 +1352,18 @@ class ReplayerRecoveryTest {
         RestoreFrames.write(store, 2, CUT, CUT * 1024, 1, header, SNAPSHOT_RECORD);
         startRestoring();
         replayTheCut();
+        receiver.doTimers(false); // the records' check
         receiver.doTimers(false);
         assertTrue(receiver.restoreFailure().contains("header of version 9"));
+        assertFalse(receiver.isRecovering());
+        assertNull(new ReplayerRecovery(actions, event -> { }, null, null).restoreFailure());
+    }
 
-        setUp();
+    @Test
+    @DisplayName("a snapshot whose records do not match its trailer gives way to the next older one before the handler "
+                 + "sees any")
+    void damagedSnapshotGivesWayToAnOlderOne() throws IOException {
+        RestoreFrames.write(store, 1, CUT - 5, (CUT - 5) * 1024, 1, SNAPSHOT_HEADER, RestoreFrames.record(5));
         writeSnapshot(2);
         final Path file = storeDirectory().resolve("2.snapshot");
         final byte[] damaged = Files.readAllBytes(file);
@@ -1349,10 +1371,21 @@ class ReplayerRecoveryTest {
         Files.write(file, damaged);
         startRestoring();
         replayTheCut();
+
         receiver.doTimers(false);
-        assertTrue(receiver.restoreFailure().contains("damaged"));
-        assertFalse(receiver.isRecovering());
-        assertNull(new ReplayerRecovery(actions, event -> { }, null, null).restoreFailure());
+        assertNull(receiver.restoreFailure());
+        assertTrue(restored.isEmpty(), "nothing of the damaged file reaches the handler");
+        assertFalse(receiver.isRestoring());
+        assertEquals(2, actions.requestsSent, "round 1's cut, next");
+        assertEquals((CUT - 5) * 1024, receiver.requestFromPosition());
+
+        attachReplay(22, 64 * 1024);
+        deliverReplayFrame(RestoreFrames.started(CUT - 5, 1), CUT - 5);
+        receiver.doTimers(false);
+        receiver.doTimers(false);
+        assertEquals(List.of("header 4 2", "0 5"), restored);
+        assertEquals(CUT - 5, receiver.lastClusterSeqNo());
+        assertTrue(Files.exists(file), "the damaged file stays until its round is confirmed again");
     }
 
     private void startRestoring() {

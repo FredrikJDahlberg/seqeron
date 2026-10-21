@@ -117,7 +117,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
     /// <summary>One duty-cycle iteration: drain control, ride an attached replay image, and always drain and
     /// dispatch the queue — <c>ReplayerRecovery</c>'s contiguity check, not the poll routing, decides what a queue
     /// frame is worth mid-walk.</summary>
-    /// <returns>fragments consumed</returns>
+    /// <returns>fragments consumed and snapshot records restored</returns>
     /// <exception cref="InvalidOperationException">once this node's recording does not hold what recovery asked of
     /// it</exception>
     public int Poll()
@@ -134,7 +134,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
         }
 
         bool requestPubPending = _requestPublication != null && !_requestPublication.IsConnected;
-        _recovery.DoTimers(requestPubPending);
+        work += _recovery.DoTimers(requestPubPending);
 
         if (_recovery.ReplaySessionId >= 0)
         {

@@ -250,7 +250,6 @@ class ReplayerRecoveryPropertyTest {
             publishFrame(started(NEXT_CUT, 3));
             publish(); // heartbeat 14
 
-            // Newest first: confirming a round deletes the older files, and both are to stay.
             RestoreFrames.write(store, 3, clusterSeqNoOf(NEXT_CUT), positionOf(NEXT_CUT - 1), FORMAT_VERSION, header,
                                 RestoreFrames.record(98));
             RestoreFrames.write(store, 2, clusterSeqNoOf(CUT), positionOf(CUT), FORMAT_VERSION, header, count, sum);

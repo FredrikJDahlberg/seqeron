@@ -136,7 +136,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
      * One duty-cycle iteration: drain control, ride an attached replay image, and always drain and dispatch
      * the queue — {@link ReplayerRecovery}'s contiguity check, not the poll routing, decides what a queue frame is
      * worth mid-walk.
-     * @return fragments consumed
+     * @return fragments consumed and snapshot records restored
      * @throws IllegalStateException once this node's recording does not hold what recovery asked of it
      */
     public int poll() {
@@ -150,7 +150,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         }
 
         final boolean requestPubPending = requestPublication != null && !requestPublication.isConnected();
-        recovery.doTimers(requestPubPending);
+        work += recovery.doTimers(requestPubPending);
 
         if (recovery.replaySessionId() >= 0) {
             if (replayImage == null && replaySubscription != null) {

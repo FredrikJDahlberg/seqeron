@@ -129,7 +129,9 @@ public class SnapshotStoreTest : IDisposable
                      ReadAll(store.Open(2)));
     }
 
-    [Fact(DisplayName = "a confirmation replaces every older file, and any write a crash left behind")]
+    [Fact(
+        DisplayName =
+            "a confirmation replaces every older file but the newest confirmed one, and any write a crash left behind")]
     public void ConfirmationReplacesOlderFiles()
     {
         var crashed = new SnapshotStore(_directory.Path);
@@ -141,14 +143,30 @@ public class SnapshotStoreTest : IDisposable
 
         var store = new SnapshotStore(_directory.Path);
         Write(store, 4, Records());
-        Assert.Equal(new List<string> { "4.snapshot" }, Names());
+        Assert.Equal(new List<string> { "1.snapshot", "4.snapshot" }, Names());
 
         Commit(store, 5, Records());
         Begin(store, 6); // round 5's end never came
         store.Abandon();
-        Assert.Equal(new List<string> { "4.snapshot", "5.tmp" }, Names());
+        Assert.Equal(new List<string> { "1.snapshot", "4.snapshot", "5.tmp" }, Names());
         Write(store, 7, Records());
-        Assert.Equal(new List<string> { "7.snapshot" }, Names());
+        Assert.Equal(new List<string> { "4.snapshot", "7.snapshot" }, Names());
+    }
+
+    [Fact(DisplayName = "a confirmation of a round already on disk replaces its file, and keeps the one before it")]
+    public void ConfirmationReplacesItsOwnRound()
+    {
+        var store = new SnapshotStore(_directory.Path);
+        Write(store, 4, Records());
+        Write(store, 5, Records());
+        string file = FileOf(5);
+        byte[] damaged = File.ReadAllBytes(file);
+        damaged[2 + HeaderLength + 2 + 5] ^= 1; // a body byte of record 1
+        File.WriteAllBytes(file, damaged);
+
+        Write(store, 5, Records()); // the round again, on the way back to the tail
+        Assert.Equal(new List<string> { "4.snapshot", "5.snapshot" }, Names());
+        Assert.Equal(new List<int> { HeaderLength, 1000, 1302, 698, SnapshotStore.Reader.End }, ReadAll(store.Open(5)));
     }
 
     [Fact(DisplayName = "a round whose file never became durable deletes nothing older")]

@@ -343,9 +343,10 @@ outlive the process ([`snapshot.md`](snapshot.md) §4.1).
    `formatVersion`. A build that changes its format overrides `supportsFormatVersion` to keep reading the
    formats it replaces ([`snapshot.md`](snapshot.md) §9). Dispatch resumes after the cut; with no such file,
    from the start of the queue.
-4. **An unreadable file** (a `formatVersion` that `supportsFormatVersion` refuses, corrupt records) fences with
+4. **An unreadable file** (a `formatVersion` that `supportsFormatVersion` refuses) fences with
    `SNAPSHOT_UNRESTORABLE` (C++/C# `ClusterError::SnapshotUnrestorable`; divergence is
-   `ClusterError::SnapshotDiverged`).
+   `ClusterError::SnapshotDiverged`). Corrupt records give way to the older confirmed file the instance keeps,
+   or with none to a replay from the start, before `onRestore` sees any of them.
 
 ### `OutstandingWork`
 

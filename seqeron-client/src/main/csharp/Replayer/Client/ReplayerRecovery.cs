@@ -24,8 +24,8 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// <para>Given a snapshot store (<see cref="RestoreFrom"/>), a cold start first restores the newest snapshot it holds
 /// (doc/snapshot.md §7): it replays the recording from the snapshot's cut, and if the frame there is the round's
 /// <c>SnapshotStarted</c> the file recorded, reads the file's records into the handler, dispatching nothing, then
-/// resumes at the cut with it as the anchor. A file whose cut the recording does not hold gives way to the next older
-/// one, and the last to a walk.</para>
+/// resumes at the cut with it as the anchor. A file whose cut the recording does not hold, or whose records do not
+/// match its trailer, gives way to the next older one, and the last to a walk.</para>
 /// <para><c>ReplayerRecovery.java</c> and <c>ReplayerRecovery.hpp</c> are its twins; keep the three in step.</para>
 /// </summary>
 internal sealed class ReplayerRecovery
@@ -122,6 +122,8 @@ internal sealed class ReplayerRecovery
 
     // Reading the chosen file's records; nothing is dispatched until its last.
     private bool _restoring;
+    // The file's records match its trailer, so the restore reads them again, into the handler.
+    private bool _recordsChecked;
     private SnapshotStore.Reader _reader;
     private int _restoreRecordIndex;
 
@@ -376,12 +378,10 @@ internal sealed class ReplayerRecovery
     /// </summary>
     /// <param name="requestPublicationPending">the request publication has not connected yet: retried every cycle
     /// rather than eating a full resend interval for a race much shorter than that</param>
-    public void DoTimers(bool requestPublicationPending)
+    /// <returns>the records the restore read, the duty cycle's work; timers are none</returns>
+    public int DoTimers(bool requestPublicationPending)
     {
-        if (_restoring)
-        {
-            RestoreRecords();
-        }
+        int records = _restoring ? RestoreRecords() : 0;
         long nowMs = _actions.NowMs();
         if (_awaitingReplay && (requestPublicationPending || (nowMs - _lastRequestMs) > ResendIntervalMs))
         {
@@ -391,6 +391,7 @@ internal sealed class ReplayerRecovery
         {
             OnReplayStalled();
         }
+        return records;
     }
 
     /// <summary>Recovery has run without dispatching a frame for <c>RecoveryProgressTimeoutMs</c>. Evaluated every
@@ -556,6 +557,7 @@ internal sealed class ReplayerRecovery
             return;
         }
         _restoring = true;
+        _recordsChecked = false;
         _restoreRecordIndex = 0;
         _restoredHeader = null;
         Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, _actions.MemberId,
@@ -563,24 +565,30 @@ internal sealed class ReplayerRecovery
                     _reader.CutClusterSeqNo, _reader.CutPosition);
     }
 
-    /// <summary>The next records of the restore, at most <see cref="MaxRestoreRecordsPerCycle"/>. They match the end
-    /// the log holds by the file's trailer, so records that fail it are a damaged file.</summary>
-    private void RestoreRecords()
+    /// <summary>The next records of the restore, at most <see cref="MaxRestoreRecordsPerCycle"/>, once
+    /// <see cref="CheckRecords"/> has matched them to the file's trailer; records that fail it now changed underneath
+    /// the restore.</summary>
+    /// <returns>how many it passed on</returns>
+    private int RestoreRecords()
     {
         _noProgressSinceMs = 0;
+        if (!_recordsChecked)
+        {
+            return CheckRecords();
+        }
         for (int i = 0; i < MaxRestoreRecordsPerCycle; i++)
         {
             int length = _reader.Next(_restoreRecord);
             if (length == SnapshotStore.Reader.End)
             {
                 CompleteRestore();
-                return;
+                return i;
             }
             if (length == SnapshotStore.Reader.Damaged)
             {
                 FailRestore($"round {_snapshotRound}'s snapshot file is damaged: its records do not match its " +
                             "trailer");
-                return;
+                return i;
             }
             if (_restoreRecordIndex == 0)
             {
@@ -589,7 +597,7 @@ internal sealed class ReplayerRecovery
                 {
                     FailRestore($"round {_snapshotRound} has a header of version " +
                                 $"{SnapshotHeader.Version(_restoreRecord, 0, length)}, which this build does not read");
-                    return;
+                    return i;
                 }
                 _restoreHandler.OnSnapshotHeader(_restoredHeader);
             }
@@ -600,6 +608,39 @@ internal sealed class ReplayerRecovery
             }
             _restoreRecordIndex++;
         }
+        return MaxRestoreRecordsPerCycle;
+    }
+
+    /// <summary>Reads the next records of the chosen file without passing them on, at most
+    /// <see cref="MaxRestoreRecordsPerCycle"/>, so a damaged file gives way to an older one before the handler has
+    /// seen any.</summary>
+    /// <returns>how many it read</returns>
+    private int CheckRecords()
+    {
+        int records = 0;
+        int length = 0;
+        while (records < MaxRestoreRecordsPerCycle && (length = _reader.Next(_restoreRecord)) >= 0)
+        {
+            records++;
+        }
+        if (length >= 0)
+        {
+            return records;
+        }
+        CloseReader();
+        if (length == SnapshotStore.Reader.End && (_reader = _store.Open(_snapshotRound)) != null)
+        {
+            _recordsChecked = true;
+            return records;
+        }
+        _restoring = false;
+        Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                   Logger.CoreEventCode.SnapshotStoreFailed, _actions.MemberId,
+                   "round {0}'s snapshot file is damaged: its records do not match its trailer, or it cannot be " +
+                       "opened again; trying an older snapshot",
+                   _snapshotRound);
+        ChooseBelow(_snapshotRound);
+        return records;
     }
 
     private void CloseReader()

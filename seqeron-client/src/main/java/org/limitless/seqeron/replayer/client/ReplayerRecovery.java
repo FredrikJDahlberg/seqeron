@@ -32,8 +32,8 @@ import org.limitless.seqeron.util.Logger;
  * <p>Given a snapshot store ({@link #restoreFrom}), a cold start first restores the newest snapshot it holds
  * (doc/snapshot.md §7): it replays the recording from the snapshot's cut, and if the frame there is the round's
  * {@code SnapshotStarted} the file recorded, reads the file's records into the handler, dispatching nothing, then
- * resumes at the cut with it as the anchor. A file whose cut the recording does not hold gives way to the next
- * older one, and the last to a walk.
+ * resumes at the cut with it as the anchor. A file whose cut the recording does not hold, or whose records do not
+ * match its trailer, gives way to the next older one, and the last to a walk.
  */
 final class ReplayerRecovery {
     private static final long RESEND_INTERVAL_MS = 500;
@@ -142,6 +142,8 @@ final class ReplayerRecovery {
 
     /** Reading the chosen file's records; nothing is dispatched until its last. */
     private boolean restoring;
+    /** The file's records match its trailer, so the restore reads them again, into the handler. */
+    private boolean recordsChecked;
     private SnapshotStore.Reader reader;
     private int restoreRecordIndex;
 
@@ -348,11 +350,10 @@ final class ReplayerRecovery {
      * @param requestPublicationPending the request publication has not connected yet — retried every cycle
      *                                  rather than eating a full resend interval for a race much shorter
      *                                  than that
+     * @return the records the restore read, the duty cycle's work; timers are none
      */
-    public void doTimers(final boolean requestPublicationPending) {
-        if (restoring) {
-            restoreRecords();
-        }
+    public int doTimers(final boolean requestPublicationPending) {
+        final int records = restoring ? restoreRecords() : 0;
         final long nowMs = actions.nowMs();
         if (awaitingReplay && (requestPublicationPending || (nowMs - lastRequestMs) > RESEND_INTERVAL_MS)) {
             requestReplay(requestFromPosition); // re-send the same request verbatim
@@ -360,6 +361,7 @@ final class ReplayerRecovery {
         if (replaySessionId >= 0 && (nowMs - lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS) {
             onReplayStalled();
         }
+        return records;
     }
 
     /**
@@ -540,6 +542,7 @@ final class ReplayerRecovery {
             return;
         }
         restoring = true;
+        recordsChecked = false;
         restoreRecordIndex = 0;
         restoredHeader = null;
         Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, actions.memberId(),
@@ -548,21 +551,25 @@ final class ReplayerRecovery {
     }
 
     /**
-     * The next records of the restore, at most {@link #MAX_RESTORE_RECORDS_PER_CYCLE}. They match the end the log
-     * holds by the file's trailer, so records that fail it are a damaged file.
+     * The next records of the restore, at most {@link #MAX_RESTORE_RECORDS_PER_CYCLE}, once {@link #checkRecords}
+     * has matched them to the file's trailer; records that fail it now changed underneath the restore.
+     * @return how many it passed on
      */
-    private void restoreRecords() {
+    private int restoreRecords() {
         noProgressSinceMs = 0;
+        if (!recordsChecked) {
+            return checkRecords();
+        }
         for (int i = 0; i < MAX_RESTORE_RECORDS_PER_CYCLE; i++) {
             final int length = reader.next(restoreRecord);
             if (length == SnapshotStore.Reader.END) {
                 completeRestore();
-                return;
+                return i;
             }
             if (length == SnapshotStore.Reader.DAMAGED) {
                 failRestore("round " + snapshotRound + "'s snapshot file is damaged: its records do not match its "
                             + "trailer");
-                return;
+                return i;
             }
             if (restoreRecordIndex == 0) {
                 restoredHeader = SnapshotHeader.decode(restoreRecord, 0, length);
@@ -570,7 +577,7 @@ final class ReplayerRecovery {
                     failRestore("round " + snapshotRound + " has a header of version "
                                 + SnapshotHeader.version(restoreRecord, 0, length)
                                 + ", which this build does not read");
-                    return;
+                    return i;
                 }
                 restoreHandler.onSnapshotHeader(restoredHeader);
             } else {
@@ -579,6 +586,35 @@ final class ReplayerRecovery {
             }
             restoreRecordIndex++;
         }
+        return MAX_RESTORE_RECORDS_PER_CYCLE;
+    }
+
+    /**
+     * Reads the next records of the chosen file without passing them on, at most {@link
+     * #MAX_RESTORE_RECORDS_PER_CYCLE}, so a damaged file gives way to an older one before the handler has seen any.
+     * @return how many it read
+     */
+    private int checkRecords() {
+        int records = 0;
+        int length = 0;
+        while (records < MAX_RESTORE_RECORDS_PER_CYCLE && (length = reader.next(restoreRecord)) >= 0) {
+            records++;
+        }
+        if (length >= 0) {
+            return records;
+        }
+        closeReader();
+        if (length == SnapshotStore.Reader.END && (reader = store.open(snapshotRound)) != null) {
+            recordsChecked = true;
+            return records;
+        }
+        restoring = false;
+        Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                   Logger.CoreEventCode.SnapshotStoreFailed, actions.memberId(),
+                   "round %d's snapshot file is damaged: its records do not match its trailer, or it cannot be "
+                       + "opened again; trying an older snapshot", snapshotRound);
+        chooseBelow(snapshotRound);
+        return records;
     }
 
     private void closeReader() {
