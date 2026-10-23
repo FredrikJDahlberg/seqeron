@@ -131,7 +131,11 @@ await_replaced "$BEFORE"; PHASE2=$(( $(replaced) - BEFORE ))
 sleep 2
 
 echo "phase 3: gateway pair paused for ${GATEWAY_PAUSE_SECS}s"
-seqeron-service/src/main/scripts/clusterctl.sh load-topology "$TOPOLOGY" > "$LOG_DIR/load-topology.log" 2>&1 \
+# Without its <snapshots> element: the consensus module resets every session's inactivity clock at each snapshot, so
+# a round every 2 s, inside the 5 s session timeout, would keep the paused pair's sessions from ever timing out.
+NO_ROUNDS_TOPOLOGY="$LOG_DIR/topology-no-rounds.xml"
+grep -v "<snapshots" "$TOPOLOGY" > "$NO_ROUNDS_TOPOLOGY"
+seqeron-service/src/main/scripts/clusterctl.sh load-topology "$NO_ROUNDS_TOPOLOGY" > "$LOG_DIR/load-topology.log" 2>&1 \
   || { echo "clusterctl load-topology failed — see $LOG_DIR/load-topology.log"; exit 1; }
 start_gateway() {  # start_gateway <memberId> <name> <port index> — echoes the pid
   java "${JAVA_OPTS[@]}" -Dprobe.memberId="$1" -Dprobe.clientId=10 -Dprobe.gatewayName="$2" \

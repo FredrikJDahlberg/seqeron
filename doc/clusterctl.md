@@ -104,9 +104,10 @@ exits 1 after the timeout. The instance named opens its external connections, an
 
 ### request-snapshot
 
-Starts an application snapshot round now, rather than at the next interval. It publishes
-`SnapshotRequested`, waits for the `SnapshotStarted` the sequencer synthesizes at the next `clusterSeqNo`,
-and prints the round and that `clusterSeqNo`, which is the round's cut. A round still open is superseded.
+Starts a snapshot round now, rather than at the next interval. It publishes `SnapshotRequested`, which makes a round
+due; the leader's service then asks the cluster for a snapshot, and the command waits for the `SnapshotStarted` that
+snapshot publishes and prints the round and its `clusterSeqNo`, which is the round's cut. It is a cluster snapshot as
+well as an application round (`snapshot.md` §10).
 If the loaded topology has no `<snapshots>` element, nothing answers the request and the command exits 1
 after the timeout. What the participating sources then do is [`snapshot.md`](snapshot.md) §4.
 

@@ -248,8 +248,8 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes {@code SnapshotRequested} and waits for the {@code SnapshotStarted} the sequencer synthesizes at
-     * the next {@code clusterSeqNo}; none follows when the loaded topology has no {@code <snapshots>}.
+     * Publishes {@code SnapshotRequested} and waits for the {@code SnapshotStarted} of the round it calls for; none
+     * follows when the loaded topology has no {@code <snapshots>}.
      */
     private static int requestSnapshot() {
         final long correlationId = System.nanoTime();
@@ -279,8 +279,9 @@ public final class ClusterCtl {
     }
 
     /**
-     * Matches our {@code SnapshotRequested} by correlationId, then the {@code SnapshotStarted} at the {@code
-     * clusterSeqNo} just behind it. One handler for both, since one poll can deliver the two together.
+     * Matches our {@code SnapshotRequested} by correlationId, then the first {@code SnapshotStarted} behind it: the
+     * round the request called for, which the cluster's snapshot action takes at the leader's next callback. One
+     * handler for both, since one poll can deliver the two together.
      */
     private static final class SnapshotStartedEchoHandler extends EchoHandler {
         private final ClusterStartedDecoder marker = new ClusterStartedDecoder();
@@ -309,7 +310,7 @@ public final class ClusterCtl {
                 }
                 return false;
             }
-            if (requestSeqNo < 0 || view.clusterSeqNo() != requestSeqNo + 1) {
+            if (requestSeqNo < 0 || view.clusterSeqNo() < requestSeqNo) {
                 return false;
             }
             decoder.wrap(buffer, view.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,

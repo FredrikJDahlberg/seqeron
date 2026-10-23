@@ -15,13 +15,19 @@ Every recovery path in this document reduces to one operation: replay the sequen
 1. A client whose source takes part in application snapshots starts that replay later, at the cut of its
 newest snapshot the log confirms (§3.4); the snapshot is a file of its own, and the log holds its digest.
 
-The cluster itself takes no snapshots. `SequencerService.onTakeSnapshot` throws and `onStart` refuses a
-snapshot image, and `clusterctl shutdown` stops the cluster with Aeron's `ABORT`, which takes no snapshot,
-rather than `SHUTDOWN`, which does. The reason is the recording. Every member records its own copy of the
-sequenced stream (§1.1); a member restored from a snapshot would hold a recording that starts where the
-snapshot did. Full-log replay is what keeps every recording complete, so any member can serve history to
-its clients without a peer. The cost is that recovery time and archive size grow with uptime; the 1 Hz
-heartbeat alone adds about 86,400 frames a day.
+The cluster takes snapshots only while a `<snapshots>` policy is loaded; without one `SequencerService.onTakeSnapshot`
+throws, and `clusterctl shutdown` stops the cluster with Aeron's `ABORT`, which takes no snapshot, rather than
+`SHUTDOWN`, which does. Without a policy every member records the whole sequenced stream (§1.1), so any member can
+serve history to its clients without a peer, and the cost is that recovery time and archive size grow with uptime;
+the 1 Hz heartbeat alone adds about 86,400 frames a day.
+
+With a policy, a member restarts from the newest cluster snapshot that its `restart-safe.log` names, and its queue
+recording starts at that snapshot's cut rather than at `groupSeqNo` 1. What lies below the cut is in the
+applications' own snapshot files, so a consumer that cannot restore from one (a bare `ReplayerStreamReceiver` has no
+way to write it) cannot follow a restarted member. A cut is named only when every co-located application that joined
+its round has confirmed its file, so a member that dies between a cut and that mark restarts from the snapshot before
+and replays more log, never less. Recovery then replays at most the bytes since the snapshot before the newest safe
+one, about twice the policy's `bytes`.
 
 All state downstream of the log — `clusterSeqNo`, the gateway list, which instance is active, the open
 connections — is a function of the log. None of it has separate persistence or a separate recovery

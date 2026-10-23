@@ -399,6 +399,29 @@ directory, `ArchiveTool <copy> verify <recordingId> -a -checksum CRC-32C`; `desc
 over an archive that holds recordings made without checksums: it marks every recording that fails `INVALID`,
 the Raft log included.
 
+## Cluster snapshots
+
+A `<snapshots>` policy turns on cluster snapshots ([`snapshot.md`](snapshot.md) §10); without one a member's recovery is
+a replay of its whole log.
+
+- **`interval` must exceed `sequencer.sessionTimeoutMs`.** The consensus module resets every client session's
+  inactivity clock at each snapshot, so rounds more often than the session timeout keep a dead client's session from
+  ever timing out, and a dead gateway from ever being replaced by its standby. `bytes` has the same effect on a busy
+  cluster that sets it low.
+- **Every consumer of a member's queue must be able to restart from a snapshot file.** A restarted member's queue starts
+  at a cut, so a process that can only walk the queue from `groupSeqNo` 1, a bare `ReplayerStreamReceiver` such as
+  `ClusterProbe follow`, is fenced with `FirstFrameNotOne`. Only an `Application` or `Gateway` with a
+  `SnapshotListener`, a stateless one writing no records included, and a row in the topology, writes the file.
+- **`replayer.snapshotJoinMs`** (default 5000) is how long after a cut an application has to join its round. One that
+  joins later is not waited for, and the cut is restart-safe without it: its restart is then fenced until a peer's file
+  is copied in. Keep it above the longest time an application takes to serialize.
+- **`restart-safe.log`** in each member's cluster directory holds `cut`, `safe` and `trimmed` lines. Do not edit it. A
+  member that has not marked its newest snapshot safe starts from the one before, so a missing mark costs replay and
+  nothing else.
+- **`LogVersion`** is the major of Aeron's `appVersion` on the consensus module and the service. A node started on a
+  log of another major stops with "incompatible version"; a log written before there was a version is accepted until
+  the major is raised.
+
 ## A node that terminates itself
 
 A member's archive is its copy of the sequenced history, so a member that cannot record would accumulate

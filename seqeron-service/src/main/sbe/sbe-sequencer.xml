@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+    The Sequencer's snapshot: schema 216, specified in doc/snapshot.md §10.2.
+
+    What SequencerService writes to Aeron's snapshot publication and reads back in onStart: a begin message
+    with the scalars, one message per map or list entry, and an end message with the counts. Java only, and
+    node-local: it is read by the build that wrote it or the next, never by a client, so it is no part of the wire
+    protocol (spec §8) and its version is the formatVersion of the begin message.
+
+    Entries are written in key order (maps) or log order (lists), so that every member writes the same bytes at
+    the same log position.
+-->
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="org.limitless.seqeron.sbe.sequencer"
+                   id="216"
+                   version="0"
+                   description="The Sequencer's snapshot, node-local and Java only"
+                   byteOrder="littleEndian">
+
+    <types>
+
+        <composite name="messageHeader">
+            <type name="blockLength" primitiveType="uint16"/>
+            <type name="templateId"  primitiveType="uint16"/>
+            <type name="schemaId"    primitiveType="uint16"/>
+            <type name="version"     primitiveType="uint16"/>
+        </composite>
+
+        <composite name="varDataEncoding">
+            <type name="length"  primitiveType="uint16" nullValue="65535" presence="optional"/>
+            <type name="varData" primitiveType="uint8"  length="0"/>
+        </composite>
+
+        <type name="groupNames" primitiveType="char"  length="512" characterEncoding="US-ASCII"
+              description="Sixteen 32-byte slots, as GroupsRegistered's; byte 0 = 0x00 means no group"/>
+        <type name="longs16"    primitiveType="int64" length="16" description="One per group, slot groupId - 1"/>
+        <type name="ints16"     primitiveType="int32" length="16" description="One per group, slot groupId - 1"/>
+
+    </types>
+
+    <sbe:message name="SequencerState" id="1"
+                 description="The scalars, the groups and the queues. The first record">
+        <field name="formatVersion"         id="1"  type="int32"/>
+        <field name="clusterSeqNo"          id="2"  type="int64"
+               description="Of the round's marker, the last frame sequenced when a snapshot is taken"/>
+        <field name="topologySession"       id="3"  type="int64"/>
+        <field name="rejectedFrameCount"    id="4"  type="int64"/>
+        <field name="gatewayPromotionCount" id="5"  type="int64"/>
+        <field name="gatewayPromotionFailedCount" id="6" type="int64"/>
+        <field name="bootstrapActivationScheduled" id="7" type="uint8"/>
+        <field name="bootstrapActivationEmitted"   id="8" type="uint8"/>
+        <field name="snapshotIntervalNs"    id="9"  type="int64"/>
+        <field name="snapshotRound"         id="10" type="int64"/>
+        <field name="lastSnapshotStart"     id="11" type="int64"/>
+        <field name="snapshotBytes"         id="12" type="int64"/>
+        <field name="bytesSinceSnapshot"    id="13" type="int64"/>
+        <field name="roundDue"              id="14" type="uint8"
+               description="A round is due: the interval, the byte count or an operator called for one"/>
+        <field name="groupNames"            id="15" type="groupNames"/>
+        <field name="groupSeqNos"           id="16" type="longs16"
+               description="Each queue's last groupSeqNo"/>
+        <field name="markerPositions"       id="17" type="longs16"
+               description="Where each queue's marker started in this node's recording, a hint"/>
+        <field name="termLengths"           id="18" type="ints16"
+               description="The term length of each queue publication when it was taken"/>
+        <field name="mtus"                  id="19" type="ints16"
+               description="The MTU of each queue publication when it was taken"/>
+        <data  name="prologue"              id="20" type="varDataEncoding"
+               description="The latest LeadershipChanged as sequenced, until activation writes it"/>
+    </sbe:message>
+
+    <sbe:message name="SourceGroup" id="2" description="One registered source's group, in sourceId order">
+        <field name="sourceId" id="1" type="int32"/>
+        <field name="groupId"  id="2" type="int32"/>
+    </sbe:message>
+
+    <sbe:message name="SessionBinding" id="3" description="A session a GatewayStarted bound, in sessionId order">
+        <field name="sessionId" id="1" type="int64"/>
+        <field name="gatewayId" id="2" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="Designation" id="4"
+                 description="A logical gateway's designated instance, in gatewaySourceId order">
+        <field name="gatewaySourceId" id="1" type="int64"/>
+        <field name="gatewayId"       id="2" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="GatewayRow" id="5" description="One list row, in log order">
+        <field name="gatewayId"       id="1" type="int32"/>
+        <field name="gatewaySourceId" id="2" type="int32"/>
+        <field name="preferenceRank"  id="3" type="int16"/>
+        <field name="boundSession"    id="4" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="PendingActivation" id="6" description="One unanswered GatewayActive, in arm order">
+        <field name="gatewaySourceId" id="1" type="int32"/>
+        <field name="gatewayId"       id="2" type="int32"/>
+        <field name="deadline"        id="3" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="TopologyRow" id="8"
+                 description="A topology row as it was sequenced on the default queue, in key order, for the Replayer to
+                              resolve instances' queues from (spec R-6), which the log no longer replays">
+        <data name="frame" id="1" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="SequencerEnd" id="7" description="The counts of what came before. The last record">
+        <field name="sourceGroups"       id="1" type="int32"/>
+        <field name="sessionBindings"    id="2" type="int32"/>
+        <field name="designations"       id="3" type="int32"/>
+        <field name="gatewayRows"        id="4" type="int32"/>
+        <field name="pendingActivations" id="5" type="int32"/>
+        <field name="topologyRows"       id="6" type="int32"/>
+    </sbe:message>
+
+</sbe:messageSchema>

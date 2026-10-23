@@ -16,7 +16,8 @@ queue is sequenced: it carries `Sequenced` envelopes and nothing else, and the s
 same committed log in the same order and keep identical sequencing state (so a new leader resumes
 exactly where the last one left off), which makes the queues byte-identical across nodes, frame for frame
 (recording positions match only at equal IPC MTU and term length): each archive
-independently holds each queue complete, with no cross-node replication. A queue publication is created
+independently holds each queue, with no cross-node replication, from `groupSeqNo` 1 or from the cut a restarted
+member restored at (below). A queue publication is created
 once, at activation, and never re-created on a leadership change (`aeron:ipc` has no port to collide on),
 so a node's recording of it is one continuous run spanning every leader tenure; a node whose archive is not
 recording every queue within 5 s of activation terminates itself.
@@ -42,12 +43,30 @@ Besides forwarded ingress, the sequencer synthesizes its own frames on the same 
 clock, so consumers have a consensus-driven time source that keeps advancing while a producer is silent,
 which is exactly when a gateway's keepalive watchdog must probe.
 
-**Cluster snapshots are not supported**, and both `ClusteredService` hooks refuse: `onTakeSnapshot` throws, and
-`onStart` refuses a snapshot image rather than restoring from one. `clusterctl shutdown` uses `ABORT`,
-and a node's recovery is always full-log replay from `clusterSeqNo` 1. That is deliberate: replaying the whole log
-is what keeps each node's queue recording complete and gap-free — a node restored from a snapshot would
-record only from wherever it resumed. The cost is that recovery time and archive size grow with uptime
-(the 1 Hz heartbeat alone is ~86.4k frames/day).
+**A cluster snapshot is also an application round** (`doc/snapshot.md` §10), and exists only while a
+`<snapshots>` policy is loaded: without one `onTakeSnapshot` throws, `clusterctl shutdown` uses `ABORT`, and a node's
+recovery is full-log replay from `clusterSeqNo` 1. With a policy the `Sequencer` reports a round due (its interval,
+its `bytes`, or an operator's `SnapshotRequested`) as replicated state, and the leader's service sets the
+`ClusterControl` toggle to `SNAPSHOT`. The cluster's snapshot action then calls `onTakeSnapshot` on every member at
+the same log position: `Sequencer.takeSnapshot` publishes the marker `SnapshotStarted` on every queue, and
+`Sequencer` (a `SequencerSnapshot`, its own Java-only schema 216) writes its state, which acks. Nothing waits for an
+application. **`onStart` restores that state and creates each queue again at the cut** (`QueueStart`: at the marker's
+position when the node's IPC term length and MTU are the snapshot's, else at 0), re-emits the marker as the queue's
+first frame, purges the earlier recording, and hands the Replayer the topology rows the log no longer replays. So a
+restarted member's queue starts at a cut, not at `groupSeqNo` 1, and a consumer that cannot restore from a snapshot
+file cannot follow it.
+
+A cut may be restarted from only once it is *restart-safe*: every co-located application that joined the round
+(`SnapshotJoined`, within `replayer.snapshotJoinMs`) has confirmed its file (`SnapshotConfirmed`). The member's
+`restart-safe.log` in its cluster directory holds `cut`, `safe` and `trimmed` lines, forced to disk; the service writes
+`cut` before it acks, which is also how a snapshot action replayed from the log is told from a live one, and the
+Replayer writes `safe` (`RestartSafety`). Before the consensus module starts, the launcher invalidates every snapshot at
+the head of `recording.log` that the file does not name as safe (`SnapshotChoice`), so an unsafe cut costs a longer
+replay and never a fenced application. `LogVersion` is the major of Aeron's `appVersion`.
+
+**A policy's `interval` must exceed the session timeout.** The consensus module resets every client session's
+inactivity clock at each snapshot, so rounds more often than `sequencer.sessionTimeoutMs` keep a dead client's session
+from ever timing out, and a dead gateway from ever being replaced by its standby.
 
 **Application snapshots are local files the log confirms instead** (`doc/snapshot.md`). The sequencer
 synthesizes `SnapshotStarted` as a round's cut; every instance of a participating source serializes its state
@@ -76,10 +95,10 @@ runs its own media driver and archive, and `AeronQueueRelay` copies a member's q
 recording live. Its decisions are the pure
 **`QueueRelay`**, unit-tested the way `QueuePublisher` is. It republishes only the frame after the last one it
 published, so the host's queue is the member's frame for frame, and on losing its member it resumes on the next
-at the same recording position — every member's active recording of a queue starts at `groupSeqNo` 1 and its
-positions follow from the frames — falling back to that recording's start if the frame there is not the
-next one. Each start relays from `groupSeqNo` 1 into a new local recording, as a member's restart does, so
-the host's recording starts where a client checks it does. Clients there are unchanged: they attach to the host's
+at the same recording position — a member's recording of a queue follows from its frames from its first, so
+positions agree at equal term length and MTU — falling back to that recording's start if the frame there is not the
+next one. Each start relays from the member's recording start, `groupSeqNo` 1 or a cut's, into a new local recording,
+as a member's restart does, so the host's recording starts where a client checks it does. Clients there are unchanged: they attach to the host's
 Aeron directory with the host's node id (one no member uses) where they take a member id, and submit over UDP
 ingress — an `Application` with `offCluster` set, since no leadership there is its own, which makes it the
 one instance whose gate opens once caught up. The member pays one archive replay per gateway host and its sequencer nothing.

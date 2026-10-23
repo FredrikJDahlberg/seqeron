@@ -25,6 +25,7 @@ import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
 import org.limitless.seqeron.sequencer.SequencerServer;
 import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.client.IngressPublisher;
@@ -70,14 +71,27 @@ final class InProcessCluster implements AutoCloseable {
 
     /** Launches every member and activates the groups, since the cluster sequences nothing before them (spec §7.4). */
     void startAll() {
+        startAll(NO_SNAPSHOT_POLICY, 0);
+    }
+
+    /** No {@code <snapshots>} policy: {@link #startAll()}'s. */
+    static final int NO_SNAPSHOT_POLICY = -1;
+
+    /**
+     * As {@link #startAll()}, loading a snapshot policy on the session that activates the groups, the one session that
+     * may register a topology row (<b>S-9</b>).
+     * @param snapshotIntervalSeconds seconds between rounds, 0 for operator requests only, or {@link #NO_SNAPSHOT_POLICY}
+     * @param snapshotBytes           sequenced bytes between rounds, 0 for none
+     */
+    void startAll(final int snapshotIntervalSeconds, final long snapshotBytes) {
         for (int m = 0; m < MEMBERS; m++) {
             start(m);
         }
-        activateGroups();
+        activateGroups(snapshotIntervalSeconds, snapshotBytes);
     }
 
     /** Publishes the group table from a session of its own, and waits until every member's Replayer serves it. */
-    private void activateGroups() {
+    private void activateGroups(final int snapshotIntervalSeconds, final long snapshotBytes) {
         final byte[] names = new byte[GroupsRegisteredEncoder.groupNamesLength()];
         final int slot = names.length / FrameLayer.MAX_GROUPS;
         for (final int groupId : GROUP_IDS) {
@@ -94,6 +108,19 @@ final class InProcessCluster implements AutoCloseable {
             while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
                                            SystemFrame.GROUPS_REGISTERED, body, length) != Publish.Published) {
                 Tests.yield();
+            }
+            if (snapshotIntervalSeconds != NO_SNAPSHOT_POLICY) {
+                final ExpandableArrayBuffer policy = new ExpandableArrayBuffer(SnapshotPolicyRegisteredEncoder.BLOCK_LENGTH);
+                final int policyLength = new SnapshotPolicyRegisteredEncoder()
+                                             .wrap(policy, 0)
+                                             .intervalSeconds(snapshotIntervalSeconds)
+                                             .bytes(snapshotBytes)
+                                             .encodedLength();
+                while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
+                                               SystemFrame.SNAPSHOT_POLICY_REGISTERED, policy, policyLength)
+                       != Publish.Published) {
+                    Tests.yield();
+                }
             }
             for (int m = 0; m < MEMBERS; m++) {
                 try (Aeron member = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir(m)))) {

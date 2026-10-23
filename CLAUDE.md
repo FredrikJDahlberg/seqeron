@@ -221,8 +221,10 @@ mirrored by `PortLayout` in every language; change all four together.
 
 ## Known gaps
 
-The two structural costs are the standing ones: **no cluster snapshots** (a node's recovery time and
-archive size grow with uptime; application snapshots shorten only a client's restart),
+The two structural costs are the standing ones: **a cluster with no `<snapshots>` policy takes no cluster
+snapshots** (a node's recovery time and archive size grow with uptime; with one they are bounded by the policy's
+`bytes`, and every consumer of a member's queue must then be able to restart from a snapshot file, which only an
+`Application` or `Gateway` writes),
 and **the cluster is bounded at seven members** by the 70-port cluster block (`doc/ops.md`, "Ports").
 `SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by all three mirrors
 — but does not widen it. `SEQERON_HOSTS` names the members' hosts, deployment-wide too, and is read by

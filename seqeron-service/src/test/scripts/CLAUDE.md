@@ -49,7 +49,9 @@ goes away raises from `doWork()` rather than as a fence. It is in
 `seqeron-service/build/classes/java/test` on the classpath beside the uber jar and refuse to start
 without it. Its
 list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, whose pair takes part in snapshot rounds
-(`-Dprobe.snapshot`, `-Dprobe.snapshotDir`) so they run under the faults too. `topology-test-snapshot.xml` beside it adds
+(`-Dprobe.snapshot`, `-Dprobe.snapshotDir`). `chaos-runner.sh` loads it without its `<snapshots>` element, since a member
+restarted from a cluster snapshot starts its queue at a cut, which its plain `ClusterProbe follow` consumers cannot
+follow; rounds under member kills are `snapshot-test.sh`'s and `ClusterSnapshotTest`'s. `topology-test-snapshot.xml` beside it adds
 **`TestApplication`** (`sourceId` 16, one replica per member), the reference consumer of `app/Application` with a
 `SnapshotListener`; `snapshot-test.sh` loads it and drives both through restores, a failover onto a restored instance, the
 killed instance's return, an operator-requested round and a cluster leader kill. The two other topology documents here are

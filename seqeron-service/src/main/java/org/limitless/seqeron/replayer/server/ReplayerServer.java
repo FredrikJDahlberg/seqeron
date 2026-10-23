@@ -166,7 +166,7 @@ public final class ReplayerServer {
         try {
             return new ReplayerServer(config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(),
                                       config.host(), config.groups(), new ConcurrentLinkedQueue<>(),
-                                      config.idleStrategies(), fatalHandler);
+                                      config.idleStrategies(), fatalHandler, null);
         } catch (final RuntimeException ex) {
             CloseHelper.quietClose(driver);
             throw ex;
@@ -186,14 +186,26 @@ public final class ReplayerServer {
     public static ReplayerServer launch(final int memberId, final String aeronDir,
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler) {
+        return launch(memberId, aeronDir, idleStrategies, topologyRows, fatalHandler, null);
+    }
+
+    /**
+     * As above, tracking the cluster snapshots the member takes (doc/snapshot.md §10.8).
+     *
+     * @param cutIntake the cuts the member hands over, its {@code restart-safe.log} and the join window; null to
+     *                  track none
+     */
+    public static ReplayerServer launch(final int memberId, final String aeronDir,
+                                        final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
+                                        final Runnable fatalHandler, final CutIntake cutIntake) {
         return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, List.of(), topologyRows,
-                                  idleStrategies, fatalHandler);
+                                  idleStrategies, fatalHandler, cutIntake);
     }
 
     private ReplayerServer(final int memberId, final ArchivingMediaDriver driver, final String aeronDir,
                            final List<String> archiveEndpoints, final String host, final List<Integer> groups,
                            final Queue<byte[]> topologyRows, final Supplier<IdleStrategy> idleStrategies,
-                           final Runnable fatalHandler) {
+                           final Runnable fatalHandler, final CutIntake cutIntake) {
         this.memberId = memberId;
         this.driver = driver;
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
@@ -224,7 +236,8 @@ public final class ReplayerServer {
             ? null
             : new Thread(() -> AeronQueueRelay.run(relays, running, relayIdleStrategy), "relay-" + memberId);
         final ReplayerService replayer =
-            new ReplayerService(aeron, archive, memberId, idleStrategy, topologyRows, relayedGroups, fatalHandler);
+            new ReplayerService(aeron, archive, memberId, idleStrategy, topologyRows, relayedGroups, fatalHandler,
+                                cutIntake);
         replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         if (relayThread != null) {
             relayThread.start();
