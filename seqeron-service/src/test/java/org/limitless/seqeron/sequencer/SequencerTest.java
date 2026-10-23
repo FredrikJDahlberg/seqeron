@@ -685,6 +685,119 @@ class SequencerTest {
         assertNothingBehindHeartbeat("and round 3 restarts it");
     }
 
+    /** Sequences a policy row and returns the length of the frame it became. */
+    private int sequencePolicy(final Sequencer target, final FrameRecorder recorder, final int intervalSeconds,
+                               final long bytes) {
+        final MutableDirectBuffer row = new ExpandableArrayBuffer(64);
+        assertTrue(target.sequenceMessage(row, 0, encodeIngressSnapshotPolicy(row, 0, intervalSeconds, bytes),
+                                          SESSION_ID, TIMESTAMP));
+        return recorder.lastLength();
+    }
+
+    /** Sequences one application frame and returns the length it was published at. */
+    private int sequencePayload() {
+        assertTrue(sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), SESSION_ID, TIMESTAMP));
+        return frames.lastLength();
+    }
+
+    @Test
+    @DisplayName("sequenced bytes start a round once they reach the threshold, with no interval set")
+    void snapshotBytesStartARoundAtTheThreshold() {
+        final int policy = sequencePolicy(sequencer, frames, 0, 0);
+        final int payload = sequencePayload();
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        final int heartbeat = frames.lastLength();
+
+        // Policy, two frames and a heartbeat reach it exactly, the count including the heartbeat itself.
+        sequencePolicy(sequencer, frames, 0, policy + 2L * payload + heartbeat);
+        sequencePayload();
+        sequencePayload();
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        assertEquals(1L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+    }
+
+    @Test
+    @DisplayName("a byte count short of the threshold starts nothing, and the next heartbeat tips it")
+    void snapshotBytesBelowTheThresholdStartNothing() {
+        final int policy = sequencePolicy(sequencer, frames, 0, 0);
+        final int payload = sequencePayload();
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        final int heartbeat = frames.lastLength();
+
+        sequencePolicy(sequencer, frames, 0, policy + 2L * payload + heartbeat + 1);
+        sequencePayload();
+        sequencePayload();
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        assertNothingBehindHeartbeat("one byte short");
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        assertEquals(1L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+    }
+
+    @Test
+    @DisplayName("bytes 0 turns the trigger off, however much is sequenced")
+    void snapshotBytesZeroIsOff() {
+        sequencePolicy(sequencer, frames, 0, 0);
+        for (int i = 0; i < 100; i++) {
+            sequencePayload();
+        }
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        assertNothingBehindHeartbeat("no byte trigger");
+    }
+
+    @Test
+    @DisplayName("an operator round restarts the byte count")
+    void snapshotRoundRestartsTheByteCount() {
+        final int policy = sequencePolicy(sequencer, frames, 0, 0);
+        final int payload = sequencePayload();
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        final int heartbeat = frames.lastLength();
+
+        sequencePolicy(sequencer, frames, 0, policy + 2L * payload + heartbeat);
+        sequencePayload();
+        sequencePayload();
+        sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, 5), SESSION_ID, TIMESTAMP);
+        assertEquals(1L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        assertNothingBehindHeartbeat("the two frames no longer count");
+        for (int i = 0; i < 3; i++) {
+            sequencePayload();
+        }
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        assertEquals(2L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+    }
+
+    @Test
+    @DisplayName("the interval and the byte count falling due on one heartbeat start one round")
+    void snapshotIntervalAndBytesTogetherStartOneRound() {
+        final long interval = 10_000_000_000L;
+        sequencePolicy(sequencer, frames, 10, 1);
+        final int before = frames.count();
+        sequencer.clusterHeartbeat(TIMESTAMP + interval);
+        assertEquals(before + 2, frames.count(), "the heartbeat and one SnapshotStarted");
+        assertEquals(1L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+    }
+
+    @Test
+    @DisplayName("a frame reaching several queues counts once")
+    void snapshotBytesCountAFrameOncePerClusterNotPerQueue() {
+        final FrameRecorder recorder = new FrameRecorder();
+        final Sequencer target = new Sequencer(0, recorder);
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(1024);
+        assertTrue(target.sequenceMessage(buf, 0, encodeIngressGroupsRegistered(buf, 0, "group-1", "group-2"),
+                                          SESSION_ID, TIMESTAMP));
+        final int policy = sequencePolicy(target, recorder, 0, 0);
+        target.clusterHeartbeat(TIMESTAMP);
+        final int heartbeat = recorder.lastLength();
+
+        // Policy and heartbeat, once each, fall one byte short; counted per queue they would not.
+        sequencePolicy(target, recorder, 0, policy + heartbeat + 1);
+        target.clusterHeartbeat(TIMESTAMP);
+        assertEquals(SystemFrame.CLUSTER_HEARTBEAT, systemHeaderOf(recorder.last()).systemEventType());
+        target.clusterHeartbeat(TIMESTAMP);
+        assertEquals(SystemFrame.SNAPSHOT_STARTED, systemHeaderOf(recorder.last()).systemEventType());
+    }
+
     // ── Lifecycle and clock frames ────────────────────────────────────────────
 
     @Test
@@ -1474,10 +1587,15 @@ class SequencerTest {
     /** Encodes a SnapshotPolicyRegistered, as {@code clusterctl load-topology} submits it. */
     private static int encodeIngressSnapshotPolicy(final MutableDirectBuffer buffer, final int offset,
                                                    final int intervalSeconds) {
+        return encodeIngressSnapshotPolicy(buffer, offset, intervalSeconds, 0);
+    }
+
+    private static int encodeIngressSnapshotPolicy(final MutableDirectBuffer buffer, final int offset,
+                                                   final int intervalSeconds, final long bytes) {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(16);
         final org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder encoder =
             new org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder();
-        encoder.wrap(body, 0).intervalSeconds(intervalSeconds);
+        encoder.wrap(body, 0).intervalSeconds(intervalSeconds).bytes(bytes);
         return encodeIngressSystemFrame(buffer, offset, 99, -1, SystemFrame.SNAPSHOT_POLICY_REGISTERED, body,
                                         encoder.encodedLength());
     }

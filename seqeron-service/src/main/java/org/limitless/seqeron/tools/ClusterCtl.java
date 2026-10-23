@@ -440,7 +440,9 @@ public final class ClusterCtl {
 
             if (topology.snapshots() != null) {
                 final SnapshotPolicyRegisteredEncoder policyEncoder = new SnapshotPolicyRegisteredEncoder();
-                policyEncoder.wrap(payload, 0).intervalSeconds(topology.snapshots().intervalSeconds());
+                policyEncoder.wrap(payload, 0)
+                    .intervalSeconds(topology.snapshots().intervalSeconds())
+                    .bytes(topology.snapshots().bytes());
                 publish(session, log, SystemFrame.SNAPSHOT_POLICY_REGISTERED, payload, policyEncoder.encodedLength());
             }
 

@@ -313,6 +313,8 @@
                               other row">
         <field name="intervalSeconds" id="20056" type="uint32"
                description="Seconds between rounds on the cluster clock; 0 = operator requests only"/>
+        <field name="bytes" id="20061" type="int64"
+               description="Sequenced bytes between rounds; 0 = no byte trigger"/>
     </sbe:message>
 
     <sbe:message name="GroupsRegistered" id="32"

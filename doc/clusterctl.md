@@ -121,7 +121,7 @@ Publishes the deployment's topology document (spec §6.4): an XML file validated
 | `<gateways>` (optional) | one `GatewayRegistered` per row, `remaining` counting down to 0 on the last | builds the gateway list, and after the last row designates the rank-0 instance of each gateway not designated before |
 | `<applications>` (optional) | one `ApplicationRegistered` per row | records the source's group; the `snapshot` attribute is the façades' ([`snapshot.md`](snapshot.md) §1) |
 | `<protocols>` (optional) | one `PayloadIdRegistered` per row | reads nothing; the rows label payloads for the log printer |
-| `<snapshots>` (optional) | one `SnapshotPolicyRegistered` | turns snapshot rounds on (spec §7.3) |
+| `<snapshots>` (optional) | one `SnapshotPolicyRegistered` | turns snapshot rounds on, by `interval` seconds and `bytes` sequenced (spec §7.3) |
 
 **Validation.** A published list cannot be retracted, so the whole file is validated before anything is
 published.
@@ -132,8 +132,8 @@ published.
   `name`, application `name` and `sourceId`, and `payloadId`.
 - The loader (`TopologyDocument`) checks what one row cannot express: exactly one `rank="0"` per gateway
   `sourceId`; no reserved `sourceId` (spec §5); no application `sourceId` a gateway also uses; the same
-  `snapshot` and `group` on every row of one gateway `sourceId`; and at least one row with
-  `snapshot="true"` when `<snapshots>` is present.
+  `snapshot` and `group` on every row of one gateway `sourceId`; and `snapshot="true"` on every row when
+  `<snapshots>` is present, of which there is at least one.
 - A row may carry a `description` attribute for readers of the file; it is not published.
 
 **Checks against the log.** The schema cannot see what is already loaded, and a row the sequencer refuses

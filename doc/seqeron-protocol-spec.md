@@ -367,7 +367,7 @@ snapshot rounds:
 | `<gateways>` | one `GatewayRegistered` per row | the gateway list (§7) |
 | `<applications>` | one `ApplicationRegistered` per row | co-located applications |
 | `<protocols>` | one `PayloadIdRegistered` per row | shared protocols (§6.3) |
-| `<snapshots>` | one `SnapshotPolicyRegistered` | the snapshot round interval (§7.3) |
+| `<snapshots>` | one `SnapshotPolicyRegistered` | the snapshot round interval and byte threshold (§7.3) |
 
 ```xml
 <topology>
@@ -392,7 +392,7 @@ Attribute to field: a gateway's `name`/`id`/`sourceId`/`rank` are
 `gatewayName`/`gatewayId`/`gatewaySourceId`/`preferenceRank`; an application's `name`/`sourceId` are
 `applicationName`/`applicationSourceId`; a protocol's `payloadId`/`version`/`name` are
 `payloadId`/`protocolVersion`/`protocolName`. A gateway's or application's optional `snapshot`
-(default `false`) is `snapshot`, and `<snapshots interval>` is `intervalSeconds`. A group's `name` is
+(default `false`) is `snapshot`, and `<snapshots interval>` and `<snapshots bytes>` (default 0) are `intervalSeconds` and `bytes`. A group's `name` is
 the `groupNames` slot its `id` selects (§7.1), and a gateway's or application's `group` is the
 `groupId` of the group it names. A gateway's `remaining` is computed by the loader from the row count of
 its section. An application row has no `id` or `rank` because applications are not elected.
@@ -412,7 +412,7 @@ its section. An application row has no `id` or `rank` because applications are n
 | no `sourceId` is a reserved id (§5) | loader |
 | no application `sourceId` equals a gateway `sourceId` | loader |
 | every row of one gateway `sourceId` has the same `snapshot` and `group` | loader |
-| `<snapshots>` has a row with `snapshot="true"` | loader |
+| `<snapshots>` has a row with `snapshot="true"`, and no row without | loader |
 
 The loader MUST validate against the schema in its own artifact and MUST ignore any schema location
 the document names. Otherwise a document could name a weaker schema and bypass **C-1**.
@@ -482,7 +482,7 @@ of their own.
 | `ApplicationRegistered` | 25 | payload | yes (`clusterctl load-topology`) | yes: its `groupId` (**S-8**) |
 | `SnapshotRequested` | 26 | payload | yes (`clusterctl request-snapshot`) | no: answered with `SnapshotStarted` (§7.3) |
 | `SnapshotEnd` | 28 | payload | yes (participating source) | no |
-| `SnapshotPolicyRegistered` | 29 | payload | yes (`clusterctl load-topology`) | yes: the round interval (§7.3) |
+| `SnapshotPolicyRegistered` | 29 | payload | yes (`clusterctl load-topology`) | yes: the round interval and byte threshold (§7.3) |
 | `SnapshotStarted` | 30 | template 107 | no | no (encodes only) |
 | `SessionClosed` | 31 | template 108 | no | no (encodes only) |
 | `GroupsRegistered` | 32 | payload | yes (`clusterctl load-topology`) | yes: the group table; the first activates the groups (§7.4); opens the topology session (**S-9**) |
@@ -552,7 +552,7 @@ synthesized templates' blocks include the 44-byte header composite.
 | `ApplicationRegistered` | 25 | 38 | 92 | `applicationSourceId` int32, `applicationName` char[32], `snapshot` uint8, `groupId` uint8 |
 | `SnapshotRequested` | 26 | 8 | 62 | `correlationId` int64 |
 | `SnapshotEnd` | 28 | 28 | 82 | `round` int64, `recordCount` int32, `length` int64, `crc32c` uint32, `formatVersion` uint32 |
-| `SnapshotPolicyRegistered` | 29 | 4 | 58 | `intervalSeconds` uint32 |
+| `SnapshotPolicyRegistered` | 29 | 12 | 66 | `intervalSeconds` uint32, `bytes` int64 |
 | `SnapshotStarted` | 30 | 52 | 60 | `round` int64 |
 | `SessionClosed` | 31 | 52 | 60 | `clusterSessionId` int64 |
 | `GroupsRegistered` | 32 | 512 | 566 | `groupNames` char[512] |
@@ -669,19 +669,24 @@ frame at the same `clusterSeqNo`.
 A round is a cut in the log: a synthesized `SnapshotStarted` whose `clusterSeqNo` is the point every
 participating source serializes its state at. The sequencer tracks nothing about a round once it has
 started; what the sources submit for it is `doc/snapshot.md`. Its state is the latest
-`SnapshotPolicyRegistered`'s interval, the last round number, and the timestamp the interval counts
-from.
+`SnapshotPolicyRegistered`'s interval and byte threshold, the last round number, the timestamp the
+interval counts from, and the bytes sequenced since the last `SnapshotStarted`: the length of every
+frame published to the queues, each counted once however many queues it reaches.
 
-**Triggers.** Neither fires before a `SnapshotPolicyRegistered` has been sequenced.
+**Triggers.** None fires before a `SnapshotPolicyRegistered` has been sequenced.
 
 1. Operator request: a sequenced `SnapshotRequested` is answered by `SnapshotStarted` at the next
    `clusterSeqNo`. Without a policy, nothing follows it.
 2. Interval: on each `ClusterHeartbeat`, immediately after promotion, when `intervalSeconds` > 0 and
    the heartbeat's timestamp is at least `intervalSeconds` past the last `SnapshotStarted`, or past the
    latest policy row before any round.
+3. Bytes: on each `ClusterHeartbeat`, when `bytes` > 0 and the bytes sequenced, the heartbeat's own
+   length included, have reached `bytes`. The count restarts at each `SnapshotStarted`, which counts
+   toward the next round, and before any round at the latest policy row.
 
-Rounds are numbered from 1, and each `SnapshotStarted` supersedes the one before it. A policy row
-sequenced after the first round changes the interval but not the point it counts from.
+A heartbeat that meets both the interval and the byte trigger starts one round. Rounds are numbered
+from 1, and each `SnapshotStarted` supersedes the one before it. A policy row sequenced after the first
+round changes the interval and the threshold but not the point either counts from.
 
 ### 7.4 Groups and producer-side routing
 

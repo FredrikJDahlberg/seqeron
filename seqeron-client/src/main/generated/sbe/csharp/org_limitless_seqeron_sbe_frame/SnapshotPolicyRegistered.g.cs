@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
     /// </summary>
     public sealed partial class SnapshotPolicyRegistered
     {
-        public const ushort BlockLength = (ushort)4;
+        public const ushort BlockLength = (ushort)12;
         public const ushort TemplateId = (ushort)29;
         public const ushort SchemaId = (ushort)210;
         public const ushort SchemaVersion = (ushort)0;
@@ -138,6 +138,49 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
         }
 
 
+        public const int BytesId = 20061;
+        public const int BytesSinceVersion = 0;
+        public const int BytesDeprecated = 0;
+        public bool BytesInActingVersion()
+        {
+            return _actingVersion >= BytesSinceVersion;
+        }
+
+        public const int BytesOffset = 4;
+
+        public static string BytesMetaAttribute(MetaAttribute metaAttribute)
+        {
+            switch (metaAttribute)
+            {
+                case MetaAttribute.Epoch: return "";
+                case MetaAttribute.TimeUnit: return "";
+                case MetaAttribute.SemanticType: return "";
+                case MetaAttribute.Presence: return "required";
+            }
+
+            return "";
+        }
+
+        public const long BytesNullValue = -9223372036854775808L;
+        public const long BytesMinValue = -9223372036854775807L;
+        public const long BytesMaxValue = 9223372036854775807L;
+
+        /// <summary>
+        /// Sequenced bytes between rounds; 0 = no byte trigger
+        /// </summary>
+        public long Bytes
+        {
+            get
+            {
+                return _buffer.Int64GetLittleEndian(_offset + 4);
+            }
+            set
+            {
+                _buffer.Int64PutLittleEndian(_offset + 4, value);
+            }
+        }
+
+
         public override string ToString()
         {
             var sb = new StringBuilder(100);
@@ -178,6 +221,9 @@ namespace Org.Limitless.Seqeron.Sbe.Frame
 
             builder.Append("IntervalSeconds=");
             builder.Append(this.IntervalSeconds);
+            builder.Append('|');
+            builder.Append("Bytes=");
+            builder.Append(this.Bytes);
 
             this.Limit = originalLimit;
 

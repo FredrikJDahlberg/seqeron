@@ -256,6 +256,12 @@ public final class Sequencer {
     /** When the interval counts from: the last {@code SnapshotStarted}, or the policy row before any round. */
     private long lastSnapshotStart = 0;
 
+    /** The latest policy's byte threshold; 0 turns the byte trigger off. */
+    private long snapshotBytes = 0;
+
+    /** Bytes sequenced since the last {@code SnapshotStarted}, each frame once however many queues it reaches. */
+    private long bytesSinceSnapshot = 0;
+
     /** A {@code SnapshotRequested} being sequenced; its {@code SnapshotStarted} is published behind it. */
     private boolean snapshotRequested = false;
 
@@ -617,8 +623,10 @@ public final class Sequencer {
             case SystemFrame.GATEWAY_ACTIVATION_REQUESTED -> designations.addInt(activationRequestedDecoder.gatewayId());
             case SystemFrame.SNAPSHOT_POLICY_REGISTERED -> {
                 snapshotIntervalNs = TimeUnit.SECONDS.toNanos(snapshotPolicyDecoder.intervalSeconds());
+                snapshotBytes = snapshotPolicyDecoder.bytes();
                 if (snapshotRound == 0) {
                     lastSnapshotStart = timestamp;
+                    bytesSinceSnapshot = 0;
                 }
             }
             case SystemFrame.SNAPSHOT_REQUESTED -> snapshotRequested = true;
@@ -661,7 +669,7 @@ public final class Sequencer {
     /**
      * Publishes the 1 Hz cluster clock frame — consumers read its consensus timestamp while producers are
      * silent — then everything that runs off it: a hand-over for each designated instance that never answered
-     * with {@code GatewayStarted}, then an interval-triggered {@code SnapshotStarted}.
+     * with {@code GatewayStarted}, then a {@code SnapshotStarted} the interval or the byte count calls for.
      * @param timestamp now
      */
     public void clusterHeartbeat(final long timestamp) {
@@ -674,7 +682,8 @@ public final class Sequencer {
         while ((overdue = takeOverdueActivation(timestamp)) != NO_GATEWAY_ID) {
             handOverUnansweredActivation(overdue, timestamp);
         }
-        if (snapshotIntervalNs > 0 && timestamp - lastSnapshotStart >= snapshotIntervalNs) {
+        if (snapshotIntervalNs > 0 && timestamp - lastSnapshotStart >= snapshotIntervalNs ||
+            snapshotIntervalNs != NO_SNAPSHOT_POLICY && snapshotBytes > 0 && bytesSinceSnapshot >= snapshotBytes) {
             publishSynthesized(snapshotStarted(timestamp));
         }
     }
@@ -708,6 +717,7 @@ public final class Sequencer {
     /** Encodes the next round's {@code SnapshotStarted}; its {@code clusterSeqNo} is the round's cut. */
     private int snapshotStarted(final long timestamp) {
         lastSnapshotStart = timestamp;
+        bytesSinceSnapshot = 0;
         final long clusterSeq = ++clusterSeqNo;
         snapshotStartedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         stampSynthesized(snapshotStartedEncoder.header(), SystemFrame.SNAPSHOT_STARTED, clusterSeq, timestamp);
@@ -886,6 +896,9 @@ public final class Sequencer {
      * the mask is 0 and the frame reaches no queue.
      */
     private void publish(final MutableDirectBuffer buffer, final int length, final int groupMask) {
+        if (groupMask != 0) {
+            bytesSinceSnapshot += length;
+        }
         for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
             if ((groupMask & groupBit(groupId)) != 0) {
                 queueHeaderEncoder.wrap(buffer, MessageHeaderEncoder.ENCODED_LENGTH)
