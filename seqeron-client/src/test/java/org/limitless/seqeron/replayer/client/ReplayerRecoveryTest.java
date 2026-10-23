@@ -89,11 +89,13 @@ class ReplayerRecoveryTest {
     private static final class RecordingActions implements ReplayerRecoveryActions {
         long clockMs = CLOCK_MS;
         int requestsSent;
+        long lastCutClusterSeqNo = -2;
         final List<Boolean> stalledGauge = new ArrayList<>();
 
         @Override
-        public void sendReplayRequest(final long requestId, final long fromPosition) {
+        public void sendReplayRequest(final long requestId, final long fromPosition, final long cutClusterSeqNo) {
             ++requestsSent;
+            lastCutClusterSeqNo = cutClusterSeqNo;
         }
 
         @Override
@@ -1163,6 +1165,7 @@ class ReplayerRecoveryTest {
         assertEquals(1, actions.requestsSent);
         assertTrue(receiver.isAwaitingReplay());
         assertEquals(CUT * 1024, receiver.requestFromPosition(), "the newest round's cut");
+        assertEquals(CUT, actions.lastCutClusterSeqNo, "the request names the cut, the position being a hint");
         assertFalse(receiver.isRestoring(), "no record before the cut is seen");
         assertTrue(receiver.isRecovering());
 
@@ -1178,6 +1181,7 @@ class ReplayerRecoveryTest {
         advancePastTimers();
         assertEquals(2, actions.requestsSent);
         assertEquals(CUT * 1024, receiver.requestFromPosition());
+        assertEquals(CUT, actions.lastCutClusterSeqNo, "the resend names the cut too");
 
         deliverPending(receiver.requestId());
         actions.clockMs += 100;
@@ -1194,6 +1198,7 @@ class ReplayerRecoveryTest {
         assertFalse(receiver.isRestoring());
         assertTrue(receiver.isAwaitingReplay());
         assertEquals(FROM_START, receiver.requestFromPosition());
+        assertEquals(ReplayProtocol.NO_CUT, actions.lastCutClusterSeqNo, "a walk names no cut");
     }
 
     @Test

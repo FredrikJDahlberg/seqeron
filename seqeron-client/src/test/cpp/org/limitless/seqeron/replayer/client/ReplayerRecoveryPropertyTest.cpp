@@ -433,7 +433,7 @@ struct Simulation final
 
     // ── ReplayerRecoveryActions: the client's outbound side ───────────────────────────────────────────
 
-    void sendReplayRequest(const std::int64_t requestId, const std::int64_t fromPosition) override
+    void sendReplayRequest(const std::int64_t requestId, const std::int64_t fromPosition, const std::int64_t) override
     {
         if (chaos && chance(15))
         {

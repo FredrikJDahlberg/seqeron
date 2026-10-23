@@ -73,6 +73,9 @@ internal sealed class ReplayerRecovery
     // fromPosition of the current request, for an idempotent resend; FromStart for a walk.
     private long _requestFromPosition = ReplayProtocol.FromStart;
 
+    // cutClusterSeqNo of the current request: the snapshot a restore is checking, else ReplayProtocol.NoCut.
+    private long _requestCutClusterSeqNo = ReplayProtocol.NoCut;
+
     private long _lastRequestMs;
 
     // Advances per send; replies not carrying it are stale (see OnControl).
@@ -385,7 +388,7 @@ internal sealed class ReplayerRecovery
         long nowMs = _actions.NowMs();
         if (_awaitingReplay && (requestPublicationPending || (nowMs - _lastRequestMs) > ResendIntervalMs))
         {
-            RequestReplay(_requestFromPosition); // re-send the same request verbatim
+            RequestReplay(_requestFromPosition, _requestCutClusterSeqNo); // re-send the same request verbatim
         }
         if (_replaySessionId >= 0 && (nowMs - _lastReplayProgressMs) > ReplayStallTimeoutMs)
         {
@@ -475,19 +478,20 @@ internal sealed class ReplayerRecovery
     /// this clientId, so a resend is safe. The request id advances on every send, resends included: only a
     /// per-send id tells a stale reply from the live one on the shared control stream.
     /// </summary>
-    private void RequestReplay(long fromPosition)
+    private void RequestReplay(long fromPosition, long cutClusterSeqNo = ReplayProtocol.NoCut)
     {
         if (fromPosition == ReplayProtocol.FromStart)
         {
             _resumeAnchorClusterSeqNo = 0; // a walk supersedes any resume in flight
         }
         _requestFromPosition = fromPosition;
+        _requestCutClusterSeqNo = cutClusterSeqNo;
         _awaitingReplay = true;
         _replaySessionId = -1;
         _actions.CloseReplay();
         _lastRequestMs = _actions.NowMs();
         ++_requestId;
-        _actions.SendReplayRequest(_requestId, fromPosition);
+        _actions.SendReplayRequest(_requestId, fromPosition, cutClusterSeqNo);
     }
 
     /// <summary>
@@ -534,7 +538,7 @@ internal sealed class ReplayerRecovery
     private void RequestCut()
     {
         _checkingCut = true;
-        RequestReplay(_reader.CutPosition);
+        RequestReplay(_reader.CutPosition, _reader.CutClusterSeqNo);
         _resumeAnchorClusterSeqNo = _reader.CutClusterSeqNo;
     }
 

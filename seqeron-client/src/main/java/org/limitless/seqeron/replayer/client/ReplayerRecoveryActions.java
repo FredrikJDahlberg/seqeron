@@ -9,8 +9,9 @@ interface ReplayerRecoveryActions {
      * Offers a {@code ReplayRequest}. Best-effort by design — see {@code ReplayerRecovery.requestReplay} on
      * why it must not be retried any faster than the resend timer does.
      * @param fromPosition where to resume the active recording, or {@code ReplayProtocol.FROM_START}
+     * @param cutClusterSeqNo the cut of the snapshot a restore checks, else {@code ReplayProtocol.NO_CUT}
      */
-    void sendReplayRequest(long requestId, long fromPosition);
+    void sendReplayRequest(long requestId, long fromPosition, long cutClusterSeqNo);
 
     /** Subscribes to exactly one replay — this one — for as long as the client rides it. */
     void openReplay(long replaySessionId);

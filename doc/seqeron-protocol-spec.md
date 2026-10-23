@@ -800,7 +800,7 @@ seqeron owns two SBE schemas: the frames on the log and the replay control proto
 | file | schema id | contains | change policy (§11) |
 | --- | --- | --- | --- |
 | `sbe-frame.xml` | 210 | the nine top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the thirteen submitted system payloads | envelopes frozen; system events changeable under **V-3** |
-| `sbe-replay.xml` | 212 | the five replay control messages (§10) | changed in place, no version bump |
+| `sbe-replay.xml` | 212 | the eight replay control messages (§10) | changed in place, no version bump |
 
 The envelopes and system messages are one schema because they have one owner, ship in one artifact and
 follow the same change rule. `version` stays 0 for the life of schema 210, including system message
@@ -950,7 +950,7 @@ counts frames from non-conforming producers.
 
 ## 10. Replay control protocol
 
-Five messages between a node's replayer and its co-located clients, on streams 202 and 203. They carry
+Eight messages between a node's replayer and its co-located clients, on streams 202 and 203. They carry
 no header composite and are never sequenced or recorded.
 
 | message (id) | direction | meaning |
@@ -960,6 +960,9 @@ no header composite and are never sequenced or recorded.
 | `ReplayPending` (8) | replayer → client | not now: no slot is free, the replayer is not ready, the recording has not reached `fromPosition` yet, or the queue a `QueueRequest` asks for is not known yet; wait and resend |
 | `QueueRequest` (9) | client → replayer | which queue to read: the group of the gateway instance `gatewayName` names, or of the application `sourceId` names, or, naming neither, the default queue (**R-6**) |
 | `QueueResolved` (10) | replayer → client | read the queue `queueId` names |
+| `SnapshotRound` (11) | replayer → every client | a snapshot round was cut on this node (`doc/snapshot.md` §10.8) |
+| `SnapshotJoined` (12) | application → replayer | this application replica takes part in the round |
+| `SnapshotConfirmed` (13) | application → replayer | this replica's file for the round is confirmed and durable under its name |
 
 - **R-1.** `requestId` identifies the current request. The client increments it on every send,
   including an unchanged resend, and the replayer echoes it. A client MUST ignore a reply whose
@@ -1013,17 +1016,26 @@ encoded length is 8 + block. None has var-data or repeating groups.
 
 | message | id | block | fields |
 | --- | --- | --- | --- |
-| `ReplayRequest` | 6 | 28 | `clientId` int64, `requestId` int64, `fromPosition` int64, `queueId` int32 |
+| `ReplayRequest` | 6 | 36 | `clientId` int64, `requestId` int64, `fromPosition` int64, `queueId` int32, `cutClusterSeqNo` int64 |
 | `Replaying` | 7 | 32 | `clientId` int64, `requestId` int64, `replaySessionId` int64, `catchUpPosition` int64 |
 | `ReplayPending` | 8 | 16 | `clientId` int64, `requestId` int64 |
 | `QueueRequest` | 9 | 52 | `clientId` int64, `requestId` int64, `sourceId` int32, `gatewayName` char[32] |
 | `QueueResolved` | 10 | 20 | `clientId` int64, `requestId` int64, `queueId` int32 |
+| `SnapshotRound` | 11 | 16 | `round` int64, `clusterSeqNo` int64 |
+| `SnapshotJoined` | 12 | 20 | `clientId` int64, `sourceId` int32, `round` int64 |
+| `SnapshotConfirmed` | 13 | 20 | `clientId` int64, `sourceId` int32, `round` int64 |
 
 - `clientId`: the client's id on its media driver (**R-4**). It addresses a reply on the shared control
   stream; `requestId` matches it to a request (**R-1**).
 - `requestId`: echoed in every reply.
 - `fromPosition`: the position to resume the active recording at, or `FROM_START` = −1 for its start.
 - `queueId`: a `groupId`, 1–16 (**R-5**).
+- `cutClusterSeqNo`: the `clusterSeqNo` of the snapshot cut a restore replays from, `fromPosition` then being
+  only a hint at where it is; `NO_CUT` = −1 on every other request.
+- `round`: a round's number, as `SnapshotStarted.round`. `SnapshotRound` is addressed to no client: every
+  application replica on the stream answers it with a `SnapshotJoined`, a gateway ignores it, and a replica
+  that takes no part in snapshots answers nothing. `SnapshotRound` is not a reply, so **R-1** and **R-4**
+  do not apply to it. A replica sends `SnapshotJoined` and `SnapshotConfirmed` again until the offer lands.
 - `sourceId`: an application's `applicationSourceId`, or −1. `gatewayName`: a gateway instance's, as in
   `GatewayRegistered`, byte 0 = `0x00` meaning absent. A client MUST NOT name both; the replayer logs a
   request that does and does not answer it (**R-6**).

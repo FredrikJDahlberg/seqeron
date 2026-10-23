@@ -37,12 +37,19 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
     private readonly Replay.MessageHeader _requestHeader = new Replay.MessageHeader();
     private readonly Replay.ReplayRequest _replayRequest = new Replay.ReplayRequest();
+    private readonly Replay.SnapshotJoined _snapshotJoined = new Replay.SnapshotJoined();
+    private readonly Replay.SnapshotConfirmed _snapshotConfirmed = new Replay.SnapshotConfirmed();
+    private readonly Replay.MessageHeader _controlHeader = new Replay.MessageHeader();
+    private readonly Replay.SnapshotRound _snapshotRound = new Replay.SnapshotRound();
+    private readonly SbeBuffer _controlView = new SbeBuffer();
     private readonly UnsafeBuffer _requestBuffer = new UnsafeBuffer(GC.AllocateArray<byte>(RequestBufferLength, true));
     private readonly SbeBuffer _requestView = new SbeBuffer();
 
     private readonly FragmentAssembler _queueHandler;
     private readonly FragmentAssembler _replayHandler;
     private readonly FragmentAssembler _controlHandler;
+
+    private Action<long, long> _onSnapshotRound;
 
     private Aeron _aeron;
     private int? _memberId;
@@ -77,6 +84,50 @@ public sealed class ReplayerStreamReceiver : IDisposable
         _replayHandler = new FragmentAssembler(OnReplayFragment);
         _controlHandler = new FragmentAssembler(OnControlFragment);
         SbeBuffers.Wrap(_requestView, _requestBuffer, 0, RequestBufferLength);
+    }
+
+    /// <summary>Hands each <c>SnapshotRound</c> the Replayer sends to <paramref name="handler"/>, with the round and
+    /// its cut; none is delivered without one (doc/snapshot.md §10.8).</summary>
+    /// <param name="handler">receives the round's number and its cut's <c>clusterSeqNo</c></param>
+    public void OnSnapshotRound(Action<long, long> handler)
+    {
+        _onSnapshotRound = handler;
+    }
+
+    /// <summary>Tells the Replayer this replica takes part in <paramref name="round"/>. Best-effort: the offer may not
+    /// land.</summary>
+    /// <param name="sourceId">the application's <c>sourceId</c></param>
+    /// <param name="round">the round's number</param>
+    /// <returns>whether it was placed</returns>
+    public bool SendSnapshotJoined(int sourceId, long round)
+    {
+        if (!RequestPublicationConnected)
+        {
+            return false;
+        }
+        _snapshotJoined.WrapForEncodeAndApplyHeader(_requestView, 0, _requestHeader);
+        _snapshotJoined.ClientId = _replyId;
+        _snapshotJoined.SourceId = sourceId;
+        _snapshotJoined.Round = round;
+        return _requestPublication.Offer(_requestBuffer, 0, Replay.MessageHeader.Size + _snapshotJoined.Size) > 0;
+    }
+
+    /// <summary>Tells the Replayer this replica's file for <paramref name="round"/> is durable under its name.
+    /// Best-effort: the offer may not land.</summary>
+    /// <param name="sourceId">the application's <c>sourceId</c></param>
+    /// <param name="round">the round's number</param>
+    /// <returns>whether it was placed</returns>
+    public bool SendSnapshotConfirmed(int sourceId, long round)
+    {
+        if (!RequestPublicationConnected)
+        {
+            return false;
+        }
+        _snapshotConfirmed.WrapForEncodeAndApplyHeader(_requestView, 0, _requestHeader);
+        _snapshotConfirmed.ClientId = _replyId;
+        _snapshotConfirmed.SourceId = sourceId;
+        _snapshotConfirmed.Round = round;
+        return _requestPublication.Offer(_requestBuffer, 0, Replay.MessageHeader.Size + _snapshotConfirmed.Size) > 0;
     }
 
     /// <summary>Restores the newest snapshot in <paramref name="store"/> on <see cref="Start"/>, before anything is
@@ -218,8 +269,24 @@ public sealed class ReplayerStreamReceiver : IDisposable
         }
     }
 
+    // A SnapshotRound is no one's reply, so it never reaches ReplayerRecovery.
     private void OnControlFragment(IDirectBuffer buffer, int offset, int length, Header header)
     {
+        if (length >= Replay.MessageHeader.Size)
+        {
+            SbeBuffers.Wrap(_controlView, buffer, offset, length);
+            _controlHeader.Wrap(_controlView, 0, Replay.MessageHeader.SbeSchemaVersion);
+            if (_controlHeader.TemplateId == Replay.SnapshotRound.TemplateId)
+            {
+                if (_onSnapshotRound != null && Replay.MessageHeader.Size + _controlHeader.BlockLength <= length)
+                {
+                    _snapshotRound.WrapForDecode(_controlView, Replay.MessageHeader.Size, _controlHeader.BlockLength,
+                                                 _controlHeader.Version);
+                    _onSnapshotRound(_snapshotRound.Round, _snapshotRound.ClusterSeqNo);
+                }
+                return;
+            }
+        }
         _recovery.OnControl(buffer, offset, length);
     }
 
@@ -250,7 +317,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
             _receiver = receiver;
         }
 
-        public void SendReplayRequest(long requestId, long fromPosition)
+        public void SendReplayRequest(long requestId, long fromPosition, long cutClusterSeqNo)
         {
             if (!_receiver.RequestPublicationConnected)
             {
@@ -262,6 +329,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
             request.RequestId = requestId;
             request.FromPosition = fromPosition;
             request.QueueId = _receiver._groupId;
+            request.CutClusterSeqNo = cutClusterSeqNo;
             Offer(Replay.MessageHeader.Size + request.Size);
         }
 

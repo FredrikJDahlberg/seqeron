@@ -14,8 +14,12 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
+import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
+import org.limitless.seqeron.sbe.replay.SnapshotConfirmedEncoder;
+import org.limitless.seqeron.sbe.replay.SnapshotJoinedEncoder;
+import org.limitless.seqeron.sbe.replay.SnapshotRoundDecoder;
 import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
 
@@ -48,11 +52,17 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     private final MessageHeaderEncoder requestHeader = new MessageHeaderEncoder();
     private final ReplayRequestEncoder replayRequest = new ReplayRequestEncoder();
+    private final SnapshotJoinedEncoder snapshotJoined = new SnapshotJoinedEncoder();
+    private final SnapshotConfirmedEncoder snapshotConfirmed = new SnapshotConfirmedEncoder();
+    private final MessageHeaderDecoder controlHeader = new MessageHeaderDecoder();
+    private final SnapshotRoundDecoder snapshotRound = new SnapshotRoundDecoder();
     private final UnsafeBuffer requestBuffer = new UnsafeBuffer(new byte[REQUEST_BUFFER_LENGTH]);
 
     private final FragmentHandler queueHandler;
     private final FragmentHandler replayHandler;
     private final FragmentHandler controlFragmentHandler;
+
+    private SnapshotRoundHandler snapshotRoundHandler;
 
     private Aeron aeron;
     private Integer memberId;
@@ -94,8 +104,70 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         this.recovery = new ReplayerRecovery(actions, onSequenced, onLeadershipChanged, onCaughtUp);
         this.queueHandler = new FragmentAssembler(this::onQueueFragment);
         this.replayHandler = new FragmentAssembler(this::onReplayFragment);
-        this.controlFragmentHandler =
-            new FragmentAssembler((buffer, offset, length, hdr) -> recovery.onControl(buffer, offset, length));
+        this.controlFragmentHandler = new FragmentAssembler(this::onControlFragment);
+    }
+
+    /** What a cut round is told to: the Replayer says a round was cut, to every replica (doc/snapshot.md §10.8). */
+    @FunctionalInterface
+    public interface SnapshotRoundHandler {
+        /**
+         * @param round        the round's number
+         * @param clusterSeqNo the round's cut
+         */
+        void onSnapshotRound(long round, long clusterSeqNo);
+    }
+
+    /** Hands each {@code SnapshotRound} the Replayer sends to {@code handler}; none is delivered without one. */
+    public void onSnapshotRound(final SnapshotRoundHandler handler) {
+        snapshotRoundHandler = handler;
+    }
+
+    /**
+     * Tells the Replayer this replica takes part in {@code round}. Best-effort: the offer may not land.
+     * @return whether it was placed
+     */
+    public boolean sendSnapshotJoined(final int sourceId, final long round) {
+        if (requestPublication == null || !requestPublication.isConnected()) {
+            return false;
+        }
+        snapshotJoined.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
+            .clientId(replyId)
+            .sourceId(sourceId)
+            .round(round);
+        return requestPublication.offer(requestBuffer, 0,
+                                        MessageHeaderEncoder.ENCODED_LENGTH + snapshotJoined.encodedLength()) > 0;
+    }
+
+    /**
+     * Tells the Replayer this replica's file for {@code round} is durable under its name. Best-effort: the offer may
+     * not land.
+     * @return whether it was placed
+     */
+    public boolean sendSnapshotConfirmed(final int sourceId, final long round) {
+        if (requestPublication == null || !requestPublication.isConnected()) {
+            return false;
+        }
+        snapshotConfirmed.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
+            .clientId(replyId)
+            .sourceId(sourceId)
+            .round(round);
+        return requestPublication.offer(requestBuffer, 0,
+                                        MessageHeaderEncoder.ENCODED_LENGTH + snapshotConfirmed.encodedLength()) > 0;
+    }
+
+    /** A {@code SnapshotRound} is no one's reply, so it never reaches {@link ReplayerRecovery}. */
+    private void onControlFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
+                                   final io.aeron.logbuffer.Header header) {
+        if (length >= MessageHeaderDecoder.ENCODED_LENGTH
+            && controlHeader.wrap(buffer, offset).templateId() == SnapshotRoundDecoder.TEMPLATE_ID) {
+            if (snapshotRoundHandler != null) {
+                snapshotRound.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, controlHeader.blockLength(),
+                                   controlHeader.version());
+                snapshotRoundHandler.onSnapshotRound(snapshotRound.round(), snapshotRound.clusterSeqNo());
+            }
+            return;
+        }
+        recovery.onControl(buffer, offset, length);
     }
 
     /**
@@ -261,7 +333,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     /** The recovery state machine's transport. Private, so a consumer cannot drive the replay protocol. */
     private final class Actions implements ReplayerRecoveryActions {
         @Override
-        public void sendReplayRequest(final long requestId, final long fromPosition) {
+        public void sendReplayRequest(final long requestId, final long fromPosition, final long cutClusterSeqNo) {
             if (requestPublication == null || !requestPublication.isConnected()) {
                 return; // Replayer not up yet; the resend timer retries
             }
@@ -269,7 +341,8 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                 .clientId(replyId)
                 .requestId(requestId)
                 .fromPosition(fromPosition)
-                .queueId(groupId);
+                .queueId(groupId)
+                .cutClusterSeqNo(cutClusterSeqNo);
             requestPublication.offer(requestBuffer, 0,
                                      MessageHeaderEncoder.ENCODED_LENGTH + replayRequest.encodedLength());
         }

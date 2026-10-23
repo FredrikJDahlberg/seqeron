@@ -88,6 +88,9 @@ final class ReplayerRecovery {
     /** fromPosition of the current request, for an idempotent resend; {@link ReplayProtocol#FROM_START} for a walk. */
     private long requestFromPosition = ReplayProtocol.FROM_START;
 
+    /** cutClusterSeqNo of the current request: the snapshot a restore is checking, else {@link ReplayProtocol#NO_CUT}. */
+    private long requestCutClusterSeqNo = ReplayProtocol.NO_CUT;
+
     private long lastRequestMs;
 
     /** Advances per send; replies not carrying it are stale — see {@link #onControl}. */
@@ -356,7 +359,7 @@ final class ReplayerRecovery {
         final int records = restoring ? restoreRecords() : 0;
         final long nowMs = actions.nowMs();
         if (awaitingReplay && (requestPublicationPending || (nowMs - lastRequestMs) > RESEND_INTERVAL_MS)) {
-            requestReplay(requestFromPosition); // re-send the same request verbatim
+            requestReplay(requestFromPosition, requestCutClusterSeqNo); // re-send the same request verbatim
         }
         if (replaySessionId >= 0 && (nowMs - lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS) {
             onReplayStalled();
@@ -469,16 +472,21 @@ final class ReplayerRecovery {
      * included: only a per-send id tells a stale reply from the live one on the shared control stream.
      */
     private void requestReplay(final long fromPosition) {
+        requestReplay(fromPosition, ReplayProtocol.NO_CUT);
+    }
+
+    private void requestReplay(final long fromPosition, final long cutClusterSeqNo) {
         if (fromPosition == ReplayProtocol.FROM_START) {
             resumeAnchorClusterSeqNo = 0; // a walk supersedes any resume in flight
         }
         requestFromPosition = fromPosition;
+        requestCutClusterSeqNo = cutClusterSeqNo;
         awaitingReplay = true;
         replaySessionId = -1;
         actions.closeReplay();
         lastRequestMs = actions.nowMs();
         ++requestId;
-        actions.sendReplayRequest(requestId, fromPosition);
+        actions.sendReplayRequest(requestId, fromPosition, cutClusterSeqNo);
     }
 
     /**
@@ -521,7 +529,7 @@ final class ReplayerRecovery {
     /** Replays the recording from the chosen snapshot's cut; its first frame decides the restore. */
     private void requestCut() {
         checkingCut = true;
-        requestReplay(reader.cutPosition());
+        requestReplay(reader.cutPosition(), reader.cutClusterSeqNo());
         resumeAnchorClusterSeqNo = reader.cutClusterSeqNo();
     }
 

@@ -38,7 +38,8 @@ class ReplayerRecoveryActions
 {
   public:
     // fromPosition: where to resume the active recording, or protocol::REPLAYER_FROM_START.
-    virtual void sendReplayRequest(std::int64_t requestId, std::int64_t fromPosition) = 0;
+    // cutClusterSeqNo: the cut of the snapshot a restore checks, else protocol::REPLAYER_NO_CUT.
+    virtual void sendReplayRequest(std::int64_t requestId, std::int64_t fromPosition, std::int64_t cutClusterSeqNo) = 0;
     virtual void openReplay(std::int64_t replaySessionId) = 0;
     virtual void closeReplay() = 0;
     virtual void recoveryStalled(bool stalled) = 0;
@@ -158,6 +159,8 @@ class ReplayerRecovery
     std::int64_t m_catchUpPosition = 0; // bounded replay's end position; replay done once the image reaches it
     // fromPosition of the current request, for idempotent resend; REPLAYER_FROM_START for a walk
     std::int64_t m_reqFromPosition = protocol::REPLAYER_FROM_START;
+    // cutClusterSeqNo of the current request: the snapshot a restore is checking, else REPLAYER_NO_CUT
+    std::int64_t m_reqCutClusterSeqNo = protocol::REPLAYER_NO_CUT;
     std::int64_t m_lastRequestMs = 0;
     std::int64_t m_requestId = 0;            // advances per send; replies not carrying it are stale (see onControl)
     std::int64_t m_lastReplayPosition = -1;  // last replay-image position seen; -1 = not attached yet
@@ -418,7 +421,7 @@ class ReplayerRecovery
         const std::int64_t nowMs = m_actions.nowMs();
         if (m_awaitingReplay && (requestPublicationPending || (nowMs - m_lastRequestMs) > RESEND_INTERVAL_MS))
         {
-            requestReplay(m_reqFromPosition); // re-send the same request verbatim
+            requestReplay(m_reqFromPosition, m_reqCutClusterSeqNo); // re-send the same request verbatim
         }
         // >= 0: 0 is an ordinary replaySessionId, and -1 alone means none.
         if (m_replaySessionId >= 0 && (nowMs - m_lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS)
@@ -515,19 +518,20 @@ class ReplayerRecovery
     }
 
   private:
-    void requestReplay(const std::int64_t fromPosition)
+    void requestReplay(const std::int64_t fromPosition, const std::int64_t cutClusterSeqNo = protocol::REPLAYER_NO_CUT)
     {
         if (fromPosition == protocol::REPLAYER_FROM_START)
         {
             m_resumeAnchorSequenceNumber = 0; // a walk supersedes any resume in flight
         }
         m_reqFromPosition = fromPosition;
+        m_reqCutClusterSeqNo = cutClusterSeqNo;
         m_awaitingReplay = true;
         m_replaySessionId = -1;
         m_actions.closeReplay();
         m_lastRequestMs = m_actions.nowMs();
         ++m_requestId;
-        m_actions.sendReplayRequest(m_requestId, fromPosition);
+        m_actions.sendReplayRequest(m_requestId, fromPosition, cutClusterSeqNo);
     }
 
     void requestResume()
@@ -568,7 +572,7 @@ class ReplayerRecovery
     void requestCut()
     {
         m_checkingCut = true;
-        requestReplay(m_reader->cutPosition());
+        requestReplay(m_reader->cutPosition(), m_reader->cutClusterSeqNo());
         m_resumeAnchorSequenceNumber = m_reader->cutClusterSeqNo();
     }
 

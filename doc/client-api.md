@@ -348,6 +348,12 @@ outlive the process ([`snapshot.md`](snapshot.md) §4.1).
    `ClusterError::SnapshotDiverged`). Corrupt records give way to the older confirmed file the instance keeps,
    or with none to a replay from the start, before `onRestore` sees any of them.
 
+5. **Rounds and the Replayer** (`Application` only; a `Gateway` ignores them). The node's Replayer tells every
+   replica when it has cut a round, and an instance that takes part answers `SnapshotJoined` at once, and
+   `SnapshotConfirmed` once its file for the round is confirmed and durable under its final name, each sent
+   again until the offer lands ([`snapshot.md`](snapshot.md) §10.8). The receiver's `onSnapshotRound` and its
+   two sends are the façade's, and no consumer calls them.
+
 ### `OutstandingWork`
 
 The façades are composed of I/O-free state machines with twins in every language. `OutstandingWork` —

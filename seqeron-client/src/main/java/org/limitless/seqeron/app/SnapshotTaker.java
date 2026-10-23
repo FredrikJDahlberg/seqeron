@@ -27,6 +27,13 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
         Publish publishEnd(long round, int recordCount, long length, long crc32c, int formatVersion);
     }
 
+    /** How an application tells its node's Replayer where a round stands; each answers whether the offer landed. */
+    interface Signals {
+        boolean joined(long round);
+
+        boolean confirmed(long round);
+    }
+
     private final SnapshotListener listener;
     private final SnapshotStore store;
     private final Runnable keepAlive;
@@ -36,6 +43,10 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     private long round = -1;
     /** The last round this instance confirmed; 0 for none yet. */
     private long confirmedRound;
+    /** The round to answer a {@code SnapshotRound} for, or 0; only the latest is kept. */
+    private long pendingJoined;
+    /** The round whose file is confirmed and not yet told to the Replayer, or 0. */
+    private long pendingConfirmed;
     private boolean serialized;
     private boolean publishing;
     private int recordCount;
@@ -133,7 +144,32 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
         }
         store.confirm(round);
         confirmedRound = round;
+        pendingConfirmed = round;
         return true;
+    }
+
+    /** The Replayer cut {@code roundNumber}: an instance that takes part answers it until the offer lands. */
+    void onSnapshotRound(final long roundNumber) {
+        if (participating) {
+            pendingJoined = roundNumber;
+        }
+    }
+
+    /**
+     * Places what the Replayer is still owed, a declined offer being placed again on the next call.
+     * @return signals placed
+     */
+    int signal(final Signals signals) {
+        int placed = 0;
+        if (pendingJoined != 0 && signals.joined(pendingJoined)) {
+            pendingJoined = 0;
+            placed++;
+        }
+        if (pendingConfirmed != 0 && signals.confirmed(pendingConfirmed)) {
+            pendingConfirmed = 0;
+            placed++;
+        }
+        return placed;
     }
 
     /** This instance may no longer publish this round: another took the role. It does not resume. */

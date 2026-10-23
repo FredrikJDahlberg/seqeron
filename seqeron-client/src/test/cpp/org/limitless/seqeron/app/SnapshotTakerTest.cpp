@@ -95,6 +95,34 @@ struct Frames
     int budget = 1 << 30;
 };
 
+// Records the signals placed; declines the first `declines` offers of each kind.
+struct Signals
+{
+    bool joined(const std::int64_t round)
+    {
+        return place("joined " + std::to_string(round));
+    }
+
+    bool confirmed(const std::int64_t round)
+    {
+        return place("confirmed " + std::to_string(round));
+    }
+
+    bool place(std::string signal)
+    {
+        if (declines > 0)
+        {
+            --declines;
+            return false;
+        }
+        placed.push_back(std::move(signal));
+        return true;
+    }
+
+    std::vector<std::string> placed;
+    int declines = 0;
+};
+
 // Instances, each with a directory of its own under one test directory.
 struct Instances
 {
@@ -374,6 +402,60 @@ TEST(SnapshotTaker, SerializingARoundKeepsTheClusterSessionAliveAfterEveryRecord
     SnapshotTaker& taker = t.participating();
     started(taker, 1, true);
     EXPECT_EQ(4, t.keepAlives) << "the header and three records";
+}
+
+TEST(SnapshotTaker, AReplicaThatTakesPartJoinsTheRoundTheReplayerCutAgainUntilTheOfferLands)
+{
+    Instances t;
+    Signals signals;
+    SnapshotTaker& taker = t.participating();
+    EXPECT_EQ(0, taker.signal(signals)) << "nothing owed before a round";
+
+    signals.declines = 2;
+    taker.onSnapshotRound(1);
+    taker.onSnapshotRound(2);
+    EXPECT_EQ(0, taker.signal(signals));
+    EXPECT_EQ(0, taker.signal(signals));
+    EXPECT_EQ(1, taker.signal(signals));
+    EXPECT_EQ((std::vector<std::string>{ "joined 2" }), signals.placed) << "only the latest round is owed";
+    EXPECT_EQ(0, taker.signal(signals)) << "and only once";
+}
+
+TEST(SnapshotTaker, AReplicaThatTakesNoPartOrHasNoListenerJoinsNothing)
+{
+    Instances t;
+    Signals signals;
+    SnapshotTaker& off = t.instance();
+    off.participating(false);
+    off.onSnapshotRound(1);
+    SnapshotTaker unlistened{ nullptr, nullptr, [] {} };
+    unlistened.participating(true);
+    unlistened.onSnapshotRound(1);
+
+    EXPECT_EQ(0, off.signal(signals));
+    EXPECT_EQ(0, unlistened.signal(signals));
+    EXPECT_TRUE(signals.placed.empty());
+}
+
+TEST(SnapshotTaker, AConfirmedFileIsToldToTheReplayerAgainUntilTheOfferLandsADivergedOneIsNot)
+{
+    Instances t;
+    Signals signals;
+    SnapshotTaker& taker = t.participating();
+    started(taker, 1, true);
+    taker.submit(t.frames);
+    const Frames::End end = t.frames.ends[0];
+    EXPECT_EQ(0, taker.signal(signals)) << "written is not confirmed";
+
+    EXPECT_TRUE(taker.onSnapshotEnd(1, end.recordCount, end.length, end.crc32c));
+    signals.declines = 1;
+    EXPECT_EQ(0, taker.signal(signals));
+    EXPECT_EQ(1, taker.signal(signals));
+    EXPECT_EQ((std::vector<std::string>{ "confirmed 1" }), signals.placed);
+
+    started(taker, 2, false);
+    EXPECT_FALSE(taker.onSnapshotEnd(2, 99, 0, 0));
+    EXPECT_EQ(0, taker.signal(signals)) << "a diverged instance confirms nothing";
 }
 
 } // namespace

@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -23,6 +24,9 @@
 // Request codecs (sbe-replay.xml); the replies are decoded in ReplayerRecovery.
 #include "org_limitless_seqeron_sbe_replay/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayRequest.h"
+#include "org_limitless_seqeron_sbe_replay/SnapshotConfirmed.h"
+#include "org_limitless_seqeron_sbe_replay/SnapshotJoined.h"
+#include "org_limitless_seqeron_sbe_replay/SnapshotRound.h"
 
 namespace org::limitless::seqeron::replayer::client {
 
@@ -53,6 +57,8 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     using OnDisconnected = detail::ReplayerRecovery::OnDisconnected;
     using OnLeadershipChanged = detail::ReplayerRecovery::OnLeadershipChanged;
     using OnCaughtUp = detail::ReplayerRecovery::OnCaughtUp;
+    // The Replayer cut a snapshot round on this node, told to every replica (doc/snapshot.md §10.8).
+    using OnSnapshotRound = std::function<void(std::int64_t round, std::int64_t clusterSeqNo)>;
 
     /**
      * Creates a receiver that has not started. A frame whose own callback is empty reaches onSequenced
@@ -104,6 +110,33 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     void restoreFrom(SnapshotStore& store, SnapshotRestoreHandler& handler)
     {
         m_recovery.restoreFrom(store, handler);
+    }
+
+    // Hands each SnapshotRound the Replayer sends to a handler; none is delivered without one.
+    void onSnapshotRound(OnSnapshotRound handler)
+    {
+        m_onSnapshotRound = std::move(handler);
+    }
+
+    /**
+     * Tells the Replayer this replica takes part in a round. Best-effort: the offer may not land.
+     *
+     * @return whether it was placed
+     */
+    bool sendSnapshotJoined(const std::int32_t sourceId, const std::int64_t round)
+    {
+        return sendSnapshotSignal<sbe::replay::SnapshotJoined>(sourceId, round);
+    }
+
+    /**
+     * Tells the Replayer this replica's file for a round is durable under its name. Best-effort: the offer may not
+     * land.
+     *
+     * @return whether it was placed
+     */
+    bool sendSnapshotConfirmed(const std::int32_t sourceId, const std::int64_t round)
+    {
+        return sendSnapshotSignal<sbe::replay::SnapshotConfirmed>(sourceId, round);
     }
 
     /**
@@ -239,7 +272,25 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     static constexpr int FRAGMENT_LIMIT = 16;
     static constexpr std::size_t REQUEST_BUFFER_LENGTH = 64;
 
-    void sendReplayRequest(const std::int64_t requestId, const std::int64_t fromPosition) override
+    template<typename Signal>
+    bool sendSnapshotSignal(const std::int32_t sourceId, const std::int64_t round)
+    {
+        if (!m_requestPub || !m_requestPub->isConnected())
+        {
+            return false;
+        }
+        alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
+        Signal enc;
+        enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
+        enc.clientId(m_replyId).sourceId(sourceId).round(round);
+        const auto len =
+            static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
+        aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
+        return m_requestPub->offer(ab, 0, len) > 0;
+    }
+
+    void sendReplayRequest(const std::int64_t requestId, const std::int64_t fromPosition,
+                           const std::int64_t cutClusterSeqNo) override
     {
         if (!m_requestPub || !m_requestPub->isConnected())
         {
@@ -248,7 +299,11 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
         sbe::replay::ReplayRequest enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_replyId).requestId(requestId).fromPosition(fromPosition).queueId(m_groupId);
+        enc.clientId(m_replyId)
+            .requestId(requestId)
+            .fromPosition(fromPosition)
+            .queueId(m_groupId)
+            .cutClusterSeqNo(cutClusterSeqNo);
         const auto len =
             static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
@@ -340,6 +395,23 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     void onControlFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                            const aeron::util::index_t length)
     {
+        // A SnapshotRound is no one's reply, so it never reaches ReplayerRecovery.
+        if (static_cast<std::uint64_t>(length) >= sbe::replay::MessageHeader::encodedLength())
+        {
+            sbe::replay::MessageHeader mh;
+            mh.wrap(frameAt(buffer, offset), 0U, 0U, static_cast<std::uint64_t>(length));
+            if (mh.templateId() == sbe::replay::SnapshotRound::sbeTemplateId())
+            {
+                if (m_onSnapshotRound)
+                {
+                    sbe::replay::SnapshotRound round;
+                    round.wrapForDecode(frameAt(buffer, offset), sbe::replay::MessageHeader::encodedLength(),
+                                        mh.blockLength(), mh.version(), static_cast<std::uint64_t>(length));
+                    m_onSnapshotRound(round.round(), round.clusterSeqNo());
+                }
+                return;
+            }
+        }
         m_recovery.onControl(frameAt(buffer, offset), static_cast<std::uint64_t>(length));
     }
 
@@ -361,6 +433,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
 
     const std::int32_t m_clientId;
     detail::ReplayerRecovery m_recovery;
+    OnSnapshotRound m_onSnapshotRound;
 
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::int64_t m_replyId = -1; // the id the Replayer addresses this receiver's replies to, drawn at start

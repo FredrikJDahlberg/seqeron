@@ -44,6 +44,7 @@ namespace frm = org::limitless::seqeron::sbe::frame;
 namespace diag = org::limitless::seqeron::util;
 namespace rpl = org::limitless::seqeron::sbe::replay;
 using protocol::REPLAYER_FROM_START;
+using protocol::REPLAYER_NO_CUT;
 using protocol::REPLAYER_NO_REPLAY_NEEDED;
 using protocol::SequencedEvent;
 
@@ -105,9 +106,10 @@ struct Client final : ReplayerRecoveryActions
       recovery(*this, std::move(onSequenced), {}, {}, {}, std::move(onCaughtUp))
     {}
 
-    void sendReplayRequest(std::int64_t, std::int64_t) override
+    void sendReplayRequest(std::int64_t, std::int64_t, const std::int64_t cutClusterSeqNo) override
     {
         ++requestsSent;
+        lastCutClusterSeqNo = cutClusterSeqNo;
     }
 
     void openReplay(std::int64_t) override
@@ -133,6 +135,7 @@ struct Client final : ReplayerRecoveryActions
 
     std::int64_t clockMs = CLOCK_MS;
     int requestsSent = 0;
+    std::int64_t lastCutClusterSeqNo = -2;
     std::vector<bool> stalledGauge;
 
     ReplayerRecovery recovery;
@@ -1383,7 +1386,7 @@ TEST(ReplayerRecoveryDelivery, ALeadershipChangeReachesOnSequencedWhenNoLeadersh
 // A bare ReplayerRecoveryActions: this case needs the leadership callback the Client fixture leaves empty.
 struct NoActions final : ReplayerRecoveryActions
 {
-    void sendReplayRequest(std::int64_t, std::int64_t) override
+    void sendReplayRequest(std::int64_t, std::int64_t, std::int64_t) override
     {}
     void openReplay(std::int64_t) override
     {}
@@ -1526,6 +1529,7 @@ TEST(ReplayerRecoveryRestore, ARestoringColdStartReplaysFromItsNewestSnapshotsCu
     EXPECT_EQ(1, r.client.requestsSent);
     EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
     EXPECT_EQ(CUT * 1024, r.client.recovery.requestFromPosition()) << "the newest round's cut";
+    EXPECT_EQ(CUT, r.client.lastCutClusterSeqNo) << "the request names the cut, the position being a hint";
     EXPECT_FALSE(r.client.recovery.isRestoring()) << "no record before the cut is seen";
     EXPECT_TRUE(r.client.recovery.isRecovering());
 
@@ -1541,6 +1545,7 @@ TEST(ReplayerRecoveryRestore, AnUnansweredReplayOfTheCutIsResentAndAPendingAnswe
     advancePastTimers(r.client);
     EXPECT_EQ(2, r.client.requestsSent);
     EXPECT_EQ(CUT * 1024, r.client.recovery.requestFromPosition());
+    EXPECT_EQ(CUT, r.client.lastCutClusterSeqNo) << "the resend names the cut too";
 
     deliverControl(r.client, encodeReplayPending(CLIENT_ID, r.client.recovery.requestId()));
     r.client.clockMs += 100;
@@ -1557,6 +1562,7 @@ TEST(ReplayerRecoveryRestore, WithNoLocalSnapshotTheColdStartWalksTheRecordingFr
     EXPECT_FALSE(r.client.recovery.isRestoring());
     EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
     EXPECT_EQ(REPLAYER_FROM_START, r.client.recovery.requestFromPosition());
+    EXPECT_EQ(REPLAYER_NO_CUT, r.client.lastCutClusterSeqNo) << "a walk names no cut";
 }
 
 TEST(ReplayerRecoveryRestore, ASnapshotWhoseCutTheRecordingHoldsIsRestoredFromItsFileThenResumesAnchoredAtItsCut)

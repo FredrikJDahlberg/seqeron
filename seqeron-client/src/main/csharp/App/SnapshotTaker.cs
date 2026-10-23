@@ -24,6 +24,15 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
         Publish PublishEnd(long round, int recordCount, long length, uint crc32c, int formatVersion);
     }
 
+    /// <summary>How an application tells its node's Replayer where a round stands; each answers whether the offer
+    /// landed.</summary>
+    internal interface ISignals
+    {
+        bool Joined(long round);
+
+        bool Confirmed(long round);
+    }
+
     private readonly ISnapshotListener _listener;
     private readonly SnapshotStore _store;
     private readonly Action _keepAlive;
@@ -34,6 +43,10 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     private long _round = -1;
     // The last round this instance confirmed; 0 for none yet.
     private long _confirmedRound;
+    // The round to answer a SnapshotRound for, or 0; only the latest is kept.
+    private long _pendingJoined;
+    // The round whose file is confirmed and not yet told to the Replayer, or 0.
+    private long _pendingConfirmed;
     private bool _serialized;
     private bool _publishing;
     private int _recordCount;
@@ -131,6 +144,7 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
         }
         _store.Confirm(_round);
         _confirmedRound = _round;
+        _pendingConfirmed = _round;
         return true;
     }
 
@@ -159,6 +173,35 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex, long formatVersion)
     {
         _listener.OnRestore(record, length, recordIndex, (int)formatVersion);
+    }
+
+    /// <summary>The Replayer cut <paramref name="round"/>: an instance that takes part answers it until the offer
+    /// lands.</summary>
+    internal void OnSnapshotRound(long round)
+    {
+        if (_participating)
+        {
+            _pendingJoined = round;
+        }
+    }
+
+    /// <summary>Places what the Replayer is still owed, a declined offer being placed again on the next
+    /// call.</summary>
+    /// <returns>signals placed</returns>
+    internal int Signal(ISignals signals)
+    {
+        int placed = 0;
+        if (_pendingJoined != 0 && signals.Joined(_pendingJoined))
+        {
+            _pendingJoined = 0;
+            placed++;
+        }
+        if (_pendingConfirmed != 0 && signals.Confirmed(_pendingConfirmed))
+        {
+            _pendingConfirmed = 0;
+            placed++;
+        }
+        return placed;
     }
 
     /// <summary>Places the end of the round being published. A declined end is placed again on the next

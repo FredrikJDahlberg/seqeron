@@ -195,6 +195,7 @@ class Application
             m_listener.onLeadershipChanged(transition == detail::LeaderGate::Transition::Opened);
             ++work;
         }
+        work += m_snapshots.signal(m_snapshotSignals);
         if (m_gate.isOpen())
         {
             work += m_snapshots.submit(m_snapshotFrames);
@@ -430,6 +431,11 @@ class Application
             }
         }
 
+        void onSnapshotRound(const std::int64_t round)
+        {
+            m_app.m_snapshots.onSnapshotRound(round);
+        }
+
         // A term won by another member ends this replica's part in the round it is publishing.
         void onLeadershipChanged()
         {
@@ -511,6 +517,21 @@ class Application
     SessionDispatch m_dispatch;
     detail::Session<SessionDispatch> m_session;
     detail::SnapshotFrames<detail::Session<SessionDispatch>> m_snapshotFrames;
+    // How this replica tells its node's Replayer where a round stands.
+    struct SnapshotSignals
+    {
+        Application& m_app;
+
+        bool joined(const std::int64_t round)
+        {
+            return m_app.m_session.sendSnapshotJoined(m_app.m_config.sourceId, round);
+        }
+
+        bool confirmed(const std::int64_t round)
+        {
+            return m_app.m_session.sendSnapshotConfirmed(m_app.m_config.sourceId, round);
+        }
+    } m_snapshotSignals{ *this };
 
     // The last round this replica confirmed, null until its async add resolves, and never without a listener.
     std::shared_ptr<aeron::Aeron> m_aeron;

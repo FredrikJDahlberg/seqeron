@@ -69,11 +69,13 @@ public class ReplayerRecoveryTest : IDisposable
     {
         public long ClockMs = ReplayerRecoveryTest.ClockMs;
         public int RequestsSent;
+        public long LastCutClusterSeqNo = -2;
         public readonly List<bool> StalledGauge = new List<bool>();
 
-        public void SendReplayRequest(long requestId, long fromPosition)
+        public void SendReplayRequest(long requestId, long fromPosition, long cutClusterSeqNo)
         {
             ++RequestsSent;
+            LastCutClusterSeqNo = cutClusterSeqNo;
         }
 
         public void OpenReplay(long replaySessionId)
@@ -1163,6 +1165,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(1, _actions.RequestsSent);
         Assert.True(_receiver.IsAwaitingReplay);
         Assert.Equal(Cut * 1024, _receiver.RequestFromPosition); // the newest round's cut
+        Assert.Equal(Cut, _actions.LastCutClusterSeqNo); // the request names the cut, the position being a hint
         Assert.False(_receiver.IsRestoring, "no record before the cut is seen");
         Assert.True(_receiver.IsRecovering);
 
@@ -1178,6 +1181,7 @@ public class ReplayerRecoveryTest : IDisposable
         AdvancePastTimers();
         Assert.Equal(2, _actions.RequestsSent);
         Assert.Equal(Cut * 1024, _receiver.RequestFromPosition);
+        Assert.Equal(Cut, _actions.LastCutClusterSeqNo); // the resend names the cut too
 
         DeliverPending(_receiver.RequestId);
         _actions.ClockMs += 100;
@@ -1194,6 +1198,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.False(_receiver.IsRestoring);
         Assert.True(_receiver.IsAwaitingReplay);
         Assert.Equal(FromStart, _receiver.RequestFromPosition);
+        Assert.Equal(ReplayProtocol.NoCut, _actions.LastCutClusterSeqNo); // a walk names no cut
     }
 
     [Fact(DisplayName =
