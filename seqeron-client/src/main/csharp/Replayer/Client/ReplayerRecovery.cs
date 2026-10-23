@@ -136,6 +136,9 @@ internal sealed class ReplayerRecovery
     // groupSeqNo of the frame at the chosen snapshot's cut, read off the replay that found it.
     private long _cutGroupSeqNo;
 
+    // Where that frame starts in this node's recording, which the file's CutPosition only hints at.
+    private long _cutFramePosition;
+
     // The header of the restore in progress, null before its record 0.
     private SnapshotHeader _restoredHeader;
 
@@ -218,6 +221,7 @@ internal sealed class ReplayerRecovery
             if (_checkingCut)
             {
                 _cutGroupSeqNo = groupSeqNo;
+                _cutFramePosition = framePosition;
                 OnCutReplayed(clusterSeqNo == anchor && _event.ClusterTimestampNs == _reader.CutTimestampNs);
                 return;
             }
@@ -663,7 +667,7 @@ internal sealed class ReplayerRecovery
         _restoring = false;
         _lastClusterSeqNo = _reader.CutClusterSeqNo;
         _lastGroupSeqNo = _cutGroupSeqNo;
-        _lastFramePosition = _reader.CutPosition;
+        _lastFramePosition = _cutFramePosition;
         CloseReader();
         _currentLeaderMemberId = _restoredHeader.LeaderMemberId;
         Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, _actions.MemberId,

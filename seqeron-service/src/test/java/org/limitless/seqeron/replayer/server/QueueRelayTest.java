@@ -126,6 +126,56 @@ class QueueRelayTest {
     }
 
     @Test
+    @DisplayName("a recording that starts at a cut is relayed from its first frame, whatever its groupSeqNo")
+    void aRecordingStartingAtACutIsRelayedFromItsFirstFrame() {
+        assertEquals(end(499), relay.replayFrom(end(499), end(600), 0));
+        publish(500, 503, 0);
+        assertEquals(503, relay.lastGroupSeqNo());
+        assertEquals(QueueRelay.Verdict.PUBLISH, relay.onFrame(504, 0));
+    }
+
+    @Test
+    @DisplayName("a hole after the first frame of a cut recording still leaves that member")
+    void aHoleAfterTheFirstFrameOfACutRecordingDropsTheSource() {
+        relay.replayFrom(end(499), end(600), 0);
+        publish(500, 500, 0);
+
+        assertEquals(QueueRelay.Verdict.DROP_SOURCE, relay.onFrame(502, 0));
+    }
+
+    @Test
+    @DisplayName("a member whose positions differ resumes on an earlier frame by skipping what is published")
+    void aMemberWhoseFramesStartEarlierSkipsToTheNextFrame() {
+        relay.replayFrom(end(499), end(600), 0);
+        publish(500, 510, 0);
+        relay.onSourceLost(0);
+
+        // The next member's recording began at an earlier cut, so end(510) falls on its frame 508.
+        assertEquals(end(510), relay.replayFrom(end(480), end(700), 0));
+        for (long n = 508; n <= 510; n++) {
+            assertEquals(QueueRelay.Verdict.SKIP, relay.onFrame(n, 0), "frame " + n);
+        }
+        assertEquals(QueueRelay.Verdict.PUBLISH, relay.onFrame(511, 0));
+    }
+
+    @Test
+    @DisplayName("a member whose positions differ resumes on a later frame by replaying from its start, with no hole")
+    void aMemberWhoseFramesStartLaterIsReplayedFromItsStart() {
+        relay.replayFrom(end(499), end(600), 0);
+        publish(500, 510, 0);
+        relay.onSourceLost(0);
+
+        // The next member's recording began at a later cut, so end(510) falls on its frame 515.
+        assertEquals(end(510), relay.replayFrom(end(505), end(700), 0));
+        assertEquals(QueueRelay.Verdict.REPLAY_FROM_START, relay.onFrame(515, 0));
+        assertEquals(end(505), relay.replayFrom(end(505), end(700), 0));
+        for (long n = 506; n <= 510; n++) {
+            assertEquals(QueueRelay.Verdict.SKIP, relay.onFrame(n, 0), "frame " + n);
+        }
+        assertEquals(QueueRelay.Verdict.PUBLISH, relay.onFrame(511, 0));
+    }
+
+    @Test
     @DisplayName("a member that sends nothing for the source timeout is stalled; any frame keeps it alive")
     void aSilentMemberStalls() {
         relay.replayFrom(START, end(100), 1_000);

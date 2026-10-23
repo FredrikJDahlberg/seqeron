@@ -993,8 +993,14 @@ no header composite and are never sequenced or recorded.
   log yet, or, on a gateway host, it names a group the host does not relay (`replayer.groups`). The
   instance waits unfenced, since the recovery-stall fence arms only after its first catch-up
   (`doc/fault-tolerance.md` §2.1), so alert on that log line.
+- **R-7.** A request that names a cut (`cutClusterSeqNo`) asks for the active recording from the frame with that
+  `clusterSeqNo`, wherever it is; `fromPosition` is only a hint at where, and need not be a frame boundary. The
+  replayer answers it with a replay that starts at the frame, `ReplayPending` while the recording has not reached
+  the cut, and `NO_REPLAY_NEEDED` (**R-2**) when the cut is before the recording's first frame or the recording
+  passes it without a frame there, which means the cut was made in another log. The client checks the frame it
+  receives, and anchors its resume at that frame's position.
 
-The replayer serves only the active recording of each of its node's queues. The cluster takes no
+The replayer serves only the active recording of each of its node's queues, whatever its first frame. The cluster takes no
 snapshots, so a node's every start replays the log from `clusterSeqNo` 1 into new recordings: the active
 one alone holds the whole of its queue, and an older one is a prefix of it. A client replaying from
 `FROM_START` checks that the first frame it dispatches is `groupSeqNo` 1; one restoring a snapshot takes

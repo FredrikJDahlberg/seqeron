@@ -1597,6 +1597,20 @@ TEST(ReplayerRecoveryRestore, ASnapshotWhoseCutTheRecordingHoldsIsRestoredFromIt
     EXPECT_EQ((std::vector<std::int64_t>{ 11, 12 }), r.dispatched);
 }
 
+TEST(ReplayerRecoveryRestore, ACutFoundElsewhereInTheRecordingThanItsFilesPositionIsResumedAtWhereItWasFound)
+{
+    Restoring r;
+    r.writeSnapshot(2);
+    r.start();
+    attachRestoreReplay(r.client, 21);
+    deliverReplayFrame(r.client, rf::started(CUT, 2), CUT + 7); // the file's cutPosition is a hint only
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+
+    EXPECT_FALSE(r.client.recovery.isRestoring());
+    EXPECT_EQ((CUT + 7) * 1024, r.client.recovery.requestFromPosition()) << "not the file's";
+}
+
 TEST(ReplayerRecoveryRestore, AfterARestoreTheQueuesContinuityResumesAtTheCutFramesGroupSeqNo)
 {
     Restoring r;

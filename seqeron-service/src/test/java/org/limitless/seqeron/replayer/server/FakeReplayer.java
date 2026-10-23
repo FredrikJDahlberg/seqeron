@@ -46,6 +46,12 @@ final class FakeReplayer implements Replayer {
     private final Map<Long, Long> stopPositions = new HashMap<>();
     private final Map<Integer, Replayer.QueueBacklog> queueBacklogs = new HashMap<>();
 
+    /** One frame of a scripted recording. */
+    private record Frame(long position, long clusterSeqNo) { }
+
+    private final Map<Long, List<Frame>> frames = new HashMap<>();
+    private final List<Long> scans = new ArrayList<>();
+
     private final List<StartedReplay> startedReplays = new ArrayList<>();
     private final List<Long> stoppedReplays = new ArrayList<>();
     private long nextReplaySessionId = 900;
@@ -89,6 +95,22 @@ final class FakeReplayer implements Replayer {
         } else {
             stopPositions.put(recordingId, tip);
         }
+    }
+
+    /**
+     * Scripts the frames {@code scanQueueRecording} reads from a recording, in order.
+     * @param positionsAndClusterSeqNos alternating frame position and {@code clusterSeqNo}
+     */
+    void addFrames(final long recordingId, final long... positionsAndClusterSeqNos) {
+        final List<Frame> list = frames.computeIfAbsent(recordingId, id -> new ArrayList<>());
+        for (int i = 0; i < positionsAndClusterSeqNos.length; i += 2) {
+            list.add(new Frame(positionsAndClusterSeqNos[i], positionsAndClusterSeqNos[i + 1]));
+        }
+    }
+
+    /** The positions the service began a scan at, in order. */
+    List<Long> scans() {
+        return scans;
     }
 
     /** Marks a recording stopped, as an operator repairing an unclean shutdown's leftover does. */
@@ -229,6 +251,27 @@ final class FakeReplayer implements Replayer {
             .filter(recording -> recording.groupId() == groupId)
             .map(GroupRecording::span)
             .toList();
+    }
+
+    @Override
+    public ScanEnd scanQueueRecording(final long recordingId, final long fromPosition, final long endPosition,
+                                      final FrameVisitor visitor) {
+        scans.add(fromPosition);
+        throwIfArchiveDown();
+        final List<Frame> recorded = frames.getOrDefault(recordingId, List.of());
+        int i = 0;
+        while (i < recorded.size() && recorded.get(i).position() != fromPosition) {
+            i++;
+        }
+        if (i == recorded.size()) {
+            return ScanEnd.UNREADABLE;
+        }
+        for (; i < recorded.size() && recorded.get(i).position() < endPosition; i++) {
+            if (!visitor.onFrame(recorded.get(i).position(), recorded.get(i).clusterSeqNo())) {
+                return ScanEnd.STOPPED;
+            }
+        }
+        return ScanEnd.TIP;
     }
 
     @Override

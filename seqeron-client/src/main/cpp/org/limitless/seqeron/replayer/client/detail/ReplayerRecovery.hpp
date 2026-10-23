@@ -198,6 +198,7 @@ class ReplayerRecovery
     std::int32_t m_restoreRecordIndex = 0;
     std::int64_t m_snapshotRound = 0;                         // the chosen snapshot's round
     std::int64_t m_cutGroupSeqNo = 0;                         // of the frame at its cut, off the replay that found it
+    std::int64_t m_cutFramePosition = 0;                      // where that frame starts here; the file's is a hint
     std::optional<protocol::SnapshotHeader> m_restoredHeader; // of the restore in progress, empty before record 0
     std::optional<std::string> m_restoreFailure;              // why the restore cannot proceed; latched
 
@@ -282,6 +283,7 @@ class ReplayerRecovery
             if (m_checkingCut)
             {
                 m_cutGroupSeqNo = groupSeqNo;
+                m_cutFramePosition = framePosition;
                 onCutReplayed(sequenceNumber == anchor && entry.clusterTimestampNs == m_reader->cutTimestampNs());
                 return;
             }
@@ -686,7 +688,7 @@ class ReplayerRecovery
         m_restoring = false;
         m_lastClusterSeqNo = m_reader->cutClusterSeqNo();
         m_lastGroupSeqNo = m_cutGroupSeqNo;
-        m_lastFramePosition = m_reader->cutPosition();
+        m_lastFramePosition = m_cutFramePosition;
         m_reader.reset();
         m_currentLeaderMemberId = m_restoredHeader->leaderMemberId;
         util::Logger::info(util::component::ReplayerStreamReceiver,

@@ -1234,6 +1234,20 @@ class ReplayerRecoveryTest {
     }
 
     @Test
+    @DisplayName("a cut found elsewhere in the recording than its file's position is resumed at where it was found")
+    void restoreResumesAtTheCutsPositionInThisRecording() {
+        writeSnapshot(2);
+        startRestoring();
+        attachReplay(21, 64 * 1024);
+        deliverReplayFrame(RestoreFrames.started(CUT, 2), CUT + 7); // the file's cutPosition is a hint only
+        receiver.doTimers(false);
+        receiver.doTimers(false);
+
+        assertFalse(receiver.isRestoring());
+        assertEquals((CUT + 7) * 1024, receiver.requestFromPosition(), "not the file's");
+    }
+
+    @Test
     @DisplayName("after a restore, the queue's continuity resumes at the cut frame's groupSeqNo")
     void afterARestoreContinuityResumesAtTheCutsGroupSeqNo() {
         writeSnapshot(2);

@@ -86,6 +86,7 @@ public final class ReplayerService {
 
     // Replay protocol state
     private final ReplaySlotAllocator replaySlots = new ReplaySlotAllocator(MAX_CONCURRENT_REPLAYS);
+    private final CutLookup cutLookup = new CutLookup();
 
     // Operator counters (see SeqeronCounters)
     private final AtomicCounter archiveErrorsCounter;
@@ -242,8 +243,8 @@ public final class ReplayerService {
 
     /**
      * Waits for the group table, then for each served queue's active recording to be visible on the local
-     * archive. Only those are served: every node start replays the log from clusterSeqNo 1 into new ones, and a
-     * client checks that a queue's first frame is groupSeqNo 1.
+     * archive. Only those are served, whatever their first frame: a recording that starts at a snapshot's cut
+     * does not start at groupSeqNo 1, and a client that walks one finds out for itself.
      * @return work count
      */
     private int checkReady() {
@@ -301,6 +302,7 @@ public final class ReplayerService {
         final long requestId = replayRequestDecoder.requestId();
         final long fromPosition = replayRequestDecoder.fromPosition();
         final int queueId = replayRequestDecoder.queueId();
+        final long cutClusterSeqNo = replayRequestDecoder.cutClusterSeqNo();
 
         if (!ready || !resolver.serves(queueId)) {
             sendPending(clientId, requestId); // R-5: no queue here has an active recording by that id
@@ -314,7 +316,7 @@ public final class ReplayerService {
             if (replaySlots.activeCount() < MAX_CONCURRENT_REPLAYS) {
                 throttledRequestsCounter.increment();
             }
-            replaySlots.addPending(clientId, requestId, fromPosition, queueId);
+            replaySlots.addPending(clientId, requestId, fromPosition, queueId, cutClusterSeqNo);
             sendPending(clientId, requestId);
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                         "client %d pending: no free replay slot (active=%d/%d%s, pending=%d)", clientId,
@@ -323,7 +325,7 @@ public final class ReplayerService {
                         replaySlots.pendingCount());
             return;
         }
-        startReplayForClient(clientId, requestId, fromPosition, queueId);
+        startReplayForClient(clientId, requestId, fromPosition, queueId, cutClusterSeqNo);
         drainPending();
     }
 
@@ -375,12 +377,13 @@ public final class ReplayerService {
      * @param requestId the request being answered, echoed in every reply
      * @param fromPosition start replay position, or {@link ReplayProtocol#FROM_START}
      * @param queueId the queue to replay
+     * @param cutClusterSeqNo the snapshot cut a restore replays from, else {@link ReplayProtocol#NO_CUT}
      */
     private void startReplayForClient(final long clientId, final long requestId, final long fromPosition,
-                                      final int queueId) {
+                                      final int queueId, final long cutClusterSeqNo) {
         final boolean fromStart = fromPosition == ReplayProtocol.FROM_START;
         try {
-            serveReplay(clientId, requestId, fromPosition, queueId);
+            serveReplay(clientId, requestId, fromPosition, queueId, cutClusterSeqNo);
         } catch (final RuntimeException error) {
             if (!fromStart && archiveAnswers(queueId)) {
                 rejectResume(clientId, requestId, "archive refused it: " + error.getMessage());
@@ -424,30 +427,51 @@ public final class ReplayerService {
      * @param requestId the request being answered, echoed in every reply
      * @param fromPosition start position, or {@link ReplayProtocol#FROM_START}
      * @param queueId the queue to replay
+     * @param cutClusterSeqNo the snapshot cut a restore replays from, else {@link ReplayProtocol#NO_CUT}; then {@code
+     *     fromPosition} only hints at where it is
      */
-    private void serveReplay(final long clientId, final long requestId, final long fromPosition, final int queueId) {
+    private void serveReplay(final long clientId, final long requestId, final long fromPosition, final int queueId,
+                             final long cutClusterSeqNo) {
         replaySlots.cancelPending(clientId);
 
         final Replayer.RecordingSpan active = findActiveRecording(queueId);
         if (active == null) {
-            replaySlots.addPending(clientId, requestId, fromPosition, queueId);
+            replaySlots.addPending(clientId, requestId, fromPosition, queueId, cutClusterSeqNo);
             sendPending(clientId, requestId);
             return;
         }
-        final long replayFrom = fromPosition == ReplayProtocol.FROM_START ? active.startPosition() : fromPosition;
-        if (replayFrom < active.startPosition()) {
-            rejectResume(clientId, requestId,
-                         "position " + fromPosition + " predates recording " + active.recordingId() +
-                             "'s startPosition " + active.startPosition());
-            return;
-        }
-
         final long recordingId = active.recordingId();
         final long tip = tipOf(recordingId);
         if (tip < 0) {
-            replaySlots.addPending(clientId, requestId, fromPosition, queueId);
+            replaySlots.addPending(clientId, requestId, fromPosition, queueId, cutClusterSeqNo);
             sendPending(clientId, requestId);
             return;
+        }
+        final long replayFrom;
+        if (cutClusterSeqNo != ReplayProtocol.NO_CUT) {
+            final CutLookup.Answer cut =
+                cutLookup.find(recordingId, active.startPosition(), tip, fromPosition, cutClusterSeqNo,
+                               replayer::scanQueueRecording);
+            if (cut.verdict() == CutLookup.Verdict.PENDING) {
+                sendPending(clientId, requestId); // the recording has not reached the cut; the client resends
+                return;
+            }
+            if (cut.verdict() != CutLookup.Verdict.FOUND) {
+                rejectResume(clientId, requestId,
+                             "cut " + cutClusterSeqNo + " is " +
+                                 (cut.verdict() == CutLookup.Verdict.BELOW ? "before recording " + recordingId
+                                                                           : "not in recording " + recordingId));
+                return;
+            }
+            replayFrom = cut.position();
+        } else {
+            replayFrom = fromPosition == ReplayProtocol.FROM_START ? active.startPosition() : fromPosition;
+            if (replayFrom < active.startPosition()) {
+                rejectResume(clientId, requestId,
+                             "position " + fromPosition + " predates recording " + recordingId +
+                                 "'s startPosition " + active.startPosition());
+                return;
+            }
         }
         final long boundedLength = tip - replayFrom;
         if (boundedLength <= 0) {
@@ -524,7 +548,7 @@ public final class ReplayerService {
             final ReplaySlotAllocator.PendingRequest request = replaySlots.pollPending();
             if (request != null) {
                 startReplayForClient(request.clientId(), request.requestId(), request.fromPosition(),
-                                     request.queueId());
+                                     request.queueId(), request.cutClusterSeqNo());
             }
         }
     }
@@ -689,6 +713,20 @@ public final class ReplayerService {
             activeRecordings[groupId - 1] = found;
         }
         return found;
+    }
+
+    /**
+     * Remembers where a snapshot cut was recorded in a queue's active recording, so a restore naming it is answered
+     * without reading the recording. The cluster tier's cut hand-over calls it (doc/snapshot.md §10.8).
+     * @param queueId         the queue's group
+     * @param cutClusterSeqNo the cut
+     * @param position        where its frame starts in the recording
+     */
+    void keepCut(final int queueId, final long cutClusterSeqNo, final long position) {
+        final Replayer.RecordingSpan active = findActiveRecording(queueId);
+        if (active != null) {
+            cutLookup.keep(active.recordingId(), cutClusterSeqNo, position);
+        }
     }
 
     /** Where a recording has reached: its live position, else where it stopped; negative if neither is known. */

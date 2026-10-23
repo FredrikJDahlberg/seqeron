@@ -258,6 +258,109 @@ class ReplayerServiceTest {
         assertTrue(noClientReplayStarted());
     }
 
+    // ── Restoring at a snapshot's cut ───────────────────────────────────────────
+
+    /** A recording from 4096 holding frames of clusterSeqNo 40, 45, 50 and 55, one per KiB. */
+    private void recordingWithCuts() {
+        fakeReplayer.addRecording(6, 4096, true, 8192);
+        fakeReplayer.addFrames(6, 4096, 40, 5120, 45, 6144, 50, 7168, 55);
+        makeReady();
+    }
+
+    @Test
+    void aCutAtTheHintedPositionIsFoundByReadingOneFrame() {
+        recordingWithCuts();
+
+        final Reply reply = cutRequest(CLIENT, 1, 6144, 50);
+
+        assertEquals(8192, reply.catchUpPosition());
+        assertEquals(6144, lastClientReplay().position());
+        assertEquals(List.of(6144L), fakeReplayer.scans());
+    }
+
+    @Test
+    void aHintThatIsNoFrameBoundaryFallsBackToReadingFromTheStart() {
+        recordingWithCuts();
+
+        cutRequest(CLIENT, 1, 6000, 50);
+
+        assertEquals(6144, lastClientReplay().position());
+        assertEquals(List.of(6000L, 4096L), fakeReplayer.scans());
+    }
+
+    @Test
+    void aHintPastTheCutFallsBackToReadingFromTheStart() {
+        recordingWithCuts();
+
+        cutRequest(CLIENT, 1, 7168, 50);
+
+        assertEquals(6144, lastClientReplay().position(), "the cut is where its frame is, not where the file says");
+        assertEquals(List.of(7168L, 4096L), fakeReplayer.scans());
+    }
+
+    @Test
+    void aCutKeptWhenItWasRecordedIsFoundWithoutReading() {
+        recordingWithCuts();
+        replayerService.keepCut(GROUP_ID, 50, 6144);
+
+        cutRequest(CLIENT, 1, 0, 50);
+
+        assertEquals(6144, lastClientReplay().position());
+        assertTrue(fakeReplayer.scans().isEmpty());
+    }
+
+    @Test
+    void aCutBeforeTheRecordingsFirstFrameIsRefused() {
+        recordingWithCuts();
+
+        final Reply reply = cutRequest(CLIENT, 1, 4096, 30);
+
+        assertEquals(ReplayProtocol.NO_REPLAY_NEEDED, reply.replaySessionId());
+        assertTrue(noClientReplayStarted());
+    }
+
+    @Test
+    void aCutTheRecordingPassesWithoutAFrameAtItIsRefused() {
+        recordingWithCuts();
+
+        final Reply reply = cutRequest(CLIENT, 1, 5120, 47);
+
+        assertEquals(ReplayProtocol.NO_REPLAY_NEEDED, reply.replaySessionId(), "another log's cut");
+        assertTrue(noClientReplayStarted());
+    }
+
+    @Test
+    void aCutTheRecordingHasNotReachedYetIsHeld() {
+        recordingWithCuts();
+
+        final Reply reply = cutRequest(CLIENT, 1, 7168, 70);
+
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId());
+        assertTrue(noClientReplayStarted());
+    }
+
+    @Test
+    void aKeptCutBelowTheRecordingsStartIsRefused() {
+        recordingWithCuts();
+        replayerService.keepCut(GROUP_ID, 20, 1024);
+
+        assertEquals(ReplayProtocol.NO_REPLAY_NEEDED, cutRequest(CLIENT, 1, 1024, 20).replaySessionId());
+    }
+
+    @Test
+    void aCutRequestWaitingForASlotStillNamesItsCut() {
+        recordingWithCuts();
+        for (int client = 100; client < 100 + ReplayerService.MAX_CONCURRENT_REPLAYS; client++) {
+            request(client, 1, 4096);
+        }
+
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, cutRequest(CLIENT, 1, 6144, 50).templateId());
+        fakeReplayer.endReplay(fakeReplayer.startedReplays().getFirst().replaySessionId());
+        replayerService.poll();
+
+        assertEquals(6144, lastClientReplay().position());
+    }
+
     // ── Local-archive errors ────────────────────────────────────────────────────
 
     @Test
@@ -711,6 +814,13 @@ class ReplayerServiceTest {
         return lastReply();
     }
 
+    /** Delivers a restore's request, naming the cut and hinting at its position. */
+    private Reply cutRequest(final long clientId, final long requestId, final long hint, final long cut) {
+        fakeReplayer.offerRequest(replayRequest(clientId, requestId, hint, GROUP_ID, cut));
+        replayerService.poll();
+        return lastReply();
+    }
+
     /** Delivers one QueueRequest and returns the reply it drew. */
     private Reply queueRequest(final long clientId, final long requestId, final int sourceId,
                                final String gatewayName) {
@@ -785,12 +895,18 @@ class ReplayerServiceTest {
 
     private byte[] replayRequest(final long clientId, final long requestId, final long fromPosition,
                                  final int queueId) {
+        return replayRequest(clientId, requestId, fromPosition, queueId, ReplayProtocol.NO_CUT);
+    }
+
+    private byte[] replayRequest(final long clientId, final long requestId, final long fromPosition,
+                                 final int queueId, final long cutClusterSeqNo) {
         final ReplayRequestEncoder encoder = new ReplayRequestEncoder();
         encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder)
             .clientId(clientId)
             .requestId(requestId)
             .fromPosition(fromPosition)
-            .queueId(queueId);
+            .queueId(queueId)
+            .cutClusterSeqNo(cutClusterSeqNo);
         return encoded(encoder.encodedLength());
     }
 

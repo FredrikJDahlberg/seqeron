@@ -1234,6 +1234,20 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(new List<long> { 11, 12 }, _dispatched);
     }
 
+    [Fact(DisplayName = "a cut found elsewhere in the recording than its file's position is resumed at where it was found")]
+    public void RestoreResumesAtTheCutsPositionInThisRecording()
+    {
+        WriteSnapshot(2);
+        StartRestoring();
+        AttachReplay(21, 64 * 1024);
+        DeliverReplayFrame(RestoreFrames.Started(Cut, 2), Cut + 7); // the file's CutPosition is a hint only
+        _receiver.DoTimers(false);
+        _receiver.DoTimers(false);
+
+        Assert.False(_receiver.IsRestoring);
+        Assert.Equal((Cut + 7) * 1024, _receiver.RequestFromPosition); // not the file's
+    }
+
     [Fact(DisplayName = "after a restore, the queue's continuity resumes at the cut frame's groupSeqNo")]
     public void AfterARestoreContinuityResumesAtTheCutsGroupSeqNo()
     {
