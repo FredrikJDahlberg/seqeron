@@ -120,7 +120,7 @@ public class HotPathAllocationTest
 
     private sealed class QuietActions : IReplayerRecoveryActions
     {
-        public void SendReplayRequest(long requestId, long fromPosition)
+        public void SendReplayRequest(long requestId, long fromPosition, long cutClusterSeqNo)
         {
         }
 

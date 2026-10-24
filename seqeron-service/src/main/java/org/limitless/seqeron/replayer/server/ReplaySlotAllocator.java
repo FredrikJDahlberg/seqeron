@@ -14,7 +14,8 @@ public final class ReplaySlotAllocator {
     public static final long NO_SLOT = -1;
 
     /** One pending request waiting for a free slot, in request order. */
-    public record PendingRequest(long clientId, long requestId, long fromPosition, int queueId) { }
+    public record PendingRequest(long clientId, long requestId, long fromPosition, int queueId,
+                                 long cutClusterSeqNo) { }
 
     private record ActiveSlot(long clientId, long token) { }
 
@@ -69,9 +70,11 @@ public final class ReplaySlotAllocator {
      * @param requestId the request to answer when it is finally served
      * @param fromPosition start replay position, or {@code ReplayProtocol.FROM_START}
      * @param queueId the queue it is for
+     * @param cutClusterSeqNo the snapshot cut it restores, or {@code ReplayProtocol.NO_CUT}
      */
-    public void addPending(final long clientId, final long requestId, final long fromPosition, final int queueId) {
-        final PendingRequest request = new PendingRequest(clientId, requestId, fromPosition, queueId);
+    public void addPending(final long clientId, final long requestId, final long fromPosition, final int queueId,
+                           final long cutClusterSeqNo) {
+        final PendingRequest request = new PendingRequest(clientId, requestId, fromPosition, queueId, cutClusterSeqNo);
         for (int i = 0; i < pending.size(); i++) {
             if (pending.get(i).clientId() == clientId) {
                 pending.set(i, request);

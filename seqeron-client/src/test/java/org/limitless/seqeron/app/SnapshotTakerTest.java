@@ -79,6 +79,31 @@ class SnapshotTakerTest {
         }
     }
 
+    /** Records the signals placed; declines the first {@link #declines} offers of each kind. */
+    private static final class Signals implements SnapshotTaker.Signals {
+        final List<String> placed = new ArrayList<>();
+        int declines;
+
+        @Override
+        public boolean joined(final long round) {
+            return place("joined " + round);
+        }
+
+        @Override
+        public boolean confirmed(final long round) {
+            return place("confirmed " + round);
+        }
+
+        private boolean place(final String signal) {
+            if (declines > 0) {
+                declines--;
+                return false;
+            }
+            placed.add(signal);
+            return true;
+        }
+    }
+
     @TempDir
     Path directory;
 
@@ -339,6 +364,60 @@ class SnapshotTakerTest {
         final SnapshotTaker taker = participating();
         started(taker, 1, true);
         assertEquals(4, keepAlives, "the header and three records");
+    }
+
+    @Test
+    @DisplayName("a replica that takes part joins the round the Replayer cut, again until the offer lands")
+    void participatingReplicaJoinsTheRoundItIsToldOf() {
+        final Signals signals = new Signals();
+        final SnapshotTaker taker = participating();
+        assertEquals(0, taker.signal(signals), "nothing owed before a round");
+
+        signals.declines = 2;
+        taker.onSnapshotRound(1);
+        taker.onSnapshotRound(2);
+        assertEquals(0, taker.signal(signals));
+        assertEquals(0, taker.signal(signals));
+        assertEquals(1, taker.signal(signals));
+        assertEquals(List.of("joined 2"), signals.placed, "only the latest round is owed");
+        assertEquals(0, taker.signal(signals), "and only once");
+    }
+
+    @Test
+    @DisplayName("a replica that takes no part, or has no listener, joins nothing")
+    void nonParticipatingReplicaJoinsNothing() {
+        final Signals signals = new Signals();
+        final SnapshotTaker off = new SnapshotTaker(state, store(), keepAlive);
+        off.participating(false);
+        off.onSnapshotRound(1);
+        final SnapshotTaker unlistened = new SnapshotTaker(null, null, keepAlive);
+        unlistened.participating(true);
+        unlistened.onSnapshotRound(1);
+
+        assertEquals(0, off.signal(signals));
+        assertEquals(0, unlistened.signal(signals));
+        assertTrue(signals.placed.isEmpty());
+    }
+
+    @Test
+    @DisplayName("a confirmed file is told to the Replayer, again until the offer lands; a diverged one is not")
+    void confirmedFileIsToldToTheReplayer() {
+        final Signals signals = new Signals();
+        final SnapshotTaker taker = participating();
+        started(taker, 1, true);
+        taker.submit(frames);
+        final long[] end = frames.ends.get(0);
+        assertEquals(0, taker.signal(signals), "written is not confirmed");
+
+        assertTrue(taker.onSnapshotEnd(1, (int)end[1], end[2], end[3]));
+        signals.declines = 1;
+        assertEquals(0, taker.signal(signals));
+        assertEquals(1, taker.signal(signals));
+        assertEquals(List.of("confirmed 1"), signals.placed);
+
+        started(taker, 2, false);
+        assertFalse(taker.onSnapshotEnd(2, 99, 0, 0));
+        assertEquals(0, taker.signal(signals), "a diverged instance confirms nothing");
     }
 
     private static byte[] filled(final int value) {

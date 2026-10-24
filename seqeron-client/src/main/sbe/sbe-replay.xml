@@ -2,7 +2,7 @@
 <!--
     The replay control protocol: schema 212, specified in doc/seqeron-protocol-spec.md §10.
 
-    Five messages between a node's ReplayerService and its co-located clients, on the request (202)
+    Eight messages between a node's ReplayerService and its co-located clients, on the request (202)
     and control (203) streams over aeron:ipc. They are never sequenced or recorded, so they carry no
     header composite. The schema changes in place without a version bump: a node's replayer and its
     clients are built and restarted together, and no recording holds these messages (§11).
@@ -46,6 +46,9 @@
                             in-order frame), or FROM_START (-1) for the recording's start"/>
         <field name="queueId"      id="20016" type="int32"
                description="The queue the request is for, by its groupId (R-5): the one a QueueResolved named"/>
+        <field name="cutClusterSeqNo" id="20021" type="int64"
+               description="Set by a restore to the clusterSeqNo of the snapshot's cut, which fromPosition then
+                            only hints at; NO_CUT (-1) otherwise (doc/snapshot.md §10.8)"/>
     </sbe:message>
 
     <!-- ReplayerService -> App: "Attach to replaySessionId on the replay stream." -->
@@ -96,6 +99,34 @@
                description="The requestId of the request this answers (R-1)"/>
         <field name="queueId"   id="20016" type="int32"
                description="The queue's groupId (R-5)"/>
+    </sbe:message>
+
+    <!-- ReplayerService -> Apps: "a cluster snapshot round was cut." -->
+    <sbe:message name="SnapshotRound" id="11"
+                 description="A round was cut on this node. Addressed to no client: every application replica on the
+                              stream answers it with a SnapshotJoined, and a gateway ignores it (doc/snapshot.md
+                              §10.8)">
+        <field name="round"        id="20019" type="int64"
+               description="The round's number, as SnapshotStarted.round"/>
+        <field name="clusterSeqNo" id="20020" type="int64"
+               description="The round's cut: the clusterSeqNo of its SnapshotStarted"/>
+    </sbe:message>
+
+    <!-- App -> ReplayerService: "this replica takes part in the round." -->
+    <sbe:message name="SnapshotJoined" id="12"
+                 description="The application replica holds state for sourceId and will write its file for the round">
+        <field name="clientId" id="20010" type="int64"/>
+        <field name="sourceId" id="20017" type="int32"
+               description="The application's applicationSourceId"/>
+        <field name="round"    id="20019" type="int64"/>
+    </sbe:message>
+
+    <!-- App -> ReplayerService: "my file for the round is durable." -->
+    <sbe:message name="SnapshotConfirmed" id="13"
+                 description="The replica's file for the round is confirmed and durable under its final name (doc/snapshot.md §5)">
+        <field name="clientId" id="20010" type="int64"/>
+        <field name="sourceId" id="20017" type="int32"/>
+        <field name="round"    id="20019" type="int64"/>
     </sbe:message>
 
 </sbe:messageSchema>

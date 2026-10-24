@@ -27,3 +27,13 @@ stdout and would corrupt the payload bytes.
 included, plus whatever
 `SEQERON_EXTRA_PROCESSES` names (`"label|pgrep-pattern"` entries, semicolon-separated), so a consumer's
 harness can clean up its own processes through the same sweep without core naming them.
+
+`start-cluster.sh` and `start-three-node-cluster.sh` launch the cluster tier and nothing else — core
+starts no process it does not own. A consumer that wants its own replicas or gateways alongside runs
+them itself: `SEQERON_NO_CONSUMERS=1` leaves out the probe followers, the caller launches its own
+after READY, and names them in `SEQERON_EXTRA_PROCESSES` so `stop-cluster.sh` sweeps them too.
+The cluster sequences nothing before its groups are active, so `SEQERON_TOPOLOGY` names a topology document
+either script loads once its members run. Without it, `start-three-node-cluster.sh` loads
+`topology-test-groups.xml` for its probe followers, and with `SEQERON_NO_CONSUMERS=1` the caller loads its own.
+The harnesses that run no gateway pair load `topology-test-groups.xml` first; every test topology declares the
+same group, `test`, and the examples' two declare the same two, so files of a kind load into one cluster.

@@ -88,6 +88,9 @@ final class ReplayerRecovery {
     /** fromPosition of the current request, for an idempotent resend; {@link ReplayProtocol#FROM_START} for a walk. */
     private long requestFromPosition = ReplayProtocol.FROM_START;
 
+    /** cutClusterSeqNo of the current request: the snapshot a restore is checking, else {@link ReplayProtocol#NO_CUT}. */
+    private long requestCutClusterSeqNo = ReplayProtocol.NO_CUT;
+
     private long lastRequestMs;
 
     /** Advances per send; replies not carrying it are stale — see {@link #onControl}. */
@@ -152,6 +155,9 @@ final class ReplayerRecovery {
 
     /** groupSeqNo of the frame at the chosen snapshot's cut, read off the replay that found it. */
     private long cutGroupSeqNo;
+
+    /** Where that frame starts in this node's recording, which the file's {@code cutPosition} only hints at. */
+    private long cutFramePosition;
 
     /** The header of the restore in progress, null before its record 0. */
     private SnapshotHeader restoredHeader;
@@ -221,6 +227,7 @@ final class ReplayerRecovery {
             resumeAnchorClusterSeqNo = 0;
             if (checkingCut) {
                 cutGroupSeqNo = groupSeqNo;
+                cutFramePosition = framePosition;
                 onCutReplayed(clusterSeqNo == anchor && event.clusterTimestampNs() == reader.cutTimestampNs());
                 return;
             }
@@ -356,7 +363,7 @@ final class ReplayerRecovery {
         final int records = restoring ? restoreRecords() : 0;
         final long nowMs = actions.nowMs();
         if (awaitingReplay && (requestPublicationPending || (nowMs - lastRequestMs) > RESEND_INTERVAL_MS)) {
-            requestReplay(requestFromPosition); // re-send the same request verbatim
+            requestReplay(requestFromPosition, requestCutClusterSeqNo); // re-send the same request verbatim
         }
         if (replaySessionId >= 0 && (nowMs - lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS) {
             onReplayStalled();
@@ -469,16 +476,21 @@ final class ReplayerRecovery {
      * included: only a per-send id tells a stale reply from the live one on the shared control stream.
      */
     private void requestReplay(final long fromPosition) {
+        requestReplay(fromPosition, ReplayProtocol.NO_CUT);
+    }
+
+    private void requestReplay(final long fromPosition, final long cutClusterSeqNo) {
         if (fromPosition == ReplayProtocol.FROM_START) {
             resumeAnchorClusterSeqNo = 0; // a walk supersedes any resume in flight
         }
         requestFromPosition = fromPosition;
+        requestCutClusterSeqNo = cutClusterSeqNo;
         awaitingReplay = true;
         replaySessionId = -1;
         actions.closeReplay();
         lastRequestMs = actions.nowMs();
         ++requestId;
-        actions.sendReplayRequest(requestId, fromPosition);
+        actions.sendReplayRequest(requestId, fromPosition, cutClusterSeqNo);
     }
 
     /**
@@ -521,7 +533,7 @@ final class ReplayerRecovery {
     /** Replays the recording from the chosen snapshot's cut; its first frame decides the restore. */
     private void requestCut() {
         checkingCut = true;
-        requestReplay(reader.cutPosition());
+        requestReplay(reader.cutPosition(), reader.cutClusterSeqNo());
         resumeAnchorClusterSeqNo = reader.cutClusterSeqNo();
     }
 
@@ -632,7 +644,7 @@ final class ReplayerRecovery {
         restoring = false;
         lastClusterSeqNo = reader.cutClusterSeqNo();
         lastGroupSeqNo = cutGroupSeqNo;
-        lastFramePosition = reader.cutPosition();
+        lastFramePosition = cutFramePosition;
         closeReader();
         currentLeaderMemberId = restoredHeader.leaderMemberId();
         Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, actions.memberId(),

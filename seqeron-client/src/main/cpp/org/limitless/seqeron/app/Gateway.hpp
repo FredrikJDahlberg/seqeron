@@ -665,6 +665,11 @@ class Gateway
             // A gateway is elected by the cluster rather than gated on its node leading: nothing to do.
         }
 
+        void onSnapshotRound(std::int64_t)
+        {
+            // A node cannot see a gateway's instances, so it expects no answer from one (doc/snapshot.md §10.8).
+        }
+
         void onPayload(const Payload& payload)
         {
             m_gateway.observeConnectionId(payload.sourceId(), payload.connectionId());

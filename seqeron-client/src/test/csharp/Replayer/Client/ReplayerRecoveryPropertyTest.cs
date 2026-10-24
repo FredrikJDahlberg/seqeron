@@ -426,7 +426,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
 
         // ── IReplayerRecoveryActions: the client's outbound side ───────────────────────────────────────
 
-        public void SendReplayRequest(long requestId, long fromPosition)
+        public void SendReplayRequest(long requestId, long fromPosition, long cutClusterSeqNo)
         {
             if (_chaos && Chance(15))
             {

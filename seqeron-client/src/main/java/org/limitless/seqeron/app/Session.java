@@ -61,6 +61,10 @@ final class Session implements AutoCloseable {
         /** A {@code LeadershipChanged} was applied; confirmed ingress has already taken the new term. */
         void onLeadershipChanged();
 
+        /** The Replayer cut a snapshot round on this node; a gateway has nothing to say to it. */
+        default void onSnapshotRound(long round) {
+        }
+
         void onPayload(Payload payload);
 
         /** Every transition to caught-up, the first included. */
@@ -152,7 +156,18 @@ final class Session implements AutoCloseable {
         this.recoveryStall = new RecoveryStallFence(recoveryStallTimeoutMs);
         this.queueStall = new QueueStallFence(queueStallTimeoutMs);
         this.receiver = new ReplayerStreamReceiver(clientId, this::onSequenced, this::onLeadershipChanged, null);
+        receiver.onSnapshotRound((round, clusterSeqNo) -> dispatch.onSnapshotRound(round));
         sender.setIngressHold(pending);
+    }
+
+    /** Tells this node's Replayer the application {@code sourceId} takes part in {@code round}; whether it landed. */
+    boolean sendSnapshotJoined(final int sourceId, final long round) {
+        return receiver.sendSnapshotJoined(sourceId, round);
+    }
+
+    /** Tells this node's Replayer the application's file for {@code round} is durable; whether it landed. */
+    boolean sendSnapshotConfirmed(final int sourceId, final long round) {
+        return receiver.sendSnapshotConfirmed(sourceId, round);
     }
 
     /** Restores the newest snapshot in {@code store} first; call before starting. */

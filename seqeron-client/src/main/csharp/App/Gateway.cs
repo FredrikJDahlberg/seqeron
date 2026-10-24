@@ -550,6 +550,11 @@ public sealed class Gateway : IDisposable
             // A gateway is elected by the cluster rather than gated on its node leading: nothing to do.
         }
 
+        public void OnSnapshotRound(long round)
+        {
+            // A node cannot see a gateway's instances, so it expects no answer from one (doc/snapshot.md §10.8).
+        }
+
         public void OnPayload(Payload payload)
         {
             _gateway.ObserveConnectionId(payload.SourceId, payload.ConnectionId);

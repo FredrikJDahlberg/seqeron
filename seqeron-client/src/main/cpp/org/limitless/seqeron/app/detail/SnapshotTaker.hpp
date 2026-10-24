@@ -26,6 +26,11 @@ namespace org::limitless::seqeron::app::detail {
  * It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener. The
  * Java twin is app/SnapshotTaker.java; keep the two in step.
  *
+ * Signals, how an application tells its node's Replayer where a round stands, provides, each answering whether the
+ * offer landed:
+ *   bool joined(std::int64_t round)
+ *   bool confirmed(std::int64_t round)
+ *
  * Actions, how an instance places the end of a round it publishes, provides:
  *   protocol::Publish publishEnd(std::int64_t round, std::int32_t recordCount, std::uint64_t length,
  *                                std::uint32_t crc32c, std::uint32_t formatVersion)
@@ -150,7 +155,40 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         }
         m_store->confirm(round);
         m_confirmedRound = round;
+        m_pendingConfirmed = round;
         return true;
+    }
+
+    // The Replayer cut a round: an instance that takes part answers it until the offer lands.
+    void onSnapshotRound(const std::int64_t round)
+    {
+        if (m_participating)
+        {
+            m_pendingJoined = round;
+        }
+    }
+
+    /**
+     * Places what the Replayer is still owed, a declined offer being placed again on the next call.
+     *
+     * @param signals places the signals
+     * @return signals placed
+     */
+    template<typename Signals>
+    int signal(Signals& signals)
+    {
+        int placed = 0;
+        if (m_pendingJoined != 0 && signals.joined(m_pendingJoined))
+        {
+            m_pendingJoined = 0;
+            ++placed;
+        }
+        if (m_pendingConfirmed != 0 && signals.confirmed(m_pendingConfirmed))
+        {
+            m_pendingConfirmed = 0;
+            ++placed;
+        }
+        return placed;
     }
 
     // This instance may no longer publish this round: another took the role. It does not resume.
@@ -219,6 +257,10 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     std::int64_t m_round = -1;
     // The last round this instance confirmed; 0 for none yet.
     std::int64_t m_confirmedRound = 0;
+    // The round to answer a SnapshotRound for, or 0; only the latest is kept.
+    std::int64_t m_pendingJoined = 0;
+    // The round whose file is confirmed and not yet told to the Replayer, or 0.
+    std::int64_t m_pendingConfirmed = 0;
     bool m_serialized = false;
     bool m_publishing = false;
     std::int32_t m_recordCount = 0;

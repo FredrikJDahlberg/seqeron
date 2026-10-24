@@ -6,8 +6,9 @@ package org.limitless.seqeron.replayer.server;
  * gives up on a member or on itself. {@link AeronQueueRelay} is the adapter.
  *
  * <p>It republishes exactly the frame after the last one it published, so the local queue holds the member's
- * queue frame for frame whichever member each frame came from. Every member's active recording of the queue
- * starts at {@code groupSeqNo} 1 and its positions follow from the frames alone, so a replay on the next member
+ * queue frame for frame whichever member each frame came from. Its first frame is the first of the member's
+ * recording, whatever its {@code groupSeqNo}: a recording that starts at a snapshot's cut does not start at 1. A
+ * member's positions follow from the frames alone, at equal term length and MTU, so a replay on the next member
  * normally resumes at the position the last one reached. Nothing depends on that: a frame past the
  * next one means the position did not line up there, and the replay starts again from that
  * recording's start, skipping what is already published.
@@ -116,7 +117,7 @@ final class QueueRelay {
             failedAttempts = 0;
             return Verdict.SKIP;
         }
-        if (groupSeqNo == lastGroupSeqNo + 1) {
+        if (groupSeqNo == lastGroupSeqNo + 1 || lastGroupSeqNo == 0 && fromStart) {
             return Verdict.PUBLISH;
         }
         return onHole();

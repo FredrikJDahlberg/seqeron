@@ -348,6 +348,12 @@ outlive the process ([`snapshot.md`](snapshot.md) §4.1).
    `ClusterError::SnapshotDiverged`). Corrupt records give way to the older confirmed file the instance keeps,
    or with none to a replay from the start, before `onRestore` sees any of them.
 
+5. **Rounds and the Replayer** (`Application` only; a `Gateway` ignores them). The node's Replayer tells every
+   replica when it has cut a round, and an instance that takes part answers `SnapshotJoined` at once, and
+   `SnapshotConfirmed` once its file for the round is confirmed and durable under its final name, each sent
+   again until the offer lands ([`snapshot.md`](snapshot.md) §10.8). The receiver's `onSnapshotRound` and its
+   two sends are the façade's, and no consumer calls them.
+
 ### `OutstandingWork`
 
 The façades are composed of I/O-free state machines with twins in every language. `OutstandingWork` —
@@ -378,6 +384,11 @@ directory and passes the host's node id (unused by any member) as `memberId`. `G
 | release | `close()` | `close()`, or the destructor | `Dispose()` |
 
 Single-threaded, like the façades.
+
+**With a `<snapshots>` policy loaded, a consumer must be able to restart from a snapshot file.** A member restarted from
+a cluster snapshot records its queue from the cut, so a receiver that can only walk the queue from `groupSeqNo` 1 stops
+with `FirstFrameNotOne` (`ops.md`, "Cluster snapshots"). The receiver restores a file but does not write one: a consumer
+needs an `Application` or `Gateway` with a `SnapshotListener`, which may write no records.
 
 **Snapshot restore.** `restoreFrom` makes the cold start take the newest confirmed file in the store whose
 cut a replay finds in the recording, handing header and records to the handler, a bounded number per

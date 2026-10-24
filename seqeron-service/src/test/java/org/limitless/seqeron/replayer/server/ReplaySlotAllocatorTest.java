@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.limitless.seqeron.protocol.ReplayProtocol;
 
 /**
  * Unit tests for the pure admission-control/pending-request bookkeeping behind {@link
@@ -15,6 +16,8 @@ import org.junit.jupiter.api.Test;
  * ReplaySlotAllocator} never interprets the {@code token} it is handed.
  */
 class ReplaySlotAllocatorTest {
+    private static final long NO_CUT = ReplayProtocol.NO_CUT;
+
     @Test
     @DisplayName("capacity holds until the max is reached, then refuses")
     void capacityHoldsUntilMaxThenRefuses() {
@@ -77,7 +80,7 @@ class ReplaySlotAllocatorTest {
     void pollPendingRefusesAtCapacity() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
         allocator.activate(1, 100);
-        allocator.addPending(2, /*requestId=*/1, 500, 1);
+        allocator.addPending(2, /*requestId=*/1, 500, 1, NO_CUT);
 
         assertNull(allocator.pollPending());
         assertEquals(1, allocator.pendingCount(), "a refused poll must not consume the request");
@@ -88,8 +91,8 @@ class ReplaySlotAllocatorTest {
     void pollPendingReturnsRequestsInFifoOrderOnceCapacityFrees() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
         allocator.activate(1, 100);
-        allocator.addPending(2, /*requestId=*/77, 500, /*queueId=*/2);
-        allocator.addPending(3, /*requestId=*/78, 0, 1);
+        allocator.addPending(2, /*requestId=*/77, 500, /*queueId=*/2, NO_CUT);
+        allocator.addPending(3, /*requestId=*/78, 0, 1, NO_CUT);
 
         allocator.supersede(1); // frees the one slot
 
@@ -117,8 +120,8 @@ class ReplaySlotAllocatorTest {
     @DisplayName("pollPending does not itself consume capacity — only activate() does")
     void pollPendingDoesNotConsumeCapacityByItself() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
-        allocator.addPending(1, /*requestId=*/1, 0, 1);
-        allocator.addPending(2, /*requestId=*/1, 0, 1);
+        allocator.addPending(1, /*requestId=*/1, 0, 1, NO_CUT);
+        allocator.addPending(2, /*requestId=*/1, 0, 1, NO_CUT);
 
         final ReplaySlotAllocator.PendingRequest first = allocator.pollPending();
         assertEquals(1, first.clientId());
@@ -139,9 +142,9 @@ class ReplaySlotAllocatorTest {
         // A pending client resends every ~500ms until it is served. Appending each one grew the list for
         // the whole of a node's cold start (three co-located apps against a cap of two, so one is always
         // pending) and left entries that start replays the client has long moved past.
-        allocator.addPending(2, /*requestId=*/1, 0, 1);
-        allocator.addPending(2, /*requestId=*/2, 0, 1);
-        allocator.addPending(2, /*requestId=*/3, 0, 1);
+        allocator.addPending(2, /*requestId=*/1, 0, 1, NO_CUT);
+        allocator.addPending(2, /*requestId=*/2, 0, 1, NO_CUT);
+        allocator.addPending(2, /*requestId=*/3, 0, 1, NO_CUT);
 
         assertEquals(1, allocator.pendingCount(), "one entry per client, however often it resends");
 
@@ -154,10 +157,10 @@ class ReplaySlotAllocatorTest {
     void aResendKeepsTheClientsPlaceInLine() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
         allocator.activate(1, 100);
-        allocator.addPending(2, /*requestId=*/1, 0, 1);
-        allocator.addPending(3, /*requestId=*/1, 0, 1);
+        allocator.addPending(2, /*requestId=*/1, 0, 1, NO_CUT);
+        allocator.addPending(3, /*requestId=*/1, 0, 1, NO_CUT);
 
-        allocator.addPending(2, /*requestId=*/2, 0, 1); // client 2's resend while it waits
+        allocator.addPending(2, /*requestId=*/2, 0, 1, NO_CUT); // client 2's resend while it waits
 
         // Sending it to the back on every resend would starve a client that resends on a timer.
         allocator.supersede(1);
@@ -168,8 +171,8 @@ class ReplaySlotAllocatorTest {
     @DisplayName("cancelPending drops only the named client's pending request")
     void cancelPendingDropsOnlyThatClientsPendingRequest() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(2);
-        allocator.addPending(2, /*requestId=*/1, 0, 1);
-        allocator.addPending(3, /*requestId=*/1, 0, 1);
+        allocator.addPending(2, /*requestId=*/1, 0, 1, NO_CUT);
+        allocator.addPending(3, /*requestId=*/1, 0, 1, NO_CUT);
 
         // Client 2 re-requested, found capacity, and is being served directly — its pending entry is now
         // stale. Left behind it would be drained into a second replay for a client that never asked.
@@ -183,7 +186,7 @@ class ReplaySlotAllocatorTest {
     @DisplayName("cancelPending for a client with nothing pending is a no-op")
     void cancelPendingForUnknownClientIsNoOp() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(2);
-        allocator.addPending(2, /*requestId=*/1, 0, 1);
+        allocator.addPending(2, /*requestId=*/1, 0, 1, NO_CUT);
 
         allocator.cancelPending(99);
 

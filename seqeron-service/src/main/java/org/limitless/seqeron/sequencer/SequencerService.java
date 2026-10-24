@@ -1,27 +1,42 @@
 package org.limitless.seqeron.sequencer;
 
+import io.aeron.ChannelUriStringBuilder;
 import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
+import io.aeron.FragmentAssembler;
 import io.aeron.Image;
+import io.aeron.Publication;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.ArchiveException;
 import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.archive.status.RecordingPos;
+import io.aeron.cluster.ClusterControl;
 import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
 import io.aeron.logbuffer.Header;
+import io.aeron.protocol.DataHeaderFlyweight;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.TimeUnit;
+import org.agrona.BitUtil;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
+import org.agrona.ExpandableArrayBuffer;
+import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SeqeronCounters;
+import org.limitless.seqeron.replayer.server.CutHandover;
 import org.limitless.seqeron.replayer.server.DefaultQueueRows;
 import org.limitless.seqeron.replayer.server.NodeDriver;
+import org.limitless.seqeron.replayer.server.RestartSafeLog;
+import org.limitless.seqeron.sbe.sequencer.SequencerStateDecoder;
 import org.limitless.seqeron.util.Logger;
 
 /**
@@ -32,8 +47,10 @@ import org.limitless.seqeron.util.Logger;
  * <p>Every node publishes and records its own queues; each queue's publication and recording are created once,
  * when the log activates the groups (§7.4), and span every leader tenure.
  *
- * <p>Snapshots are refused ({@link #onTakeSnapshot} throws, {@link #onStart} rejects a snapshot image):
- * recovery is always full-log replay, which is what keeps each node's recording complete.
+ * <p>A cluster snapshot is also an application round (doc/snapshot.md §10.8): {@link #onTakeSnapshot} publishes the
+ * round's marker on every queue and writes the {@link Sequencer}'s state, and {@link #onStart} restores that state and
+ * starts each queue again at the cut. It is refused while no {@code <snapshots>} policy is loaded, and recovery is then
+ * full-log replay.
  */
 public final class SequencerService implements ClusteredService {
     /** Set at launch to enable the test-only fault below; unset in production. */
@@ -44,6 +61,9 @@ public final class SequencerService implements ClusteredService {
 
     /** Correlation id of the one repeating heartbeat timer; rescheduling it moves its deadline. */
     private static final long HEARTBEAT_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
+
+    /** Where a restored queue's publication starts in its term ids; any value serves, positions being what count. */
+    private static final int INITIAL_TERM_ID = 0;
 
     private final Sequencer sequencer;
 
@@ -57,6 +77,25 @@ public final class SequencerService implements ClusteredService {
 
     /** The co-located archive's client settings; {@link #onStart} supplies the cluster's Aeron client. */
     private final AeronArchive.Context archiveContext;
+
+    /** What the Replayer resolves queues from; a restored node feeds it the rows its log no longer replays. */
+    private final DefaultQueueRows rows;
+    private final Queue<byte[]> topologyRows;
+
+    /** This member's record of its snapshots, and where the cuts it takes are handed to its Replayer. */
+    private final RestartSafeLog safeLog;
+    private final Queue<CutHandover> cuts;
+
+    /** The term length and MTU the node publishes its queues with, which a restored queue must match to keep its positions. */
+    private final int nodeTermLength;
+    private final int nodeMtu;
+
+    /** The cluster's snapshot toggle, or null until found. */
+    private AtomicCounter controlToggle;
+
+    /** What each queue's last offer returned, and the length it offered, slot groupId - 1. */
+    private final long[] lastOfferResults = new long[FrameLayer.MAX_GROUPS];
+    private final int[] lastOfferLengths = new int[FrameLayer.MAX_GROUPS];
 
     // Aeron runtime
     private Cluster cluster;
@@ -92,10 +131,21 @@ public final class SequencerService implements ClusteredService {
      *                       replayer resolves instances' queues from (spec R-6)
      * @param fatalHandler   run once, from a cluster callback, when this node can no longer record its own
      *                       queue. Must not block: it signals a shutdown and returns.
+     * @param safeLog        this member's {@code restart-safe.log}
+     * @param cuts           receives each cluster snapshot this member takes, for its Replayer
+     * @param nodeTermLength the IPC term length of the node's driver, which its queues are published with
+     * @param nodeMtu        the IPC MTU of the node's driver
      */
     public SequencerService(final int memberId, final AeronArchive.Context archiveContext,
-                            final Queue<byte[]> topologyRows, final Runnable fatalHandler) {
-        final DefaultQueueRows rows = new DefaultQueueRows(topologyRows::add);
+                            final Queue<byte[]> topologyRows, final Runnable fatalHandler,
+                            final RestartSafeLog safeLog, final Queue<CutHandover> cuts, final int nodeTermLength,
+                            final int nodeMtu) {
+        this.topologyRows = topologyRows;
+        this.safeLog = safeLog;
+        this.cuts = cuts;
+        this.nodeTermLength = nodeTermLength;
+        this.nodeMtu = nodeMtu;
+        this.rows = new DefaultQueueRows(topologyRows::add);
         this.sequencer = new Sequencer(memberId, new Sequencer.FrameSink() {
             @Override
             public void activate(final int[] groupIds) {
@@ -105,7 +155,8 @@ public final class SequencerService implements ClusteredService {
 
             @Override
             public void publish(final int groupId, final DirectBuffer buffer, final int length) {
-                queue.emit(groupId, buffer, length);
+                lastOfferResults[groupId - 1] = queue.emit(groupId, buffer, length);
+                lastOfferLengths[groupId - 1] = length;
                 rows.onPublish(groupId, buffer, length);
             }
         });
@@ -121,13 +172,6 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
-        // Refused before anything is acquired, so nothing is left behind.
-        if (snapshotImage != null) {
-            throw refuseStart("[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
-                              + "clusterSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster "
-                              + "directory so the log replays in full.");
-        }
-
         this.cluster = cluster;
         this.counters = cluster.context().aeron().countersReader();
         if (null != System.getenv(FAULT_INJECTION_ENV)) {
@@ -140,6 +184,91 @@ public final class SequencerService implements ClusteredService {
             throw refuseStart("[SequencerService] Refusing to start, the co-located archive is unreachable: " + ex);
         }
         createCounters();
+        if (snapshotImage != null) {
+            try {
+                restore(snapshotImage);
+            } catch (final RuntimeException ex) {
+                throw refuseStart("[SequencerService] Refusing to start from the snapshot: " + ex + ". Invalidate it "
+                                  + "with clusterctl invalidate-latest-snapshot to start from the one before.");
+            }
+        }
+    }
+
+    /**
+     * Restores the {@link Sequencer} from the snapshot, then starts each queue again at the cut (doc/snapshot.md §10.3):
+     * the recording of the node's previous run is purged, and the marker of the round is the queue's first frame.
+     */
+    private void restore(final Image snapshotImage) {
+        final RuntimeException[] failure = {null};
+        final int[] state = {0, 0}; // the next record's index, and the format version
+        final FragmentAssembler assembler = new FragmentAssembler((buffer, offset, length, header) -> {
+            try {
+                final UnsafeBuffer record = new UnsafeBuffer(buffer, offset, length);
+                if (state[0] == 0) {
+                    state[1] = new SequencerStateDecoder()
+                                   .wrapAndApplyHeader(record, 0, new org.limitless.seqeron.sbe.sequencer.MessageHeaderDecoder())
+                                   .formatVersion();
+                }
+                sequencer.onRestore(record, length, state[0]++, state[1]);
+            } catch (final RuntimeException ex) {
+                failure[0] = ex; // Image.poll would hand it to the error handler and carry on
+            }
+        });
+        while (!sequencer.isRestored() && failure[0] == null) {
+            if (snapshotImage.poll(assembler, 10) == 0) {
+                if (snapshotImage.isClosed()) {
+                    throw new IllegalStateException("the snapshot ended before the Sequencer's state did");
+                }
+                cluster.idleStrategy().idle();
+            }
+        }
+        if (failure[0] != null) {
+            throw failure[0];
+        }
+        updateCounters();
+        if (sequencer.isActive()) {
+            final int[] groupIds = sequencer.activeGroups();
+            rows.onActivate(groupIds);
+            sequencer.replayTopologyRows(topologyRows::add);
+            queue.activate(groupIds, groupId -> QueueStart.decide(
+                true, sequencer.markerPosition(groupId), sequencer.queueTermLength(groupId),
+                sequencer.queueMtu(groupId), nodeTermLength, nodeMtu));
+            for (final int groupId : groupIds) {
+                purgeOlderRecordings(groupId);
+            }
+            sequencer.reemitMarker();
+        }
+        Logger.info(Logger.CoreComponent.SequencerService, memberId,
+                    "restored the Sequencer at clusterSeqNo=%d, round %d", sequencer.clusterSeqNo(),
+                    sequencer.snapshotRound());
+    }
+
+    /**
+     * Purges the recordings of a queue that an earlier run of this node made: the new one starts at the cut, and the
+     * Replayer serves the one recording (doc/snapshot.md §10.3). One the archive will not purge, such as one a replay is
+     * reading, is left, and the Replayer serves the newest.
+     */
+    private void purgeOlderRecordings(final int groupId) {
+        final long current = queueRecordingIds[groupId - 1];
+        final List<Long> older = new ArrayList<>();
+        aeronArchive.listRecordingsForUri(
+            0, Integer.MAX_VALUE, "", FrameLayer.queueStreamId(groupId),
+            (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp, startPosition, stopPosition,
+             initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
+             originalChannel, sourceIdentity) -> {
+                if (recordingId < current) {
+                    older.add(recordingId);
+                }
+            });
+        for (final long recordingId : older) {
+            try {
+                aeronArchive.purgeRecording(recordingId);
+            } catch (final ArchiveException ex) {
+                Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError, memberId,
+                             "could not purge group %d's earlier queue recording %d: %s", groupId, recordingId,
+                             ex.getMessage());
+            }
+        }
     }
 
     /**
@@ -208,6 +337,7 @@ public final class SequencerService implements ClusteredService {
                         "gateway session %d closed (%s) — promoting standby", session.id(), closeReason);
         }
         updateCounters();
+        requestRound();
     }
 
     /**
@@ -235,6 +365,7 @@ public final class SequencerService implements ClusteredService {
             rejectedIngressCounter.increment();
         }
         updateCounters();
+        requestRound();
     }
 
     /**
@@ -247,6 +378,7 @@ public final class SequencerService implements ClusteredService {
         if (correlationId == HEARTBEAT_TIMER_CORRELATION_ID) {
             sequencer.clusterHeartbeat(timestamp);
             updateCounters();
+            requestRound();
             lastHeartbeatTimestampCounter.set(TimeUnit.NANOSECONDS.toMillis(timestamp)); // exported as ms
             injectQueueRecordingFault();
             queue.checkRecordingAlive();
@@ -281,15 +413,87 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Unsupported by design (see the class javadoc).
+     * Asks the cluster for a snapshot while a round is due and this node leads (doc/snapshot.md §10.2). The consensus
+     * module reads its toggle only on the leader, outside an election, so a request set elsewhere would wait and take an
+     * extra snapshot once that member leads; and it switches only from neutral, by compare-and-set, so a request that
+     * meets an operator's or one in progress fails and is made again at the next callback.
+     */
+    private void requestRound() {
+        if (!sequencer.snapshotDue() || cluster.role() != Cluster.Role.LEADER) {
+            return;
+        }
+        if (controlToggle == null) {
+            controlToggle = ClusterControl.findControlToggle(counters, cluster.context().clusterId());
+        }
+        if (controlToggle != null) {
+            ClusterControl.ToggleState.SNAPSHOT.toggle(controlToggle);
+        }
+    }
+
+    /**
+     * A cluster snapshot, which is an application round (doc/snapshot.md §10.8): the {@link Sequencer} publishes the
+     * round's marker on every queue, then its state is written, which acks. Nothing waits for an application. Refused
+     * while no {@code <snapshots>} policy is loaded, so a cluster without one keeps its full-log replay.
+     *
+     * <p>A node writes the cut to its {@code restart-safe.log} before it acks, and hands it to its Replayer. A snapshot
+     * action replayed from the log finds its cut already there and hands nothing over: whether it was restart-safe was
+     * decided in the run that took it.
      * @param snapshotPublication to which the state should be recorded.
      */
     @Override
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
-        throw new UnsupportedOperationException(
-            "[SequencerService] Snapshots are not supported: recovery is full-log replay from clusterSeqNo 1, "
-            + "which is what keeps each node's queue recording complete. Stop the cluster with clusterctl "
-            + "shutdown (ABORT), not a SNAPSHOT/SHUTDOWN toggle.");
+        if (!sequencer.hasSnapshotPolicy()) {
+            throw new IllegalStateException(
+                "[SequencerService] Refusing to take a snapshot: no <snapshots> policy is loaded, so recovery is "
+                + "full-log replay from clusterSeqNo 1 (doc/snapshot.md §10.2). Load a topology with <snapshots>.");
+        }
+        final long logPosition = cluster.logPosition();
+        final boolean live = !safeLog.isCut(logPosition);
+        if (live) {
+            safeLog.appendCut(logPosition);
+        }
+        sequencer.takeSnapshot(cluster.time());
+        recordQueueCuts();
+        writeState(snapshotPublication);
+        if (live && sequencer.isActive()) {
+            final long[] markerPositions = new long[FrameLayer.MAX_GROUPS];
+            for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+                markerPositions[groupId - 1] = queuePubs[groupId - 1] == null ? -1 : sequencer.markerPosition(groupId);
+            }
+            cuts.add(new CutHandover(sequencer.snapshotRound(), sequencer.clusterSeqNo(), logPosition, markerPositions));
+        }
+        updateCounters();
+    }
+
+    /** Tells the {@link Sequencer} where each queue's marker started, and what the queue was published with. */
+    private void recordQueueCuts() {
+        for (final int groupId : sequencer.activeGroups()) {
+            final ExclusivePublication publication = queuePubs[groupId - 1];
+            final long end = lastOfferResults[groupId - 1];
+            final int frame = BitUtil.align(lastOfferLengths[groupId - 1] + DataHeaderFlyweight.HEADER_LENGTH,
+                                            io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT);
+            sequencer.queueCut(groupId, end - frame, publication.termBufferLength(),
+                               publication.maxPayloadLength() + DataHeaderFlyweight.HEADER_LENGTH);
+        }
+    }
+
+    /** Offers the {@link Sequencer}'s records to the snapshot publication, waiting out back-pressure. */
+    private void writeState(final ExclusivePublication publication) {
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(4096);
+        for (int recordIndex = 0;; recordIndex++) {
+            final int length = sequencer.onSnapshot(buffer, recordIndex);
+            if (length == 0) {
+                return;
+            }
+            long result;
+            while ((result = publication.offer(buffer, 0, length)) < 0) {
+                if (result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED
+                    || result == Publication.NOT_CONNECTED) {
+                    throw new IllegalStateException("the snapshot publication refused record " + recordIndex + ": " + result);
+                }
+                cluster.idleStrategy().idle();
+            }
+        }
     }
 
     /**
@@ -329,6 +533,7 @@ public final class SequencerService implements ClusteredService {
     private void applyLeadership(final long leadershipTermId, final int leaderMemberId, final long timestamp) {
         sequencer.leadershipChanged(leadershipTermId, leaderMemberId, timestamp);
         updateCounters();
+        requestRound();
         leadershipChangeCounter.increment();
         currentLeaderMemberIdCounter.set(leaderMemberId);
         final boolean leader = leaderMemberId == memberId;
@@ -367,10 +572,14 @@ public final class SequencerService implements ClusteredService {
     /** The Aeron half of {@link QueuePublisher}: calls through to the runtime, no decisions. */
     private final class QueueActions implements QueuePublisher.Actions {
         @Override
-        public void openQueue(final int groupId) {
+        public void openQueue(final int groupId, final QueueStart.Decision start) {
             final int streamId = FrameLayer.queueStreamId(groupId);
-            queuePubs[groupId - 1] =
-                cluster.context().aeron().addExclusivePublication(FrameLayer.QUEUE_CHANNEL, streamId);
+            final String channel = start.kind() == QueueStart.Kind.AT_POSITION
+                ? new ChannelUriStringBuilder(FrameLayer.QUEUE_CHANNEL)
+                      .initialPosition(start.position(), INITIAL_TERM_ID, nodeTermLength)
+                      .build()
+                : FrameLayer.QUEUE_CHANNEL;
+            queuePubs[groupId - 1] = cluster.context().aeron().addExclusivePublication(channel, streamId);
             aeronArchive.startRecording(FrameLayer.QUEUE_CHANNEL, streamId, SourceLocation.LOCAL);
         }
 

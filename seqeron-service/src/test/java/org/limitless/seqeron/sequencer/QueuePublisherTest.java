@@ -94,7 +94,7 @@ class QueuePublisherTest {
         final List<Boolean> stalledGauge = new ArrayList<>();
 
         @Override
-        public void openQueue(final int groupId) {
+        public void openQueue(final int groupId, final QueueStart.Decision start) {
             if (openFailure != null) {
                 throw openFailure;
             }

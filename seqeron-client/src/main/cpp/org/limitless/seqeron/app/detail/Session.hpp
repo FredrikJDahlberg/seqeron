@@ -40,6 +40,7 @@ namespace org::limitless::seqeron::app::detail {
  * Dispatch provides:
  *   void onSystem(const protocol::SequencedEvent& event) // LeadershipChanged never arrives here
  *   void onLeadershipChanged()                           // confirmed ingress has already taken the new term
+ *   void onSnapshotRound(std::int64_t round)             // the Replayer cut a round on this node; a gateway ignores it
  *   void onPayload(const Payload& payload)
  *   void onCaughtUp(std::int64_t clusterSeqNo)           // every transition to caught-up, the first included
  *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs) // the cluster clock's tick
@@ -82,10 +83,23 @@ class Session
       m_queueResolution{ m_queueResolutionActions }
     {
         m_sender.setIngressHold(&m_pending);
+        m_receiver.onSnapshotRound([this](std::int64_t round, std::int64_t) { m_dispatch.onSnapshotRound(round); });
     }
 
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
+
+    // Tells this node's Replayer an application takes part in a round, or that its file for it is durable; whether the
+    // offer landed.
+    [[nodiscard]] bool sendSnapshotJoined(const std::int32_t sourceId, const std::int64_t round)
+    {
+        return m_receiver.sendSnapshotJoined(sourceId, round);
+    }
+
+    [[nodiscard]] bool sendSnapshotConfirmed(const std::int32_t sourceId, const std::int64_t round)
+    {
+        return m_receiver.sendSnapshotConfirmed(sourceId, round);
+    }
 
     /**
      * Restores the newest snapshot in a store before following the queue; call before starting.

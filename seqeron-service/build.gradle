@@ -52,7 +52,8 @@ testing {
 }
 
 // ── SBE code generation ────────────────────────────────────────────────────────
-// The two schemas the node owns. sbe-probe.xml (payloadId 5) is the protocol ClusterProbe speaks so this
+// The schemas the node owns. sbe-sequencer.xml is the Sequencer's snapshot, node-local and Java only (doc/snapshot.md
+// §10.2). sbe-probe.xml (payloadId 5) is the protocol ClusterProbe speaks so this
 // repo's e2e scripts can drive a cluster with no product binary built; it is private to tools/ClusterProbe,
 // which is also what keeps the C++ client's generated root free of any application codec.
 def sbeGeneratedSrcDir = layout.buildDirectory.dir('generated/sources/sbe/main/java').get().asFile
@@ -85,15 +86,40 @@ tasks.register('generateProbeSbe', JavaExec) {
     }
 }
 
+tasks.register('generateSequencerSbe', JavaExec) {
+    description = 'Generate Java SBE codecs from sbe-sequencer.xml (the Sequencer snapshot)'
+    classpath   = configurations.sbeCodegen
+    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
+
+    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+
+    systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
+    systemProperty 'sbe.target.language',          'Java'
+    systemProperty 'sbe.java.generate.interfaces', 'false'
+    systemProperty 'sbe.xinclude.aware',           'true'
+    systemProperty 'sbe.generate.ir',              'true'
+
+    args new File(sbeSchemaDir, 'sbe-sequencer.xml')
+
+    inputs.file  new File(sbeSchemaDir, 'sbe-sequencer.xml')
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/sequencer')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-sequencer.sbeir')
+
+    doFirst {
+        new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/sequencer').deleteDir()
+        sbeGeneratedSrcDir.mkdirs()
+    }
+}
+
 tasks.named('compileJava') {
-    dependsOn 'generateProbeSbe'
+    dependsOn 'generateProbeSbe', 'generateSequencerSbe'
 }
 
 def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
 
 tasks.register('collectSbeIr', Copy) {
     description = 'Stage this module\'s SBE IR files as jar resources for SbeLogPrinter'
-    dependsOn 'generateProbeSbe'
+    dependsOn 'generateProbeSbe', 'generateSequencerSbe'
     doFirst { delete sbeIrResourceDir }
     from(sbeGeneratedSrcDir) {
         include '*.sbeir'
