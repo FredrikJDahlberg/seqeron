@@ -385,6 +385,11 @@ directory and passes the host's node id (unused by any member) as `memberId`. `G
 
 Single-threaded, like the façades.
 
+**With a `<snapshots>` policy loaded, a consumer must be able to restart from a snapshot file.** A member restarted from
+a cluster snapshot records its queue from the cut, so a receiver that can only walk the queue from `groupSeqNo` 1 stops
+with `FirstFrameNotOne` (`ops.md`, "Cluster snapshots"). The receiver restores a file but does not write one: a consumer
+needs an `Application` or `Gateway` with a `SnapshotListener`, which may write no records.
+
 **Snapshot restore.** `restoreFrom` makes the cold start take the newest confirmed file in the store whose
 cut a replay finds in the recording, handing header and records to the handler, a bounded number per
 `poll()`, before dispatching from the message after the cut ([`snapshot.md`](snapshot.md) §7). A file whose

@@ -8,9 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.management.ThreadMXBean;
-import io.aeron.archive.client.AeronArchive;
 import java.lang.management.ManagementFactory;
-import java.util.ArrayDeque;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.DisplayName;
@@ -47,8 +45,8 @@ class SequencerTest {
     /** The second logical gateway, for the multi-pair cases: a distinct gatewaySourceId. */
     private static final int SECOND_SOURCE_ID = 8;
     private static final int CONNECTION_ID = 42;
-    private static final long SESSION_ID = 0x5EE51_0000L;
-    private static final long TIMESTAMP = 1_700_000_000_000_000_000L; // consensus time is epoch ns
+    static final long SESSION_ID = 0x5EE51_0000L;
+    static final long TIMESTAMP = 1_700_000_000_000_000_000L; // consensus time is epoch ns
 
     /**
      * An allocated payloadId the sequencer does not own, standing in for any application protocol. Nothing here decodes one: the sequencer opens no payload, so this
@@ -610,53 +608,63 @@ class SequencerTest {
         return recorded.all().toArray(new byte[0][]);
     }
 
-    // ── Snapshot ──────────────────────────────────────────────────────────────
+    // ── Snapshot rounds (doc/snapshot.md §3, §10.2) ───────────────────────────
 
-    @Test
-    @DisplayName("taking a snapshot is refused rather than persisting part of the replicated state")
-    void takingASnapshotIsRefused() {
-        // The one SequencerService call these tests make, and it starts no Aeron runtime: the throw
-        // precedes any use of the publication, which is why null is safe to pass. This used to persist
-        // clusterSeqNo alone and drop the six other replicated fields, so a restored node re-emitted the
-        // bootstrap GatewayActive and stopped producing frames identical to its peers'
-        // Recovery is full-log replay, which rebuilds all of it.
-        final SequencerService service =
-            new SequencerService(0, new AeronArchive.Context(), new ArrayDeque<>(), () -> { });
-        assertThrows(UnsupportedOperationException.class, () -> service.onTakeSnapshot(null));
+    /** The round the sequencer calls for, taken at {@code timestamp}: asserts one is due, and returns its number. */
+    private long takeRound(final long timestamp) {
+        assertTrue(sequencer.snapshotDue(), "a round is due");
+        sequencer.takeSnapshot(timestamp);
+        assertFalse(sequencer.snapshotDue(), "taking it clears it");
+        return decodeSnapshotStarted(frames.last(), frames.lastLength()).round();
     }
 
-    // ── Snapshot rounds (doc/snapshot.md §3) ──────────────────────────────────
-
     @Test
-    @DisplayName("with no policy registered, a SnapshotRequested is sequenced and nothing follows it")
+    @DisplayName("with no policy registered, a SnapshotRequested is sequenced and no round is due")
     void snapshotRequestWithoutAPolicyStartsNoRound() {
         final int request = encodeIngressSnapshotRequested(ingress, 0, 7);
         assertTrue(sequencer.sequenceMessage(ingress, 0, request, SESSION_ID, TIMESTAMP));
         assertEquals(SystemFrame.SNAPSHOT_REQUESTED, systemEventTypeOf(frames.last(), frames.lastLength()));
         sequencer.clusterHeartbeat(TIMESTAMP + 1_000_000_000_000L);
-        assertEquals(2, frames.count(), "the request and the heartbeat, and no SnapshotStarted behind either");
+        assertEquals(2, frames.count(), "the request and the heartbeat, and nothing behind either");
+        assertFalse(sequencer.hasSnapshotPolicy());
+        assertFalse(sequencer.snapshotDue());
         assertEquals(0L, sequencer.snapshotRound());
     }
 
     @Test
-    @DisplayName("an operator request is answered by SnapshotStarted at the next clusterSeqNo, and each starts a round")
-    void snapshotRequestIsAnsweredAtTheNextClusterSeqNo() {
+    @DisplayName("an operator request makes a round due, which publishes SnapshotStarted when it is taken")
+    void snapshotRequestMakesARoundDue() {
         sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotPolicy(ingress, 0, 0), SESSION_ID, TIMESTAMP);
+        assertTrue(sequencer.hasSnapshotPolicy());
         for (long round = 1; round <= 2; round++) {
             final long timestamp = TIMESTAMP + round;
             final int request = frames.count();
             sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, round), SESSION_ID,
                                       timestamp);
+            assertEquals(request + 1, frames.count(), "the request, and nothing behind it");
+
+            assertEquals(round, takeRound(timestamp));
             assertEquals(request + 2, frames.count(), "one request, one round");
-            final SnapshotStartedDecoder decoder = decodeSnapshotStarted(frames.last(), frames.lastLength());
-            assertEquals(round, decoder.round(), "a new request supersedes the open round");
             final long requestSeqNo = frameHeaderOf(frames.frame(request)).clusterSeqNo();
             assertEquals(requestSeqNo + 1, systemHeaderOf(frames.last()).clusterSeqNo(), "R follows the request");
             assertEquals(Sequencer.NO_SOURCE_ID, systemHeaderOf(frames.last()).sourceId());
             assertEquals(timestamp, systemHeaderOf(frames.last()).timestamp());
         }
         sequencer.clusterHeartbeat(TIMESTAMP + 1_000_000_000_000L);
-        assertNothingBehindHeartbeat("interval 0: rounds start only on request");
+        assertFalse(sequencer.snapshotDue(), "interval 0: rounds start only on request");
+    }
+
+    @Test
+    @DisplayName("a round that is due stays due until it is taken, and a request on top of it adds none")
+    void aDueRoundWaitsToBeTaken() {
+        sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotPolicy(ingress, 0, 0), SESSION_ID, TIMESTAMP);
+        for (int request = 0; request < 3; request++) {
+            sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, request), SESSION_ID,
+                                      TIMESTAMP);
+            sequencer.clusterHeartbeat(TIMESTAMP);
+        }
+        assertEquals(1L, takeRound(TIMESTAMP));
+        assertFalse(sequencer.snapshotDue());
     }
 
     @Test
@@ -665,24 +673,24 @@ class SequencerTest {
         final long interval = 10_000_000_000L;
         sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotPolicy(ingress, 0, 10), SESSION_ID, TIMESTAMP);
         sequencer.clusterHeartbeat(TIMESTAMP + interval - 1);
-        assertNothingBehindHeartbeat("the interval has not passed");
+        assertFalse(sequencer.snapshotDue(), "the interval has not passed");
 
         sequencer.clusterHeartbeat(TIMESTAMP + interval);
-        assertEquals(1L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+        assertEquals(1L, takeRound(TIMESTAMP + interval));
 
         final long requestedAt = TIMESTAMP + interval + interval / 2;
         sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, 9), SESSION_ID, requestedAt);
-        assertEquals(2L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+        assertEquals(2L, takeRound(requestedAt));
 
         // A policy re-published after a round moves nothing: the interval still counts from round 2.
         sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotPolicy(ingress, 0, 10), SESSION_ID,
                                   requestedAt + 1);
         sequencer.clusterHeartbeat(TIMESTAMP + 2 * interval);
-        assertNothingBehindHeartbeat("the interval counts from round 2");
+        assertFalse(sequencer.snapshotDue(), "the interval counts from round 2");
         sequencer.clusterHeartbeat(requestedAt + interval);
-        assertEquals(3L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+        assertEquals(3L, takeRound(requestedAt + interval));
         sequencer.clusterHeartbeat(requestedAt + interval);
-        assertNothingBehindHeartbeat("and round 3 restarts it");
+        assertFalse(sequencer.snapshotDue(), "and round 3 restarts it");
     }
 
     /** Sequences a policy row and returns the length of the frame it became. */
@@ -701,8 +709,8 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("sequenced bytes start a round once they reach the threshold, with no interval set")
-    void snapshotBytesStartARoundAtTheThreshold() {
+    @DisplayName("sequenced bytes make a round due once they reach the threshold, with no interval set")
+    void snapshotBytesMakeARoundDueAtTheThreshold() {
         final int policy = sequencePolicy(sequencer, frames, 0, 0);
         final int payload = sequencePayload();
         sequencer.clusterHeartbeat(TIMESTAMP);
@@ -713,12 +721,12 @@ class SequencerTest {
         sequencePayload();
         sequencePayload();
         sequencer.clusterHeartbeat(TIMESTAMP);
-        assertEquals(1L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+        assertEquals(1L, takeRound(TIMESTAMP));
     }
 
     @Test
-    @DisplayName("a byte count short of the threshold starts nothing, and the next heartbeat tips it")
-    void snapshotBytesBelowTheThresholdStartNothing() {
+    @DisplayName("a byte count short of the threshold calls for nothing, and the next heartbeat tips it")
+    void snapshotBytesBelowTheThresholdCallForNothing() {
         final int policy = sequencePolicy(sequencer, frames, 0, 0);
         final int payload = sequencePayload();
         sequencer.clusterHeartbeat(TIMESTAMP);
@@ -728,9 +736,9 @@ class SequencerTest {
         sequencePayload();
         sequencePayload();
         sequencer.clusterHeartbeat(TIMESTAMP);
-        assertNothingBehindHeartbeat("one byte short");
+        assertFalse(sequencer.snapshotDue(), "one byte short");
         sequencer.clusterHeartbeat(TIMESTAMP);
-        assertEquals(1L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+        assertEquals(1L, takeRound(TIMESTAMP));
     }
 
     @Test
@@ -741,11 +749,11 @@ class SequencerTest {
             sequencePayload();
         }
         sequencer.clusterHeartbeat(TIMESTAMP);
-        assertNothingBehindHeartbeat("no byte trigger");
+        assertFalse(sequencer.snapshotDue(), "no byte trigger");
     }
 
     @Test
-    @DisplayName("an operator round restarts the byte count")
+    @DisplayName("a round restarts the byte count")
     void snapshotRoundRestartsTheByteCount() {
         final int policy = sequencePolicy(sequencer, frames, 0, 0);
         final int payload = sequencePayload();
@@ -756,26 +764,28 @@ class SequencerTest {
         sequencePayload();
         sequencePayload();
         sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, 5), SESSION_ID, TIMESTAMP);
-        assertEquals(1L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+        assertEquals(1L, takeRound(TIMESTAMP));
 
         sequencer.clusterHeartbeat(TIMESTAMP);
-        assertNothingBehindHeartbeat("the two frames no longer count");
+        assertFalse(sequencer.snapshotDue(), "the two frames no longer count");
         for (int i = 0; i < 3; i++) {
             sequencePayload();
         }
         sequencer.clusterHeartbeat(TIMESTAMP);
-        assertEquals(2L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+        assertEquals(2L, takeRound(TIMESTAMP));
     }
 
     @Test
-    @DisplayName("the interval and the byte count falling due on one heartbeat start one round")
-    void snapshotIntervalAndBytesTogetherStartOneRound() {
+    @DisplayName("the interval and the byte count falling due on one heartbeat call for one round")
+    void snapshotIntervalAndBytesTogetherCallForOneRound() {
         final long interval = 10_000_000_000L;
         sequencePolicy(sequencer, frames, 10, 1);
         final int before = frames.count();
         sequencer.clusterHeartbeat(TIMESTAMP + interval);
-        assertEquals(before + 2, frames.count(), "the heartbeat and one SnapshotStarted");
-        assertEquals(1L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+        assertEquals(before + 1, frames.count(), "the heartbeat, and nothing behind it");
+        assertEquals(1L, takeRound(TIMESTAMP + interval));
+        sequencer.clusterHeartbeat(TIMESTAMP + interval);
+        assertTrue(sequencer.snapshotDue(), "one byte is due again at once; that is the next round's");
     }
 
     @Test
@@ -793,9 +803,57 @@ class SequencerTest {
         // Policy and heartbeat, once each, fall one byte short; counted per queue they would not.
         sequencePolicy(target, recorder, 0, policy + heartbeat + 1);
         target.clusterHeartbeat(TIMESTAMP);
-        assertEquals(SystemFrame.CLUSTER_HEARTBEAT, systemHeaderOf(recorder.last()).systemEventType());
+        assertFalse(target.snapshotDue());
         target.clusterHeartbeat(TIMESTAMP);
-        assertEquals(SystemFrame.SNAPSHOT_STARTED, systemHeaderOf(recorder.last()).systemEventType());
+        assertTrue(target.snapshotDue());
+    }
+
+    @Test
+    @DisplayName("a round is published to every queue with that queue's own groupSeqNo, and re-emitting it repeats it")
+    void aRoundIsAMarkerOnEveryQueueAndReemittingItRepeatsIt() {
+        final FrameRecorder recorder = new FrameRecorder();
+        final Sequencer target = new Sequencer(0, recorder);
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(1024);
+        assertTrue(target.sequenceMessage(buf, 0, encodeIngressGroupsRegistered(buf, 0, "group-1", "group-2"),
+                                          SESSION_ID, TIMESTAMP));
+        sequencePolicy(target, recorder, 0, 0);
+        recorder.clear();
+
+        target.takeSnapshot(TIMESTAMP + 5);
+        assertEquals(2, recorder.count(), "one marker per queue");
+        assertEquals(1, recorder.groupId(0));
+        assertEquals(2, recorder.groupId(1));
+        assertEquals(SystemFrame.SNAPSHOT_STARTED, systemHeaderOf(recorder.frame(0)).systemEventType());
+        final byte[] first = new byte[recorder.length(0)];
+        recorder.frame(0).getBytes(0, first);
+
+        // A sequencer restored at the cut offers the same marker as its queues' first frame.
+        final FrameRecorder restoredFrames = new FrameRecorder();
+        final Sequencer restored = new Sequencer(0, restoredFrames);
+        final MutableDirectBuffer record = new ExpandableArrayBuffer(2048);
+        for (int index = 0, length; (length = target.onSnapshot(record, index)) != 0; index++) {
+            restored.onRestore(record, length, index, target.formatVersion());
+        }
+        restored.reemitMarker();
+        assertEquals(2, restoredFrames.count());
+        for (int i = 0; i < 2; i++) {
+            final byte[] again = new byte[restoredFrames.length(i)];
+            restoredFrames.frame(i).getBytes(0, again);
+            final byte[] original = new byte[recorder.length(i)];
+            recorder.frame(i).getBytes(0, original);
+            org.junit.jupiter.api.Assertions.assertArrayEquals(original, again, "queue " + (i + 1) + "'s marker");
+        }
+        assertEquals(first.length, restoredFrames.length(0));
+    }
+
+    @Test
+    @DisplayName("with no group active there is no queue to cut: a round is taken and nothing is published")
+    void aRoundBeforeActivationPublishesNothing() {
+        final FrameRecorder recorder = new FrameRecorder();
+        final Sequencer target = new Sequencer(0, recorder);
+        target.takeSnapshot(TIMESTAMP);
+        assertEquals(0, recorder.count());
+        assertEquals(0L, target.snapshotRound());
     }
 
     // ── Lifecycle and clock frames ────────────────────────────────────────────
@@ -1457,7 +1515,7 @@ class SequencerTest {
     }
 
     /** Encodes a GroupsRegistered declaring groups 1, 2, … by the names given, as {@code load-topology} does. */
-    private static int encodeIngressGroupsRegistered(final MutableDirectBuffer buffer, final int offset,
+    static int encodeIngressGroupsRegistered(final MutableDirectBuffer buffer, final int offset,
                                                      final String... names) {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder.BLOCK_LENGTH);
         final int slot = org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder.groupNamesLength() / FrameLayer.MAX_GROUPS;
@@ -1474,12 +1532,12 @@ class SequencerTest {
      * application schema: the sequencer reads nothing past the payloadId, so a payload with a decodable
      * layout would only invite a test to assert something the production path cannot see.
      */
-    private static int encodeIngressPayload(final MutableDirectBuffer buffer, final int offset) {
+    static int encodeIngressPayload(final MutableDirectBuffer buffer, final int offset) {
         return encodeIngressPayload(buffer, offset, OPAQUE_PAYLOAD);
     }
 
     /** As above, for a payload of a caller-chosen length. */
-    private static int encodeIngressPayload(final MutableDirectBuffer buffer, final int offset,
+    static int encodeIngressPayload(final MutableDirectBuffer buffer, final int offset,
                                             final byte[] bytes) {
         final MutableDirectBuffer payload = new ExpandableArrayBuffer(bytes.length);
         payload.putBytes(0, bytes);
@@ -1500,7 +1558,7 @@ class SequencerTest {
      * Encodes a schema-200 list row, as {@code clusterctl load-topology} submits it. {@code remaining}
      * is the rows left after this one; 0 makes it the last, which is what the bootstrap fires on.
      */
-    private static int encodeIngressGatewayRegistered(final MutableDirectBuffer buffer, final int offset,
+    static int encodeIngressGatewayRegistered(final MutableDirectBuffer buffer, final int offset,
                                                       final int gatewayId, final int gatewaySourceId,
                                                       final String gatewayName, final int preferenceRank,
                                                       final int remaining) {
@@ -1557,11 +1615,11 @@ class SequencerTest {
      * Encodes a schema-200 GatewayStarted, as an instance publishes it on activation: the one frame that
      * tells the sequencer which cluster session a given {@code gatewayId} is active on.
      */
-    private static int encodeIngressGatewayStarted(final MutableDirectBuffer buffer, final int offset,
+    static int encodeIngressGatewayStarted(final MutableDirectBuffer buffer, final int offset,
                                                    final int gatewayId) {
         return encodeIngressGatewayStarted(buffer, offset, gatewayId, SOURCE_ID);
     }
-    private static int encodeIngressGatewayStarted(final MutableDirectBuffer buffer, final int offset,
+    static int encodeIngressGatewayStarted(final MutableDirectBuffer buffer, final int offset,
                                                    final int gatewayId, final int sourceId) {
         final MutableDirectBuffer payload = new ExpandableArrayBuffer(64);
         final org.limitless.seqeron.sbe.frame.GatewayStartedEncoder encoder = new org.limitless.seqeron.sbe.frame.GatewayStartedEncoder();
@@ -1572,7 +1630,7 @@ class SequencerTest {
     }
 
     /** Encodes a GatewayActivationRequested, as {@code clusterctl activate} submits it. */
-    private static int encodeIngressActivationRequested(final MutableDirectBuffer buffer, final int offset,
+    static int encodeIngressActivationRequested(final MutableDirectBuffer buffer, final int offset,
                                                         final int gatewayId) {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(64);
         final org.limitless.seqeron.sbe.frame.GatewayActivationRequestedEncoder encoder =
@@ -1585,12 +1643,12 @@ class SequencerTest {
     }
 
     /** Encodes a SnapshotPolicyRegistered, as {@code clusterctl load-topology} submits it. */
-    private static int encodeIngressSnapshotPolicy(final MutableDirectBuffer buffer, final int offset,
+    static int encodeIngressSnapshotPolicy(final MutableDirectBuffer buffer, final int offset,
                                                    final int intervalSeconds) {
         return encodeIngressSnapshotPolicy(buffer, offset, intervalSeconds, 0);
     }
 
-    private static int encodeIngressSnapshotPolicy(final MutableDirectBuffer buffer, final int offset,
+    static int encodeIngressSnapshotPolicy(final MutableDirectBuffer buffer, final int offset,
                                                    final int intervalSeconds, final long bytes) {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(16);
         final org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder encoder =
@@ -1601,7 +1659,7 @@ class SequencerTest {
     }
 
     /** Encodes a SnapshotRequested, as {@code clusterctl request-snapshot} submits it. */
-    private static int encodeIngressSnapshotRequested(final MutableDirectBuffer buffer, final int offset,
+    static int encodeIngressSnapshotRequested(final MutableDirectBuffer buffer, final int offset,
                                                       final long correlationId) {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(16);
         final org.limitless.seqeron.sbe.frame.SnapshotRequestedEncoder encoder =

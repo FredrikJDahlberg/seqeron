@@ -33,6 +33,9 @@ final class FakeReplayer implements Replayer {
     /** Every recording's term length: the driver's default IPC term, as a member's queue has. */
     static final int TERM_BUFFER_LENGTH = 16 * 1024 * 1024;
 
+    /** A segment of one term. */
+    static final int SEGMENT_FILE_LENGTH = TERM_BUFFER_LENGTH;
+
     /** One {@code startReplay} the service asked for. */
     record StartedReplay(long recordingId, long position, long length, int streamId, long replaySessionId) { }
 
@@ -46,6 +49,12 @@ final class FakeReplayer implements Replayer {
     private final Map<Long, Long> stopPositions = new HashMap<>();
     private final Map<Integer, Replayer.QueueBacklog> queueBacklogs = new HashMap<>();
 
+    /** One frame of a scripted recording. */
+    private record Frame(long position, long clusterSeqNo) { }
+
+    private final Map<Long, List<Frame>> frames = new HashMap<>();
+    private final List<Long> scans = new ArrayList<>();
+
     private final List<StartedReplay> startedReplays = new ArrayList<>();
     private final List<Long> stoppedReplays = new ArrayList<>();
     private long nextReplaySessionId = 900;
@@ -56,6 +65,8 @@ final class FakeReplayer implements Replayer {
     private int archivePolls;
     private int listings;
     private int replayAttempts;
+    private boolean refusePurges;
+    private final List<long[]> purgeAttempts = new ArrayList<>();
 
     private final Deque<byte[]> requests = new ArrayDeque<>();
     private final List<byte[]> controlReplies = new ArrayList<>();
@@ -83,12 +94,29 @@ final class FakeReplayer implements Replayer {
     void addRecording(final int groupId, final long recordingId, final long startPosition, final boolean active,
                       final long tip) {
         recordings.add(new GroupRecording(
-            groupId, new Replayer.RecordingSpan(recordingId, startPosition, active, TERM_BUFFER_LENGTH)));
+            groupId, new Replayer.RecordingSpan(recordingId, startPosition, active, TERM_BUFFER_LENGTH,
+                                                          SEGMENT_FILE_LENGTH)));
         if (active) {
             recordingPositions.put(recordingId, tip);
         } else {
             stopPositions.put(recordingId, tip);
         }
+    }
+
+    /**
+     * Scripts the frames {@code scanQueueRecording} reads from a recording, in order.
+     * @param positionsAndClusterSeqNos alternating frame position and {@code clusterSeqNo}
+     */
+    void addFrames(final long recordingId, final long... positionsAndClusterSeqNos) {
+        final List<Frame> list = frames.computeIfAbsent(recordingId, id -> new ArrayList<>());
+        for (int i = 0; i < positionsAndClusterSeqNos.length; i += 2) {
+            list.add(new Frame(positionsAndClusterSeqNos[i], positionsAndClusterSeqNos[i + 1]));
+        }
+    }
+
+    /** The positions the service began a scan at, in order. */
+    List<Long> scans() {
+        return scans;
     }
 
     /** Marks a recording stopped, as an operator repairing an unclean shutdown's leftover does. */
@@ -98,7 +126,8 @@ final class FakeReplayer implements Replayer {
             -> recording.span().recordingId() == recordingId
                 ? new GroupRecording(recording.groupId(),
                                      new Replayer.RecordingSpan(recordingId, recording.span().startPosition(), false,
-                                                                recording.span().termBufferLength()))
+                                                                recording.span().termBufferLength(),
+                                                                recording.span().segmentFileLength()))
                 : recording);
         final Long tip = recordingPositions.remove(recordingId);
         if (tip != null) {
@@ -134,6 +163,16 @@ final class FakeReplayer implements Replayer {
     /** The same, for {@code groupId}'s queue. */
     void queueBacklog(final int groupId, final Replayer.QueueBacklog backlog) {
         queueBacklogs.put(groupId, backlog);
+    }
+
+    /** Makes the archive refuse every purge, as one does while a replay reads below it. */
+    void refusePurges(final boolean refuse) {
+        refusePurges = refuse;
+    }
+
+    /** Each {@code purgeSegments} the service asked for, as {recordingId, newStartPosition}. */
+    List<long[]> purgeAttempts() {
+        return purgeAttempts;
     }
 
     /** Makes every subsequent {@code startReplay} throw, as an archive that will not serve a replay does. */
@@ -232,6 +271,27 @@ final class FakeReplayer implements Replayer {
     }
 
     @Override
+    public ScanEnd scanQueueRecording(final long recordingId, final long fromPosition, final long endPosition,
+                                      final FrameVisitor visitor) {
+        scans.add(fromPosition);
+        throwIfArchiveDown();
+        final List<Frame> recorded = frames.getOrDefault(recordingId, List.of());
+        int i = 0;
+        while (i < recorded.size() && recorded.get(i).position() != fromPosition) {
+            i++;
+        }
+        if (i == recorded.size()) {
+            return ScanEnd.UNREADABLE;
+        }
+        for (; i < recorded.size() && recorded.get(i).position() < endPosition; i++) {
+            if (!visitor.onFrame(recorded.get(i).position(), recorded.get(i).clusterSeqNo())) {
+                return ScanEnd.STOPPED;
+            }
+        }
+        return ScanEnd.TIP;
+    }
+
+    @Override
     public long recordingPosition(final long recordingId) {
         throwIfArchiveDown();
         return recordingPositions.getOrDefault(recordingId, -1L);
@@ -258,6 +318,23 @@ final class FakeReplayer implements Replayer {
         final long replaySessionId = ++nextReplaySessionId;
         startedReplays.add(new StartedReplay(recordingId, position, length, streamId, replaySessionId));
         return replaySessionId;
+    }
+
+    @Override
+    public boolean purgeSegments(final long recordingId, final long newStartPosition) {
+        purgeAttempts.add(new long[] {recordingId, newStartPosition});
+        if (refusePurges) {
+            return false;
+        }
+        recordings.replaceAll(
+            recording
+            -> recording.span().recordingId() == recordingId
+                ? new GroupRecording(recording.groupId(),
+                                     new Replayer.RecordingSpan(recordingId, newStartPosition, recording.span().active(),
+                                                                recording.span().termBufferLength(),
+                                                                recording.span().segmentFileLength()))
+                : recording);
+        return true;
     }
 
     @Override

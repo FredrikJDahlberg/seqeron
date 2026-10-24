@@ -14,9 +14,32 @@ import org.agrona.concurrent.status.AtomicCounter;
 public interface Replayer {
     /**
      * One queue recording as read off an archive listing. {@code startPosition} is carried because a replay
-     * must start at or after it, though it is always 0 today.
+     * must start at or after it. A queue recorded from its first frame starts at 0, one recorded from a snapshot's
+     * cut elsewhere (doc/snapshot.md §10.3).
      */
-    record RecordingSpan(long recordingId, long startPosition, boolean active, int termBufferLength) { }
+    record RecordingSpan(long recordingId, long startPosition, boolean active, int termBufferLength,
+                         int segmentFileLength) { }
+
+    /** Takes one frame of a queue recording in a scan. */
+    @FunctionalInterface
+    interface FrameVisitor {
+        /**
+         * @param position      where the frame starts in the recording
+         * @param clusterSeqNo  its {@code clusterSeqNo}
+         * @return whether to go on to the next frame
+         */
+        boolean onFrame(long position, long clusterSeqNo);
+    }
+
+    /** How {@link #scanQueueRecording} ended. */
+    enum ScanEnd {
+        /** The visitor asked to stop. */
+        STOPPED,
+        /** The scan reached the position it was bounded to. */
+        TIP,
+        /** The recording does not hold a frame where the scan began or went on: not a frame boundary. */
+        UNREADABLE
+    }
 
     /**
      * How far a recording trails the queue it records, and the window it may trail by before the queue's publisher
@@ -31,6 +54,16 @@ public interface Replayer {
      * @return the recordings, possibly empty
      */
     List<RecordingSpan> listQueueRecordings(int groupId);
+
+    /**
+     * Reads a queue recording's frames in order, from a position to another, or until the visitor stops.
+     * @param recordingId archive recording id
+     * @param fromPosition where to begin, which must be a frame boundary
+     * @param endPosition where to stop, the recording's tip
+     * @param visitor takes each frame
+     * @return how the scan ended
+     */
+    ScanEnd scanQueueRecording(long recordingId, long fromPosition, long endPosition, FrameVisitor visitor);
 
     /**
      * Where a still-recording recording has reached. On every request's path, so read off the node's counters
@@ -54,6 +87,14 @@ public interface Replayer {
      * @return its backlog, or {@code null} when the counters show no queue publication it records
      */
     QueueBacklog queueBacklog(int groupId, RecordingSpan span);
+
+    /**
+     * Deletes the whole segment files of a recording below a position, which becomes its start.
+     * @param recordingId archive recording id
+     * @param newStartPosition a segment boundary of the recording, past the end of its first segment
+     * @return false if the archive refused: a replay is reading below the position, or another delete is running
+     */
+    boolean purgeSegments(long recordingId, long newStartPosition);
 
     /**
      * Starts a bounded replay onto a node-local IPC stream.

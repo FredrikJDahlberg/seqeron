@@ -3,12 +3,16 @@ package org.limitless.seqeron.replayer.server;
 import io.aeron.Aeron;
 import io.aeron.AeronCounters;
 import io.aeron.ExclusivePublication;
+import io.aeron.FragmentAssembler;
+import io.aeron.Image;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.ArchiveException;
 import io.aeron.archive.status.RecordingPos;
 import io.aeron.driver.Configuration;
 import io.aeron.driver.status.StreamCounter;
 import io.aeron.logbuffer.FragmentHandler;
+import io.aeron.logbuffer.LogBufferDescriptor;
 import java.util.ArrayList;
 import java.util.List;
 import org.agrona.DirectBuffer;
@@ -18,6 +22,7 @@ import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
+import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.sequencer.SequencerService;
 
 /**
@@ -30,6 +35,9 @@ import org.limitless.seqeron.sequencer.SequencerService;
  * (see {@code ReplayerServer}'s {@code NoOpLock} note).
  */
 public final class AeronReplayer implements Replayer {
+    /** How long the replay of a cut search may take to connect. */
+    private static final long SCAN_CONNECT_TIMEOUT_MS = 5_000;
+
     private final Aeron aeron;
     private final AeronArchive archive;
     private final int memberId;
@@ -59,7 +67,8 @@ public final class AeronReplayer implements Replayer {
              initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
              originalChannel, sourceIdentity)
                 -> spans.add(new Replayer.RecordingSpan(
-                    recordingId, startPosition, stopTimestamp == AeronArchive.NULL_TIMESTAMP, termBufferLength)));
+                    recordingId, startPosition, stopTimestamp == AeronArchive.NULL_TIMESTAMP, termBufferLength,
+                    segmentFileLength)));
         return spans;
     }
 
@@ -91,6 +100,54 @@ public final class AeronReplayer implements Replayer {
     }
 
     @Override
+    public ScanEnd scanQueueRecording(final long recordingId, final long fromPosition, final long endPosition,
+                                      final FrameVisitor visitor) {
+        final long replaySessionId =
+            archive.startReplay(recordingId, fromPosition, endPosition - fromPosition, ReplayProtocol.IPC_CHANNEL,
+                                ReplayProtocol.REPLAY_STREAM_ID);
+        final String channel = ReplayProtocol.IPC_CHANNEL + "|session-id=" + (int)replaySessionId;
+        try (Subscription subscription = aeron.addSubscription(channel, ReplayProtocol.REPLAY_STREAM_ID)) {
+            return scan(subscription, (int)replaySessionId, endPosition, visitor);
+        } finally {
+            stopReplay(replaySessionId);
+        }
+    }
+
+    /** Reads the replay one frame at a time until the visitor stops, the bound is reached or a fragment is no frame. */
+    private ScanEnd scan(final Subscription subscription, final int replaySessionId, final long endPosition,
+                         final FrameVisitor visitor) {
+        final long deadlineMs = System.currentTimeMillis() + SCAN_CONNECT_TIMEOUT_MS;
+        Image image;
+        while ((image = subscription.imageBySessionId(replaySessionId)) == null) {
+            if (System.currentTimeMillis() > deadlineMs) {
+                throw new IllegalStateException("the replay of a cut search did not connect");
+            }
+            Thread.yield();
+        }
+        final ScanEnd[] ended = {null};
+        final SequencedFrameDecoder frame = new SequencedFrameDecoder();
+        final FragmentHandler handler = new FragmentAssembler((buffer, offset, length, header) -> {
+            if (ended[0] != null) {
+                return;
+            }
+            if (!frame.wrap(buffer, offset, length)) {
+                ended[0] = ScanEnd.UNREADABLE;
+            } else if (!visitor.onFrame(LogBufferDescriptor.computePosition(header.termId(), header.termOffset(),
+                                                                            header.positionBitsToShift(),
+                                                                            header.initialTermId()),
+                                        frame.clusterSeqNo())) {
+                ended[0] = ScanEnd.STOPPED;
+            }
+        });
+        while (ended[0] == null) {
+            if (image.poll(handler, 1) == 0 && (image.isClosed() || image.position() >= endPosition)) {
+                return ScanEnd.TIP;
+            }
+        }
+        return ended[0];
+    }
+
+    @Override
     public long recordingPosition(final long recordingId) {
         final CountersReader counters = aeron.countersReader();
         if (recordingCounterId == CountersReader.NULL_COUNTER_ID ||
@@ -106,6 +163,16 @@ public final class AeronReplayer implements Replayer {
     @Override
     public long stopPosition(final long recordingId) {
         return archive.getStopPosition(recordingId);
+    }
+
+    @Override
+    public boolean purgeSegments(final long recordingId, final long newStartPosition) {
+        try {
+            archive.purgeSegments(recordingId, newStartPosition);
+            return true;
+        } catch (final ArchiveException refused) {
+            return false;
+        }
     }
 
     @Override

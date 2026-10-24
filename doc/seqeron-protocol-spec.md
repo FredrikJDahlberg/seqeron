@@ -75,13 +75,15 @@ Where each kind of message travels, and which of those streams is the durable re
 | replay request | stream 202 | schema 212, client → replayer | no |
 | replay control | stream 203 | schema 212, replayer → client | no |
 
-- **F-1. The queues are the record.** The cluster takes no snapshots and always recovers by replaying the
-  full log from `clusterSeqNo` 1, so the queues' bytes are the only durable copy of a frame. Every frame
+- **F-1. The queues are the record.** Without a `<snapshots>` policy the cluster takes no snapshots and recovers
+  by replaying the full log from `clusterSeqNo` 1, so the queues' bytes are the only durable copy of a frame; with
+  one, a member's queue starts again at the cut of the snapshot it restarts from (`doc/snapshot.md` §10.3). Every frame
   sequenced after activation (§7.4) is on at least one queue, and a frame on several queues is recorded once
   on each. An application snapshot (§7.3) is frames on a queue like any other.
 - **F-2. Every node's queues are byte-identical, frame for frame.** A replay from any node's archive can
-  stand in for any other's. §9.3 keeps this true, `groupSeqNo` included (**F-6**). Recording positions
-  match only between nodes with the same IPC MTU and term length (§12).
+  stand in for any other's from where both begin. §9.3 keeps this true, `groupSeqNo` included (**F-6**). A
+  recording begins at `groupSeqNo` 1, or at the cut its member restarted from, and its positions match another's
+  only between nodes with the same IPC MTU and term length (§12).
 
 ### 3.1 Queues and groups
 
@@ -667,16 +669,16 @@ frame at the same `clusterSeqNo`.
 ### 7.3 Snapshot rounds
 
 A round is a cut in the log: a synthesized `SnapshotStarted` whose `clusterSeqNo` is the point every
-participating source serializes its state at. The sequencer tracks nothing about a round once it has
-started; what the sources submit for it is `doc/snapshot.md`. Its state is the latest
+participating source serializes its state at. It is published by the cluster's snapshot action, which the leader
+asks for when a round is due, so that a round is also a cluster snapshot (`doc/snapshot.md` §10). The sequencer tracks
+nothing about a round once it has started; what the sources submit for it is `doc/snapshot.md`. Its state is the latest
 `SnapshotPolicyRegistered`'s interval and byte threshold, the last round number, the timestamp the
 interval counts from, and the bytes sequenced since the last `SnapshotStarted`: the length of every
 frame published to the queues, each counted once however many queues it reaches.
 
 **Triggers.** None fires before a `SnapshotPolicyRegistered` has been sequenced.
 
-1. Operator request: a sequenced `SnapshotRequested` is answered by `SnapshotStarted` at the next
-   `clusterSeqNo`. Without a policy, nothing follows it.
+1. Operator request: a sequenced `SnapshotRequested` makes a round due. Without a policy, nothing follows it.
 2. Interval: on each `ClusterHeartbeat`, immediately after promotion, when `intervalSeconds` > 0 and
    the heartbeat's timestamp is at least `intervalSeconds` past the last `SnapshotStarted`, or past the
    latest policy row before any round.
@@ -684,7 +686,8 @@ frame published to the queues, each counted once however many queues it reaches.
    length included, have reached `bytes`. The count restarts at each `SnapshotStarted`, which counts
    toward the next round, and before any round at the latest policy row.
 
-A heartbeat that meets both the interval and the byte trigger starts one round. Rounds are numbered
+A round that is due stays due until the snapshot action publishes its `SnapshotStarted`, and a heartbeat that meets
+both the interval and the byte trigger makes one round due. Rounds are numbered
 from 1, and each `SnapshotStarted` supersedes the one before it. A policy row sequenced after the first
 round changes the interval and the threshold but not the point either counts from.
 
@@ -902,7 +905,8 @@ the session closes).
   order.
 - Every synthesis deadline MUST be evaluated against the consensus clock, never a local timer.
 - `ClusterHeartbeat` is driven by a cluster timer, not a local scheduler.
-- Each group's `groupSeqNo` counter is sequencer state, rebuilt by the full-log replay like the rest.
+- Each group's `groupSeqNo` counter is sequencer state, rebuilt by the log's replay, from a snapshot or from the start,
+  like the rest.
 
 ### 9.4 No callback may signal failure by throwing
 
@@ -993,8 +997,14 @@ no header composite and are never sequenced or recorded.
   log yet, or, on a gateway host, it names a group the host does not relay (`replayer.groups`). The
   instance waits unfenced, since the recovery-stall fence arms only after its first catch-up
   (`doc/fault-tolerance.md` §2.1), so alert on that log line.
+- **R-7.** A request that names a cut (`cutClusterSeqNo`) asks for the active recording from the frame with that
+  `clusterSeqNo`, wherever it is; `fromPosition` is only a hint at where, and need not be a frame boundary. The
+  replayer answers it with a replay that starts at the frame, `ReplayPending` while the recording has not reached
+  the cut, and `NO_REPLAY_NEEDED` (**R-2**) when the cut is before the recording's first frame or the recording
+  passes it without a frame there, which means the cut was made in another log. The client checks the frame it
+  receives, and anchors its resume at that frame's position.
 
-The replayer serves only the active recording of each of its node's queues. The cluster takes no
+The replayer serves only the active recording of each of its node's queues, whatever its first frame. The cluster takes no
 snapshots, so a node's every start replays the log from `clusterSeqNo` 1 into new recordings: the active
 one alone holds the whole of its queue, and an older one is a prefix of it. A client replaying from
 `FROM_START` checks that the first frame it dispatches is `groupSeqNo` 1; one restoring a snapshot takes

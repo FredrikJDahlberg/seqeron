@@ -156,6 +156,9 @@ final class ReplayerRecovery {
     /** groupSeqNo of the frame at the chosen snapshot's cut, read off the replay that found it. */
     private long cutGroupSeqNo;
 
+    /** Where that frame starts in this node's recording, which the file's {@code cutPosition} only hints at. */
+    private long cutFramePosition;
+
     /** The header of the restore in progress, null before its record 0. */
     private SnapshotHeader restoredHeader;
 
@@ -224,6 +227,7 @@ final class ReplayerRecovery {
             resumeAnchorClusterSeqNo = 0;
             if (checkingCut) {
                 cutGroupSeqNo = groupSeqNo;
+                cutFramePosition = framePosition;
                 onCutReplayed(clusterSeqNo == anchor && event.clusterTimestampNs() == reader.cutTimestampNs());
                 return;
             }
@@ -640,7 +644,7 @@ final class ReplayerRecovery {
         restoring = false;
         lastClusterSeqNo = reader.cutClusterSeqNo();
         lastGroupSeqNo = cutGroupSeqNo;
-        lastFramePosition = reader.cutPosition();
+        lastFramePosition = cutFramePosition;
         closeReader();
         currentLeaderMemberId = restoredHeader.leaderMemberId();
         Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, actions.memberId(),
