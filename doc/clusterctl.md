@@ -35,6 +35,7 @@ The defaults match `SequencerServer`'s, so a default single-member cluster needs
 | `activate <gatewayId>` | yes | ask the cluster to make a gateway instance active |
 | `request-snapshot` | yes | start an application snapshot round |
 | `load-topology <file>` | yes | publish the deployment's topology document |
+| `trim-log` | no | purge this member's Raft log and snapshot recordings below its two newest restart-safe snapshots |
 | `counters` | no | list this member's operator counters |
 | `help` | no | print usage |
 | `snapshot` | — | refused: the cluster takes no Aeron snapshots (`request-snapshot` is the application kind) |
@@ -52,7 +53,7 @@ Until a topology is loaded, the sequencer refuses every frame but the `<groups>`
 condition 13), and the replayer names no default queue, so every publishing command but `load-topology`
 exits 1 at once, `start` included.
 
-It exits 0 on success; 1 if the cluster is unreachable, no leader answers, no replayer names the default
+It exits 0 on success; 1 if the cluster (for `trim-log`, the member's archive) is unreachable, no leader answers, no replayer names the default
 queue, a topology file conflicts with the log, the frame does not appear in time, or the abort fails; 2 for a
 usage error or an invalid topology file.
 
@@ -180,6 +181,25 @@ document in this repository lists only what its user starts:
 | `seqeron-service/src/test/resources/topology-test-snapshot.xml` | `snapshot-test.sh`, adding the `TestApplication` replicas it starts |
 | `seqeron-examples/topology.xml` | the C++ gateway example and `cpp-client-test.sh` |
 | `seqeron-examples/topology-csharp.xml` | the C# gateway example, `csharp-client-test.sh` and `csharp-windows-test.sh` |
+
+### trim-log
+
+Purges what this member's two newest restart-safe snapshots make unneeded ([`snapshot.md`](snapshot.md) §10.7). Open
+source Aeron trims nothing, so a member's Raft log and snapshot recordings otherwise grow with uptime. It acts on this
+member alone, needs no leader, and is run on each member. It reads the member's `recording.log` and
+`restart-safe.log` from its cluster directory and purges through the member's archive, over `aeron:ipc`:
+
+1. It keeps the two newest snapshots that `restart-safe.log` names and the log from the older one. With fewer than two
+   it does nothing and exits 0.
+2. It records `trimmed` in `restart-safe.log` before it purges anything. From then on the member never starts without a
+   snapshot, since the log no longer begins at its first term.
+3. It purges every snapshot recording older than the two, the consensus module's and the service's.
+4. It purges each log recording's segments below the older snapshot's log position, at the segment boundary at or below it.
+
+It is safe to repeat: a recording already gone counts as done. The archive refuses a log purge while a replay reads
+below the position or while another delete runs; the command prints the refusal, leaves the log as it was and exits 1,
+and the next run trims it. A member that was down past the trim horizon may need log its leader has purged and is
+rebuilt from `ClusterBackup` (`snapshot.md` §10.7).
 
 ### counters
 

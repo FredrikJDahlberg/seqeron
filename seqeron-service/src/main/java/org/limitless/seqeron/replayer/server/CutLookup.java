@@ -52,6 +52,18 @@ final class CutLookup {
     }
 
     /**
+     * Forgets the cuts of a recording that lie below its new start, which a purge moved.
+     * @param recordingId the recording
+     * @param startPosition where it starts now
+     */
+    void forgetBelow(final long recordingId, final long startPosition) {
+        final Long2LongHashMap cuts = kept.get(recordingId);
+        if (cuts != null) {
+            cuts.entrySet().removeIf(entry -> entry.getValue() < startPosition);
+        }
+    }
+
+    /**
      * Finds a cut in a recording.
      *
      * @param recordingId     the recording

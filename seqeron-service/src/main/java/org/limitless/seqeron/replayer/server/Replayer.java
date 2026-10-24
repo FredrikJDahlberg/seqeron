@@ -17,7 +17,8 @@ public interface Replayer {
      * must start at or after it. A queue recorded from its first frame starts at 0, one recorded from a snapshot's
      * cut elsewhere (doc/snapshot.md §10.3).
      */
-    record RecordingSpan(long recordingId, long startPosition, boolean active, int termBufferLength) { }
+    record RecordingSpan(long recordingId, long startPosition, boolean active, int termBufferLength,
+                         int segmentFileLength) { }
 
     /** Takes one frame of a queue recording in a scan. */
     @FunctionalInterface
@@ -86,6 +87,14 @@ public interface Replayer {
      * @return its backlog, or {@code null} when the counters show no queue publication it records
      */
     QueueBacklog queueBacklog(int groupId, RecordingSpan span);
+
+    /**
+     * Deletes the whole segment files of a recording below a position, which becomes its start.
+     * @param recordingId archive recording id
+     * @param newStartPosition a segment boundary of the recording, past the end of its first segment
+     * @return false if the archive refused: a replay is reading below the position, or another delete is running
+     */
+    boolean purgeSegments(long recordingId, long newStartPosition);
 
     /**
      * Starts a bounded replay onto a node-local IPC stream.

@@ -41,6 +41,9 @@ public final class NodeDriver {
     /** {@link AeronQueueRelay}'s session with a member's archive. */
     static final int RELAY_ARCHIVE_RESPONSE_STREAM_ID = 122;
 
+    /** {@code clusterctl trim-log}'s session with a member's archive. */
+    public static final int CLUSTERCTL_ARCHIVE_RESPONSE_STREAM_ID = 123;
+
     /** IPC term length when {@code aeron.ipc.term.buffer.length} is not set, rather than Aeron's 64 MiB. */
     private static final int DEFAULT_IPC_TERM_BUFFER_LENGTH = 16 * 1024 * 1024;
 

@@ -207,6 +207,45 @@ class ClusterSnapshotTest {
         assertTrue(widest < 5_000_000_000L, "the widest heartbeat gap across the rounds was " + widest / 1_000_000 + " ms");
     }
 
+    /** Runs {@code clusterctl trim-log} against a member, in a process of its own as an operator would. */
+    private int trimLog(final int member) throws Exception {
+        return new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                                  "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
+                                  "-cp", System.getProperty("java.class.path"),
+                                  "-Dclusterctl.memberId=" + member, "-Dclusterctl.baseDir=" + baseDir,
+                                  "-Dclusterctl.aeronDir=" + cluster.aeronDir(member),
+                                  ClusterCtl.class.getName(), "trim-log")
+            .inheritIO().start().waitFor();
+    }
+
+    @Test
+    @InterruptAfter(240)
+    void aMemberWhoseLogWasTrimmedRestartsFromItsSnapshot() throws Exception {
+        start("200", 1);
+        final int leader = cluster.awaitLeader();
+        final int member = (leader + 1) % InProcessCluster.MEMBERS;
+        awaitSafeRounds(member, 3);
+
+        assertEquals(0, trimLog(member));
+        assertEquals(0, trimLog(member), "a second run finds the first's work done");
+        assertTrue(safeLog(member).trimmed());
+
+        cluster.stop(member);
+        cluster.start(member);
+
+        List<QueueFrames.Span> spans;
+        do {
+            Tests.sleep(100);
+            spans = QueueFrames.recordings(cluster.aeronDir(member), InProcessCluster.GROUP_ID);
+        } while (spans.stream().noneMatch(span -> span.active() && span.startPosition() > 0));
+        final QueueFrames.Span restored = spans.stream().filter(QueueFrames.Span::active).findFirst().orElseThrow();
+        assertEquals(QueueFrames.readFrom(cluster.aeronDir(leader), InProcessCluster.GROUP_ID, restored.startPosition(), 3),
+                     QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, restored.startPosition(), 3),
+                     "the member recovered and holds the leader's queue from the cut");
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+        assertFalse(cluster.terminated(), "a member terminated");
+    }
+
     /** Waits until the member's log names {@code count} snapshots as safe. */
     private void awaitSafeRounds(final int member, final int count) {
         for (int i = 0; i < 1200 && safeLog(member).safe().size() < count; i++) {
