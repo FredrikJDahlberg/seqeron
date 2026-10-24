@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReferenceArray;
@@ -55,6 +56,7 @@ final class InProcessCluster implements AutoCloseable {
     private final AtomicReferenceArray<SequencerServer> nodes = new AtomicReferenceArray<>(MEMBERS);
     private final AtomicBoolean[] cut = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean[] cutAllButConsensus = new AtomicBoolean[MEMBERS];
+    private final AtomicBoolean[] cutArchive = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean[] muted = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean[] fatal = new AtomicBoolean[MEMBERS + 1];
     private final AtomicBoolean terminated = new AtomicBoolean();
@@ -67,6 +69,7 @@ final class InProcessCluster implements AutoCloseable {
         for (int m = 0; m < MEMBERS; m++) {
             cut[m] = new AtomicBoolean();
             cutAllButConsensus[m] = new AtomicBoolean();
+            cutArchive[m] = new AtomicBoolean();
             muted[m] = new AtomicBoolean();
         }
         for (int m = 0; m <= MEMBERS; m++) {
@@ -174,8 +177,9 @@ final class InProcessCluster implements AutoCloseable {
         final AtomicBoolean isCut = cut[m];
         final AtomicBoolean isCutAllButConsensus = cutAllButConsensus[m];
         final AtomicBoolean isMuted = muted[m];
+        final AtomicBoolean isArchiveCut = cutArchive[m];
         final SequencerServer.UdpFaults udpFaults = (publication, streamId)
-            -> isCut.get() ||
+            -> isCut.get() || (isArchiveCut.get() && RELAY_STREAM_IDS.contains(streamId)) ||
             (streamId == ConsensusModule.Configuration.CONSENSUS_STREAM_ID_DEFAULT ? publication && isMuted.get()
                                                                                    : isCutAllButConsensus.get());
         final AtomicBoolean isFatal = fatal[m];
@@ -224,6 +228,18 @@ final class InProcessCluster implements AutoCloseable {
     /** As {@link #cut}, but member {@code m} keeps its consensus traffic: it still votes, but copies no log. */
     void cutAllButConsensus(final int m, final boolean isCut) {
         cutAllButConsensus[m].set(isCut);
+    }
+
+    /**
+     * What a member sends a gateway host's relay: the archive's responses (122) and the replay (206). The relay's
+     * requests (stream 100, which is also the cluster's log) are left, so the relay hears nothing and the cluster
+     * keeps its quorum.
+     */
+    private static final Set<Integer> RELAY_STREAM_IDS = Set.of(122, 206);
+
+    /** Drops, or stops dropping, what member {@code m} sends a gateway host's relay, and nothing else. */
+    void cutArchive(final int m, final boolean isCut) {
+        cutArchive[m].set(isCut);
     }
 
     /** Drops, or stops dropping, member {@code m}'s consensus messages to its peers, though it still hears theirs. */

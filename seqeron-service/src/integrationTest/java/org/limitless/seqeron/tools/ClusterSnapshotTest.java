@@ -466,6 +466,70 @@ class ClusterSnapshotTest {
         assertFalse(cluster.fatal(), "a member or the host raised a fatal");
     }
 
+    @Test
+    @InterruptAfter(240)
+    void aRelayDisconnectedWhileEveryMemberPurgedPastItStopsAndItsRestartRelaysFromTheirStart() throws Exception {
+        final String term = setProperty(TERM_PROPERTY, String.valueOf(SMALL_SEGMENT));
+        final String segment = setProperty(SEGMENT_PROPERTY, String.valueOf(SMALL_SEGMENT));
+        try {
+            start("200", 1);
+            final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
+            cluster.startGatewayHost();
+            Tests.sleep(2_500); // it relays the first frames, well within one segment
+            for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
+                cluster.cutArchive(m, true);
+            }
+            Tests.sleep(4_000); // past its source timeout: it has left every member
+
+            try (ConfirmProducer producer = new ConfirmProducer(cluster.aeronDir(member), member, 1_500, 5_000_000, 1_000)) {
+                while (!producer.isDrained() && !producer.isStalled()) {
+                    producer.doWork();
+                    Tests.yield();
+                }
+                assertTrue(producer.isDrained(), "the producer did not drain");
+            }
+            for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
+                for (int i = 0; i < 1200 && memberStart(m) < SMALL_SEGMENT; i++) {
+                    Tests.sleep(50);
+                }
+                assertTrue(memberStart(m) >= SMALL_SEGMENT, "member " + m + " never purged past the relay");
+            }
+
+            for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
+                cluster.cutArchive(m, false);
+            }
+            for (int i = 0; i < 1200 && !cluster.fatal(InProcessCluster.GATEWAY_HOST); i++) {
+                Tests.sleep(50);
+            }
+            assertTrue(cluster.fatal(InProcessCluster.GATEWAY_HOST), "the relay did not stop");
+
+            // Its restart relays from a member's start, into a new recording.
+            cluster.stopGatewayHost();
+            cluster.startGatewayHost();
+            Tests.sleep(2_500);
+            final List<QueueFrames.Span> spans =
+                QueueFrames.recordings(cluster.aeronDir(InProcessCluster.GATEWAY_HOST), InProcessCluster.GROUP_ID);
+            assertEquals(1, spans.size(), "one recording: " + spans);
+            final List<QueueFrames.Frame> frames = QueueFrames.readFrom(
+                cluster.aeronDir(InProcessCluster.GATEWAY_HOST), InProcessCluster.GROUP_ID, spans.getFirst().startPosition(), 3);
+            assertEquals(3, frames.size());
+            assertTrue(frames.getFirst().groupSeqNo() > 1, "from the members' purged start, not the first frame");
+            for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
+                assertFalse(cluster.fatal(m), "member " + m + " raised a fatal");
+            }
+            assertFalse(cluster.terminated(), "a member terminated");
+        } finally {
+            restoreProperty(TERM_PROPERTY, term);
+            restoreProperty(SEGMENT_PROPERTY, segment);
+        }
+    }
+
+    /** The start of member {@code m}'s active recording of group 1's queue. */
+    private long memberStart(final int m) {
+        return QueueFrames.recordings(cluster.aeronDir(m), InProcessCluster.GROUP_ID)
+            .stream().filter(QueueFrames.Span::active).findFirst().orElseThrow().startPosition();
+    }
+
     private static final int GATEWAY_SOURCE_ID = 40;
 
     /** A gateway with an empty snapshot, driven on its own thread against member {@code member}'s node. */
