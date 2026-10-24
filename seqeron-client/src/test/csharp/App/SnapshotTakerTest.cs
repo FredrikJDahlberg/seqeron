@@ -83,6 +83,34 @@ public class SnapshotTakerTest : IDisposable
         }
     }
 
+    // Records the signals placed; declines the first Declines offers of each kind.
+    private sealed class Signals : SnapshotTaker.ISignals
+    {
+        public readonly List<string> Placed = new List<string>();
+        public int Declines;
+
+        public bool Joined(long round)
+        {
+            return Place("joined " + round);
+        }
+
+        public bool Confirmed(long round)
+        {
+            return Place("confirmed " + round);
+        }
+
+        private bool Place(string signal)
+        {
+            if (Declines > 0)
+            {
+                Declines--;
+                return false;
+            }
+            Placed.Add(signal);
+            return true;
+        }
+    }
+
     private readonly TempDirectory _directory = new TempDirectory();
     private readonly State _state = new State();
     private readonly Frames _frames = new Frames();
@@ -314,6 +342,60 @@ public class SnapshotTakerTest : IDisposable
         SnapshotTaker taker = Participating();
         Started(taker, 1, true);
         Assert.Equal(4, _keepAlives); // the header and three records
+    }
+
+    [Fact(DisplayName = "a replica that takes part joins the round the Replayer cut, again until the offer lands")]
+    public void ParticipatingReplicaJoinsTheRoundItIsToldOf()
+    {
+        var signals = new Signals();
+        SnapshotTaker taker = Participating();
+        Assert.Equal(0, taker.Signal(signals)); // nothing owed before a round
+
+        signals.Declines = 2;
+        taker.OnSnapshotRound(1);
+        taker.OnSnapshotRound(2);
+        Assert.Equal(0, taker.Signal(signals));
+        Assert.Equal(0, taker.Signal(signals));
+        Assert.Equal(1, taker.Signal(signals));
+        Assert.Equal(new List<string> { "joined 2" }, signals.Placed); // only the latest round is owed
+        Assert.Equal(0, taker.Signal(signals)); // and only once
+    }
+
+    [Fact(DisplayName = "a replica that takes no part, or has no listener, joins nothing")]
+    public void NonParticipatingReplicaJoinsNothing()
+    {
+        var signals = new Signals();
+        var off = new SnapshotTaker(_state, Store(), KeepAlive);
+        off.SetParticipating(false);
+        off.OnSnapshotRound(1);
+        var unlistened = new SnapshotTaker(null, null, KeepAlive);
+        unlistened.SetParticipating(true);
+        unlistened.OnSnapshotRound(1);
+
+        Assert.Equal(0, off.Signal(signals));
+        Assert.Equal(0, unlistened.Signal(signals));
+        Assert.Empty(signals.Placed);
+    }
+
+    [Fact(DisplayName = "a confirmed file is told to the Replayer, again until the offer lands; a diverged one is not")]
+    public void ConfirmedFileIsToldToTheReplayer()
+    {
+        var signals = new Signals();
+        SnapshotTaker taker = Participating();
+        Started(taker, 1, true);
+        taker.Submit(_frames);
+        End end = _frames.Ends[0];
+        Assert.Equal(0, taker.Signal(signals)); // written is not confirmed
+
+        Assert.True(taker.OnSnapshotEnd(1, end.RecordCount, end.Length, end.Crc32C));
+        signals.Declines = 1;
+        Assert.Equal(0, taker.Signal(signals));
+        Assert.Equal(1, taker.Signal(signals));
+        Assert.Equal(new List<string> { "confirmed 1" }, signals.Placed);
+
+        Started(taker, 2, false);
+        Assert.False(taker.OnSnapshotEnd(2, 99, 0, 0));
+        Assert.Equal(0, taker.Signal(signals)); // a diverged instance confirms nothing
     }
 
     private void KeepAlive()

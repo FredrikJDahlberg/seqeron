@@ -55,6 +55,9 @@ internal sealed class Session : IDisposable
         /// term.</summary>
         void OnLeadershipChanged();
 
+        /// <summary>The Replayer cut a snapshot round on this node; a gateway has nothing to say to it.</summary>
+        void OnSnapshotRound(long round);
+
         void OnPayload(Payload payload);
 
         /// <summary>Every transition to caught-up, the first included.</summary>
@@ -152,7 +155,22 @@ internal sealed class Session : IDisposable
         _recoveryStall = new RecoveryStallFence(recoveryStallTimeoutMs);
         _queueStall = new QueueStallFence(queueStallTimeoutMs);
         _receiver = new ReplayerStreamReceiver(clientId, OnSequenced, OnLeadershipChanged, null);
+        _receiver.OnSnapshotRound((round, clusterSeqNo) => _dispatch.OnSnapshotRound(round));
         _sender.SetIngressHold(_pending);
+    }
+
+    /// <summary>Tells this node's Replayer the application <paramref name="sourceId"/> takes part in
+    /// <paramref name="round"/>; whether the offer landed.</summary>
+    internal bool SendSnapshotJoined(int sourceId, long round)
+    {
+        return _receiver.SendSnapshotJoined(sourceId, round);
+    }
+
+    /// <summary>Tells this node's Replayer the application's file for <paramref name="round"/> is durable; whether the
+    /// offer landed.</summary>
+    internal bool SendSnapshotConfirmed(int sourceId, long round)
+    {
+        return _receiver.SendSnapshotConfirmed(sourceId, round);
     }
 
     /// <summary>Restores the newest snapshot in <paramref name="store"/> first; call before starting.</summary>

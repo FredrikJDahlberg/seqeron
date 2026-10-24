@@ -23,18 +23,18 @@
     <!-- sourceId 13, allocated in doc/seqeron-protocol-spec.md §5. gatewayIds 12 and 13, after
          TestGateway's 10 and 11, so the two pairs can share one cluster. -->
     <gateways>
-        <gateway name="GW-EX-A" id="12" sourceId="13" rank="0" group="gateways"
+        <gateway name="GW-EX-A" id="12" sourceId="13" rank="0" group="gateways" snapshot="true"
                  description="seqeron-examples gateway_app"/>
-        <gateway name="GW-EX-B" id="13" sourceId="13" rank="1" group="gateways"
+        <gateway name="GW-EX-B" id="13" sourceId="13" rank="1" group="gateways" snapshot="true"
                  description="seqeron-examples gateway_app standby"/>
     </gateways>
 
-    <!-- ColocatedApp, Java and C++: sourceIds 11 and 12; SnapshotApp, Java and C++: 14 and 15, taking part
-         in snapshot rounds (spec §5). -->
+    <!-- ColocatedApp, Java and C++: sourceIds 11 and 12; SnapshotApp, Java and C++: 14 and 15 (spec §5).
+         <snapshots> needs snapshot="true" on every row; only a SnapshotListener takes part. -->
     <applications>
-        <application name="COLO-EX-J" sourceId="11" group="applications"
+        <application name="COLO-EX-J" sourceId="11" group="applications" snapshot="true"
                      description="seqeron-examples ColocatedApp.java"/>
-        <application name="COLO-EX-C" sourceId="12" group="applications"
+        <application name="COLO-EX-C" sourceId="12" group="applications" snapshot="true"
                      description="seqeron-examples colocated_app"/>
         <application name="SNAP-EX-J" sourceId="14" group="applications" snapshot="true"
                      description="seqeron-examples SnapshotApp.java"/>

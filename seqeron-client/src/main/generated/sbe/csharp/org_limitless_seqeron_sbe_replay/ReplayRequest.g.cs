@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
     /// </summary>
     public sealed partial class ReplayRequest
     {
-        public const ushort BlockLength = (ushort)28;
+        public const ushort BlockLength = (ushort)36;
         public const ushort TemplateId = (ushort)6;
         public const ushort SchemaId = (ushort)212;
         public const ushort SchemaVersion = (ushort)0;
@@ -267,6 +267,49 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         }
 
 
+        public const int CutClusterSeqNoId = 20021;
+        public const int CutClusterSeqNoSinceVersion = 0;
+        public const int CutClusterSeqNoDeprecated = 0;
+        public bool CutClusterSeqNoInActingVersion()
+        {
+            return _actingVersion >= CutClusterSeqNoSinceVersion;
+        }
+
+        public const int CutClusterSeqNoOffset = 28;
+
+        public static string CutClusterSeqNoMetaAttribute(MetaAttribute metaAttribute)
+        {
+            switch (metaAttribute)
+            {
+                case MetaAttribute.Epoch: return "";
+                case MetaAttribute.TimeUnit: return "";
+                case MetaAttribute.SemanticType: return "";
+                case MetaAttribute.Presence: return "required";
+            }
+
+            return "";
+        }
+
+        public const long CutClusterSeqNoNullValue = -9223372036854775808L;
+        public const long CutClusterSeqNoMinValue = -9223372036854775807L;
+        public const long CutClusterSeqNoMaxValue = 9223372036854775807L;
+
+        /// <summary>
+        /// Set by a restore to the clusterSeqNo of the snapshot's cut, which fromPosition then                             only hints at; NO_CUT (-1) otherwise (doc/snapshot.md §10.8)
+        /// </summary>
+        public long CutClusterSeqNo
+        {
+            get
+            {
+                return _buffer.Int64GetLittleEndian(_offset + 28);
+            }
+            set
+            {
+                _buffer.Int64PutLittleEndian(_offset + 28, value);
+            }
+        }
+
+
         public override string ToString()
         {
             var sb = new StringBuilder(100);
@@ -316,6 +359,9 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             builder.Append('|');
             builder.Append("QueueId=");
             builder.Append(this.QueueId);
+            builder.Append('|');
+            builder.Append("CutClusterSeqNo=");
+            builder.Append(this.CutClusterSeqNo);
 
             this.Limit = originalLimit;
 

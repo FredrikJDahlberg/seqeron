@@ -28,6 +28,9 @@ public final class ReplayProtocol {
     /** {@code QueueRequest.sourceId} naming no application. */
     public static final int NO_SOURCE_ID = -1;
 
+    /** {@code ReplayRequest.cutClusterSeqNo} of a request that is not a snapshot restore's. */
+    public static final long NO_CUT = NULL_VALUE;
+
     private ReplayProtocol() {
     }
 }

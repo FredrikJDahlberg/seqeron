@@ -101,6 +101,17 @@ public final class Application implements AutoCloseable {
     private final Listener listener;
     private final SnapshotTaker snapshots;
     private final SnapshotFrames snapshotFrames;
+    private final SnapshotTaker.Signals snapshotSignals = new SnapshotTaker.Signals() {
+        @Override
+        public boolean joined(final long round) {
+            return session.sendSnapshotJoined(sourceId, round);
+        }
+
+        @Override
+        public boolean confirmed(final long round) {
+            return session.sendSnapshotConfirmed(sourceId, round);
+        }
+    };
     private final int sourceId;
     private final int memberId;
     private final int clientId;
@@ -171,6 +182,7 @@ public final class Application implements AutoCloseable {
             listener.onLeadershipChanged(transition == LeaderGate.Transition.OPENED);
             work++;
         }
+        work += snapshots.signal(snapshotSignals);
         if (gate.isOpen()) {
             work += snapshots.submit(snapshotFrames);
         }
@@ -301,6 +313,11 @@ public final class Application implements AutoCloseable {
                 // Nothing else says anything to a producer nothing elects.
             }
             }
+        }
+
+        @Override
+        public void onSnapshotRound(final long round) {
+            snapshots.onSnapshotRound(round);
         }
 
         /** A term won by another member ends this replica's part in the round it is publishing. */

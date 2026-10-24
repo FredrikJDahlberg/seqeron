@@ -39,7 +39,7 @@ public record TopologyDocument(List<GroupRow> groups, List<TopologyRow> gateways
     public record ApplicationRow(String applicationName, int sourceId, int groupId, boolean snapshot) { }
 
     /** The {@code <snapshots>} element; {@code null} in a document without one, which starts no round. */
-    public record SnapshotPolicy(long intervalSeconds) { }
+    public record SnapshotPolicy(long intervalSeconds, long bytes) { }
 
     /** One protocol-registry row: what a shared payloadId is called in this deployment (§6.3). */
     public record ProtocolRow(int payloadId, int protocolVersion, String protocolName) { }
@@ -86,7 +86,7 @@ public record TopologyDocument(List<GroupRow> groups, List<TopologyRow> gateways
         }
         final NodeList policies = root.getElementsByTagNameNS(TOPOLOGY_NS, "snapshots");
         final SnapshotPolicy snapshots = policies.getLength() == 0 ? null
-            : new SnapshotPolicy(Long.parseLong(((Element)policies.item(0)).getAttribute("interval")));
+            : snapshotPolicy((Element)policies.item(0));
         validate(gateways, applications, snapshots);
         return new TopologyDocument(groups, gateways, applications, protocols, snapshots);
     }
@@ -98,6 +98,13 @@ public record TopologyDocument(List<GroupRow> groups, List<TopologyRow> gateways
             names[group.groupId() - 1] = group.groupName();
         }
         return names;
+    }
+
+    /** The {@code <snapshots>} element; {@code bytes} is optional, and the DOM does not apply the schema's default. */
+    private static SnapshotPolicy snapshotPolicy(final Element element) {
+        final String bytes = element.getAttribute("bytes");
+        return new SnapshotPolicy(Long.parseLong(element.getAttribute("interval")),
+                                  bytes.isEmpty() ? 0 : Long.parseLong(bytes));
     }
 
     /** A row's {@code snapshot} attribute; {@code xs:boolean} spells true two ways, and absent is false. */
@@ -165,11 +172,12 @@ public record TopologyDocument(List<GroupRow> groups, List<TopologyRow> gateways
      * The checks the XSD cannot make about rows' relations: exactly one rank-0 per gateway {@code sourceId},
      * no §5-reserved {@code sourceId}, no application {@code sourceId} a gateway row claims — which
      * <b>S-6</b> would otherwise silently refuse frame by frame at run time — one {@code snapshot} value and one
-     * group per gateway {@code sourceId}, and a participating row behind {@code <snapshots>}.
+     * group per gateway {@code sourceId}, and under {@code <snapshots>} a participating row and no other kind.
      */
     private static void validate(final List<TopologyRow> rows, final List<ApplicationRow> applications,
                                  final SnapshotPolicy snapshots) {
         boolean participating = false;
+        boolean excluded = false;
         for (final TopologyRow row : rows) {
             if (RESERVED_SOURCE_ID == row.gatewaySourceId()) {
                 throw new IllegalArgumentException(row.gatewayName() + ": sourceId " + RESERVED_SOURCE_ID +
@@ -197,6 +205,7 @@ public record TopologyDocument(List<GroupRow> groups, List<TopologyRow> gateways
                 }
             }
             participating |= row.snapshot();
+            excluded |= !row.snapshot();
         }
         for (final ApplicationRow application : applications) {
             if (RESERVED_SOURCE_ID == application.sourceId()) {
@@ -211,10 +220,15 @@ public record TopologyDocument(List<GroupRow> groups, List<TopologyRow> gateways
                 }
             }
             participating |= application.snapshot();
+            excluded |= !application.snapshot();
         }
         if (snapshots != null && !participating) {
             throw new IllegalArgumentException("<snapshots> with no row marked snapshot=\"true\" starts rounds "
                                                + "no source takes part in");
+        }
+        if (snapshots != null && excluded) {
+            throw new IllegalArgumentException("<snapshots> needs snapshot=\"true\" on every row: a restart "
+                                               + "discards the queue below the cut");
         }
     }
 }

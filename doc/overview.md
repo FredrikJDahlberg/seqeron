@@ -58,7 +58,8 @@ they would see on a member.
 - **The queues** are node-local `aeron:ipc` publications, one per group (stream 2000 + `groupId`). A queue
   carries every system message and the application messages addressed to its group. Every member publishes
   its own, leader and follower alike, and since every member applies the same committed log in the same
-  order, each queue is byte-identical across members, message for message.
+  order, each queue is byte-identical across members, message for message, from `groupSeqNo` 1 or from the cut a restarted
+  member restored at.
 - **The archive** records the queues. Each member therefore holds a complete copy of each, written
   locally, with no cross-node replication and no leader-only recording. A queue is created once, when the
   first topology load activates the groups, and survives leadership changes, so a member's recording of it
@@ -255,7 +256,7 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 | --- | --- |
 | members | up to seven, bounded by the 70-port cluster block |
 | payload | 8,874 bytes per message; larger payloads are split by the application |
-| node recovery | full-log replay; time and archive size grow with uptime (the heartbeat alone is about 86,400 messages a day) |
+| node recovery | full-log replay without a `<snapshots>` policy, so time and archive size grow with uptime (the heartbeat alone is about 86,400 messages a day); with one, a replay of the log since a cluster snapshot |
 | concurrent replays | four per member, one while its queue recording falls behind; more clients wait |
 | ingress confirmation | within one producer process: a restarted producer starts with nothing pending |
 | faults | crash, not Byzantine; network faults are injected in CI, but a standalone media driver is never killed |

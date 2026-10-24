@@ -10,7 +10,8 @@ internal interface IReplayerRecoveryActions
     /// does.</summary>
     /// <param name="requestId">the id the reply must carry</param>
     /// <param name="fromPosition">where to resume the active recording, or <c>ReplayProtocol.FromStart</c></param>
-    void SendReplayRequest(long requestId, long fromPosition);
+    /// <param name="cutClusterSeqNo">the cut of the snapshot a restore checks, else <c>ReplayProtocol.NoCut</c></param>
+    void SendReplayRequest(long requestId, long fromPosition, long cutClusterSeqNo);
 
     /// <summary>Subscribes to exactly one replay, this one, for as long as the client rides it.</summary>
     /// <param name="replaySessionId">the replay's session</param>

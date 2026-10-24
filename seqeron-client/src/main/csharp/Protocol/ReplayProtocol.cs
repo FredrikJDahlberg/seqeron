@@ -26,4 +26,7 @@ public static class ReplayProtocol
 
     /// <summary><c>QueueRequest.sourceId</c> naming no application.</summary>
     public const int NoSourceId = -1;
+
+    /// <summary><c>ReplayRequest.cutClusterSeqNo</c> of a request that is not a snapshot restore's.</summary>
+    public const long NoCut = Aeron.NULL_VALUE;
 }

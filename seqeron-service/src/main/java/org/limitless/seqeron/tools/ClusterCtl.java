@@ -3,7 +3,10 @@ package org.limitless.seqeron.tools;
 import io.aeron.Aeron;
 import io.aeron.FragmentAssembler;
 import io.aeron.Subscription;
+import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.ArchiveException;
 import io.aeron.cluster.ClusterTool;
+import io.aeron.cluster.RecordingLog;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.io.File;
@@ -29,6 +32,9 @@ import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
+import org.limitless.seqeron.replayer.server.NodeDriver;
+import org.limitless.seqeron.replayer.server.RestartSafeLog;
+import org.limitless.seqeron.replayer.server.SegmentPurge;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.ClusterStartedDecoder;
@@ -71,6 +77,8 @@ import org.xml.sax.SAXParseException;
  *       {@code SnapshotStarted} the sequencer synthesizes behind it (doc/snapshot.md §3).</li>
  *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's validated topology document, checked
  *       against the log (spec §6.4); the first command an archive accepts.
+ *   <li><b>trim-log</b> — purges this member's Raft log and snapshot recordings below its two newest restart-safe
+ *       snapshots (doc/snapshot.md §10.7); needs no leader, and is safe to repeat.</li>
  *   <li><b>counters</b> — lists this node's operator counters off the CnC file; needs no leader.</li>
  *   <li><b>help</b> — usage.</li>
  *   <li><i>anything else</i> — passed through to {@link ClusterTool} against this node's
@@ -159,6 +167,9 @@ public final class ClusterCtl {
         case "load-topology":
             System.exit(loadTopology(args));
             break;
+        case "trim-log":
+            System.exit(trimLog());
+            break;
         case "counters":
             System.exit(counters());
             break;
@@ -181,6 +192,94 @@ public final class ClusterCtl {
             return 0;
         } catch (final Exception ex) {
             System.err.println("[clusterctl] start: no elected leader / cluster unreachable (" + ex.getMessage() + ")");
+            return 1;
+        }
+    }
+
+    /**
+     * Purges what the member's two newest restart-safe snapshots make unneeded (doc/snapshot.md §10.7). The trim is
+     * recorded first: a run that dies half way leaves the log no longer beginning at its first term, and the next
+     * start must not fall back to replaying it.
+     */
+    private static int trimLog() {
+        if (!new File(CLUSTER_DIR, RecordingLog.RECORDING_LOG_FILE_NAME).exists()) {
+            System.err.println("[clusterctl] trim-log: no recording log in " + CLUSTER_DIR);
+            return 1;
+        }
+        final LogTrimPlan plan;
+        try (RecordingLog recordingLog = new RecordingLog(CLUSTER_DIR, false)) {
+            plan = LogTrimPlan.of(recordingLog.entries(),
+                                  RestartSafeLog.read(CLUSTER_DIR.toPath().resolve(RestartSafeLog.FILE_NAME)));
+        }
+        if (plan == LogTrimPlan.NOTHING) {
+            System.out.println("[clusterctl] trim-log: fewer than two restart-safe snapshots — nothing to trim");
+            return 0;
+        }
+        try (RestartSafeLog safeLog = RestartSafeLog.open(CLUSTER_DIR.toPath())) {
+            safeLog.appendTrimmed();
+        }
+
+        int failures = 0;
+        try (AeronArchive archive = AeronArchive.connect(
+            new AeronArchive.Context()
+                .aeronDirectoryName(AERON_DIR)
+                .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+                .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                .controlResponseStreamId(NodeDriver.CLUSTERCTL_ARCHIVE_RESPONSE_STREAM_ID))) {
+            for (final long recordingId : plan.snapshotRecordings()) {
+                try {
+                    archive.purgeRecording(recordingId);
+                    System.out.printf("[clusterctl] trim-log: purged snapshot recording %d%n", recordingId);
+                } catch (final ArchiveException ex) {
+                    if (ex.errorCode() != ArchiveException.UNKNOWN_RECORDING) { // else a run before this one did
+                        System.err.printf("[clusterctl] trim-log: snapshot recording %d: %s%n", recordingId,
+                                          ex.getMessage());
+                        ++failures;
+                    }
+                }
+            }
+            for (final long recordingId : plan.logRecordings()) {
+                failures += trimLogRecording(archive, recordingId, plan.floor());
+            }
+        } catch (final RuntimeException ex) {
+            System.err.println("[clusterctl] trim-log: the member's archive is unreachable (" + ex.getMessage() + ")");
+            return 1;
+        }
+        if (failures > 0) {
+            System.err.println("[clusterctl] trim-log: " + failures + " purge(s) refused; run it again");
+            return 1;
+        }
+        return 0;
+    }
+
+    /** Purges a log recording's segments below {@code floor}; 1 if the archive refused. */
+    private static int trimLogRecording(final AeronArchive archive, final long recordingId, final long floor) {
+        final long[] summary = new long[4]; // start, stop, term length, segment length
+        if (archive.listRecording(recordingId, (controlSessionId, correlationId, id, startTimestamp, stopTimestamp,
+                                                startPosition, stopPosition, initialTermId, segmentFileLength,
+                                                termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
+                                                originalChannel, sourceIdentity) -> {
+                summary[0] = startPosition;
+                summary[1] = stopPosition;
+                summary[2] = termBufferLength;
+                summary[3] = segmentFileLength;
+            }) == 0) {
+            return 0; // already gone
+        }
+        final long end =
+            summary[1] != AeronArchive.NULL_POSITION ? summary[1] : archive.getRecordingPosition(recordingId);
+        final long target = SegmentPurge.target(summary[0], (int)summary[2], (int)summary[3], Math.min(floor, end));
+        if (target == SegmentPurge.NOTHING) {
+            return 0;
+        }
+        try {
+            archive.purgeSegments(recordingId, target);
+            System.out.printf("[clusterctl] trim-log: purged log recording %d below position %d%n", recordingId, target);
+            return 0;
+        } catch (final ArchiveException ex) {
+            System.err.printf("[clusterctl] trim-log: log recording %d below position %d: %s%n", recordingId, target,
+                              ex.getMessage());
             return 1;
         }
     }
@@ -248,8 +347,8 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes {@code SnapshotRequested} and waits for the {@code SnapshotStarted} the sequencer synthesizes at
-     * the next {@code clusterSeqNo}; none follows when the loaded topology has no {@code <snapshots>}.
+     * Publishes {@code SnapshotRequested} and waits for the {@code SnapshotStarted} of the round it calls for; none
+     * follows when the loaded topology has no {@code <snapshots>}.
      */
     private static int requestSnapshot() {
         final long correlationId = System.nanoTime();
@@ -279,8 +378,9 @@ public final class ClusterCtl {
     }
 
     /**
-     * Matches our {@code SnapshotRequested} by correlationId, then the {@code SnapshotStarted} at the {@code
-     * clusterSeqNo} just behind it. One handler for both, since one poll can deliver the two together.
+     * Matches our {@code SnapshotRequested} by correlationId, then the first {@code SnapshotStarted} behind it: the
+     * round the request called for, which the cluster's snapshot action takes at the leader's next callback. One
+     * handler for both, since one poll can deliver the two together.
      */
     private static final class SnapshotStartedEchoHandler extends EchoHandler {
         private final ClusterStartedDecoder marker = new ClusterStartedDecoder();
@@ -309,7 +409,7 @@ public final class ClusterCtl {
                 }
                 return false;
             }
-            if (requestSeqNo < 0 || view.clusterSeqNo() != requestSeqNo + 1) {
+            if (requestSeqNo < 0 || view.clusterSeqNo() < requestSeqNo) {
                 return false;
             }
             decoder.wrap(buffer, view.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
@@ -440,7 +540,9 @@ public final class ClusterCtl {
 
             if (topology.snapshots() != null) {
                 final SnapshotPolicyRegisteredEncoder policyEncoder = new SnapshotPolicyRegisteredEncoder();
-                policyEncoder.wrap(payload, 0).intervalSeconds(topology.snapshots().intervalSeconds());
+                policyEncoder.wrap(payload, 0)
+                    .intervalSeconds(topology.snapshots().intervalSeconds())
+                    .bytes(topology.snapshots().bytes());
                 publish(session, log, SystemFrame.SNAPSHOT_POLICY_REGISTERED, payload, policyEncoder.encodedLength());
             }
 
@@ -855,6 +957,9 @@ public final class ClusterCtl {
                            the co-located applications, the protocol registry and the
                            snapshot policy; run it first, before start and before any
                            gateway starts: the cluster refuses everything before it
+              trim-log     purge this member's Raft log and snapshot recordings below its two
+                           newest restart-safe snapshots; per member, safe to repeat, no leader
+                           needed (doc/clusterctl.md)
               counters     list this node's seqeron operator counters (SequencerService/
                            ReplayerService); no cluster connection needed, safe on every node
               snapshot     Aeron's cluster snapshot; not supported (see request-snapshot)

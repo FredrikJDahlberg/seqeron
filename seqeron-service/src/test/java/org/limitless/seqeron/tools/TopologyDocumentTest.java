@@ -106,6 +106,16 @@ class TopologyDocumentTest {
         assertTrue(on.gateways().get(1).snapshot(), "xs:boolean spells true as 1 too");
         assertTrue(on.applications().get(0).snapshot());
         assertEquals(3600, on.snapshots().intervalSeconds());
+        assertEquals(0, on.snapshots().bytes(), "no bytes, no byte trigger");
+    }
+
+    @Test
+    @DisplayName("the snapshot policy's bytes are read as the full 64 bits")
+    void readsSnapshotBytes() throws Exception {
+        final TopologyDocument topology = read(document("""
+                <gateway name="GW-A" group="orders" id="1" sourceId="9" rank="0" snapshot="true"/>""", null, null,
+                "<snapshots interval=\"0\" bytes=\"9223372036854775807\"/>"));
+        assertEquals(Long.MAX_VALUE, topology.snapshots().bytes());
     }
 
     @Test
@@ -294,6 +304,15 @@ class TopologyDocumentTest {
         refusedBySchema(document(GATEWAY_PAIR, null, null, "<snapshots interval=\"-1\"/>"));
     }
 
+    @Test
+    @DisplayName("<snapshots> bytes is an int64 and not negative")
+    void snapshotsWithoutAValidBytesAreRefused() {
+        refusedBySchema(document(GATEWAY_PAIR, null, null, "<snapshots interval=\"0\" bytes=\"-1\"/>"));
+        refusedBySchema(document(GATEWAY_PAIR, null, null,
+                                 "<snapshots interval=\"0\" bytes=\"9223372036854775808\"/>"));
+        refusedBySchema(document(GATEWAY_PAIR, null, null, "<snapshots interval=\"0\" bytes=\"1G\"/>"));
+    }
+
     // ── refused by the loader: the checks a row cannot make about itself ──────────────────────────────
 
     @Test
@@ -356,6 +375,16 @@ class TopologyDocumentTest {
     void snapshotsWithNoParticipantIsRefused() {
         assertRefused(document(GATEWAY_PAIR, null, null, "<snapshots interval=\"60\"/>"),
                       "no row marked snapshot");
+    }
+
+    @Test
+    @DisplayName("<snapshots> needs every row to take part: a restart discards the queue below the cut")
+    void snapshotsWithANonParticipantIsRefused() {
+        assertRefused(document("""
+                <gateway name="GW-A" group="orders" id="1" sourceId="9" rank="0" snapshot="true"/>
+                <gateway name="GW-B" group="orders" id="2" sourceId="9" rank="1" snapshot="true"/>""", """
+                <application name="probe" group="orders" sourceId="8"/>""", null, "<snapshots interval=\"60\"/>"),
+                      "every row");
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────────

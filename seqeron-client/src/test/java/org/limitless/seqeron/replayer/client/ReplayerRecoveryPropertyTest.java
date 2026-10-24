@@ -390,7 +390,7 @@ class ReplayerRecoveryPropertyTest {
         // ── ReplayerRecoveryActions: the client's outbound side ────────────────────────────────────────
 
         @Override
-        public void sendReplayRequest(final long requestId, final long fromPosition) {
+        public void sendReplayRequest(final long requestId, final long fromPosition, final long cutClusterSeqNo) {
             if (chaos && chance(15)) {
                 return; // the offer did not land; only the resend timer recovers this
             }

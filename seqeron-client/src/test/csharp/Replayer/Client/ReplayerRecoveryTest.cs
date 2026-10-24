@@ -69,11 +69,13 @@ public class ReplayerRecoveryTest : IDisposable
     {
         public long ClockMs = ReplayerRecoveryTest.ClockMs;
         public int RequestsSent;
+        public long LastCutClusterSeqNo = -2;
         public readonly List<bool> StalledGauge = new List<bool>();
 
-        public void SendReplayRequest(long requestId, long fromPosition)
+        public void SendReplayRequest(long requestId, long fromPosition, long cutClusterSeqNo)
         {
             ++RequestsSent;
+            LastCutClusterSeqNo = cutClusterSeqNo;
         }
 
         public void OpenReplay(long replaySessionId)
@@ -1163,6 +1165,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(1, _actions.RequestsSent);
         Assert.True(_receiver.IsAwaitingReplay);
         Assert.Equal(Cut * 1024, _receiver.RequestFromPosition); // the newest round's cut
+        Assert.Equal(Cut, _actions.LastCutClusterSeqNo); // the request names the cut, the position being a hint
         Assert.False(_receiver.IsRestoring, "no record before the cut is seen");
         Assert.True(_receiver.IsRecovering);
 
@@ -1178,6 +1181,7 @@ public class ReplayerRecoveryTest : IDisposable
         AdvancePastTimers();
         Assert.Equal(2, _actions.RequestsSent);
         Assert.Equal(Cut * 1024, _receiver.RequestFromPosition);
+        Assert.Equal(Cut, _actions.LastCutClusterSeqNo); // the resend names the cut too
 
         DeliverPending(_receiver.RequestId);
         _actions.ClockMs += 100;
@@ -1194,6 +1198,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.False(_receiver.IsRestoring);
         Assert.True(_receiver.IsAwaitingReplay);
         Assert.Equal(FromStart, _receiver.RequestFromPosition);
+        Assert.Equal(ReplayProtocol.NoCut, _actions.LastCutClusterSeqNo); // a walk names no cut
     }
 
     [Fact(DisplayName =
@@ -1227,6 +1232,20 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverReplay(11);
         DeliverReplay(12);
         Assert.Equal(new List<long> { 11, 12 }, _dispatched);
+    }
+
+    [Fact(DisplayName = "a cut found elsewhere in the recording than its file's position is resumed at where it was found")]
+    public void RestoreResumesAtTheCutsPositionInThisRecording()
+    {
+        WriteSnapshot(2);
+        StartRestoring();
+        AttachReplay(21, 64 * 1024);
+        DeliverReplayFrame(RestoreFrames.Started(Cut, 2), Cut + 7); // the file's CutPosition is a hint only
+        _receiver.DoTimers(false);
+        _receiver.DoTimers(false);
+
+        Assert.False(_receiver.IsRestoring);
+        Assert.Equal((Cut + 7) * 1024, _receiver.RequestFromPosition); // not the file's
     }
 
     [Fact(DisplayName = "after a restore, the queue's continuity resumes at the cut frame's groupSeqNo")]

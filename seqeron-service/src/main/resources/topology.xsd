@@ -41,6 +41,13 @@
         </xs:restriction>
     </xs:simpleType>
 
+    <!-- A byte count; SnapshotPolicyRegistered.bytes is an int64. -->
+    <xs:simpleType name="ByteCount">
+        <xs:restriction base="xs:long">
+            <xs:minInclusive value="0"/>
+        </xs:restriction>
+    </xs:simpleType>
+
     <!-- A groupMask bit: groupIds run 1 to MAX_GROUPS (16). -->
     <xs:simpleType name="GroupId">
         <xs:restriction base="xs:unsignedByte">
@@ -129,10 +136,12 @@
                 </xs:element>
 
                 <!-- Enables snapshot rounds (doc/snapshot.md §1). interval is in seconds of consensus
-                     time; 0 means rounds start only on clusterctl request-snapshot. -->
+                     time; 0 means rounds start only on clusterctl request-snapshot. bytes is the sequenced
+                     bytes between rounds; 0, the default, turns that trigger off. -->
                 <xs:element name="snapshots" minOccurs="0">
                     <xs:complexType>
                         <xs:attribute name="interval" type="xs:unsignedInt" use="required"/>
+                        <xs:attribute name="bytes"    type="t:ByteCount" default="0"/>
                     </xs:complexType>
                 </xs:element>
             </xs:sequence>

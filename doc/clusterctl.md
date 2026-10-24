@@ -35,6 +35,7 @@ The defaults match `SequencerServer`'s, so a default single-member cluster needs
 | `activate <gatewayId>` | yes | ask the cluster to make a gateway instance active |
 | `request-snapshot` | yes | start an application snapshot round |
 | `load-topology <file>` | yes | publish the deployment's topology document |
+| `trim-log` | no | purge this member's Raft log and snapshot recordings below its two newest restart-safe snapshots |
 | `counters` | no | list this member's operator counters |
 | `help` | no | print usage |
 | `snapshot` | — | refused: the cluster takes no Aeron snapshots (`request-snapshot` is the application kind) |
@@ -52,7 +53,7 @@ Until a topology is loaded, the sequencer refuses every frame but the `<groups>`
 condition 13), and the replayer names no default queue, so every publishing command but `load-topology`
 exits 1 at once, `start` included.
 
-It exits 0 on success; 1 if the cluster is unreachable, no leader answers, no replayer names the default
+It exits 0 on success; 1 if the cluster (for `trim-log`, the member's archive) is unreachable, no leader answers, no replayer names the default
 queue, a topology file conflicts with the log, the frame does not appear in time, or the abort fails; 2 for a
 usage error or an invalid topology file.
 
@@ -104,9 +105,10 @@ exits 1 after the timeout. The instance named opens its external connections, an
 
 ### request-snapshot
 
-Starts an application snapshot round now, rather than at the next interval. It publishes
-`SnapshotRequested`, waits for the `SnapshotStarted` the sequencer synthesizes at the next `clusterSeqNo`,
-and prints the round and that `clusterSeqNo`, which is the round's cut. A round still open is superseded.
+Starts a snapshot round now, rather than at the next interval. It publishes `SnapshotRequested`, which makes a round
+due; the leader's service then asks the cluster for a snapshot, and the command waits for the `SnapshotStarted` that
+snapshot publishes and prints the round and its `clusterSeqNo`, which is the round's cut. It is a cluster snapshot as
+well as an application round (`snapshot.md` §10).
 If the loaded topology has no `<snapshots>` element, nothing answers the request and the command exits 1
 after the timeout. What the participating sources then do is [`snapshot.md`](snapshot.md) §4.
 
@@ -121,7 +123,7 @@ Publishes the deployment's topology document (spec §6.4): an XML file validated
 | `<gateways>` (optional) | one `GatewayRegistered` per row, `remaining` counting down to 0 on the last | builds the gateway list, and after the last row designates the rank-0 instance of each gateway not designated before |
 | `<applications>` (optional) | one `ApplicationRegistered` per row | records the source's group; the `snapshot` attribute is the façades' ([`snapshot.md`](snapshot.md) §1) |
 | `<protocols>` (optional) | one `PayloadIdRegistered` per row | reads nothing; the rows label payloads for the log printer |
-| `<snapshots>` (optional) | one `SnapshotPolicyRegistered` | turns snapshot rounds on (spec §7.3) |
+| `<snapshots>` (optional) | one `SnapshotPolicyRegistered` | turns snapshot rounds on, by `interval` seconds and `bytes` sequenced (spec §7.3) |
 
 **Validation.** A published list cannot be retracted, so the whole file is validated before anything is
 published.
@@ -132,8 +134,8 @@ published.
   `name`, application `name` and `sourceId`, and `payloadId`.
 - The loader (`TopologyDocument`) checks what one row cannot express: exactly one `rank="0"` per gateway
   `sourceId`; no reserved `sourceId` (spec §5); no application `sourceId` a gateway also uses; the same
-  `snapshot` and `group` on every row of one gateway `sourceId`; and at least one row with
-  `snapshot="true"` when `<snapshots>` is present.
+  `snapshot` and `group` on every row of one gateway `sourceId`; and `snapshot="true"` on every row when
+  `<snapshots>` is present, of which there is at least one.
 - A row may carry a `description` attribute for readers of the file; it is not published.
 
 **Checks against the log.** The schema cannot see what is already loaded, and a row the sequencer refuses
@@ -179,6 +181,25 @@ document in this repository lists only what its user starts:
 | `seqeron-service/src/test/resources/topology-test-snapshot.xml` | `snapshot-test.sh`, adding the `TestApplication` replicas it starts |
 | `seqeron-examples/topology.xml` | the C++ gateway example and `cpp-client-test.sh` |
 | `seqeron-examples/topology-csharp.xml` | the C# gateway example, `csharp-client-test.sh` and `csharp-windows-test.sh` |
+
+### trim-log
+
+Purges what this member's two newest restart-safe snapshots make unneeded ([`snapshot.md`](snapshot.md) §10.7). Open
+source Aeron trims nothing, so a member's Raft log and snapshot recordings otherwise grow with uptime. It acts on this
+member alone, needs no leader, and is run on each member. It reads the member's `recording.log` and
+`restart-safe.log` from its cluster directory and purges through the member's archive, over `aeron:ipc`:
+
+1. It keeps the two newest snapshots that `restart-safe.log` names and the log from the older one. With fewer than two
+   it does nothing and exits 0.
+2. It records `trimmed` in `restart-safe.log` before it purges anything. From then on the member never starts without a
+   snapshot, since the log no longer begins at its first term.
+3. It purges every snapshot recording older than the two, the consensus module's and the service's.
+4. It purges each log recording's segments below the older snapshot's log position, at the segment boundary at or below it.
+
+It is safe to repeat: a recording already gone counts as done. The archive refuses a log purge while a replay reads
+below the position or while another delete runs; the command prints the refusal, leaves the log as it was and exits 1,
+and the next run trims it. A member that was down past the trim horizon may need log its leader has purged and is
+rebuilt from `ClusterBackup` (`snapshot.md` §10.7).
 
 ### counters
 

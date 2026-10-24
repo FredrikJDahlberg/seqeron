@@ -59,6 +59,7 @@ public sealed class Application : IDisposable
     private readonly IApplicationListener _listener;
     private readonly SnapshotTaker _snapshots;
     private readonly SnapshotFrames _snapshotFrames;
+    private readonly SnapshotSignals _snapshotSignals;
     private readonly int _sourceId;
     private readonly int _memberId;
     private readonly int _clientId;
@@ -99,6 +100,7 @@ public sealed class Application : IDisposable
                                options.RecoveryStallTimeoutMs, options.SourceId, null, options.AddressedGroups,
                                new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _sourceId);
+        _snapshotSignals = new SnapshotSignals(this);
         if (store != null)
         {
             _session.RestoreFrom(store, _snapshots);
@@ -145,6 +147,7 @@ public sealed class Application : IDisposable
             _listener.OnLeadershipChanged(transition == LeaderGate.Transition.Opened);
             work++;
         }
+        work += _snapshots.Signal(_snapshotSignals);
         if (_gate.IsOpen)
         {
             work += _snapshots.Submit(_snapshotFrames);
@@ -266,6 +269,27 @@ public sealed class Application : IDisposable
     }
 
     // What comes off the queue, and the one frame the gate is driven by.
+    // How this replica tells its node's Replayer where a round stands.
+    private sealed class SnapshotSignals : SnapshotTaker.ISignals
+    {
+        private readonly Application _app;
+
+        public SnapshotSignals(Application app)
+        {
+            _app = app;
+        }
+
+        public bool Joined(long round)
+        {
+            return _app._session.SendSnapshotJoined(_app._sourceId, round);
+        }
+
+        public bool Confirmed(long round)
+        {
+            return _app._session.SendSnapshotConfirmed(_app._sourceId, round);
+        }
+    }
+
     private sealed class SessionDispatch : Session.IDispatch
     {
         private readonly Application _app;
@@ -324,6 +348,11 @@ public sealed class Application : IDisposable
                     // Nothing else says anything to a producer nothing elects.
                     break;
             }
+        }
+
+        public void OnSnapshotRound(long round)
+        {
+            _app._snapshots.OnSnapshotRound(round);
         }
 
         // A term won by another member ends this replica's part in the round it is publishing.
