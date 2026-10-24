@@ -127,24 +127,60 @@ class QueueRelayTest {
 
     /**
      * A member purged past what the relay has published, so its first frame is beyond the next one. The relay
-     * publishes nothing from it and, with every member purged past it, keeps trying them after a pause.
+     * publishes nothing from it and leaves it; once every member is past it the history is gone.
      */
     @Test
-    @DisplayName("members purged past the last published frame are left in turn, and nothing is published from them")
-    void membersPurgedPastTheRelayAreLeftWithoutPublishing() {
+    @DisplayName("members purged past the last published frame are left in turn, and the last one ends the relay")
+    void membersPurgedPastTheRelayLeaveNothingToRelay() {
         relay.replayFrom(START, end(100), 0);
         publish(1, 10, 0);
         relay.onSourceLost(0);
 
         for (int member = 0; member < 3; member++) {
             assertEquals(end(20), relay.replayFrom(end(20), end(200), 0), "from its own start");
+            assertEquals(member < 2 ? QueueRelay.Verdict.DROP_SOURCE : QueueRelay.Verdict.HISTORY_LOST,
+                         relay.onFrame(21, 0), "member " + member);
+            relay.onSourceLost(0);
+        }
+
+        assertEquals(10, relay.lastGroupSeqNo(), "nothing was published from them");
+    }
+
+    @Test
+    @DisplayName("a member that cannot be reached between the others is still to be tried before the history is lost")
+    void anUnreachableMemberIsNotCountedAsPurged() {
+        relay.replayFrom(START, end(100), 0);
+        publish(1, 10, 0);
+        relay.onSourceLost(0);
+
+        relay.replayFrom(end(20), end(200), 0);
+        assertEquals(QueueRelay.Verdict.DROP_SOURCE, relay.onFrame(21, 0));
+        relay.onSourceLost(0);
+        relay.onSourceLost(0); // the next member did not connect
+        relay.replayFrom(end(20), end(200), 0);
+        assertEquals(QueueRelay.Verdict.DROP_SOURCE, relay.onFrame(21, 0), "one member was never examined");
+    }
+
+    @Test
+    @DisplayName("a member that holds the next frame again clears what was found of it")
+    void aMemberThatServesAgainIsNotPurgedPast() {
+        relay.replayFrom(START, end(100), 0);
+        publish(1, 10, 0);
+        relay.onSourceLost(0);
+        for (int member = 0; member < 2; member++) {
+            relay.replayFrom(end(20), end(200), 0);
             assertEquals(QueueRelay.Verdict.DROP_SOURCE, relay.onFrame(21, 0));
             relay.onSourceLost(0);
         }
 
-        assertEquals(10, relay.lastGroupSeqNo());
-        assertFalse(relay.mayAttempt(QueueRelay.RETRY_INTERVAL_MS - 1), "every member failed in a row");
-        assertTrue(relay.mayAttempt(QueueRelay.RETRY_INTERVAL_MS));
+        relay.replayFrom(START, end(200), 0); // the third restarted from the beginning
+        assertEquals(QueueRelay.Verdict.SKIP, relay.onFrame(5, 0));
+        assertEquals(QueueRelay.Verdict.PUBLISH, relay.onFrame(11, 0));
+        publish(11, 11, 0);
+        relay.onSourceLost(0);
+
+        relay.replayFrom(end(20), end(200), 0);
+        assertEquals(QueueRelay.Verdict.DROP_SOURCE, relay.onFrame(21, 0), "progress was made since the others");
     }
 
     @Test
@@ -266,5 +302,41 @@ class QueueRelayTest {
     @DisplayName("a relay needs at least one member archive")
     void needsAMember() {
         assertThrows(IllegalArgumentException.class, () -> new QueueRelay(0));
+    }
+
+    @Test
+    @DisplayName("frames recorded when the relay connected are history, and later ones are live")
+    void framesBeforeTheConnectedTipAreHistorical() {
+        relay.replayFrom(START, end(10), 0);
+        publish(1, 10, 0);
+        assertFalse(relay.isLive(), "the frame ending at the recorded position existed when the relay connected");
+        publish(11, 11, 0);
+        assertTrue(relay.isLive());
+    }
+
+    @Test
+    @DisplayName("a relay that is live stays live across a member change, and a replay from the start")
+    void liveSurvivesAMemberChange() {
+        relay.replayFrom(START, end(10), 0);
+        publish(1, 11, 0);
+        relay.onSourceLost(0);
+        relay.replayFrom(START, end(200), 0);
+        assertTrue(relay.isLive());
+        assertEquals(QueueRelay.Verdict.SKIP, relay.onFrame(5, 0));
+        publish(12, 12, 0);
+        assertTrue(relay.isLive());
+    }
+
+    @Test
+    @DisplayName("a member lost before the relay is live is read again, so its history is the next member's tip")
+    void historyIsTheNextMembersTipWhileNotLive() {
+        relay.replayFrom(START, end(10), 0);
+        publish(1, 4, 0);
+        relay.onSourceLost(0);
+        relay.replayFrom(START, end(20), 0);
+        publish(5, 20, 0);
+        assertFalse(relay.isLive(), "everything up to frame 20 existed on the member the relay reached");
+        publish(21, 21, 0);
+        assertTrue(relay.isLive());
     }
 }

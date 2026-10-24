@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Replay
 {
     /// <summary>
-    /// A round was cut on this node. Addressed to no client: every application replica on the                               stream answers it with a SnapshotJoined, and a gateway ignores it (doc/snapshot.md                               §10.8)
+    /// A round was cut on this node. Addressed to no client: every application replica and                               gateway instance on the stream answers it with a SnapshotJoined (doc/snapshot.md                               §10.8)
     /// </summary>
     public sealed partial class SnapshotRound
     {

@@ -1043,10 +1043,10 @@ encoded length is 8 + block. None has var-data or repeating groups.
 - `cutClusterSeqNo`: the `clusterSeqNo` of the snapshot cut a restore replays from, `fromPosition` then being
   only a hint at where it is; `NO_CUT` = −1 on every other request.
 - `round`: a round's number, as `SnapshotStarted.round`. `SnapshotRound` is addressed to no client: every
-  application replica on the stream answers it with a `SnapshotJoined`, a gateway ignores it, and a replica
+  application replica and gateway instance on the stream answers it with a `SnapshotJoined`, and an instance
   that takes no part in snapshots answers nothing. `SnapshotRound` is not a reply, so **R-1** and **R-4**
   do not apply to it. A replica sends `SnapshotJoined` and `SnapshotConfirmed` again until the offer lands.
-- `sourceId`: an application's `applicationSourceId`, or −1. `gatewayName`: a gateway instance's, as in
+- `sourceId`: an application's `applicationSourceId`, a gateway's `sourceId` on `SnapshotJoined` and `SnapshotConfirmed`, or −1. `gatewayName`: a gateway instance's, as in
   `GatewayRegistered`, byte 0 = `0x00` meaning absent. A client MUST NOT name both; the replayer logs a
   request that does and does not answer it (**R-6**).
 - `replaySessionId`: the Aeron replay session to attach to on stream 201, or `NO_REPLAY_NEEDED` = −1

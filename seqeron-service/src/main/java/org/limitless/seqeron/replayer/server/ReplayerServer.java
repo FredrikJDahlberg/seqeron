@@ -47,6 +47,7 @@ import org.limitless.seqeron.util.Logger;
  *   replayer.aeronDir          — the Aeron directory; default PortLayout.aeronDir(memberId)
  *   replayer.idleStrategy      — duty-cycle idle strategy: {@code backoff} (default), {@code yielding}, or
  *                                {@code busyspin}; busy-spin pays only on an isolated core
+ *   replayer.snapshotJoinMs    — how long after a cut an application or gateway has to join its round; default 10s
  *   replayer.host              — this host's name as the members reach it; default localhost
  *   replayer.baseDir           — data directory root; default {tmpdir}/seqeron-seq
  *   aeron.threading.mode       — the driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
@@ -73,6 +74,10 @@ public final class ReplayerServer {
     private static final String PROP_HOST = "replayer.host";
     private static final String PROP_BASE_DIR = "replayer.baseDir";
     private static final String PROP_GROUPS = "replayer.groups";
+    private static final String PROP_SNAPSHOT_JOIN_MS = "replayer.snapshotJoinMs";
+
+    /** Above a member's, since a host's purge cannot be undone (doc/snapshot.md §10.6). */
+    static final long DEFAULT_SNAPSHOT_JOIN_MS = 10_000;
 
     /**
      * How long shutdown waits for the duty cycle's current iteration, which never blocks on a timeout of
@@ -162,11 +167,24 @@ public final class ReplayerServer {
      * @return the running host, which the caller stops with {@link #stop()}, the driver and archive included
      */
     public static ReplayerServer launchGatewayHost(final GatewayHostConfig config, final Runnable fatalHandler) {
+        return launchGatewayHost(config, fatalHandler, null);
+    }
+
+    /**
+     * As {@link #launchGatewayHost(GatewayHostConfig, Runnable)}, with the relays reporting the snapshot markers they
+     * publish to {@code cutReports}, which the host's Replayer consumes; a test passes one to see them.
+     *
+     * @param cutReports where the relays report each marker, or {@code null} for the host's own
+     */
+    public static ReplayerServer launchGatewayHost(final GatewayHostConfig config, final Runnable fatalHandler,
+                                                   final Queue<RelayedCut> cutReports) {
         final ArchivingMediaDriver driver = launchDriver(config);
         try {
-            return new ReplayerServer(config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(),
-                                      config.host(), config.groups(), new ConcurrentLinkedQueue<>(),
-                                      config.idleStrategies(), fatalHandler, null);
+            final Queue<RelayedCut> reports = cutReports == null ? new ConcurrentLinkedQueue<>() : cutReports;
+            return new ReplayerServer(
+                config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(), config.host(), config.groups(),
+                new ConcurrentLinkedQueue<>(), reports, config.idleStrategies(), fatalHandler,
+                CutIntake.ofHost(reports, Long.getLong(PROP_SNAPSHOT_JOIN_MS, DEFAULT_SNAPSHOT_JOIN_MS)));
         } catch (final RuntimeException ex) {
             CloseHelper.quietClose(driver);
             throw ex;
@@ -199,13 +217,14 @@ public final class ReplayerServer {
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake) {
         return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, List.of(), topologyRows,
-                                  idleStrategies, fatalHandler, cutIntake);
+                                  null, idleStrategies, fatalHandler, cutIntake);
     }
 
     private ReplayerServer(final int memberId, final ArchivingMediaDriver driver, final String aeronDir,
                            final List<String> archiveEndpoints, final String host, final List<Integer> groups,
-                           final Queue<byte[]> topologyRows, final Supplier<IdleStrategy> idleStrategies,
-                           final Runnable fatalHandler, final CutIntake cutIntake) {
+                           final Queue<byte[]> topologyRows, final Queue<RelayedCut> cutReports,
+                           final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler,
+                           final CutIntake cutIntake) {
         this.memberId = memberId;
         this.driver = driver;
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
@@ -226,8 +245,8 @@ public final class ReplayerServer {
             for (final int groupId : groups) {
                 // The lowest relayed queue is the host's default queue, and it alone feeds the resolver.
                 relays.add(new AeronQueueRelay(aeron, archive, archiveEndpoints, host, memberId, groupId,
-                                               relays.isEmpty() ? topologyRows : null, idleStrategies.get(),
-                                               fatalHandler));
+                                               relays.isEmpty() ? topologyRows : null, cutReports,
+                                               idleStrategies.get(), fatalHandler));
                 relayedGroups |= 1 << (groupId - 1);
             }
         }

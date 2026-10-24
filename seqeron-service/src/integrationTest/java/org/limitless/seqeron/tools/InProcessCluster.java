@@ -11,6 +11,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReferenceArray;
@@ -23,7 +25,9 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
+import org.limitless.seqeron.replayer.server.RelayedCut;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
+import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
 import org.limitless.seqeron.sequencer.SequencerServer;
@@ -52,16 +56,20 @@ final class InProcessCluster implements AutoCloseable {
     private final AtomicReferenceArray<SequencerServer> nodes = new AtomicReferenceArray<>(MEMBERS);
     private final AtomicBoolean[] cut = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean[] cutAllButConsensus = new AtomicBoolean[MEMBERS];
+    private final AtomicBoolean[] cutArchive = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean[] muted = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean[] fatal = new AtomicBoolean[MEMBERS + 1];
     private final AtomicBoolean terminated = new AtomicBoolean();
     private ReplayerServer gatewayHost;
+    private ExpandableArrayBuffer gatewayRow;
+    private int gatewayRowLength;
 
     InProcessCluster(final Path baseDir) {
         this.baseDir = baseDir;
         for (int m = 0; m < MEMBERS; m++) {
             cut[m] = new AtomicBoolean();
             cutAllButConsensus[m] = new AtomicBoolean();
+            cutArchive[m] = new AtomicBoolean();
             muted[m] = new AtomicBoolean();
         }
         for (int m = 0; m <= MEMBERS; m++) {
@@ -109,6 +117,13 @@ final class InProcessCluster implements AutoCloseable {
                                            SystemFrame.GROUPS_REGISTERED, body, length) != Publish.Published) {
                 Tests.yield();
             }
+            if (gatewayRow != null) {
+                while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
+                                               SystemFrame.GATEWAY_REGISTERED, gatewayRow, gatewayRowLength)
+                       != Publish.Published) {
+                    Tests.yield();
+                }
+            }
             if (snapshotIntervalSeconds != NO_SNAPSHOT_POLICY) {
                 final ExpandableArrayBuffer policy = new ExpandableArrayBuffer(SnapshotPolicyRegisteredEncoder.BLOCK_LENGTH);
                 final int policyLength = new SnapshotPolicyRegisteredEncoder()
@@ -132,6 +147,26 @@ final class InProcessCluster implements AutoCloseable {
         }
     }
 
+    /**
+     * Has the next {@link #startAll} register a gateway row that takes part in snapshots, from the session that
+     * registers the groups (<b>S-9</b>). With {@code last} the row ends the topology and the cluster designates the
+     * gateway; without, the designation is withheld.
+     */
+    void withGateway(final int gatewayId, final int gatewaySourceId, final String name, final boolean last) {
+        final ExpandableArrayBuffer body = new ExpandableArrayBuffer(GatewayRegisteredEncoder.BLOCK_LENGTH);
+        gatewayRowLength = new GatewayRegisteredEncoder()
+                               .wrap(body, 0)
+                               .remaining(last ? 0 : 1)
+                               .gatewayId(gatewayId)
+                               .gatewaySourceId(gatewaySourceId)
+                               .gatewayName(name)
+                               .preferenceRank((short)0)
+                               .snapshot((short)1)
+                               .groupId((short)GROUP_ID)
+                               .encodedLength();
+        gatewayRow = body;
+    }
+
     /** Launches member {@code m} on its directories, which a previous run of it may have left. */
     void start(final int m) {
         final SequencerServer.Config config = new SequencerServer.Config(
@@ -142,8 +177,9 @@ final class InProcessCluster implements AutoCloseable {
         final AtomicBoolean isCut = cut[m];
         final AtomicBoolean isCutAllButConsensus = cutAllButConsensus[m];
         final AtomicBoolean isMuted = muted[m];
+        final AtomicBoolean isArchiveCut = cutArchive[m];
         final SequencerServer.UdpFaults udpFaults = (publication, streamId)
-            -> isCut.get() ||
+            -> isCut.get() || (isArchiveCut.get() && RELAY_STREAM_IDS.contains(streamId)) ||
             (streamId == ConsensusModule.Configuration.CONSENSUS_STREAM_ID_DEFAULT ? publication && isMuted.get()
                                                                                    : isCutAllButConsensus.get());
         final AtomicBoolean isFatal = fatal[m];
@@ -152,13 +188,24 @@ final class InProcessCluster implements AutoCloseable {
 
     /** Launches the gateway host: its own driver and archive, relaying a member's queue of each group onto its own. */
     void startGatewayHost() {
+        startGatewayHost(null);
+    }
+
+    /** As {@link #startGatewayHost()}, with the host's relays reporting the markers they publish to {@code cutReports}. */
+    void startGatewayHost(final Queue<RelayedCut> cutReports) {
         final List<String> archives = IntStream.range(0, MEMBERS)
                                           .mapToObj(m -> PortLayout.DEFAULT_HOST + ":" + PortLayout.archivePort(m))
                                           .toList();
         gatewayHost = ReplayerServer.launchGatewayHost(
             new ReplayerServer.GatewayHostConfig(GATEWAY_HOST, aeronDir(GATEWAY_HOST), baseDir.toString(), archives,
                                                  PortLayout.DEFAULT_HOST, GROUP_IDS, BackoffIdleStrategy::new),
-            () -> fatal[GATEWAY_HOST].set(true));
+            () -> fatal[GATEWAY_HOST].set(true), cutReports);
+    }
+
+    /** Stops the gateway host, whose archive and Aeron directory stay for the next {@link #startGatewayHost()}. */
+    void stopGatewayHost() {
+        gatewayHost.stop();
+        gatewayHost = null;
     }
 
     /** Stops member {@code m}, which a member stopped in-process does by closing rather than by dying. */
@@ -181,6 +228,18 @@ final class InProcessCluster implements AutoCloseable {
     /** As {@link #cut}, but member {@code m} keeps its consensus traffic: it still votes, but copies no log. */
     void cutAllButConsensus(final int m, final boolean isCut) {
         cutAllButConsensus[m].set(isCut);
+    }
+
+    /**
+     * What a member sends a gateway host's relay: the archive's responses (122) and the replay (206). The relay's
+     * requests (stream 100, which is also the cluster's log) are left, so the relay hears nothing and the cluster
+     * keeps its quorum.
+     */
+    private static final Set<Integer> RELAY_STREAM_IDS = Set.of(122, 206);
+
+    /** Drops, or stops dropping, what member {@code m} sends a gateway host's relay, and nothing else. */
+    void cutArchive(final int m, final boolean isCut) {
+        cutArchive[m].set(isCut);
     }
 
     /** Drops, or stops dropping, member {@code m}'s consensus messages to its peers, though it still hears theirs. */

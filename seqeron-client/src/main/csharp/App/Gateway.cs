@@ -86,6 +86,7 @@ public sealed class Gateway : IDisposable
     private Counter _connectionsCounter;
     private Counter _snapshotRoundCounter;
     private readonly int _sourceId;
+    private readonly SnapshotSignals _snapshotSignals;
 
     // The highest connectionId this logical gateway's history holds; the resume point for §7's row.
     private int _highestConnectionId = NoConnection;
@@ -124,6 +125,7 @@ public sealed class Gateway : IDisposable
                                options.RecoveryStallTimeoutMs, ReplayProtocol.NoSourceId, options.GatewayName,
                                options.AddressedGroups, new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _lifecycle.GatewaySourceId);
+        _snapshotSignals = new SnapshotSignals(this);
         if (store != null)
         {
             _session.RestoreFrom(store, new Restore(this));
@@ -162,6 +164,7 @@ public sealed class Gateway : IDisposable
         }
         work += DrainLifecycle();
         work += _session.IsCaughtUp ? _lifecycle.Advance() : 0;
+        work += _snapshots.Signal(_snapshotSignals);
         work += _snapshots.Submit(_snapshotFrames);
         return work;
     }
@@ -457,6 +460,27 @@ public sealed class Gateway : IDisposable
     }
 
     // What comes off the queue, split into what the election reads and what the consumer does.
+    // How this instance tells its node's Replayer where a round stands.
+    private sealed class SnapshotSignals : SnapshotTaker.ISignals
+    {
+        private readonly Gateway _gateway;
+
+        public SnapshotSignals(Gateway gateway)
+        {
+            _gateway = gateway;
+        }
+
+        public bool Joined(long round)
+        {
+            return _gateway._session.SendSnapshotJoined(_gateway._sourceId, round);
+        }
+
+        public bool Confirmed(long round)
+        {
+            return _gateway._session.SendSnapshotConfirmed(_gateway._sourceId, round);
+        }
+    }
+
     private sealed class SessionDispatch : Session.IDispatch
     {
         private readonly Gateway _gateway;
@@ -552,7 +576,7 @@ public sealed class Gateway : IDisposable
 
         public void OnSnapshotRound(long round)
         {
-            // A node cannot see a gateway's instances, so it expects no answer from one (doc/snapshot.md §10.8).
+            _gateway._snapshots.OnSnapshotRound(round);
         }
 
         public void OnPayload(Payload payload)

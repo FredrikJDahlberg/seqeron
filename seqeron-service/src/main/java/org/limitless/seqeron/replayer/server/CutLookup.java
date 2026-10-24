@@ -52,6 +52,17 @@ final class CutLookup {
     }
 
     /**
+     * Where a cut was kept.
+     * @param recordingId     the recording
+     * @param cutClusterSeqNo the cut
+     * @return where its frame starts in that recording, or -1 if it was not kept
+     */
+    long kept(final long recordingId, final long cutClusterSeqNo) {
+        final Long2LongHashMap cuts = kept.get(recordingId);
+        return cuts == null ? MISSING : cuts.get(cutClusterSeqNo);
+    }
+
+    /**
      * Forgets the cuts of a recording that lie below its new start, which a purge moved.
      * @param recordingId the recording
      * @param startPosition where it starts now

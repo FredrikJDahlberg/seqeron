@@ -94,12 +94,15 @@ public final class ReplayerService {
     private final ReplaySlotAllocator replaySlots = new ReplaySlotAllocator(MAX_CONCURRENT_REPLAYS);
     private final CutLookup cutLookup = new CutLookup();
 
-    /** The cuts to track, or null where there are none to: a gateway host. */
+    /** The cuts to track, or null where there are none to. */
     private final CutIntake cutIntake;
     private final RestartSafety restartSafety;
 
     /** The cut handed over last, which is the round {@link #restartSafety} is tracking. */
     private CutHandover inFlightCut;
+
+    /** On a gateway host, the newest {@code clusterSeqNo} whose round a relay's live report opened. */
+    private long openedCut = 0;
 
     /** Per queue, slot groupId − 1: the position its recording may be purged below, or -1 once that is done. */
     private final long[] purgeFloors = new long[FrameLayer.MAX_GROUPS];
@@ -276,9 +279,10 @@ public final class ReplayerService {
     }
 
     /**
-     * Takes the cuts the service has handed over since the last cycle: each queue keeps where its marker was recorded,
-     * every application replica is told of the round, and a cut that every replica that joined has confirmed is written
-     * to the member's log as safe to restart from (doc/snapshot.md §10.8).
+     * Takes the cuts the service has handed over, or the relays have reported, since the last cycle: each queue keeps
+     * where its marker was recorded, every application replica and gateway instance is told of the round, and a cut
+     * that every one that joined has confirmed is written to the member's log as safe to restart from
+     * (doc/snapshot.md §10.8).
      */
     private int trackCuts() {
         int work = 0;
@@ -286,34 +290,84 @@ public final class ReplayerService {
         while ((cut = cutIntake.cuts().poll()) != null) {
             for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
                 if (cut.markerPositions()[groupId - 1] >= 0 && resolver.serves(groupId)) {
-                    try {
-                        keepCut(groupId, cut.clusterSeqNo(), cut.markerPositions()[groupId - 1]);
-                    } catch (final RuntimeException ex) {
-                        onArchiveError("listing the queue recordings to keep a cut", ex); // it is found by reading
-                    }
+                    keepCutOf(groupId, cut.clusterSeqNo(), cut.markerPositions()[groupId - 1]);
                 }
             }
-            inFlightCut = cut;
-            restartSafety.onCut(cut.round(), cut.logPosition(), replayer.epochMillis());
-            snapshotRoundEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
-                .round(cut.round())
-                .clusterSeqNo(cut.clusterSeqNo());
-            offerControl(MessageHeaderEncoder.ENCODED_LENGTH + snapshotRoundEncoder.encodedLength());
+            openRound(cut);
             ++work;
         }
+        work += ready ? trackRelayedCuts() : 0;
         final long safe = restartSafety.poll(replayer.epochMillis());
         if (safe != RestartSafety.NO_POSITION) {
-            cutIntake.log().appendSafe(safe);
+            if (cutIntake.log() != null) {
+                cutIntake.log().appendSafe(safe);
+            }
             if (inFlightCut != null && inFlightCut.logPosition() == safe) {
-                for (int slot = 0; slot < FrameLayer.MAX_GROUPS; slot++) {
-                    purgeFloors[slot] = Math.max(purgeFloors[slot], inFlightCut.markerPositions()[slot]);
+                for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+                    final int slot = groupId - 1;
+                    purgeFloors[slot] = Math.max(purgeFloors[slot], keptCut(groupId, inFlightCut.clusterSeqNo()));
                 }
             }
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                        "the snapshot at log position %d may be restarted from", safe);
+                        cutIntake.log() != null ? "the snapshot at log position %d may be restarted from"
+                                                : "the snapshot at cut %d may be restarted from",
+                        safe);
             ++work;
         }
         return work;
+    }
+
+    /**
+     * Takes the markers a gateway host's relays have published: each queue keeps its own, and the first live report of
+     * a cut opens its round. Every relay publishes its copy of one marker at its own time, so the reports of one cut
+     * arrive apart, and a historical one, from before the relay was caught up, opens none.
+     */
+    private int trackRelayedCuts() {
+        int work = 0;
+        RelayedCut report;
+        while ((report = cutIntake.relayed().poll()) != null) {
+            keepCutOf(report.groupId(), report.clusterSeqNo(), report.position());
+            if (report.live() && report.clusterSeqNo() > openedCut) {
+                openedCut = report.clusterSeqNo();
+                // A host has no Raft log position: the cut is unique and ascends, which is all RestartSafety asks.
+                openRound(new CutHandover(report.round(), report.clusterSeqNo(), report.clusterSeqNo(),
+                                          new long[FrameLayer.MAX_GROUPS]));
+                ++work;
+            }
+        }
+        return work;
+    }
+
+    private void keepCutOf(final int groupId, final long clusterSeqNo, final long position) {
+        try {
+            keepCut(groupId, clusterSeqNo, position);
+        } catch (final RuntimeException ex) {
+            onArchiveError("listing the queue recordings to keep a cut", ex); // it is found by reading
+        }
+    }
+
+    /** Starts tracking a round and tells the applications and gateways of it. */
+    private void openRound(final CutHandover cut) {
+        inFlightCut = cut;
+        restartSafety.onCut(cut.round(), cut.logPosition(), replayer.epochMillis());
+        snapshotRoundEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
+            .round(cut.round())
+            .clusterSeqNo(cut.clusterSeqNo());
+        offerControl(MessageHeaderEncoder.ENCODED_LENGTH + snapshotRoundEncoder.encodedLength());
+    }
+
+    /** Where a queue kept a cut, or -1 if it has not: the queue is not served, or its marker was not reported. */
+    private long keptCut(final int groupId, final long clusterSeqNo) {
+        if (!resolver.serves(groupId)) {
+            return NULL_VALUE;
+        }
+        try {
+            final Replayer.RecordingSpan active = findActiveRecording(groupId);
+            return active == null ? NULL_VALUE : cutLookup.kept(active.recordingId(), clusterSeqNo);
+        } catch (final RuntimeException ex) {
+            onArchiveError("listing the queue recordings to purge below a cut", ex);
+            return NULL_VALUE;
+        }
     }
 
     /**
@@ -424,7 +478,10 @@ public final class ReplayerService {
             snapshotJoinedDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
                                        inHeaderDecoder.blockLength(), inHeaderDecoder.version());
             if (restartSafety != null) {
-                restartSafety.onJoined(snapshotJoinedDecoder.round(), snapshotJoinedDecoder.sourceId());
+                if (restartSafety.onJoined(snapshotJoinedDecoder.round(), snapshotJoinedDecoder.sourceId(),
+                                           snapshotJoinedDecoder.clientId())) {
+                    logSharedSource(snapshotJoinedDecoder.round(), snapshotJoinedDecoder.sourceId());
+                }
             }
             return;
         }
@@ -432,7 +489,10 @@ public final class ReplayerService {
             snapshotConfirmedDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
                                           inHeaderDecoder.blockLength(), inHeaderDecoder.version());
             if (restartSafety != null) {
-                restartSafety.onConfirmed(snapshotConfirmedDecoder.round(), snapshotConfirmedDecoder.sourceId());
+                if (restartSafety.onConfirmed(snapshotConfirmedDecoder.round(), snapshotConfirmedDecoder.sourceId(),
+                                              snapshotConfirmedDecoder.clientId())) {
+                    logSharedSource(snapshotConfirmedDecoder.round(), snapshotConfirmedDecoder.sourceId());
+                }
             }
             return;
         }
@@ -476,6 +536,12 @@ public final class ReplayerService {
      * Answers which queue an instance reads (R-6), or {@code ReplayPending} until its row is on the log. Holds no
      * slot; a request naming both a gateway and an application is logged and not answered.
      */
+    private void logSharedSource(final long round, final int sourceId) {
+        Logger.info(Logger.CoreComponent.ReplayerService, memberId,
+                    "round %d: source %d joined under a second client, so the round stays unsafe; a gateway's "
+                    + "instances must not share a node", round, sourceId);
+    }
+
     private void onQueueRequest() {
         final long clientId = queueRequestDecoder.clientId();
         final long requestId = queueRequestDecoder.requestId();

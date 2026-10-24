@@ -1,5 +1,7 @@
 package org.limitless.seqeron.replayer.server;
 
+import java.util.Arrays;
+
 /**
  * What a gateway host's relay of one group's queue decides, free of Aeron: which member's recording of that
  * queue it reads, where a replay of it starts, which frames it republishes onto the local queue, and when it
@@ -11,7 +13,8 @@ package org.limitless.seqeron.replayer.server;
  * member's positions follow from the frames alone, at equal term length and MTU, so a replay on the next member
  * normally resumes at the position the last one reached. Nothing depends on that: a frame past the
  * next one means the position did not line up there, and the replay starts again from that
- * recording's start, skipping what is already published.
+ * recording's start, skipping what is already published. A member that has purged past the next frame cannot serve it,
+ * and when every member has, the history is gone.
  *
  * <p>Single-threaded: the relay's duty cycle.
  */
@@ -25,7 +28,9 @@ final class QueueRelay {
         /** A hole: replay this member's recording again from its start. */
         REPLAY_FROM_START,
         /** A hole in a replay that began at its recording's start: that recording cannot serve. */
-        DROP_SOURCE
+        DROP_SOURCE,
+        /** Every member's recording starts past the next frame: the history this relay needs is gone. */
+        HISTORY_LOST
     }
 
     /** {@link #replayFrom}'s answer for a member whose recording has not reached this relay yet. */
@@ -50,6 +55,12 @@ final class QueueRelay {
     private long resumePosition = NOT_SUITABLE;
     private boolean fromStart;
     private boolean forceStart;
+    private int framesInReplay;
+    /** Per member, whether its recording was last found to start past the next frame. */
+    private final boolean[] startsPast;
+
+    private long liveTarget = NOT_SUITABLE;
+    private boolean live;
 
     private boolean backPressured;
     private long backPressuredSinceMs;
@@ -65,6 +76,7 @@ final class QueueRelay {
             throw new IllegalArgumentException("a relay needs at least one member archive");
         }
         this.sourceCount = sourceCount;
+        this.startsPast = new boolean[sourceCount];
     }
 
     /** Which member archive to read next, as an index into the configured list. */
@@ -93,6 +105,11 @@ final class QueueRelay {
      */
     long replayFrom(final long startPosition, final long recordedPosition, final long nowMs) {
         lastFrameMs = nowMs;
+        startsPast[sourceIndex] = false;
+        framesInReplay = 0;
+        if (!live && liveTarget == NOT_SUITABLE) {
+            liveTarget = recordedPosition;
+        }
         if (forceStart || resumePosition < startPosition) {
             forceStart = false;
             fromStart = true;
@@ -113,12 +130,18 @@ final class QueueRelay {
      */
     Verdict onFrame(final long groupSeqNo, final long nowMs) {
         lastFrameMs = nowMs;
+        final boolean first = framesInReplay++ == 0;
         if (groupSeqNo <= lastGroupSeqNo) {
             failedAttempts = 0;
+            Arrays.fill(startsPast, false);
             return Verdict.SKIP;
         }
         if (groupSeqNo == lastGroupSeqNo + 1 || lastGroupSeqNo == 0 && fromStart) {
             return Verdict.PUBLISH;
+        }
+        if (first && fromStart) {
+            startsPast[sourceIndex] = true;
+            return isHistoryLost() ? Verdict.HISTORY_LOST : Verdict.DROP_SOURCE;
         }
         return onHole();
     }
@@ -136,7 +159,9 @@ final class QueueRelay {
      */
     void onPublished(final long groupSeqNo, final long sourcePosition) {
         lastGroupSeqNo = groupSeqNo;
+        Arrays.fill(startsPast, false);
         resumePosition = sourcePosition;
+        live |= sourcePosition > liveTarget;
         failedAttempts = 0;
         backPressured = false;
     }
@@ -159,6 +184,15 @@ final class QueueRelay {
         return nowMs - backPressuredSinceMs >= RECORDING_STALL_FATAL_MS;
     }
 
+    /**
+     * Whether the relay has caught up with its member: it has published a frame recorded after the member's
+     * recording was last read at a connect, while it was not yet live. Once live it stays live across member changes,
+     * so a marker published before it is live is history that existed when the relay connected.
+     */
+    boolean isLive() {
+        return live;
+    }
+
     /** Whether the member has sent nothing for {@link #SOURCE_TIMEOUT_MS}. */
     boolean isSourceStalled(final long nowMs) {
         return nowMs - lastFrameMs >= SOURCE_TIMEOUT_MS;
@@ -172,12 +206,22 @@ final class QueueRelay {
      */
     void onSourceLost(final long nowMs) {
         sourceIndex = (sourceIndex + 1) % sourceCount;
+        liveTarget = NOT_SUITABLE;
         forceStart = false;
         backPressured = false;
         if (++failedAttempts >= sourceCount) {
             failedAttempts = 0;
             nextAttemptMs = nowMs + RETRY_INTERVAL_MS;
         }
+    }
+
+    private boolean isHistoryLost() {
+        for (final boolean past : startsPast) {
+            if (!past) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private Verdict onHole() {
