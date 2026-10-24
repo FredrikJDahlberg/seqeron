@@ -59,6 +59,9 @@ public sealed class SnapshotStore
     // The round whose file was last completed, which Confirm may name; -1 for none.
     private long _committedRound = -1;
 
+    // The newest round whose file is durable under its name, which the writer sets; -1 for none.
+    private long _durableRound = -1;
+
     // What runs off the caller's thread, one step after another: confirming files and deleting older ones.
     private Task _writes = Task.CompletedTask;
 
@@ -190,7 +193,7 @@ public sealed class SnapshotStore
 
     /// <summary>The log confirms <paramref name="round"/>: off this thread, its file is made durable under its name,
     /// and every older file but the newest confirmed one, and any write of one a crash left behind, is deleted.
-    /// Nothing if its file was not completed.</summary>
+    /// Nothing if its file was not completed. <see cref="DurableRound"/> names it once it is durable.</summary>
     /// <param name="round">the round last committed</param>
     public void Confirm(long round)
     {
@@ -208,6 +211,9 @@ public sealed class SnapshotStore
     {
         _writes.Wait();
     }
+
+    /// <summary>The newest round confirmed whose file is durable under its name; -1 for none. Any thread.</summary>
+    public long DurableRound => Volatile.Read(ref _durableRound);
 
     /// <summary>The newest round below <paramref name="belowRound"/> with a confirmed file, or -1.</summary>
     /// <param name="belowRound"><see cref="long.MaxValue"/> for the newest of all</param>
@@ -315,6 +321,7 @@ public sealed class SnapshotStore
                        "cannot make round {0}'s snapshot durable in {1}: {2}", round, _directory, ex.Message);
             return;
         }
+        Volatile.Write(ref _durableRound, round);
         long kept = LatestRound(round);
         try
         {

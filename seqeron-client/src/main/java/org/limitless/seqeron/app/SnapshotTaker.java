@@ -41,11 +41,11 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     private final CRC32C crc = new CRC32C();
     private boolean participating;
     private long round = -1;
-    /** The last round this instance confirmed; 0 for none yet. */
+    /** The last round this instance confirmed whose file is durable; 0 for none yet. */
     private long confirmedRound;
     /** The round to answer a {@code SnapshotRound} for, or 0; only the latest is kept. */
     private long pendingJoined;
-    /** The round whose file is confirmed and not yet told to the Replayer, or 0. */
+    /** The round confirmed and not yet told to the Replayer, or 0; told once its file is durable. */
     private long pendingConfirmed;
     private boolean serialized;
     private boolean publishing;
@@ -80,7 +80,7 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
         return participating;
     }
 
-    /** The last round this instance confirmed, its snapshot counter's value; 0 for none yet. */
+    /** The last round this instance confirmed whose file is durable, its snapshot counter's value; 0 for none yet. */
     long confirmedRound() {
         return confirmedRound;
     }
@@ -143,7 +143,6 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
             return false;
         }
         store.confirm(round);
-        confirmedRound = round;
         pendingConfirmed = round;
         return true;
     }
@@ -156,7 +155,8 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     }
 
     /**
-     * Places what the Replayer is still owed, a declined offer being placed again on the next call.
+     * Places what the Replayer is still owed, a declined offer being placed again on the next call. A confirmation
+     * waits until its file is durable, and one whose file never becomes durable is never placed.
      * @return signals placed
      */
     int signal(final Signals signals) {
@@ -165,9 +165,12 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
             pendingJoined = 0;
             placed++;
         }
-        if (pendingConfirmed != 0 && signals.confirmed(pendingConfirmed)) {
-            pendingConfirmed = 0;
-            placed++;
+        if (pendingConfirmed != 0 && store.durableRound() >= pendingConfirmed) {
+            confirmedRound = pendingConfirmed;
+            if (signals.confirmed(pendingConfirmed)) {
+                pendingConfirmed = 0;
+                placed++;
+            }
         }
         return placed;
     }

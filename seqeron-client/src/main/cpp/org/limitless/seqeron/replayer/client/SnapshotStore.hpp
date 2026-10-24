@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <filesystem>
@@ -302,7 +303,7 @@ class SnapshotStore
     /**
      * The log confirms a round: off this thread, its file is made durable under its name, and every older file but the
      * newest confirmed one, and any write of one a crash left behind, is deleted. Nothing if its file was not
-     * completed.
+     * completed. durableRound names it once it is durable.
      *
      * @param round the round last committed
      */
@@ -323,6 +324,12 @@ class SnapshotStore
         {
             m_writes.wait();
         }
+    }
+
+    // The newest round confirmed whose file is durable under its name; -1 for none. Any thread.
+    [[nodiscard]] std::int64_t durableRound() const
+    {
+        return m_durableRound.load(std::memory_order_acquire);
     }
 
     /**
@@ -424,6 +431,7 @@ class SnapshotStore
                                m_directory.c_str(), error.message().c_str());
             return;
         }
+        m_durableRound.store(round, std::memory_order_release);
         const std::int64_t kept = latestRound(round);
         for (const auto& entry : std::filesystem::directory_iterator(m_directory, error))
         {
@@ -500,6 +508,8 @@ class SnapshotStore
     bool m_writing = false; // m_out holds the round's .tmp file
     // The round whose file was last completed, which confirm may name; -1 for none.
     std::int64_t m_committedRound = -1;
+    // The newest round whose file is durable under its name, which the writer sets; -1 for none.
+    std::atomic<std::int64_t> m_durableRound = -1;
     // What runs off the caller's thread, one step after another. Last, so its destructor waits before the rest go.
     std::future<void> m_writes;
 };
