@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A front-door application whose state is restored from a snapshot. -->
+  <PropertyGroup>
+    <RootNamespace>Example</RootNamespace>
+    <SeqeronFacadeOnly>true</SeqeronFacadeOnly>
+  </PropertyGroup>
+</Project>

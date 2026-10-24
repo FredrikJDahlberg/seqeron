@@ -181,6 +181,23 @@ public class SnapshotStoreTest : IDisposable
         Assert.True(File.Exists(Path.Combine(_directory.Path, "2.tmp")));
     }
 
+    [Fact(DisplayName =
+              "a round whose file cannot be created confirms nothing, and the next round is written as usual")]
+    public void UncreatableRoundConfirmsNothing()
+    {
+        var store = new SnapshotStore(_directory.Path);
+        Write(store, 1, Records());
+        Directory.CreateDirectory(Path.Combine(_directory.Path, "2.tmp", "occupied")); // the file cannot be created
+
+        Write(store, 2, Records());
+        Assert.Equal(1, store.DurableRound);
+        Assert.Equal(1, store.LatestRound(long.MaxValue));
+
+        Write(store, 3, Records());
+        Assert.Equal(3, store.DurableRound);
+        Assert.Equal(new List<int> { HeaderLength, 1000, 1302, 698, SnapshotStore.Reader.End }, ReadAll(store.Open(3)));
+    }
+
     [Fact(DisplayName = "a record of the most bytes its length prefix can say reads back whole")]
     public void LargestRecordReadsBack()
     {

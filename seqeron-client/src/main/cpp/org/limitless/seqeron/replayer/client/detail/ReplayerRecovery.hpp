@@ -137,12 +137,12 @@ class ReplayerRecovery
     // How long recovery may run without dispatching a single frame before it is reported as unconvergent.
     static constexpr std::int64_t RECOVERY_PROGRESS_TIMEOUT_MS = 30'000;
 
+  public:
     // Caps on frames retained ahead of a hole (see retainFrame) — enough to cover a walk over a normal
     // recording, not a whole log; past either bound recovery resumes at the last dispatched frame.
     static constexpr std::size_t MAX_RETAINED_FRAMES = 65536;
     static constexpr std::size_t MAX_RETAINED_BYTES = 16UL * 1024 * 1024;
 
-  public:
     // Records one duty cycle restores at most, so a large snapshot does not stall the session.
     static constexpr int MAX_RESTORE_RECORDS_PER_CYCLE = 1024;
 
@@ -519,6 +519,12 @@ class ReplayerRecovery
     std::int64_t requestFromPosition() const
     {
         return m_reqFromPosition;
+    }
+
+    /** Frames held ahead of the current hole. */
+    std::size_t retainedFrameCount() const
+    {
+        return m_retainFrameCount;
     }
 
   private:

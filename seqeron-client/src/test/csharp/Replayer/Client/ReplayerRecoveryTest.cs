@@ -753,6 +753,45 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.IsCaughtUp, "an overflow would have forced a re-walk");
     }
 
+    [Fact(DisplayName = "frames ahead of the hole are retained up to the frame cap, and the next is dropped")]
+    public void FramesAheadOfTheHoleAreRetainedUpToTheFrameCap()
+    {
+        DeliverQueue(1);
+        CaptureLogs();
+        long last = 2 + ReplayerRecovery.MaxRetainedFrames; // 2 is the hole
+        for (long clusterSeqNo = 3; clusterSeqNo <= last; clusterSeqNo++)
+        {
+            DeliverQueue(clusterSeqNo);
+        }
+        Assert.Equal(ReplayerRecovery.MaxRetainedFrames, _receiver.RetainedFrameCount);
+        Assert.Equal(0, OverflowReports());
+
+        DeliverQueue(last + 1);
+
+        Assert.True(_receiver.RetainedFrameCount == ReplayerRecovery.MaxRetainedFrames, "dropped, not retained");
+        Assert.Equal(1, OverflowReports());
+    }
+
+    [Fact(DisplayName = "frames of the largest payload are retained up to the byte cap, and the next is dropped")]
+    public void FramesAheadOfTheHoleAreRetainedUpToTheByteCap()
+    {
+        DeliverQueue(1);
+        CaptureLogs();
+        int fit = (int)(ReplayerRecovery.MaxRetainedBytes / LargestFrameLength);
+        long last = 2 + fit; // 2 is the hole
+        for (long clusterSeqNo = 3; clusterSeqNo <= last; clusterSeqNo++)
+        {
+            DeliverQueuePadded(clusterSeqNo, LargestFrameLength);
+        }
+        Assert.Equal(fit, _receiver.RetainedFrameCount);
+        Assert.Equal(0, OverflowReports());
+
+        DeliverQueuePadded(last + 1, LargestFrameLength);
+
+        Assert.True(_receiver.RetainedFrameCount == fit, "dropped, not retained");
+        Assert.Equal(1, OverflowReports());
+    }
+
     // The ranges legitimately overlap, since a re-walk restarts from the start while the queue keeps arriving.
     [Fact(DisplayName = "retained frames the replay has meanwhile covered are not redelivered")]
     public void RetainedFramesAlreadyCoveredByTheReplayAreNotRedelivered()
@@ -1287,6 +1326,26 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverReplayFrame(Frames.OnQueue(RestoreFrames.Started(Cut, 2), 4), 4);
         DeliverOnQueue(Cut + 3, 5, true);
         Assert.Equal(new List<long> { Cut + 3 }, _dispatched); // groupSeqNo 5 follows the cut's 4
+    }
+
+    [Fact(DisplayName = "after a restore, the leadership handler is told the snapshot's leader at the cut")]
+    public void AfterARestoreTheLeadershipHandlerIsToldTheSnapshotsLeader()
+    {
+        var changes = new List<string>();
+        _receiver = new ReplayerRecovery(_actions, e => _dispatched.Add(e.ClusterSeqNo),
+                                         (leaderMemberId, leadershipTermId, clusterSeqNo) =>
+                                             changes.Add($"{leaderMemberId} {leadershipTermId} {clusterSeqNo}"),
+                                         null);
+        WriteSnapshot(2);
+        StartRestoring();
+        ReplayTheCut();
+        _receiver.DoTimers(false);
+        Assert.True(changes.Count == 0, "not before the records are restored");
+
+        _receiver.DoTimers(false);
+
+        Assert.Equal(new List<string> { $"2 4 {Cut}" }, changes); // the header's leader and term
+        Assert.True(_dispatched.Count == 0, "it reaches the handler alone");
     }
 
     [Fact(DisplayName = "a replay of the cut that stops advancing is requested again at the cut")]

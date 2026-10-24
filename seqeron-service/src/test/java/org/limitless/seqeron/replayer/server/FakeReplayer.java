@@ -54,7 +54,7 @@ final class FakeReplayer implements Replayer {
 
     private final Map<Long, List<Frame>> frames = new HashMap<>();
     private final List<Long> scans = new ArrayList<>();
-    private boolean stallScans;
+    private int scansToStall;
 
     private final List<StartedReplay> startedReplays = new ArrayList<>();
     private final List<Long> stoppedReplays = new ArrayList<>();
@@ -67,6 +67,9 @@ final class FakeReplayer implements Replayer {
     private int listings;
     private int replayAttempts;
     private boolean refusePurges;
+    private RuntimeException purgeFailure;
+    private RuntimeException backlogFailure;
+    private RuntimeException stopFailure;
     private final List<long[]> purgeAttempts = new ArrayList<>();
 
     private final Deque<byte[]> requests = new ArrayDeque<>();
@@ -104,6 +107,11 @@ final class FakeReplayer implements Replayer {
         }
     }
 
+    /** Moves an active recording's tip, as the queue's frames reaching the archive do. */
+    void recordTo(final long recordingId, final long tip) {
+        recordingPositions.put(recordingId, tip);
+    }
+
     /**
      * Scripts the frames {@code scanQueueRecording} reads from a recording, in order.
      * @param positionsAndClusterSeqNos alternating frame position and {@code clusterSeqNo}
@@ -122,7 +130,12 @@ final class FakeReplayer implements Replayer {
 
     /** Makes every subsequent scan stall, as an archive that stops delivering does. */
     void stallScans() {
-        stallScans = true;
+        scansToStall = Integer.MAX_VALUE;
+    }
+
+    /** Makes only the next scan stall. */
+    void stallNextScan() {
+        scansToStall = 1;
     }
 
     /** Marks a recording stopped, as an operator repairing an unclean shutdown's leftover does. */
@@ -174,6 +187,21 @@ final class FakeReplayer implements Replayer {
     /** Makes the archive refuse every purge, as one does while a replay reads below it. */
     void refusePurges(final boolean refuse) {
         refusePurges = refuse;
+    }
+
+    /** Makes every subsequent purge throw, as an archive that fails one rather than refusing it does. */
+    void failPurges(final RuntimeException failure) {
+        purgeFailure = failure;
+    }
+
+    /** Makes every subsequent {@code queueBacklog} throw. */
+    void failQueueBacklog(final RuntimeException failure) {
+        backlogFailure = failure;
+    }
+
+    /** Makes every subsequent {@code stopReplay} throw, as an archive whose replay already ended may. */
+    void failStops(final RuntimeException failure) {
+        stopFailure = failure;
     }
 
     /** Each {@code purgeSegments} the service asked for, as {recordingId, newStartPosition}. */
@@ -281,7 +309,8 @@ final class FakeReplayer implements Replayer {
                                       final FrameVisitor visitor) {
         scans.add(fromPosition);
         throwIfArchiveDown();
-        if (stallScans) {
+        if (scansToStall > 0) {
+            --scansToStall;
             return ScanEnd.STALLED;
         }
         final List<Frame> recorded = frames.getOrDefault(recordingId, List.of());
@@ -314,6 +343,9 @@ final class FakeReplayer implements Replayer {
 
     @Override
     public Replayer.QueueBacklog queueBacklog(final int groupId, final Replayer.RecordingSpan span) {
+        if (backlogFailure != null) {
+            throw backlogFailure;
+        }
         return queueBacklogs.get(groupId);
     }
 
@@ -332,6 +364,9 @@ final class FakeReplayer implements Replayer {
     @Override
     public boolean purgeSegments(final long recordingId, final long newStartPosition) {
         purgeAttempts.add(new long[] {recordingId, newStartPosition});
+        if (purgeFailure != null) {
+            throw purgeFailure;
+        }
         if (refusePurges) {
             return false;
         }
@@ -348,6 +383,9 @@ final class FakeReplayer implements Replayer {
 
     @Override
     public void stopReplay(final long replaySessionId) {
+        if (stopFailure != null) {
+            throw stopFailure;
+        }
         stoppedReplays.add(replaySessionId);
     }
 

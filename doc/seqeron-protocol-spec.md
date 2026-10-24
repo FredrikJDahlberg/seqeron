@@ -256,6 +256,7 @@ producer takes its id by adding a row.
 | 16 | `TestApplication` replicas (end-to-end tests) | application |
 | 17 | `seqeron-examples` `ColocatedApp` (C#) | application |
 | 18 | `seqeron-examples` C# gateway pair | gateway |
+| 19 | `seqeron-examples` `SnapshotApp` (C#) | application |
 
 Gateways are listed by `GatewayRegistered.gatewaySourceId`, applications by
 `ApplicationRegistered.applicationSourceId`. **S-6** checks gateways only. No list row may claim

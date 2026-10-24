@@ -2,12 +2,14 @@ package org.limitless.seqeron.tools;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
 import io.aeron.test.SystemTestWatcher;
 import io.aeron.test.Tests;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -15,6 +17,9 @@ import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 import org.limitless.seqeron.replayer.server.RelayedCut;
 import io.aeron.Aeron;
 import org.agrona.DirectBuffer;
@@ -311,6 +316,67 @@ class ClusterSnapshotTest {
 
     @Test
     @InterruptAfter(180)
+    void aGatewayWithNoSnapshotFileOnAMemberRestartedAtACutFailsFromItsDoWork() throws Exception {
+        gatewayRow = true;
+        start("200", 1);
+        final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
+        awaitSafe(member);
+        cluster.stop(member);
+        cluster.start(member);
+        while (QueueFrames.recordings(cluster.aeronDir(member), InProcessCluster.GROUP_ID).stream()
+                   .noneMatch(span -> span.active() && span.startPosition() > 0)) {
+            Tests.sleep(100);
+        }
+
+        // Its walk from the recording's start opens on the cut's marker, not on groupSeqNo 1.
+        try (GatewayInstance gateway = new GatewayInstance(member)) {
+            final RuntimeException failure = gateway.awaitFailure();
+            assertTrue(failure.getMessage().contains("expected 1"), failure.getMessage());
+            assertFalse(gateway.caughtUp.get(), "it caught up on a queue it does not hold from its start");
+        }
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+    }
+
+    @Test
+    @InterruptAfter(180)
+    void aGatewayRestartedOnItsMemberRestoresItsConfirmedSnapshotAndCatchesUp() throws Exception {
+        gatewayRow = true;
+        start("200", 1);
+        final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
+        try (GatewayInstance gateway = new GatewayInstance(member)) {
+            gateway.awaitCaughtUp();
+            for (int i = 0; i < 600 && confirmedSnapshots() == 0; i++) {
+                Tests.sleep(50);
+            }
+            assertTrue(confirmedSnapshots() > 0, "the gateway confirmed no snapshot in 30 s");
+        }
+        Tests.sleep(3_000); // the queue runs on past the cut, so its replay carries more than one frame
+
+        // The replay of the cut is let go once its first frame shows the cut, and the frames after it in that poll
+        // must not reach recovery, which has dispatched nothing yet and would take the next for a first frame.
+        // Here the image the close closes stops the poll; where a close is asynchronous, as in Aeron's C client,
+        // the adapter's own check drops them.
+        try (GatewayInstance restarted = new GatewayInstance(member)) {
+            restarted.awaitCaughtUp();
+            assertNull(restarted.failure.get(), "doWork threw");
+            assertEquals(1, restarted.restored.get(), "it restored its snapshot's one record");
+        }
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+    }
+
+    /** How many snapshot files a gateway instance has confirmed. */
+    private long confirmedSnapshots() throws IOException {
+        final Path directory = baseDir.resolve("gateway-snapshots");
+        if (!Files.isDirectory(directory)) {
+            return 0;
+        }
+        try (Stream<Path> files = Files.list(directory)) {
+            return files.filter(file -> file.getFileName().toString().endsWith(".snapshot")).count();
+        }
+    }
+
+    @Test
+    @InterruptAfter(180)
     void aGatewayHostRelayReportsEachMarkerAtItsStartInTheHostsOwnRecording() throws Exception {
         start("3600000", 1);
         // The host's Replayer consumes the reports; this one only records what it takes.
@@ -532,13 +598,18 @@ class ClusterSnapshotTest {
 
     private static final int GATEWAY_SOURCE_ID = 40;
 
-    /** A gateway with an empty snapshot, driven on its own thread against member {@code member}'s node. */
+    /** The one record every gateway instance's snapshot holds. */
+    private static final long SNAPSHOT_RECORD = 42;
+
+    /** A gateway with a one-record snapshot, driven on its own thread against member {@code member}'s node. */
     private final class GatewayInstance implements AutoCloseable, Gateway.Listener, SnapshotListener {
         private final Aeron aeron;
         private final Gateway gateway;
         private final AtomicBoolean running = new AtomicBoolean(true);
         private final Thread duty;
         private final AtomicBoolean caughtUp = new AtomicBoolean();
+        private final AtomicReference<RuntimeException> failure = new AtomicReference<>();
+        private final AtomicInteger restored = new AtomicInteger();
 
         GatewayInstance(final int member) {
             aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
@@ -555,20 +626,34 @@ class ClusterSnapshotTest {
                 .build();
             gateway.start(aeron);
             duty = new Thread(() -> {
-                while (running.get()) {
-                    if (gateway.doWork() == 0) {
-                        Tests.sleep(1);
+                try {
+                    while (running.get()) {
+                        if (gateway.doWork() == 0) {
+                            Tests.sleep(1);
+                        }
                     }
+                } catch (final RuntimeException ex) {
+                    failure.set(ex);
                 }
             }, "gateway-instance");
             duty.start();
         }
 
         void awaitCaughtUp() {
-            for (int i = 0; i < 600 && !caughtUp.get(); i++) {
+            for (int i = 0; i < 600 && !caughtUp.get() && failure.get() == null; i++) {
                 Tests.sleep(50);
             }
+            assertNull(failure.get(), "doWork threw");
             assertTrue(caughtUp.get(), "the gateway did not catch up in 30 s");
+        }
+
+        /** What {@code doWork} threw, which stopped this instance. */
+        RuntimeException awaitFailure() {
+            for (int i = 0; i < 600 && failure.get() == null; i++) {
+                Tests.sleep(50);
+            }
+            assertTrue(failure.get() != null, "doWork threw nothing in 30 s");
+            return failure.get();
         }
 
         @Override
@@ -626,12 +711,18 @@ class ClusterSnapshotTest {
 
         @Override
         public int onSnapshot(final MutableDirectBuffer buffer, final int recordIndex) {
-            return 0;
+            if (recordIndex > 0) {
+                return 0;
+            }
+            buffer.putLong(0, SNAPSHOT_RECORD);
+            return Long.BYTES;
         }
 
         @Override
         public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex,
                               final int formatVersion) {
+            assertEquals(SNAPSHOT_RECORD, buffer.getLong(0));
+            restored.incrementAndGet();
         }
     }
 }

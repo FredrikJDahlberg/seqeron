@@ -53,8 +53,8 @@
 # loop to reliably land inside that window — every attempt measured zero genuine overlaps. The state
 # transition itself (a non-contiguous queue frame arriving while `m_replaySessionId >= 0`, not just
 # `m_awaitingReplay`) is instead covered deterministically by
-# `ReplayerStreamReceiverGapRecovery.QueueFrameAheadOfAnInFlightWalkDoesNotSupersedeIt` in
-# `ReplayerStreamReceiverTest.cpp` — as of 2026-08-05 such a frame must NOT supersede the in-flight
+# `ReplayerRecoveryGapRecovery.AQueueFrameArrivingDuringAnAssignedReplaySessionDoesNotSupersedeIt` in
+# `ReplayerRecoveryTest.cpp` — as of 2026-08-05 such a frame must NOT supersede the in-flight
 # walk, since the queue is now dispatched mid-walk and legitimately runs ahead of the replay.
 set -uo pipefail
 

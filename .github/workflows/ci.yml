@@ -255,12 +255,12 @@ jobs:
       - name: Probe builds
         run: dotnet build seqeron-client/src/test/csharp-probe/Seqeron.ClusterProbe.csproj
 
-      # Built against the packed package, as an outside consumer resolves it. ColocatedApp and GatewayApp also fail
-      # their build on a name outside App and Protocol.Publish.
+      # Built against the packed package, as an outside consumer resolves it. ColocatedApp, GatewayApp and SnapshotApp
+      # also fail their build on a name outside App and Protocol.Publish.
       - name: Examples build
         run: |
           dotnet pack -c Release -o build/nuget seqeron-client/src/main/csharp/Seqeron.Client.csproj
-          for ex in FollowStream ColocatedApp GatewayApp; do
+          for ex in FollowStream ColocatedApp GatewayApp SnapshotApp; do
             dotnet build "seqeron-examples/src/csharp/$ex/$ex.csproj"
           done
 

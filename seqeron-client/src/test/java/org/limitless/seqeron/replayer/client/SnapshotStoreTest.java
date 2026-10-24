@@ -195,6 +195,22 @@ class SnapshotStoreTest {
     }
 
     @Test
+    @DisplayName("a round whose file cannot be created confirms nothing, and the next round is written as usual")
+    void uncreatableRoundConfirmsNothing() throws IOException {
+        final SnapshotStore store = new SnapshotStore(directory);
+        write(store, 1, records());
+        Files.createDirectories(directory.resolve("2.tmp").resolve("occupied")); // the file cannot be created
+
+        write(store, 2, records());
+        assertEquals(1, store.durableRound());
+        assertEquals(1, store.latestRound(Long.MAX_VALUE));
+
+        write(store, 3, records());
+        assertEquals(3, store.durableRound());
+        assertEquals(List.of(HEADER_LENGTH, 1000, 1302, 698, SnapshotStore.Reader.END), readAll(store.open(3)));
+    }
+
+    @Test
     @DisplayName("a record of the most bytes its length prefix can say reads back whole")
     void largestRecordReadsBack() {
         final SnapshotStore store = new SnapshotStore(directory);

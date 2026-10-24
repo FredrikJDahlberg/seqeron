@@ -102,8 +102,9 @@ constexpr std::int64_t PAST_EVERY_TIMER_MS = 6'000;
 // A ReplayerRecovery with its transport recorded rather than performed, and a clock the test owns.
 struct Client final : ReplayerRecoveryActions
 {
-    explicit Client(ReplayerRecovery::OnSequenced onSequenced, ReplayerRecovery::OnCaughtUp onCaughtUp = {}) :
-      recovery(*this, std::move(onSequenced), {}, {}, {}, std::move(onCaughtUp))
+    explicit Client(ReplayerRecovery::OnSequenced onSequenced, ReplayerRecovery::OnCaughtUp onCaughtUp = {},
+                    ReplayerRecovery::OnLeadershipChanged onLeadershipChanged = {}) :
+      recovery(*this, std::move(onSequenced), {}, {}, std::move(onLeadershipChanged), std::move(onCaughtUp))
     {}
 
     void sendReplayRequest(std::int64_t, std::int64_t, const std::int64_t cutClusterSeqNo) override
@@ -271,6 +272,16 @@ bool checkProgressAt(Client& client, const std::int64_t nowMs)
     return client.recovery.checkRecoveryProgress();
 }
 
+TEST(ReplayerRecoveryBaseline, ColdStartWalksTheRecordingFromItsStart)
+{
+    Client client{ [](const SequencedEvent&) {} };
+
+    client.recovery.start();
+
+    EXPECT_TRUE(client.recovery.isAwaitingReplay());
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition());
+}
+
 TEST(ReplayerRecoveryBaseline, FirstFrameAtClusterSeqNoOneIsAccepted)
 {
     int delivered = 0;
@@ -432,12 +443,43 @@ TEST(ReplayerRecoveryGapRecovery, QueueGapReportsAStructuredDiagnosticEvent)
     EXPECT_EQ("queue gap: expected groupSeqNo=3 got 5 — resuming the recording at clusterSeqNo=2", text);
 }
 
+TEST(ReplayerRecoveryGapRecovery, ALiveQueueFrameAheadOfAnInFlightWalkIsRetainedNotTreatedAsAGap)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&](const SequencedEvent& event) { dispatched.push_back(event.clusterSeqNo); } };
+    deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), /*replaySessionId=*/11,
+                                           /*catchUpPosition=*/4096));
+    const std::int64_t requestIdBefore = client.recovery.requestId();
+
+    deliverLive(client, 9); // the queue runs ahead of the replay
+
+    EXPECT_TRUE(dispatched.empty()) << "no baseline yet — only the walk may establish one";
+    EXPECT_EQ(1u, client.recovery.retainedFrameCount());
+    EXPECT_EQ(requestIdBefore, client.recovery.requestId()) << "an in-flight walk must not be superseded";
+}
+
+TEST(ReplayerRecoveryGapRecovery, AQueueGapWhileTheWalkIsStillInFlightDoesNotSupersedeIt)
+{
+    Client client{ [](const SequencedEvent&) {} };
+    deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), /*replaySessionId=*/11,
+                                           /*catchUpPosition=*/4096));
+    deliverReplay(client, 1); // baseline established, by the walk rather than by the queue
+    const std::int64_t requestIdBefore = client.recovery.requestId();
+
+    deliverLive(client, 5); // 2..4 are not lost — they are frames this walk has not reached yet
+
+    EXPECT_EQ(requestIdBefore, client.recovery.requestId()) << "an in-flight walk must run to completion";
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition())
+        << "a mid-walk queue gap is expected, not a new gap";
+    EXPECT_EQ(1u, client.recovery.retainedFrameCount());
+}
+
 // A queue frame that is non-contiguous only because the queue runs ahead of an in-flight replay must not be
 // mistaken for a new gap. Now that poll() dispatches the queue mid-walk instead of discarding it (the
 // 2026-08-05 seam fix), this is the common case, not a rarity: every queue frame arriving while a walk
 // replays history reads as "ahead". Superseding the walk on each one would restart it from the start
 // forever under any sustained publish rate.
-TEST(ReplayerRecoveryGapRecovery, QueueFrameAheadOfAnInFlightWalkDoesNotSupersedeIt)
+TEST(ReplayerRecoveryGapRecovery, AQueueFrameArrivingDuringAnAssignedReplaySessionDoesNotSupersedeIt)
 {
     ScopedLoggerSink sink;
     int delivered = 0;
@@ -529,6 +571,22 @@ TEST(ReplayerRecoveryGapRecovery, DuplicateAndStaleFramesFromReplayAreDropped)
 
     deliverReplay(client, 3); // new -> delivered
     EXPECT_EQ(3, delivered);
+}
+
+TEST(ReplayerRecoveryGapRecovery, ReplayedHistoryDispatchesInOrderAndDeDupesARedeliveredFrame)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&](const SequencedEvent& event) { dispatched.push_back(event.clusterSeqNo); } };
+    deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), /*replaySessionId=*/11,
+                                           /*catchUpPosition=*/4096));
+
+    deliverReplay(client, 1);
+    deliverReplay(client, 2);
+    deliverReplay(client, 2); // redelivered
+    deliverReplay(client, 3);
+
+    EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3 }), dispatched);
+    EXPECT_EQ(3, client.recovery.lastClusterSeqNo());
 }
 
 TEST(ReplayerRecoveryGapRecovery, NothingToReplayFromTheStartMarksCaughtUp)
@@ -639,23 +697,10 @@ TEST(ReplayerRecoveryGapRecovery, ReplayPendingForASupersededRequestIsIgnored)
 
 // ── Closed image vs. completed replay ────────────────────────────────────────────────────────
 // A replay whose recording stopped closes its image on its own, exactly at the position it was bounded
-// to — the one close that means "replay done".
-TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingAtTheBoundCompletesTheReplay)
-{
-    Client client{ [](const SequencedEvent&) {} };
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
-                                           /*catchUpPosition=*/500));
-
-    client.recovery.onReplayImageClosed(/*finalPosition=*/500);
-
-    EXPECT_TRUE(client.recovery.isCaughtUp()) << "closing AT the bound is completion";
-    EXPECT_FALSE(client.recovery.isAwaitingReplay());
-}
-
-// Any other close (supersede, archive fault, Replayer shutdown) leaves the image short
-// of the bound. Completing there skips history that was never replayed — a silent hole, since only a
-// later queue gap could ever expose it.
-TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingShortOfTheBoundReRequestsIt)
+// to — the one close that means "replay done". Any other close (supersede, archive fault, Replayer shutdown)
+// leaves the image short of the bound. Completing there skips history that was never replayed — a silent
+// hole, since only a later queue gap could ever expose it.
+TEST(ReplayerRecoveryGapRecovery, AReplayImageClosingAtItsBoundCompletesTheReplayShortOfItReRequests)
 {
     ScopedLoggerSink sink;
     Client client{ [](const SequencedEvent&) {} };
@@ -671,6 +716,13 @@ TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingShortOfTheBoundReRequestsIt)
     EXPECT_NE(requestId, client.recovery.requestId()) << "re-requesting is a new request, so the reply to the "
                                                          "stopped one is recognisably stale";
     EXPECT_EQ(1u, sink.events.size()) << "a truncated replay is reported, not silently absorbed";
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/8,
+                                           /*catchUpPosition=*/500));
+    client.recovery.onReplayImageClosed(/*finalPosition=*/500);
+
+    EXPECT_TRUE(client.recovery.isCaughtUp()) << "closing AT the bound is completion";
+    EXPECT_FALSE(client.recovery.isAwaitingReplay());
 }
 
 // A replay that neither closes nor advances is the third case, and the one nothing used to catch: once
@@ -774,9 +826,32 @@ TEST(ReplayerRecoveryGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElap
         << "resend repeats the same request verbatim, still the resume";
 }
 
+// An unsent request must NOT be retried per duty cycle, only on the resend timer. Every send does
+// ++m_requestId and onControl acts only on a reply carrying the CURRENT id, so a per-poll retry runs the
+// counter away and every reply that arrives is discarded as stale — leaving the client awaiting a replay
+// that can never correlate, hence never caught up. Cost of getting this wrong is not a slow resend: it is
+// a consumer wedged out of isCaughtUp(), which on the leader-co-located replica means no ExecutionReport.
+TEST(ReplayerRecoveryGapRecovery, AnUnsentRequestIsNotReSentOncePerPoll)
+{
+    Client client{ [](const SequencedEvent&) {}, [] {} };
+
+    deliverLive(client, 1);
+    deliverLive(client, 5); // gap -> resume request; no publication here, so it never goes out
+    const std::int64_t before = client.recovery.requestId();
+
+    for (int i = 0; i < 50; ++i)
+    {
+        client.recovery.doTimers(/*requestPublicationPending=*/false); // duty cycles, no clock advance
+    }
+
+    ASSERT_TRUE(client.recovery.isAwaitingReplay()) << "still waiting — nothing answered it";
+    EXPECT_LE(client.recovery.requestId() - before, 1)
+        << "the resend timer paces this; one id per poll outruns every reply in flight";
+}
+
 // isRecovering() is what separates "the queue is ahead of my replay" from "there is a hole" — narrowing it
 // to miss a state means a walk supersedes itself on its own in-flight frames (see
-// QueueFrameAheadOfAnInFlightWalkDoesNotSupersedeIt), widening it means a real gap goes unreported. This
+// AQueueGapWhileTheWalkIsStillInFlightDoesNotSupersedeIt), widening it means a real gap goes unreported. This
 // walks every transition it must track. (It also guarded the discard routing behind the
 // 2026-07-31 "gap re-walk starves the queue it is recovering" fault; that discard is gone as of 2026-08-05 —
 // poll() now always drains AND dispatches the queue — but the predicate itself carries more weight, not
@@ -851,6 +926,22 @@ TEST(ReplayerRecoveryGapRecovery, QueueGapRevokesCaughtUpUntilTheStreamGoesConti
                                            "on first catch-up";
 }
 
+TEST(ReplayerRecoveryGapRecovery, RetainedQueueFramesHandStraightOverWhenTheReplayReachesThem)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&](const SequencedEvent& event) { dispatched.push_back(event.clusterSeqNo); } };
+    deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), /*replaySessionId=*/11,
+                                           /*catchUpPosition=*/4096));
+    deliverLive(client, 3);
+    deliverLive(client, 4);
+
+    deliverReplay(client, 1);
+    deliverReplay(client, 2);
+
+    EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3, 4 }), dispatched) << "the seam closes with no residual";
+    EXPECT_EQ(0u, client.recovery.retainedFrameCount());
+}
+
 // The retention half of the seam fix, stated on its own: a frame from beyond the hole is
 // held and delivered exactly once when the hole closes — never dropped, never duplicated, always in
 // clusterSeqNo order. Dropping these is what made every walk end one hole short of live and re-walk.
@@ -893,6 +984,64 @@ TEST(ReplayerRecoveryGapRecovery, LargestFrameAheadOfTheHoleIsRetained)
     EXPECT_TRUE(client.recovery.isCaughtUp()) << "an overflow would have forced a resume";
 }
 
+TEST(ReplayerRecoveryGapRecovery, FramesAheadOfTheHoleAreRetainedUpToTheFrameCapAndTheNextIsDropped)
+{
+    Client client{ [](const SequencedEvent&) {} };
+    deliverLive(client, 1);
+    ScopedLoggerSink sink;
+    const auto last = static_cast<std::int64_t>(2 + ReplayerRecovery::MAX_RETAINED_FRAMES); // 2 is the hole
+    for (std::int64_t clusterSeqNo = 3; clusterSeqNo <= last; ++clusterSeqNo)
+    {
+        deliverLive(client, clusterSeqNo);
+    }
+    ASSERT_EQ(ReplayerRecovery::MAX_RETAINED_FRAMES, client.recovery.retainedFrameCount());
+    ASSERT_EQ(0u, overflowReports(sink));
+
+    deliverLive(client, last + 1);
+
+    EXPECT_EQ(ReplayerRecovery::MAX_RETAINED_FRAMES, client.recovery.retainedFrameCount()) << "dropped, not retained";
+    EXPECT_EQ(1u, overflowReports(sink));
+}
+
+TEST(ReplayerRecoveryGapRecovery, FramesOfTheLargestPayloadAreRetainedUpToTheByteCapAndTheNextIsDropped)
+{
+    Client client{ [](const SequencedEvent&) {} };
+    deliverLive(client, 1);
+    ScopedLoggerSink sink;
+    const std::size_t fit = ReplayerRecovery::MAX_RETAINED_BYTES / LARGEST_FRAME_LENGTH;
+    const auto last = static_cast<std::int64_t>(2 + fit); // 2 is the hole
+    for (std::int64_t clusterSeqNo = 3; clusterSeqNo <= last; ++clusterSeqNo)
+    {
+        deliverLivePadded(client, clusterSeqNo, LARGEST_FRAME_LENGTH);
+    }
+    ASSERT_EQ(fit, client.recovery.retainedFrameCount());
+    ASSERT_EQ(0u, overflowReports(sink));
+
+    deliverLivePadded(client, last + 1, LARGEST_FRAME_LENGTH);
+
+    EXPECT_EQ(fit, client.recovery.retainedFrameCount()) << "dropped, not retained";
+    EXPECT_EQ(1u, overflowReports(sink));
+}
+
+// Retained frames the replay has meanwhile covered are discarded on drain rather than double-delivered —
+// the ranges legitimately overlap, since a replay restarts behind the hole while the queue keeps arriving.
+TEST(ReplayerRecoveryGapRecovery, RetainedFramesAlreadyCoveredByTheReplayAreNotRedelivered)
+{
+    std::vector<std::int64_t> delivered;
+    Client client{ [&](const SequencedEvent& event) { delivered.push_back(event.clusterSeqNo); } };
+
+    deliverLive(client, 1);
+    deliverLive(client, 3); // gap -> retained
+    deliverLive(client, 4); // retained
+
+    deliverReplay(client, 1); // a resume opens on the frame it anchored at — already delivered, deduped
+    deliverReplay(client, 2);
+    deliverReplay(client, 3); // the replay covers a frame the queue already retained
+    deliverReplay(client, 4); // and another
+
+    EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3, 4 }), delivered) << "each clusterSeqNo dispatched exactly once";
+}
+
 // A hole in REPLAYED history was the one invariant violation that produced no log and no counter:
 // the frame is dropped, the walk rides on, and recovery quietly never converges.
 // Nothing unsafe follows — contiguity still holds — so this reports rather than aborts, once per
@@ -921,6 +1070,30 @@ TEST(ReplayerRecoveryGapRecovery, GapInReplayedHistoryIsReportedOncePerEpisode)
     ASSERT_EQ(2, delivered);
     deliverReplay(client, 9);
     EXPECT_EQ(2u, sink.events.size()) << "the latch clears once history goes contiguous again";
+}
+
+TEST(ReplayerRecoveryGapRecovery, DroppedQueueFramesAreReportedOncePerEpisode)
+{
+    Client client{ [](const SequencedEvent&) {} };
+    deliverLive(client, 1);
+    deliverLive(client, 3); // gap -> resume anchored on frame 1; 3 is retained
+
+    ScopedLoggerSink sink; // installed after the setup gap, so it captures only the overflow lines
+    deliverLiveTooBigToRetain(client, 4);
+    deliverLiveTooBigToRetain(client, 5);
+    ASSERT_EQ(1u, overflowReports(sink)) << "one episode is one line, not one per dropped frame";
+
+    // The resume is what covers the dropped frames, so the episode ends when it is requested.
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500));
+    deliverReplay(client, 1);
+    deliverReplay(client, 2);
+    completeReplay(client);
+    ASSERT_TRUE(client.recovery.isAwaitingReplay());
+
+    deliverLiveTooBigToRetain(client, 9);
+
+    EXPECT_EQ(2u, overflowReports(sink)) << "a later overflow is a distinct episode and names itself";
 }
 
 // The resume's safety check: its first frame must be the frame the position was anchored on. Positions
@@ -1058,29 +1231,6 @@ TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundCatchesUpAndRequestsNoth
     EXPECT_EQ(2, caughtUpNotifications) << "re-fired, so consumers re-arm on re-convergence";
 }
 
-// An unsent request must NOT be retried per duty cycle, only on the resend timer. Every send does
-// ++m_requestId and onControl acts only on a reply carrying the CURRENT id, so a per-poll retry runs the
-// counter away and every reply that arrives is discarded as stale — leaving the client awaiting a replay
-// that can never correlate, hence never caught up. Cost of getting this wrong is not a slow resend: it is
-// a consumer wedged out of isCaughtUp(), which on the leader-co-located replica means no ExecutionReport.
-TEST(ReplayerRecoveryGapRecovery, AnUnsentRequestIsNotReSentOncePerPoll)
-{
-    Client client{ [](const SequencedEvent&) {}, [] {} };
-
-    deliverLive(client, 1);
-    deliverLive(client, 5); // gap -> resume request; no publication here, so it never goes out
-    const std::int64_t before = client.recovery.requestId();
-
-    for (int i = 0; i < 50; ++i)
-    {
-        client.recovery.doTimers(/*requestPublicationPending=*/false); // duty cycles, no clock advance
-    }
-
-    ASSERT_TRUE(client.recovery.isAwaitingReplay()) << "still waiting — nothing answered it";
-    EXPECT_LE(client.recovery.requestId() - before, 1)
-        << "the resend timer paces this; one id per poll outruns every reply in flight";
-}
-
 // The companion defect (review #5): a resume can reach its bound while a retained-ahead frame still
 // sits behind a hole the replay never covered — onReplaySegmentComplete used to declare caught up on the
 // bound alone, with no check that m_lastClusterSeqNo had actually reached the frontier the retained FIFO
@@ -1138,49 +1288,6 @@ TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundAfterDroppedQueueFramesR
     EXPECT_NE(REPLAYER_FROM_START, client.recovery.requestFromPosition())
         << "resumes now rather than leaving the hole for a later queue gap";
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
-}
-
-TEST(ReplayerRecoveryGapRecovery, DroppedQueueFramesAreReportedOncePerEpisode)
-{
-    Client client{ [](const SequencedEvent&) {} };
-    deliverLive(client, 1);
-    deliverLive(client, 3); // gap -> resume anchored on frame 1; 3 is retained
-
-    ScopedLoggerSink sink; // installed after the setup gap, so it captures only the overflow lines
-    deliverLiveTooBigToRetain(client, 4);
-    deliverLiveTooBigToRetain(client, 5);
-    ASSERT_EQ(1u, overflowReports(sink)) << "one episode is one line, not one per dropped frame";
-
-    // The resume is what covers the dropped frames, so the episode ends when it is requested.
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
-                                           /*catchUpPosition=*/500));
-    deliverReplay(client, 1);
-    deliverReplay(client, 2);
-    completeReplay(client);
-    ASSERT_TRUE(client.recovery.isAwaitingReplay());
-
-    deliverLiveTooBigToRetain(client, 9);
-
-    EXPECT_EQ(2u, overflowReports(sink)) << "a later overflow is a distinct episode and names itself";
-}
-
-// Retained frames the replay has meanwhile covered are discarded on drain rather than double-delivered —
-// the ranges legitimately overlap, since a replay restarts behind the hole while the queue keeps arriving.
-TEST(ReplayerRecoveryGapRecovery, RetainedFramesAlreadyCoveredByTheReplayAreNotRedelivered)
-{
-    std::vector<std::int64_t> delivered;
-    Client client{ [&](const SequencedEvent& event) { delivered.push_back(event.clusterSeqNo); } };
-
-    deliverLive(client, 1);
-    deliverLive(client, 3); // gap -> retained
-    deliverLive(client, 4); // retained
-
-    deliverReplay(client, 1); // a resume opens on the frame it anchored at — already delivered, deduped
-    deliverReplay(client, 2);
-    deliverReplay(client, 3); // the replay covers a frame the queue already retained
-    deliverReplay(client, 4); // and another
-
-    EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3, 4 }), delivered) << "each clusterSeqNo dispatched exactly once";
 }
 
 // ── The end of a walk ───────────────────────────────────────────────────────────────────────
@@ -1493,6 +1600,14 @@ const rf::Bytes SNAPSHOT_RECORD = rf::record(7);
 // A client restoring from a store of its own, started once the test has written its files.
 struct Restoring
 {
+    Restoring() = default;
+
+    explicit Restoring(ReplayerRecovery::OnLeadershipChanged onLeadershipChanged) :
+      client{ [this](const SequencedEvent& event) { dispatched.push_back(event.clusterSeqNo); },
+              {},
+              std::move(onLeadershipChanged) }
+    {}
+
     void start()
     {
         client.recovery.restoreFrom(store, handler);
@@ -1653,6 +1768,26 @@ TEST(ReplayerRecoveryRestore, AfterARestoreTheQueuesContinuityResumesAtTheCutFra
     deliverReplayFrame(r.client, rf::started(CUT, 4, 2, CUT * 1000), 4);
     deliverReplayFrame(r.client, encodeHeartbeat(CUT + 3, 5), 5);
     EXPECT_EQ((std::vector<std::int64_t>{ CUT + 3 }), r.dispatched) << "groupSeqNo 5 follows the cut's 4";
+}
+
+TEST(ReplayerRecoveryRestore, AfterARestoreTheLeadershipHandlerIsToldTheSnapshotsLeaderAtTheCut)
+{
+    std::vector<std::string> changes;
+    Restoring r{ [&changes](const std::int32_t leaderMemberId, const std::int64_t leadershipTermId,
+                            const std::int64_t clusterSeqNo) {
+        changes.push_back(std::to_string(leaderMemberId) + " " + std::to_string(leadershipTermId) + " " +
+                          std::to_string(clusterSeqNo));
+    } };
+    r.writeSnapshot(2);
+    r.start();
+    replayTheCut(r.client);
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+    EXPECT_TRUE(changes.empty()) << "not before the records are restored";
+
+    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
+
+    EXPECT_EQ((std::vector<std::string>{ "2 4 " + std::to_string(CUT) }), changes) << "the header's leader and term";
+    EXPECT_TRUE(r.dispatched.empty()) << "it reaches the handler alone";
 }
 
 TEST(ReplayerRecoveryRestore, AReplayOfTheCutThatStopsAdvancingIsRequestedAgainAtTheCut)

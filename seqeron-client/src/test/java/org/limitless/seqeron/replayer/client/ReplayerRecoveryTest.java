@@ -750,6 +750,43 @@ class ReplayerRecoveryTest {
         assertTrue(receiver.isCaughtUp(), "an overflow would have forced a re-walk");
     }
 
+    @Test
+    @DisplayName("frames ahead of the hole are retained up to the frame cap, and the next is dropped")
+    void framesAheadOfTheHoleAreRetainedUpToTheFrameCap() {
+        deliverQueue(1);
+        captureLogs();
+        final long last = 2 + ReplayerRecovery.MAX_RETAINED_FRAMES; // 2 is the hole
+        for (long clusterSeqNo = 3; clusterSeqNo <= last; clusterSeqNo++) {
+            deliverQueue(clusterSeqNo);
+        }
+        assertEquals(ReplayerRecovery.MAX_RETAINED_FRAMES, receiver.retainedFrameCount());
+        assertEquals(0, overflowReports());
+
+        deliverQueue(last + 1);
+
+        assertEquals(ReplayerRecovery.MAX_RETAINED_FRAMES, receiver.retainedFrameCount(), "dropped, not retained");
+        assertEquals(1, overflowReports());
+    }
+
+    @Test
+    @DisplayName("frames of the largest payload are retained up to the byte cap, and the next is dropped")
+    void framesAheadOfTheHoleAreRetainedUpToTheByteCap() {
+        deliverQueue(1);
+        captureLogs();
+        final int fit = (int)(ReplayerRecovery.MAX_RETAINED_BYTES / LARGEST_FRAME_LENGTH);
+        final long last = 2 + fit; // 2 is the hole
+        for (long clusterSeqNo = 3; clusterSeqNo <= last; clusterSeqNo++) {
+            deliverQueuePadded(clusterSeqNo, LARGEST_FRAME_LENGTH);
+        }
+        assertEquals(fit, receiver.retainedFrameCount());
+        assertEquals(0, overflowReports());
+
+        deliverQueuePadded(last + 1, LARGEST_FRAME_LENGTH);
+
+        assertEquals(fit, receiver.retainedFrameCount(), "dropped, not retained");
+        assertEquals(1, overflowReports());
+    }
+
     // The ranges legitimately overlap, since a re-walk restarts from the start while the queue keeps
     // arriving.
     @Test
@@ -1286,6 +1323,26 @@ class ReplayerRecoveryTest {
         deliverReplayFrame(RestoreFrames.started(CUT, 4, 2, CUT * 1000), 4);
         deliverReplayOnQueue(CUT + 3, 5);
         assertEquals(List.of(CUT + 3), dispatched, "groupSeqNo 5 follows the cut's 4");
+    }
+
+    @Test
+    @DisplayName("after a restore, the leadership handler is told the snapshot's leader at the cut")
+    void afterARestoreTheLeadershipHandlerIsToldTheSnapshotsLeader() {
+        final List<String> changes = new ArrayList<>();
+        receiver = new ReplayerRecovery(actions, event -> dispatched.add(event.clusterSeqNo()),
+                                        (leaderMemberId, leadershipTermId, clusterSeqNo) ->
+                                            changes.add(leaderMemberId + " " + leadershipTermId + " " + clusterSeqNo),
+                                        null);
+        writeSnapshot(2);
+        startRestoring();
+        replayTheCut();
+        receiver.doTimers(false);
+        assertTrue(changes.isEmpty(), "not before the records are restored");
+
+        receiver.doTimers(false);
+
+        assertEquals(List.of("2 4 " + CUT), changes, "the header's leader and term");
+        assertTrue(dispatched.isEmpty(), "it reaches the handler alone");
     }
 
     @Test

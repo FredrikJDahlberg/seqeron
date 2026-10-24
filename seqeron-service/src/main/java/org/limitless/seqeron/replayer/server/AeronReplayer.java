@@ -118,8 +118,8 @@ public final class AeronReplayer implements Replayer {
      * Reads the replay one frame at a time until the visitor stops, the bound is reached, a fragment is no frame or
      * the replay stalls.
      */
-    private ScanEnd scan(final Subscription subscription, final int replaySessionId, final long endPosition,
-                         final FrameVisitor visitor) {
+    static ScanEnd scan(final Subscription subscription, final int replaySessionId, final long endPosition,
+                        final FrameVisitor visitor) {
         long deadlineMs = System.currentTimeMillis() + SCAN_STALL_TIMEOUT_MS;
         Image image;
         while ((image = subscription.imageBySessionId(replaySessionId)) == null) {
