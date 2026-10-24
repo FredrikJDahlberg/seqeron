@@ -175,7 +175,11 @@ class ReplayerRecoveryTest {
     void firstFrameMustBeOne() {
         attachReplay(11, 4096);
 
-        assertThrows(IllegalStateException.class, () -> deliverReplay(7));
+        deliverReplay(7);
+
+        assertTrue(receiver.fault().contains("groupSeqNo=7, expected 1"), receiver.fault());
+        assertTrue(dispatched.isEmpty());
+        assertEquals(-1, receiver.replaySessionId());
     }
 
     // Once the queue is dispatched mid-walk, a cold start races a live queue already carrying mid-stream
@@ -213,7 +217,10 @@ class ReplayerRecoveryTest {
     void firstFrameMustBeGroupSeqNoOne() {
         attachReplay(11, 4096);
 
-        assertThrows(IllegalStateException.class, () -> deliverReplayOnQueue(1, 2));
+        deliverReplayOnQueue(1, 2);
+
+        assertTrue(receiver.fault().contains("groupSeqNo=2, expected 1"), receiver.fault());
+        assertTrue(dispatched.isEmpty());
     }
 
     @Test
@@ -534,6 +541,24 @@ class ReplayerRecoveryTest {
         assertNotEquals(requestId, receiver.requestId(),
                         "re-requesting is a new request, so the reply to the stalled one is recognisably stale");
         assertEquals(1, logged.size(), "a stalled replay is reported, not silently absorbed");
+    }
+
+    @Test
+    @DisplayName("a walk that stalls after dispatching resumes at its last frame rather than walking again")
+    void aWalkThatStallsAfterDispatchingResumesAtItsLastFrame() {
+        answerReplaying(7, 8192);
+        deliverReplay(1);
+        deliverReplay(2);
+
+        advancePastTimers();
+
+        assertTrue(receiver.isAwaitingReplay());
+        assertEquals(2 * 1024, receiver.requestFromPosition(), "resumed at the last dispatched frame");
+        answerReplaying(8, 8192);
+        deliverReplay(2); // the anchor, already dispatched
+        deliverReplay(3);
+        assertEquals(List.of(1L, 2L, 3L), dispatched);
+        assertNull(receiver.fault());
     }
 
     // Session id 0 is an ordinary archive replaySessionId; -1 is the only value that means "no replay".

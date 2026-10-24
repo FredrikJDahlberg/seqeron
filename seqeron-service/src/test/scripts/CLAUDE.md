@@ -32,8 +32,8 @@ the C# clients beside a gateway host on Windows, on one `windows-latest` runner 
 thirteenth, `cpp-client-test.sh`, is `csharp-client-test.sh` for the C++ client tier: `cluster_probe`
 (`seqeron-client/src/test/cpp-probe`, a target beside `core_tests`, which the harness builds in the examples' tree
 so that Aeron is built once), then the C++ examples
-built as an outside consumer builds them, their gateway pair through a handover, and `snapshot_app` restored from a
-round it confirmed. It needs CMake beside the uber jar, and CI runs it in `chaos.yml`.
+built as an outside consumer builds them, their gateway pair through a handover, `snapshot_app` restored from a
+round it confirmed, and `ClusterStreamClient` replaying a member restarted at a cut (`cluster_probe scan`). It needs CMake beside the uber jar, and CI runs it in `chaos.yml`.
 `chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session

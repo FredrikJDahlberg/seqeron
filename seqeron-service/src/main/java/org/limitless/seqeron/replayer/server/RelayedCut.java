@@ -5,7 +5,7 @@ import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.BitUtil;
 
 /**
- * A snapshot marker a gateway host's relay has published onto its local queue (doc/snapshot-gateway-purge-plan.md).
+ * A snapshot marker a gateway host's relay has published onto its local queue (doc/snapshot.md §10.6).
  *
  * @param round        the round's number
  * @param clusterSeqNo the marker's {@code clusterSeqNo}: the cut

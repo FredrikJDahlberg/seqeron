@@ -100,7 +100,7 @@ public final class ReplaySlotAllocator {
 
     /**
      * Pops the next pending request, or null if none is pending or every slot is taken. Callers bound a
-     * drain pass to {@link #pendingCount()}, so a request that is held again is retried once per pass.
+     * drain pass to {@link #pendingCount()}.
      * @return the longest-waiting client's current request, or null
      */
     public PendingRequest pollPending() {

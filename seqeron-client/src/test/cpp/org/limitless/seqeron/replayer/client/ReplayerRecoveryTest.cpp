@@ -3,7 +3,7 @@
 // Locked here: the contiguity/de-dupe decision and the first-frame-must-be-clusterSeqNo-1 baseline check
 // (a cold start answered NO_REPLAY_NEEDED used to adopt an arbitrary
 // mid-stream baseline; clusterSeqNo only increases, so once the first frame observed isn't 1 no later one
-// ever can be, and it aborts rather than latching a flag a caller might not check), the Replayer
+// ever can be, and it latches a fault the receiver raises from its duty cycle), the Replayer
 // control-stream transitions, the retained-ahead FIFO, the walk, the steady-state resume,
 // and the two watchdogs.
 //
@@ -282,12 +282,16 @@ TEST(ReplayerRecoveryBaseline, FirstFrameAtClusterSeqNoOneIsAccepted)
     EXPECT_TRUE(client.recovery.isCaughtUp());
 }
 
-TEST(ReplayerRecoveryBaseline, FirstFrameNotAtClusterSeqNoOneAbortsTheProcess)
+TEST(ReplayerRecoveryBaseline, FirstFrameNotAtClusterSeqNoOneIsAFault)
 {
-    Client client{ [](const SequencedEvent&) {} };
+    int delivered = 0;
+    Client client{ [&](const SequencedEvent&) { ++delivered; } };
 
-    EXPECT_DEATH(deliverLive(client, 57), "groupSeqNo=57, expected 1")
-        << "must not silently adopt a mid-stream baseline";
+    deliverLive(client, 57);
+
+    ASSERT_TRUE(client.recovery.fault().has_value()) << "must not silently adopt a mid-stream baseline";
+    EXPECT_NE(std::string::npos, client.recovery.fault()->find("groupSeqNo=57, expected 1"));
+    EXPECT_EQ(0, delivered);
 }
 
 // Coverage for the gap-recovery/re-walk state machine (the "gap re-walk starves the queue it is
@@ -297,7 +301,7 @@ TEST(ReplayerRecoveryBaseline, FirstFrameNotAtClusterSeqNoOneAbortsTheProcess)
 // predicate that separates a real hole from the queue running ahead of an in-flight walk, and the
 // isCaughtUp() state transitions consumers gate on.
 
-// Companion to ReplayerStreamReceiverBaseline.FirstFrameNotAtClusterSeqNoOneAbortsTheProcess, and the
+// Companion to ReplayerRecoveryBaseline.FirstFrameNotAtClusterSeqNoOneIsAFault, and the
 // regression the 2026-08-05 seam fix first introduced: once the queue is dispatched mid-walk, a cold start
 // races a live queue already carrying mid-stream clusterSeqNos against a replay that has not delivered 1
 // yet. That queue frame is neither a valid baseline nor a fault — only the walk may establish the
@@ -336,12 +340,17 @@ TEST(ReplayerRecoveryContinuity, AFirstFrameAtGroupSeqNoOneIsTheBaselineWhatever
     EXPECT_TRUE(client.recovery.isCaughtUp());
 }
 
-TEST(ReplayerRecoveryContinuity, AFirstFrameNotAtGroupSeqNoOneAbortsEvenAtClusterSeqNoOne)
+TEST(ReplayerRecoveryContinuity, AFirstFrameNotAtGroupSeqNoOneIsAFaultEvenAtClusterSeqNoOne)
 {
-    Client client{ [](const SequencedEvent&) {} };
+    int delivered = 0;
+    Client client{ [&](const SequencedEvent&) { ++delivered; } };
     deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), 11, 4096));
 
-    EXPECT_DEATH(deliverOnQueue(client, 1, 2, /*fromReplay=*/true), "groupSeqNo=2, expected 1");
+    deliverOnQueue(client, 1, 2, /*fromReplay=*/true);
+
+    ASSERT_TRUE(client.recovery.fault().has_value());
+    EXPECT_NE(std::string::npos, client.recovery.fault()->find("groupSeqNo=2, expected 1"));
+    EXPECT_EQ(0, delivered);
 }
 
 TEST(ReplayerRecoveryContinuity, ContinuityFollowsGroupSeqNoSoAJumpInClusterSeqNoIsNoGap)
@@ -686,6 +695,25 @@ TEST(ReplayerRecoveryGapRecovery, ReplayThatStopsAdvancingReRequestsIt)
     EXPECT_NE(requestId, client.recovery.requestId()) << "re-requesting is a new request, so the reply to the "
                                                          "stalled one is recognisably stale";
     EXPECT_EQ(1u, sink.events.size()) << "a stalled replay is reported, not silently absorbed";
+}
+
+TEST(ReplayerRecoveryGapRecovery, AWalkThatStallsAfterDispatchingResumesAtItsLastFrame)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&](const SequencedEvent& event) { dispatched.push_back(event.clusterSeqNo); } };
+    deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), 7, 8192));
+    deliverOnQueue(client, 1, 1, /*fromReplay=*/true);
+    deliverOnQueue(client, 2, 2, /*fromReplay=*/true);
+
+    advancePastTimers(client);
+
+    EXPECT_TRUE(client.recovery.isAwaitingReplay());
+    EXPECT_EQ(2 * 1024, client.recovery.requestFromPosition()) << "resumed at the last dispatched frame";
+    deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), 8, 8192));
+    deliverOnQueue(client, 2, 2, /*fromReplay=*/true); // the anchor, already dispatched
+    deliverOnQueue(client, 3, 3, /*fromReplay=*/true);
+    EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3 }), dispatched);
+    EXPECT_FALSE(client.recovery.fault().has_value());
 }
 
 // Session id 0 is an ordinary archive replaySessionId; -1 is the only value that means "no replay".

@@ -3,8 +3,8 @@
 How a seqeron deployment changes versions: seqeron's own protocol, which is fixed, and the application
 protocols it carries, which are not. §1, §2 and §4 describe what holds today: seqeron's policies, and what
 SBE and Protocol Buffers provide. The rest is a **proposed design** for upgrading applications without
-stopping them; none of it is implemented, and the compatibility rules it describes are not yet part of the
-spec. "spec" is
+stopping them; §8 says which parts of it are implemented, and the compatibility rules it describes are not yet
+part of the spec. "spec" is
 [`seqeron-protocol-spec.md`](seqeron-protocol-spec.md). How exchanges and log-based systems version their
 protocols is surveyed in [`versioning-prior-art.md`](versioning-prior-art.md).
 
@@ -80,14 +80,12 @@ begins with a `MessageHeader` — and the application's schema defines the messa
 ### 3.2 Constraints
 
 **Snapshots are required cluster-wide.** If any stateful client may recover from `clusterSeqNo` 1, the
-bound is gone for that client. Today participation is per topology row (`snapshot="true"`) and optional, a
-read-only consumer has no snapshot of its own, and a restore that finds no usable file replays the log from
-the start ([`snapshot.md`](snapshot.md) §7). Making the bound hold needs cluster snapshots
-([`snapshot.md`](snapshot.md) §10.6, proposed): history before the floor `F`, the cut of the oldest round a
-client may still restore, is truncated; a client with no confirmed file at or after `F` restores from a
-peer's file, which is portable ([`snapshot.md`](snapshot.md) §4.1), or is fenced; and a stateless consumer
-starts at `F`. The topology would state the requirement — for example a `required` attribute on
-`<snapshots>`, checked by the loader against every row.
+bound is gone for that client. Without a `<snapshots>` policy no round starts, and a restore replays the log
+from the start ([`snapshot.md`](snapshot.md) §7). With one, the loader requires `snapshot="true"` on every row,
+and cluster snapshots bound history ([`snapshot.md`](snapshot.md) §10.6): each node purges its queues below the
+floor `F`, its newest restart-safe cut; a client with no confirmed file at or after `F` restores from a peer's
+file, which is portable ([`snapshot.md`](snapshot.md) §4.1), or is fenced; and a consumer with no snapshot of its
+own, which can only walk from `groupSeqNo` 1, cannot follow the queue at all.
 
 **A snapshot schema version does not change mid-rollout.** Every instance of a source must write the same
 bytes for a round (spec **A-6**), or the ones that differ are fenced (**A-7**). A round cut while a
@@ -98,7 +96,7 @@ new build reads the versions the last round wrote and writes its own from its fi
 With both, the compatibility window is exact: **the snapshot schema versions of the rounds since `F`, and
 the payload versions published since `F`** — about four rounds.
 
-**The cost.** Truncating at `F` gives up a property seqeron has today: every member holds the complete
+**The cost.** Truncating at `F` gives up a property seqeron has without a policy: every member holds the complete
 history from `clusterSeqNo` 1, and any consumer can rebuild from it. A deployment that must retain history
 beyond `F`, for audit or regulation, takes it from an export of the archive.
 
@@ -348,14 +346,14 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
 | opaque payloads, per-application versioning (spec **V-2**) | implemented |
 | snapshot rounds, confirmation, restore, `formatVersion` checked on restore by the listener | implemented ([`snapshot.md`](snapshot.md)) |
 | operator-only rounds (`interval="0"`, `clusterctl request-snapshot`) | implemented |
-| snapshots required cluster-wide | proposed: needs a topology attribute and cluster snapshots |
-| cluster snapshots and the floor `F` | proposed ([`snapshot.md`](snapshot.md) §10) |
+| snapshots required cluster-wide | implemented: with `<snapshots>`, the loader requires `snapshot="true"` on every row |
+| cluster snapshots and the floor `F` | implemented, but the audit tool ([`snapshot.md`](snapshot.md) §10) |
 | snapshot records as specified messages, framing in the spec | proposed (§3.1) |
 | upcasters, for payloads and snapshot records | proposed (§5) |
 | a schema checker enforcing §4.1's rules | proposed (§4.1) |
 | consumers-first enforced by the cluster: announced versions and an activation frame | proposed (§5.4): a schema 210 change |
 | a new source beside the old: its own `sourceId`, `payloadId` and rows, loaded into a running cluster | implemented (§7.1) |
-| groups: a queue per group, fixed by the first topology load | proposed (spec §3.1, §7.4) |
+| groups: a queue per group, fixed by the first topology load | implemented (spec §3.1, §7.4) |
 | groups added to a running cluster by a later topology load | proposed, a second step (spec §7.4) |
 | a source restoring another source's snapshot | proposed (§7.2 step 1) |
 | a reply comparator | proposed (§7.2 step 2) |
@@ -373,8 +371,9 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
 3. **Mandating SBE for snapshot records.** Requiring a canonical cross-language encoding in the spec would
    make **A-6** hold for every source (§4.3); leaving it open restricts a source on another format to one
    language and library version.
-4. **Read-only consumers** with no state of their own start at `F` under cluster snapshots; one that needs
-   history older than `F` reads an export, not the cluster.
+4. **Read-only consumers** with no state of their own cannot follow a queue under cluster snapshots, since they
+   walk from `groupSeqNo` 1; whether one should start at `F` instead is undecided. One that needs history older
+   than `F` reads an export, not the cluster.
 5. **Enforcement of the rollout rules.** §5.4 proposes enforcing reader-before-writer. Rounds between
    rollouts (§3.2) remain an operational rule: a build could at least refuse a round while it sees
    instances of its source announcing different versions, which §5.4's announcements would make possible.

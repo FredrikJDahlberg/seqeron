@@ -89,16 +89,8 @@ public final class QueuePublisher {
     static final long SUSTAINED_BACKPRESSURE_THRESHOLD_NS = TimeUnit.MILLISECONDS.toNanos(200);
 
     /**
-     * How long the recording may make <em>zero</em> progress under back-pressure before the node
-     * terminates. An archive that is slow but still advancing is never timed out. 5x the stall gauge; re-tune
-     * against production storage.
-     */
-    static final long QUEUE_STALL_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
-
-    /**
      * How long the consensus module may refuse the cluster-clock timer before {@link #scheduleHeartbeat}
-     * gives up on this node; a second without one accepted is wedged, not busy. Matches
-     * {@link #QUEUE_STALL_FATAL_TIMEOUT_NS}.
+     * gives up on this node; a second without one accepted is wedged, not busy.
      */
     static final long HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
@@ -110,6 +102,7 @@ public final class QueuePublisher {
     private static final QueueStart.Decision GENESIS = new QueueStart.Decision(QueueStart.Kind.GENESIS, 0);
 
     private final Actions actions;
+    private final long stallTimeoutNs;
 
     /** The groups whose queues are open, ascending; none before activation. */
     private int[] activeGroups = NO_GROUPS;
@@ -121,8 +114,14 @@ public final class QueuePublisher {
 
     private boolean fatalSignalled;
 
-    public QueuePublisher(final Actions actions) {
+    /**
+     * @param actions        the transport
+     * @param stallTimeoutNs how long the recording may make <em>zero</em> progress under back-pressure before the node
+     *                       terminates; an archive that is slow but still advancing is never timed out
+     */
+    public QueuePublisher(final Actions actions, final long stallTimeoutNs) {
         this.actions = actions;
+        this.stallTimeoutNs = stallTimeoutNs;
     }
 
     /**
@@ -291,10 +290,9 @@ public final class QueuePublisher {
             return;
         }
         final long stalledNs = nowNs - stallSinceNs;
-        if (stalledNs >= QUEUE_STALL_FATAL_TIMEOUT_NS) {
+        if (stalledNs >= stallTimeoutNs) {
             fatalQueueFailure("group " + groupId + "'s queue recording made no progress for " +
-                                  TimeUnit.NANOSECONDS.toMillis(QUEUE_STALL_FATAL_TIMEOUT_NS) +
-                                  "ms of continuous back-pressure",
+                                  TimeUnit.NANOSECONDS.toMillis(stallTimeoutNs) + "ms of continuous back-pressure",
                               true);
         } else if (stalledNs >= SUSTAINED_BACKPRESSURE_THRESHOLD_NS && !stalled) {
             stalled = true;

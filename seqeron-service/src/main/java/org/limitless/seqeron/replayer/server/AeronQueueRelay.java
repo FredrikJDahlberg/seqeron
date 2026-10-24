@@ -104,10 +104,13 @@ final class AeronQueueRelay implements AutoCloseable {
      * @param idleStrategy     what a wait on the driver or the archive does between checks
      * @param fatalHandler     run once, from the duty cycle, when the relay can no longer keep the local
      *                         history; it must signal a shutdown and return
+     * @param stallTimeoutMs   how long the local recording may make no progress under back-pressure before the relay
+     *                         stops
      */
     AeronQueueRelay(final Aeron aeron, final AeronArchive localArchive, final List<String> archiveEndpoints,
                     final String host, final int nodeId, final int groupId, final Queue<byte[]> topologyRows,
-                    final Queue<RelayedCut> cutReports, final IdleStrategy idleStrategy, final Runnable fatalHandler) {
+                    final Queue<RelayedCut> cutReports, final IdleStrategy idleStrategy, final Runnable fatalHandler,
+                    final long stallTimeoutMs) {
         this.aeron = aeron;
         this.localArchive = localArchive;
         this.archiveEndpoints = archiveEndpoints;
@@ -119,7 +122,7 @@ final class AeronQueueRelay implements AutoCloseable {
         this.cutReports = cutReports;
         this.idleStrategy = idleStrategy;
         this.fatalHandler = fatalHandler;
-        this.relay = new QueueRelay(archiveEndpoints.size());
+        this.relay = new QueueRelay(archiveEndpoints.size(), stallTimeoutMs);
         this.counters = aeron.countersReader();
 
         queue = aeron.addExclusivePublication(FrameLayer.QUEUE_CHANNEL, streamId);
@@ -289,8 +292,7 @@ final class AeronQueueRelay implements AutoCloseable {
             return Action.BREAK;
         }
         if (relay.onBackPressured(nowMs, counters.getCounterValue(recordingCounterId))) {
-            fatal("the local recording made no progress for " + QueueRelay.RECORDING_STALL_FATAL_MS +
-                  "ms of back-pressure");
+            fatal("the local recording made no progress for " + relay.stallTimeoutMs() + "ms of back-pressure");
             return Action.BREAK;
         }
         return Action.ABORT;

@@ -2,7 +2,7 @@
 # The C++ client tier against a live three-node cluster.
 #
 # cluster_probe (seqeron-client/src/test/cpp-probe) is the C++ twin of ClusterProbe's confirm and follow modes,
-# against the members' own embedded Java drivers. Seven phases:
+# against the members' own embedded Java drivers. Eight phases:
 #
 #   A  UDP ingress from a follower's host, through PendingSends            confirm EXACT
 #   B  IPC ingress co-located with the leader (connectColocated)            confirm EXACT, no UDP fallback
@@ -13,6 +13,7 @@
 #      and the active gateway_app of the pair in seqeron-examples/topology.xml is killed — the standby is
 #      designated, resumes past its predecessor's connection id, and serves
 #   G  snapshot_app confirms a snapshot round, and its restart restores from it with the ledger's total intact
+#   H  a member restarted at a cut: ClusterStreamClient replays its recording from the cut   scan CAUGHT UP
 #
 # and no member logs a rejected ingress frame. The control in D reports what the kill had in flight; like
 # failover-test.sh's, it is not asserted, since a kill can land between two frames.
@@ -225,14 +226,36 @@ wait "$SNAP_PID"; SNAP_2_RC=$?
 ((SNAP_1_RC == 0 && SNAP_2_RC == 0)) || { echo "    exits: snapshot_app=$SNAP_1_RC, restarted=$SNAP_2_RC"; G_OK=0; }
 echo "    $(grep -m1 "# restored after" "$LOG_DIR/snap-2.log")"
 
+# Q took part in G's rounds, so its restart restores the newest restart-safe one and records each queue from the cut,
+# above position 0. With L1 still down, the cluster has no quorum until Q is back.
+echo "=== H: ClusterStreamClient replays member $Q's recording from a cut"
+H_OK=1
+for ((i = 0; i < 60; i++)); do
+  grep -q "^safe " "$BASE_DIR/cluster-$Q/restart-safe.log" 2>/dev/null && break
+  sleep 0.5
+done
+grep -q "^safe " "$BASE_DIR/cluster-$Q/restart-safe.log" 2>/dev/null || { echo "    member $Q has no restart-safe cut"; H_OK=0; }
+kill "${SEQ_PIDS[$Q]}" 2>/dev/null; wait "${SEQ_PIDS[$Q]}" 2>/dev/null
+java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$Q" -Dsequencer.baseDir="$BASE_DIR" \
+     -Dsequencer.hosts="$CLUSTER_HOSTS" -jar "$JAR" > "$LOG_DIR/seq-$Q-restart.log" 2>&1 &
+SEQ_PIDS[$Q]=$!
+wait_for_log "$LOG_DIR/seq-$Q-restart.log" "serving replay" 60 || { echo "    member $Q not back"; H_OK=0; }
+probe scan scan "$Q" 37; H_RC=$?
+SCAN=$(grep -hE "scan: |failed" "$LOG_DIR/scan.log" | tail -1)
+echo "    $SCAN"
+FIRST=$(sed -nE 's/.*first frame groupSeqNo ([0-9]+) at position ([0-9]+), a cut$/\1 \2/p' <<< "$SCAN")
+read -r FIRST_GROUP_SEQ_NO FIRST_POSITION <<< "${FIRST:-0 0}"
+((H_RC == 0 && FIRST_GROUP_SEQ_NO > 1 && FIRST_POSITION > 0)) ||
+  { echo "    expected a caught-up scan whose first frame is a cut above groupSeqNo 1 and position 0"; H_OK=0; }
+
 REJECTED=$(cat "$LOG_DIR"/seq-*.log | grep -cE "skipping (malformed )?ingress message")
 echo "=== ingress frames rejected by the sequencer: $REJECTED"
 
 if ((A_RC == 0 && B_RC == 0 && B_FELL_BACK == 0 && C_RC == 0 && C_FELL_BACK == 1 && D_RC == 0 && E_RC == 0 &&
-      REPLAYS >= 1 && F_OK == 1 && G_OK == 1 && REJECTED == 0)); then
+      REPLAYS >= 1 && F_OK == 1 && G_OK == 1 && H_OK == 1 && REJECTED == 0)); then
   echo "C++ CLIENT TEST: PASS"; exit 0
 else
   echo "C++ CLIENT TEST: FAIL (A=$A_RC B=$B_RC/fallback $B_FELL_BACK C=$C_RC/fallback $C_FELL_BACK D=$D_RC E=$E_RC" \
-       "replays=$REPLAYS F=$F_OK G=$G_OK rejected=$REJECTED)"
+       "replays=$REPLAYS F=$F_OK G=$G_OK H=$H_OK rejected=$REJECTED)"
   exit 1
 fi

@@ -179,7 +179,11 @@ public class ReplayerRecoveryTest : IDisposable
     {
         AttachReplay(11, 4096);
 
-        Assert.Throws<InvalidOperationException>(() => DeliverReplay(7));
+        DeliverReplay(7);
+
+        Assert.Contains("groupSeqNo=7, expected 1", _receiver.Fault);
+        Assert.Empty(_dispatched);
+        Assert.Equal(-1, _receiver.ReplaySessionId);
     }
 
     // Once the queue is dispatched mid-walk, a cold start races a live queue already carrying mid-stream clusterSeqNos
@@ -217,7 +221,10 @@ public class ReplayerRecoveryTest : IDisposable
     {
         AttachReplay(11, 4096);
 
-        Assert.Throws<InvalidOperationException>(() => DeliverOnQueue(1, 2, true));
+        DeliverOnQueue(1, 2, true);
+
+        Assert.Contains("groupSeqNo=2, expected 1", _receiver.Fault);
+        Assert.Empty(_dispatched);
     }
 
     [Fact(DisplayName = "continuity follows groupSeqNo, so a jump in clusterSeqNo is no gap")]
@@ -536,6 +543,24 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(requestId != _receiver.RequestId,
                     "re-requesting is a new request, so the reply to the stalled one is recognisably stale");
         Assert.True(_logged.Count == 1, "a stalled replay is reported, not silently absorbed");
+    }
+
+    [Fact(DisplayName = "a walk that stalls after dispatching resumes at its last frame rather than walking again")]
+    public void AWalkThatStallsAfterDispatchingResumesAtItsLastFrame()
+    {
+        AnswerReplaying(7, 8192);
+        DeliverReplay(1);
+        DeliverReplay(2);
+
+        AdvancePastTimers();
+
+        Assert.True(_receiver.IsAwaitingReplay);
+        Assert.True(_receiver.RequestFromPosition == 2 * 1024, "resumed at the last dispatched frame");
+        AnswerReplaying(8, 8192);
+        DeliverReplay(2); // the anchor, already dispatched
+        DeliverReplay(3);
+        Assert.Equal(new List<long> { 1, 2, 3 }, _dispatched);
+        Assert.Null(_receiver.Fault);
     }
 
     // Session id 0 is an ordinary archive replaySessionId; -1 is the only value that means "no replay". Testing >= 1

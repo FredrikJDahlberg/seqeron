@@ -28,15 +28,16 @@ import org.limitless.seqeron.sequencer.SequencerService;
 /**
  * The production {@link Replayer}: {@link ReplayerService}'s calls forwarded to the
  * co-located node's {@code Aeron} client and {@code AeronArchive} control session. Every method here
- * is a forward — any decision belongs above the seam, in {@code ReplayerService}, where it is
- * testable.
+ * but {@link #scanQueueRecording} is a forward — any decision belongs above the seam, in {@code
+ * ReplayerService}, where it is testable. That one reads a replay on the duty cycle, and blocks until
+ * the visitor stops, the bound is reached or the replay stalls.
  *
  * <p>Not thread-safe, the control publication is exclusive and every call is from the duty-cycle thread
  * (see {@code ReplayerServer}'s {@code NoOpLock} note).
  */
 public final class AeronReplayer implements Replayer {
-    /** How long the replay of a cut search may take to connect. */
-    private static final long SCAN_CONNECT_TIMEOUT_MS = 5_000;
+    /** How long the replay of a cut search may go without connecting, and then without delivering. */
+    private static final long SCAN_STALL_TIMEOUT_MS = 2_000;
 
     private final Aeron aeron;
     private final AeronArchive archive;
@@ -113,17 +114,21 @@ public final class AeronReplayer implements Replayer {
         }
     }
 
-    /** Reads the replay one frame at a time until the visitor stops, the bound is reached or a fragment is no frame. */
+    /**
+     * Reads the replay one frame at a time until the visitor stops, the bound is reached, a fragment is no frame or
+     * the replay stalls.
+     */
     private ScanEnd scan(final Subscription subscription, final int replaySessionId, final long endPosition,
                          final FrameVisitor visitor) {
-        final long deadlineMs = System.currentTimeMillis() + SCAN_CONNECT_TIMEOUT_MS;
+        long deadlineMs = System.currentTimeMillis() + SCAN_STALL_TIMEOUT_MS;
         Image image;
         while ((image = subscription.imageBySessionId(replaySessionId)) == null) {
             if (System.currentTimeMillis() > deadlineMs) {
-                throw new IllegalStateException("the replay of a cut search did not connect");
+                return ScanEnd.STALLED;
             }
             Thread.yield();
         }
+        deadlineMs = System.currentTimeMillis() + SCAN_STALL_TIMEOUT_MS;
         final ScanEnd[] ended = {null};
         final SequencedFrameDecoder frame = new SequencedFrameDecoder();
         final FragmentHandler handler = new FragmentAssembler((buffer, offset, length, header) -> {
@@ -140,8 +145,12 @@ public final class AeronReplayer implements Replayer {
             }
         });
         while (ended[0] == null) {
-            if (image.poll(handler, 1) == 0 && (image.isClosed() || image.position() >= endPosition)) {
+            if (image.poll(handler, 1) > 0) {
+                deadlineMs = System.currentTimeMillis() + SCAN_STALL_TIMEOUT_MS;
+            } else if (image.isClosed() || image.position() >= endPosition) {
                 return ScanEnd.TIP;
+            } else if (System.currentTimeMillis() > deadlineMs) {
+                return ScanEnd.STALLED;
             }
         }
         return ended[0];

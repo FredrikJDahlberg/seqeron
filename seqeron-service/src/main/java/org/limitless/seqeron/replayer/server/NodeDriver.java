@@ -53,11 +53,42 @@ public final class NodeDriver {
     /**
      * Untethered window-limit and linger timeouts when their Aeron properties are not set, rather than Aeron's 5s
      * each. Until evicted, a stalled subscriber holds the queue's window, and the sequencer and a gateway host's
-     * relay each terminate after 1s of back-pressure with no recording progress.
+     * relay each terminate after {@link #queueStallTimeoutMs} of back-pressure with no recording progress.
      */
     static final long DEFAULT_UNTETHERED_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(100);
 
+    /**
+     * How long a queue's recording may make no progress under back-pressure before the process terminates, when
+     * {@link #queueStallTimeoutMs}'s property is not set. Above a block storage's write stalls, which can reach
+     * several members at once.
+     */
+    public static final long DEFAULT_QUEUE_STALL_TIMEOUT_MS = 5_000;
+
+    /**
+     * The least stall timeout: over twice the untethered eviction, until which a stalled subscriber holds the window
+     * and the recording cannot advance.
+     */
+    public static final long MIN_QUEUE_STALL_TIMEOUT_MS = 1_000;
+
     private NodeDriver() {
+    }
+
+    /**
+     * Reads the queue stall timeout, {@code sequencer.queueStallTimeoutMs} on a member and
+     * {@code replayer.queueStallTimeoutMs} on a gateway host (doc/ops.md, "A node that terminates itself").
+     *
+     * @param property the property's name
+     * @return the timeout in milliseconds, {@link #DEFAULT_QUEUE_STALL_TIMEOUT_MS} when it is not set
+     * @throws IllegalArgumentException if it is below {@link #MIN_QUEUE_STALL_TIMEOUT_MS}
+     */
+    public static long queueStallTimeoutMs(final String property) {
+        final long timeoutMs = Long.getLong(property, DEFAULT_QUEUE_STALL_TIMEOUT_MS);
+        if (timeoutMs < MIN_QUEUE_STALL_TIMEOUT_MS) {
+            throw new IllegalArgumentException(property + " is " + timeoutMs + "; the least is " +
+                                               MIN_QUEUE_STALL_TIMEOUT_MS +
+                                               ", above a stalled subscriber's untethered eviction");
+        }
+        return timeoutMs;
     }
 
     /**

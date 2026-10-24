@@ -272,9 +272,9 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive
  *   2. Call start(aeron, archive, recordingId, catchUpPosition, replayChannel).
  *   3. Call poll() in a duty-cycle loop.
  *
- * Every recording a node holds of a queue starts at groupSeqNo 1, so that one recording is the whole queue. It is
- * replayed with NULL_LENGTH, so it follows the recording's growth once caught up: the same image delivers
- * history and then the live feed, with no subscription switch.
+ * The recording is replayed from its start with NULL_LENGTH, so it follows the recording's growth once caught up:
+ * the same image delivers history and then the live feed, with no subscription switch. It is the whole queue only on
+ * a cluster with no snapshot policy: a member restarted at a cut records from the cut, and a purge moves the start.
  *
  * Every message is stamped with receiveTimeNs (std::chrono::system_clock).
  */
@@ -326,7 +326,8 @@ class ClusterStreamClient
                const std::int64_t catchUpPosition, const char* replayChannel = REPLAY_CHANNEL_IPC)
     {
         aeron::archive::client::ReplayParams replayParams;
-        replayParams.position(0).length(aeron::archive::client::NULL_LENGTH);
+        // NULL_POSITION is the recording's own start, which a restart at a cut or a purge moves off 0.
+        replayParams.position(aeron::archive::client::NULL_POSITION).length(aeron::archive::client::NULL_LENGTH);
         m_archive = archive;
         start(std::move(aeron),
               archive->startReplay(recordingId, replayChannel, ARCHIVE_REPLAY_STREAM_ID, replayParams), catchUpPosition,

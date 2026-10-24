@@ -142,6 +142,7 @@ The sequenced stream itself has no port: the queue is `aeron:ipc` on each member
 | `sequencer.leaderHeartbeatIntervalMs` | `200`                  | how often the leader heartbeats its followers |
 | `sequencer.leaderHeartbeatTimeoutMs` | `2000`                  | how long a follower waits for a leader heartbeat before it starts an election ([`ops.md`](ops.md), "Consensus timeouts") |
 | `sequencer.electionTimeoutMs` | `1000`                         | how long an election stage waits on the other members |
+| `sequencer.queueStallTimeoutMs` | `5000`, at least `1000`      | how long a queue's recording may make no progress under back-pressure before the member exits 70 ([`ops.md`](ops.md), "A node that terminates itself") |
 | `aeron.cluster.max.sessions` | `64`, rather than Aeron's 10   | the most client sessions the cluster holds at once ([`ops.md`](ops.md), "Cluster sessions") |
 
 The Replayer runs in the member's JVM, on its media driver, and takes no configuration of its own.

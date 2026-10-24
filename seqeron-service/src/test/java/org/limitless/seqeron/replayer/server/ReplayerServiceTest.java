@@ -163,7 +163,8 @@ class ReplayerServiceTest {
 
         // Reported as a tip, this transient read would tell a walking app it is caught up.
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId());
-        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID));
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID),
+                     "the client's resend is the retry");
         assertTrue(noClientReplayFor(6));
     }
 
@@ -307,6 +308,29 @@ class ReplayerServiceTest {
 
         assertEquals(6144, lastClientReplay().position());
         assertTrue(fakeReplayer.scans().isEmpty());
+    }
+
+    @Test
+    void aCutFoundByReadingIsKeptSoTheResendDoesNotReadAgain() {
+        recordingWithCuts();
+        cutRequest(CLIENT, 1, 6000, 50);
+
+        cutRequest(CLIENT, 2, 6000, 50);
+
+        assertEquals(6144, lastClientReplay().position());
+        assertEquals(List.of(6000L, 4096L), fakeReplayer.scans());
+    }
+
+    @Test
+    void aCutSearchTheArchiveStallsIsHeldForTheResend() {
+        recordingWithCuts();
+        fakeReplayer.stallScans();
+
+        final Reply reply = cutRequest(CLIENT, 1, 6144, 50);
+
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId(), "not refused, which costs the snapshot");
+        assertTrue(noClientReplayStarted());
+        assertEquals(List.of(6144L, 4096L), fakeReplayer.scans(), "a stalled hint falls back to the start");
     }
 
     @Test

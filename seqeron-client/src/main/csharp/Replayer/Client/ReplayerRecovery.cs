@@ -12,7 +12,8 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 
 /// <summary>
 /// The state machine of <c>ReplayerStreamReceiver</c>. A cold start walks the node's active recording of its queue
-/// from its start, which holds the whole queue; catch-up is detected by position (<c>Replaying.catchUpPosition</c>);
+/// from its start, which must be the queue's: a recording that starts at a cut or was purged stops the walk at its
+/// first frame. Catch-up is detected by position (<c>Replaying.catchUpPosition</c>);
 /// a gap by groupSeqNo (spec F-6), repaired by resuming the active recording at the last dispatched frame.
 /// De-duplication and a resume's anchor go by clusterSeqNo, which increases along a queue but jumps (spec P-3).
 /// <para>The replay-to-live seam is closed by the queue itself: the untethered queue is polled every duty cycle, so
@@ -201,7 +202,6 @@ internal sealed class ReplayerRecovery
     /// <param name="receiveNs">when the frame arrived, so a consumer's delivery-latency stats measure the queue rather
     /// than the drain of the retained FIFO</param>
     /// <param name="fromReplay">whether the frame arrived on a replay image rather than the live queue</param>
-    /// <exception cref="InvalidOperationException">if the first frame observed is not clusterSeqNo 1</exception>
     public void OnFrame(IDirectBuffer buffer, int offset, int length, long framePosition, long receiveNs,
                         bool fromReplay)
     {
@@ -280,9 +280,9 @@ internal sealed class ReplayerRecovery
                          "FATAL: first frame observed has groupSeqNo={0}, expected 1 — this node's recording does " +
                              "not reach the start of the queue",
                          groupSeqNo);
-            throw new InvalidOperationException(
-                $"first frame observed has groupSeqNo={groupSeqNo}, expected 1 — this node's recording does not " +
-                "reach the start of the queue");
+            LatchFault($"first frame observed has groupSeqNo={groupSeqNo}, expected 1 — this node's recording does " +
+                       "not reach the start of the queue");
+            return;
         }
         DispatchFrame(buffer, offset, length, clusterSeqNo, framePosition, receiveNs, fromReplay);
         DrainRetained();
@@ -695,14 +695,14 @@ internal sealed class ReplayerRecovery
     }
 
     /// <summary>Re-asks for whatever is in flight; a resume goes back through <see cref="RequestResume"/> for a fresh
-    /// anchor.</summary>
+    /// anchor, and so does a walk that has dispatched a frame.</summary>
     private void ReRequestCurrent()
     {
         if (_checkingCut)
         {
             RequestCut();
         }
-        else if (_requestFromPosition == ReplayProtocol.FromStart)
+        else if (_requestFromPosition == ReplayProtocol.FromStart && _lastGroupSeqNo == 0)
         {
             RequestReplay(ReplayProtocol.FromStart); // same request verbatim, new request id
         }
@@ -745,12 +745,18 @@ internal sealed class ReplayerRecovery
     /// <summary>Stops recovering: the recording does not hold what the request expected of it.</summary>
     private void Fail(string reason)
     {
+        LatchFault(reason);
+        Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.QueueGap, _actions.MemberId,
+                     "FATAL: {0} — this node's recording does not match the positions this client holds", reason);
+    }
+
+    /// <summary>Stops recovering, for the receiver to raise <paramref name="reason"/> from its duty cycle.</summary>
+    private void LatchFault(string reason)
+    {
         Fault = reason;
         _awaitingReplay = false;
         _replaySessionId = -1;
         _actions.CloseReplay();
-        Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.QueueGap, _actions.MemberId,
-                     "FATAL: {0} — this node's recording does not match the positions this client holds", reason);
     }
 
     /// <summary>An attached (or expected) replay stopped delivering: see the watchdog in

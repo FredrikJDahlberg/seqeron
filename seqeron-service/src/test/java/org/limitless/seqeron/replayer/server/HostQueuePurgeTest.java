@@ -22,7 +22,7 @@ import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
 
 /**
  * A gateway host's Replayer purging its queue recording below the floor its relay's reported cuts give
- * (doc/snapshot-gateway-purge-plan.md); {@link QueuePurgeTest} is a member's.
+ * (doc/snapshot.md §10.6); {@link QueuePurgeTest} is a member's.
  */
 class HostQueuePurgeTest {
     private static final int GROUP_ID = FakeReplayer.GROUP_ID;

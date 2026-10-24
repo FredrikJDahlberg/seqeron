@@ -43,6 +43,9 @@ class QueuePublisherTest {
 
     private static final long CLUSTER_TIME_DEADLINE = 1_000;
 
+    /** Five gauge thresholds, so a test counts the fatal timeout in threshold periods. */
+    private static final long STALL_TIMEOUT_NS = 5 * QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS;
+
     private Recorder actions;
     private QueuePublisher publisher;
 
@@ -51,7 +54,7 @@ class QueuePublisherTest {
     void setUp() {
         Logger.install(event -> { });
         actions = new Recorder();
-        publisher = new QueuePublisher(actions);
+        publisher = new QueuePublisher(actions, STALL_TIMEOUT_NS);
         publisher.activate(new int[] {GROUP});
     }
 
@@ -246,7 +249,7 @@ class QueuePublisherTest {
     @Test
     @DisplayName("an archive that is slow but still draining is never fatal, however long it back-pressures")
     void slowButDrainingArchiveIsLeftAlone() {
-        actions.nanosPerIdle = periodOf(QueuePublisher.QUEUE_STALL_FATAL_TIMEOUT_NS);
+        actions.nanosPerIdle = periodOf(STALL_TIMEOUT_NS);
         actions.recordedAdvancePerIdle = 1; // the recording keeps moving under the back-pressure
         actions.failedOffers = clockReads(20);
 
@@ -283,7 +286,7 @@ class QueuePublisherTest {
 
         // Same recording position as before, and more than the fatal timeout since it last moved: it is the
         // time since THIS stall began that counts, so the next emit may only raise the gauge again.
-        actions.nowNs += QueuePublisher.QUEUE_STALL_FATAL_TIMEOUT_NS;
+        actions.nowNs += STALL_TIMEOUT_NS;
         actions.offers = 0;
         publisher.emit(GROUP, FRAME, 64);
 
@@ -335,7 +338,7 @@ class QueuePublisherTest {
     @DisplayName("activation opens every group's queue in order and returns once the archive records them all")
     void activationOpensAndRecordsEveryQueue() {
         actions = new Recorder();
-        publisher = new QueuePublisher(actions);
+        publisher = new QueuePublisher(actions, STALL_TIMEOUT_NS);
         actions.idlesBeforeRecording = 3;
 
         publisher.activate(new int[] {2, 5, 9});
@@ -349,7 +352,7 @@ class QueuePublisherTest {
     @DisplayName("an archive that has not recorded every queue within the activation budget halts the node")
     void unrecordedQueueAtActivationHalts() {
         actions = new Recorder();
-        publisher = new QueuePublisher(actions);
+        publisher = new QueuePublisher(actions, STALL_TIMEOUT_NS);
         actions.nanosPerIdle = QueuePublisher.QUEUE_RECORDING_START_TIMEOUT_NS / 4;
         actions.idlesBeforeRecording = Long.MAX_VALUE;
 
@@ -364,7 +367,7 @@ class QueuePublisherTest {
     @DisplayName("a queue that cannot be opened halts the node")
     void queueThatCannotBeOpenedHalts() {
         actions = new Recorder();
-        publisher = new QueuePublisher(actions);
+        publisher = new QueuePublisher(actions, STALL_TIMEOUT_NS);
         actions.openFailure = new IllegalStateException("archive refused");
 
         publisher.activate(new int[] {1});
@@ -379,7 +382,7 @@ class QueuePublisherTest {
     @DisplayName("before activation there is no queue, so the 1 Hz check checks nothing")
     void checkBeforeActivationChecksNothing() {
         actions = new Recorder();
-        publisher = new QueuePublisher(actions);
+        publisher = new QueuePublisher(actions, STALL_TIMEOUT_NS);
         actions.recordingActive = false;
 
         publisher.checkRecordingAlive();
@@ -391,7 +394,7 @@ class QueuePublisherTest {
     @DisplayName("any one queue's recording stopping is fatal off the 1 Hz check")
     void oneStoppedQueueIsFatal() {
         actions = new Recorder();
-        publisher = new QueuePublisher(actions);
+        publisher = new QueuePublisher(actions, STALL_TIMEOUT_NS);
         publisher.activate(new int[] {1, 2, 3});
         actions.stoppedGroup = 2;
 
@@ -429,7 +432,7 @@ class QueuePublisherTest {
         publisher.checkRecordingAlive();
         publisher.checkRecordingAlive();
 
-        actions.nanosPerIdle = periodOf(QueuePublisher.QUEUE_STALL_FATAL_TIMEOUT_NS);
+        actions.nanosPerIdle = periodOf(STALL_TIMEOUT_NS);
         actions.failedOffers = clockReads(4);
         publisher.emit(GROUP, FRAME, 64);
         actions.failedTimers = clockReads(4);

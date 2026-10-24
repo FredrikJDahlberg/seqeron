@@ -22,7 +22,7 @@ final class CutLookup {
         BELOW,
         /** The recording passes the cut without a frame at it: it is not the log the cut was made in. */
         NOT_IN_LOG,
-        /** The recording has not reached the cut yet. */
+        /** The recording has not reached the cut yet, or the archive stalled reading it. */
         PENDING
     }
 
@@ -95,17 +95,21 @@ final class CutLookup {
         if (tip <= startPosition) {
             return Answer.PENDING;
         }
+        Answer answer = null;
         if (hint > startPosition && hint < tip) {
             try {
-                final Answer fromHint = scan(recordingId, hint, tip, cutClusterSeqNo, scanner, false);
-                if (fromHint != null) {
-                    return fromHint;
-                }
+                answer = scan(recordingId, hint, tip, cutClusterSeqNo, scanner, false);
             } catch (final RuntimeException refused) {
                 // A hint that is no frame boundary may be refused by the archive; the recording's start is not.
             }
         }
-        return scan(recordingId, startPosition, tip, cutClusterSeqNo, scanner, true);
+        if (answer == null) {
+            answer = scan(recordingId, startPosition, tip, cutClusterSeqNo, scanner, true);
+        }
+        if (answer.verdict() == Verdict.FOUND) {
+            keep(recordingId, cutClusterSeqNo, answer.position()); // so a resend does not read it again
+        }
+        return answer;
     }
 
     /**
@@ -145,6 +149,9 @@ final class CutLookup {
         }
         if (end == Replayer.ScanEnd.UNREADABLE) {
             return fromStart ? Answer.NOT_IN_LOG : null;
+        }
+        if (end == Replayer.ScanEnd.STALLED && !fromStart) {
+            return null; // as a refused hint: the recording's start is tried
         }
         return Answer.PENDING;
     }

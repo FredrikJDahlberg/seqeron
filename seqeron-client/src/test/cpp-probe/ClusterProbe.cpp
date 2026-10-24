@@ -7,6 +7,8 @@
 //            --colocated connects through the member's IPC ingress first, falling back to UDP.
 //   follow:  cold-starts a ReplayerStreamReceiver, follows the queue live for --live-seconds after catching up, and
 //            exits 0 iff it dispatched every frame from groupSeqNo 1 with no gap.
+//   scan:    replays the co-located archive's recording of the queue with ClusterStreamClient, from the recording's
+//            start, and exits 0 iff it reaches the recording's position at connect; it reports the first frame.
 //
 // Both read the queue of --group, or else the default queue (spec §3.1), and address their frames to it.
 //
@@ -37,6 +39,7 @@
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/ReplayProtocol.hpp"
 #include "org/limitless/seqeron/replayer/client/ReplayerStreamReceiver.hpp"
+#include "org/limitless/seqeron/sequencer/client/ClusterStreamClient.hpp"
 #include "org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
 #include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
@@ -69,6 +72,7 @@ constexpr std::uint16_t PROBE_MARKER_LENGTH = MESSAGE_HEADER_LENGTH + PROBE_MARK
 constexpr std::size_t PENDING_CAPACITY = 4096;
 constexpr std::int64_t IPC_CONNECT_TIMEOUT_MS = 2'000;
 constexpr std::int64_t DRAIN_TIMEOUT_MS = 15'000;
+constexpr std::int64_t SCAN_TIMEOUT_MS = 15'000;
 
 std::int64_t monotonicMs()
 {
@@ -446,9 +450,49 @@ int follow(const Options& options)
     return exact ? 0 : 1;
 }
 
+int scan(const Options& options)
+{
+    std::int64_t firstGroupSeqNo = 0;
+    std::int64_t firstPosition = -1;
+    bool firstIsCut = false;
+    bool ended = false;
+    auto idle = util::resolveIdleStrategy();
+
+    const std::shared_ptr<aeron::Aeron> aeron = connect(options);
+    std::int64_t recordingId = -1;
+    std::int64_t catchUpPosition = 0;
+    const auto archive =
+        client::connectLocalArchive(aeron, protocol::ARCHIVE_CONTROL_STREAM_ID, groupId(aeron, options),
+                                    "[ClusterProbe]", recordingId, catchUpPosition);
+    client::ClusterStreamClient stream(
+        [&](const protocol::SequencedEvent& event) {
+            if (firstPosition < 0)
+            {
+                firstGroupSeqNo = event.groupSeqNo;
+                firstPosition = event.position;
+                firstIsCut = event.system && event.systemEventType == protocol::SNAPSHOT_STARTED;
+            }
+        },
+        {}, {}, {}, [&] { ended = true; });
+    stream.start(aeron, archive, recordingId, catchUpPosition);
+    const std::int64_t deadlineMs = monotonicMs() + SCAN_TIMEOUT_MS;
+    while (!stream.isCaughtUp() && !ended && monotonicMs() < deadlineMs)
+    {
+        idle.idle(stream.poll());
+    }
+    const bool caughtUp = stream.isCaughtUp();
+    util::Logger::info(CLUSTER_PROBE,
+                       "scan: %s — recording %lld to position %lld, first frame groupSeqNo %lld at position %lld%s",
+                       caughtUp ? "CAUGHT UP" : "NOT CAUGHT UP", static_cast<long long>(recordingId),
+                       static_cast<long long>(catchUpPosition), static_cast<long long>(firstGroupSeqNo),
+                       static_cast<long long>(firstPosition), firstIsCut ? ", a cut" : "");
+    return caughtUp ? 0 : 1;
+}
+
 int usage()
 {
-    std::fputs("usage: cluster_probe confirm|follow --member <id> --client-id <id> [--aeron-dir <dir>] [--group <id>]\n"
+    std::fputs("usage: cluster_probe confirm|follow|scan --member <id> --client-id <id> [--aeron-dir <dir>] "
+               "[--group <id>]\n"
                "         confirm: --egress-port <port> [--count <n>] [--pacing-micros <us>] [--untracked] "
                "[--colocated]\n"
                "         follow:  [--live-seconds <s>]\n",
@@ -475,6 +519,10 @@ int main(const int argc, char** argv)
         if (mode == "follow")
         {
             return follow(options);
+        }
+        if (mode == "scan")
+        {
+            return scan(options);
         }
         return usage();
     }

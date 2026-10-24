@@ -240,7 +240,7 @@ This repository's processes use the ids below. An application's should start at 
 | 19 | `seqeron-examples` `FollowStream` (C#) |
 | 20 | `seqeron-examples` `ColocatedApp` (C#) |
 | 21, 22 | `seqeron-examples` `GatewayApp` (C#), GW-EX-CS-A, GW-EX-CS-B |
-| 31–36 | `csharp-client-test.sh` C# probes; `cpp-client-test.sh` C++ probes |
+| 31–36 | `csharp-client-test.sh` C# probes; `cpp-client-test.sh` C++ probes, and its scan 37 |
 | 41–43 | `csharp-windows-test.sh` C# probes |
 
 ## Consensus timeouts
@@ -371,11 +371,11 @@ on a timer: once it has been three quarters of a window behind for `aeron.unteth
 and then lingered for `aeron.untethered.linger.timeout`, each checked every `aeron.timer.interval`. Until
 then it still holds the window, and a full window behind it back-pressures the queue.
 
-The sequencer and a gateway host's relay terminate after 1 s of back-pressure with no recording progress,
-so seqeron's drivers set those three to 10 ms, 100 ms and 100 ms. At Aeron's defaults of 1 s, 5 s and 5 s,
-a subscriber that stops for a window's worth of traffic would take its member down. When overriding them,
-keep both timeouts plus two timer intervals well inside that second. A dropped subscriber rejoins at the
-live position after `aeron.untethered.resting.timeout`, 10 s.
+The sequencer and a gateway host's relay terminate after the queue stall timeout of back-pressure with no
+recording progress ("A node that terminates itself"), so seqeron's drivers set those three to 10 ms, 100 ms and
+100 ms. At Aeron's defaults of 1 s, 5 s and 5 s, a subscriber that stops for a window's worth of traffic would
+take its member down. When overriding them, keep both timeouts plus two timer intervals under half the stall
+timeout. A dropped subscriber rejoins at the live position after `aeron.untethered.resting.timeout`, 10 s.
 
 ## Recording checksums
 
@@ -442,9 +442,17 @@ a replay of its whole log.
 
 A member's archive is its copy of the sequenced history, so a member that cannot record would accumulate
 silent holes in it. Rather than do that, `SequencerServer` exits with code **70** when its archive stops
-recording the queue: no progress for 1 s under back-pressure, or the recording gone. This is deliberate, not
-a crash.
+recording the queue: no progress for `sequencer.queueStallTimeoutMs` (default 5 s) under back-pressure, or the
+recording gone. This is deliberate, not a crash.
 
+- **The stall timeout** counts only while a frame waits on the queue and the recording position does not move: a
+  recording that is slow but advancing never trips it, and the `seqeron_sequencer_queue_stalled` gauge rises after
+  200 ms as the warning. While it runs, the member sequences nothing, so a long one holds a leader's co-located
+  applications up; a short one turns a write stall of the storage into an exit, and a stall that reaches several
+  members at once, as one on shared network block storage can, into a loss of quorum. The 5 s default rides out
+  such stalls; lower it only on local disks whose stalls are measured. It may not go below 1000, which keeps
+  it over twice an untethered subscriber's eviction ("Untethered subscribers"). A gateway host's relay applies the
+  same bound to its local recording, as `replayer.queueStallTimeoutMs` in the host's JVM.
 - **What you see.** A `[SequencerService/N] FATAL: … terminating this node` line naming the reason, and
   `seqeron_sequencer_queue_stalled{member="N"}` at 1 until the process goes; then `up{job="seqeron",member="N"}`
   falls to 0.
@@ -456,8 +464,8 @@ a crash.
   `clusterctl shutdown`, is the signal to restart. A member that halted rather than shut down
   ([`fault-tolerance.md`](fault-tolerance.md) §1.3) leaves its mark files active, and a restart within
   about 10 s fails with "active mark file detected"; delay the restart by 12 s or retry it.
-- **If it exits 70 again immediately**, the archive is still broken: start-up has the same bound, and the
-  recording must go live within 5 s. Fix the storage first.
+- **If it exits 70 again immediately**, the archive is still broken: at start-up the recording must go live
+  within 5 s. Fix the storage first.
 
 A member also exits 70 when its Replayer's duty cycle dies (a `[ReplayerService/N]` error names it), and 71
 when its shutdown gave up waiting for that duty cycle. Both mean restart it.

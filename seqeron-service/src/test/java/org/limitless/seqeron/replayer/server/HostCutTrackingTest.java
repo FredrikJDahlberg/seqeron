@@ -21,7 +21,7 @@ import org.limitless.seqeron.sbe.replay.SnapshotJoinedEncoder;
 import org.limitless.seqeron.sbe.replay.SnapshotRoundDecoder;
 
 /**
- * A gateway host's Replayer tracking the markers its relays report (doc/snapshot-gateway-purge-plan.md): the first
+ * A gateway host's Replayer tracking the markers its relays report (doc/snapshot.md §10.6): the first
  * live report of a cut opens its round, every report is kept for its own queue, and a safe cut raises each reported
  * queue's purge floor.
  */

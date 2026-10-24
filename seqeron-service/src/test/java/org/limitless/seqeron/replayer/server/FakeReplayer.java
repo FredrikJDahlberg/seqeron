@@ -54,6 +54,7 @@ final class FakeReplayer implements Replayer {
 
     private final Map<Long, List<Frame>> frames = new HashMap<>();
     private final List<Long> scans = new ArrayList<>();
+    private boolean stallScans;
 
     private final List<StartedReplay> startedReplays = new ArrayList<>();
     private final List<Long> stoppedReplays = new ArrayList<>();
@@ -117,6 +118,11 @@ final class FakeReplayer implements Replayer {
     /** The positions the service began a scan at, in order. */
     List<Long> scans() {
         return scans;
+    }
+
+    /** Makes every subsequent scan stall, as an archive that stops delivering does. */
+    void stallScans() {
+        stallScans = true;
     }
 
     /** Marks a recording stopped, as an operator repairing an unclean shutdown's leftover does. */
@@ -275,6 +281,9 @@ final class FakeReplayer implements Replayer {
                                       final FrameVisitor visitor) {
         scans.add(fromPosition);
         throwIfArchiveDown();
+        if (stallScans) {
+            return ScanEnd.STALLED;
+        }
         final List<Frame> recorded = frames.getOrDefault(recordingId, List.of());
         int i = 0;
         while (i < recorded.size() && recorded.get(i).position() != fromPosition) {
