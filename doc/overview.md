@@ -257,6 +257,9 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 | members | up to seven, bounded by the 70-port cluster block |
 | payload | 8,874 bytes per message; larger payloads are split by the application |
 | node recovery | full-log replay without a `<snapshots>` policy, so time and archive size grow with uptime (the heartbeat alone is about 86,400 messages a day); with one, a replay of the log since a cluster snapshot |
+| queue history | with a `<snapshots>` policy, purged on each member below the newest restart-safe cut; a gateway host purges nothing, so its recordings grow with uptime |
+| Raft log | trimmed by hand: `clusterctl trim-log` on each member |
+| gateway relay | one cut off from every member while they purge past it stops relaying until its host restarts |
 | concurrent replays | four per member, one while its queue recording falls behind; more clients wait |
 | ingress confirmation | within one producer process: a restarted producer starts with nothing pending |
 | faults | crash, not Byzantine; network faults are injected in CI, but a standalone media driver is never killed |

@@ -73,9 +73,13 @@ Features
 Limitations
 -----------
 
-- **No cluster snapshots.** Cluster node snapshots are not yet implemented
-  ([design](doc/snapshot.md#10-cluster-snapshots)). A node's recovery is a full replay of the Raft log from
-  `clusterSeqNo` 1. 
+- **Cluster snapshots need a `<snapshots>` policy.** Without one, a node recovers by replaying the Raft log from
+  `clusterSeqNo` 1, and its recovery time and archive size grow with uptime. With one, each member purges its queue
+  recordings below the newest restart-safe cut ([design](doc/snapshot.md#10-cluster-snapshots)).
+- **The Raft log is trimmed by hand.** Aeron's open-source release trims nothing; `clusterctl trim-log` is run on
+  each member.
+- **Gateway hosts do not purge.** A gateway host's queue recordings grow with uptime. A host whose relay is cut off
+  from every member while they purge past it stops relaying, with error logs, until it is restarted.
 - **Groups are fixed at the first topology load.** No group can be added, removed or renamed on an existing
   archive, and no gateway or application can move to another group.
 - **No authentication or encryption.** Anyone who reaches the cluster's ports can submit messages, operator

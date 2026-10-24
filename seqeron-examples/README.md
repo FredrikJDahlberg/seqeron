@@ -167,21 +167,20 @@ would otherwise serve instead:
     dotnet run --project seqeron-examples/src/csharp/FollowStream
     dotnet run --project seqeron-examples/src/csharp/ColocatedApp
 
-The gateway pair, whose list the node loaded — stop the first and the second takes over:
+The active instance of the gateway pair, whose list the node loaded. Its standby, `GW-EX-B`, belongs on another
+node, so that losing a node never takes both; `cpp-client-test.sh` runs the pair on a three-node cluster through a
+handover:
 
     SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-A ./seqeron-examples/cmake-build-release/gateway_app
-    SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-B ./seqeron-examples/cmake-build-release/gateway_app
 
 or in Java, with `-Dgateway.name` in place of the variable:
 
     ./gradlew -p seqeron-examples runGateway -Dgateway.name=GW-EX-A
-    ./gradlew -p seqeron-examples runGateway -Dgateway.name=GW-EX-B
 
-and the C# pair, from its own list:
+and the C# pair's active instance, from its own list (`csharp-client-test.sh` runs its handover):
 
     ./seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology-csharp.xml
     SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-CS-A dotnet run --project seqeron-examples/src/csharp/GatewayApp
-    SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-CS-B dotnet run --project seqeron-examples/src/csharp/GatewayApp
 
 `SnapshotApp` needs the same list loaded, for its row and the round interval; it runs without it, but
 takes no snapshots. A cluster that loaded an earlier copy of the list takes this one too: a row replaces the
