@@ -223,7 +223,7 @@ its counters. Keep it unique among the clients on a node: two that share one sha
 Replayer does not use it; it addresses each client by an id the client draws from its media driver (spec
 **R-4**).
 
-This repository's processes use the ids below. An application's should start at 23 and skip 31–36 and
+This repository's processes use the ids below. An application's should start at 24 and skip 31–38 and
 41–43.
 
 | `clientId` | used by |
@@ -240,7 +240,8 @@ This repository's processes use the ids below. An application's should start at 
 | 19 | `seqeron-examples` `FollowStream` (C#) |
 | 20 | `seqeron-examples` `ColocatedApp` (C#) |
 | 21, 22 | `seqeron-examples` `GatewayApp` (C#), GW-EX-CS-A, GW-EX-CS-B |
-| 31–36 | `csharp-client-test.sh` C# probes; `cpp-client-test.sh` C++ probes, and its scan 37 |
+| 23 | `seqeron-examples` `SnapshotApp` (C#) |
+| 31–38 | `csharp-client-test.sh` C# probes 31–37; `cpp-client-test.sh` C++ probes 31–36, its scan 37 and its walk 38 |
 | 41–43 | `csharp-windows-test.sh` C# probes |
 
 ## Consensus timeouts

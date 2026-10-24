@@ -2,6 +2,7 @@ package org.limitless.seqeron.tools;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.aeron.Aeron;
@@ -9,12 +10,14 @@ import io.aeron.FragmentAssembler;
 import io.aeron.Image;
 import io.aeron.Publication;
 import io.aeron.Subscription;
+import io.aeron.archive.client.AeronArchive;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
 import io.aeron.test.SystemTestWatcher;
 import io.aeron.test.Tests;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import org.agrona.ExpandableArrayBuffer;
@@ -26,9 +29,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
+import org.limitless.seqeron.replayer.server.AeronReplayer;
+import org.limitless.seqeron.replayer.server.Replayer;
 import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingDecoder;
@@ -44,6 +50,7 @@ class CutLookupTest {
     private static final int CLIENT_ID = 11;
     private static final long TIMEOUT_MS = 20_000;
     private static final int FRAMES = 5;
+    private static final int RESPONSE_STREAM_ID = 126; // beside ReplaySlotsTest's
 
     @RegisterExtension
     final SystemTestWatcher watcher = new SystemTestWatcher();
@@ -97,6 +104,84 @@ class CutLookupTest {
         }
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");
+    }
+
+    @Test
+    @InterruptAfter(60)
+    void aScanPastWhatTheRecordingWillHoldStallsAtItsDeadlineRatherThanBlocking() {
+        final int member = cluster.awaitLeader();
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
+             AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()
+                                                             .aeron(aeron)
+                                                             .ownsAeronClient(false)
+                                                             .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                                             .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+                                                             .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                                             .controlResponseStreamId(RESPONSE_STREAM_ID))) {
+            final AeronReplayer replayer = new AeronReplayer(aeron, archive, member);
+            final Replayer.RecordingSpan span = replayer.listQueueRecordings(InProcessCluster.GROUP_ID).stream()
+                .filter(Replayer.RecordingSpan::active)
+                .findFirst()
+                .orElseThrow();
+            // Without a quorum nothing more is sequenced, heartbeats included, so nothing more reaches the queue.
+            for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
+                if (m != member) {
+                    cluster.stop(m);
+                }
+            }
+            final long tip = replayer.recordingPosition(span.recordingId());
+            final List<Long> read = new ArrayList<>();
+
+            // Its own thread: a scan that never returns spins without checking for an interrupt.
+            final long startMs = System.currentTimeMillis();
+            final Replayer.ScanEnd end = assertTimeoutPreemptively(
+                Duration.ofSeconds(10),
+                () -> replayer.scanQueueRecording(span.recordingId(), span.startPosition(), tip + 1024 * 1024,
+                                                  (position, clusterSeqNo) -> {
+                                                      read.add(clusterSeqNo);
+                                                      return true;
+                                                  }),
+                "the scan blocked: it would hold the Replayer's duty cycle");
+            final long elapsedMs = System.currentTimeMillis() - startMs;
+
+            assertEquals(Replayer.ScanEnd.STALLED, end);
+            assertFalse(read.isEmpty(), "it read what the recording held first");
+            assertTrue(elapsedMs >= 2_000 && elapsedMs < 10_000, "it stalled after " + elapsedMs + " ms, not 2 s");
+        }
+    }
+
+    @Test
+    @InterruptAfter(60)
+    void aScanOfARecordingStillGrowingRunsPastItsDeadlineWhileFramesKeepArriving() {
+        final int member = cluster.awaitLeader();
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
+             AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()
+                                                             .aeron(aeron)
+                                                             .ownsAeronClient(false)
+                                                             .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                                             .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+                                                             .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                                             .controlResponseStreamId(RESPONSE_STREAM_ID))) {
+            final AeronReplayer replayer = new AeronReplayer(aeron, archive, member);
+            final Replayer.RecordingSpan span = replayer.listQueueRecordings(InProcessCluster.GROUP_ID).stream()
+                .filter(Replayer.RecordingSpan::active)
+                .findFirst()
+                .orElseThrow();
+            final long tip = replayer.recordingPosition(span.recordingId());
+
+            // The 1 Hz heartbeat records a frame well inside each 2 s deadline; the visitor stops at twice that.
+            final long startMs = System.currentTimeMillis();
+            final Replayer.ScanEnd end = assertTimeoutPreemptively(
+                Duration.ofSeconds(10),
+                () -> replayer.scanQueueRecording(span.recordingId(), span.startPosition(), tip + 1024 * 1024,
+                                                  (position, clusterSeqNo) ->
+                                                      System.currentTimeMillis() - startMs < 4_000),
+                "the scan blocked: it would hold the Replayer's duty cycle");
+            final long elapsedMs = System.currentTimeMillis() - startMs;
+
+            assertEquals(Replayer.ScanEnd.STOPPED, end, "it stalled after " + elapsedMs + " ms");
+            assertTrue(elapsedMs >= 4_000, "it stopped after " + elapsedMs + " ms");
+        }
     }
 
     /** Reads frames off the live queue until {@link #FRAMES} have been seen: the heartbeat supplies them. */

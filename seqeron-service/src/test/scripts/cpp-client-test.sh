@@ -13,7 +13,8 @@
 #      and the active gateway_app of the pair in seqeron-examples/topology.xml is killed — the standby is
 #      designated, resumes past its predecessor's connection id, and serves
 #   G  snapshot_app confirms a snapshot round, and its restart restores from it with the ledger's total intact
-#   H  a member restarted at a cut: ClusterStreamClient replays its recording from the cut   scan CAUGHT UP
+#   H  a member restarted at a cut: ClusterStreamClient replays its recording from the cut   scan CAUGHT UP;
+#      a ReplayerStreamReceiver with no snapshot file walks it from its start                 follow FAILED
 #
 # and no member logs a rejected ingress frame. The control in D reports what the kill had in flight; like
 # failover-test.sh's, it is not asserted, since a kill can land between two frames.
@@ -247,6 +248,11 @@ FIRST=$(sed -nE 's/.*first frame groupSeqNo ([0-9]+) at position ([0-9]+), a cut
 read -r FIRST_GROUP_SEQ_NO FIRST_POSITION <<< "${FIRST:-0 0}"
 ((H_RC == 0 && FIRST_GROUP_SEQ_NO > 1 && FIRST_POSITION > 0)) ||
   { echo "    expected a caught-up scan whose first frame is a cut above groupSeqNo 1 and position 0"; H_OK=0; }
+# With no snapshot file, a ReplayerStreamReceiver walks that recording from its start, and its poll throws.
+probe walk follow "$Q" 38 --live-seconds 1; WALK_RC=$?
+echo "    $(verdict walk)"
+((WALK_RC != 0)) && grep -q "follow failed: .*expected 1" "$LOG_DIR/walk.log" ||
+  { echo "    expected the walk from the recording's start to fail on the cut"; H_OK=0; }
 
 REJECTED=$(cat "$LOG_DIR"/seq-*.log | grep -cE "skipping (malformed )?ingress message")
 echo "=== ingress frames rejected by the sequencer: $REJECTED"

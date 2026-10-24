@@ -19,6 +19,7 @@ through the same consumer — so the round trip is measured over the real path.
 | `src/csharp/FollowStream` | the low-level flow in C#, built against the `Org.Limitless.Seqeron` package — see below |
 | `src/csharp/ColocatedApp` | its front-door twin in C# |
 | `src/csharp/GatewayApp` | a C# gateway pair of its own |
+| `src/csharp/SnapshotApp` | `SnapshotApp`'s C# twin |
 
 ## Consume and publish
 
@@ -58,18 +59,20 @@ examples against a live cluster, the pair through a handover and `snapshot_app` 
 
 ## C#
 
-`src/csharp` holds `FollowStream`, `ColocatedApp` and `GatewayApp`, one project each, with the same flows as
+`src/csharp` holds `FollowStream`, `ColocatedApp`, `GatewayApp` and `SnapshotApp`, one project each, with the same flows as
 their twins and the C++ environment variables. They resolve `Org.Limitless.Seqeron` as a package from
 `build/nuget` in the repo root (`NuGet.config`), where `dotnet pack` puts it, and their own
 `Directory.Build.props` keeps the repo's build settings out — so anything the package fails to expose fails
-here. `ColocatedApp` and `GatewayApp` fail their build if their source names seqeron anywhere but the `App`
+here. `ColocatedApp`, `GatewayApp` and `SnapshotApp` fail their build if their source names seqeron anywhere but the `App`
 namespace and the `Publish` alias (`Directory.Build.targets`); they take Agrona's backoff idle strategy rather
 than `Util`'s.
 
 `GatewayApp` runs its own pair, `GW-EX-CS-A`/`GW-EX-CS-B` on `sourceId` 18, listed in `topology-csharp.xml`
 rather than `topology.xml`: a listed pair that nothing starts trades the role every 5 s for the life of the
-cluster. `csharp-client-test.sh` in `seqeron-service/src/test/scripts` runs all three against a live
-cluster, and the pair through a handover.
+cluster. `SnapshotApp` is `sourceId` 19, also in `topology-csharp.xml`, which has no `<snapshots>` policy: a
+cluster that loads it alone takes no rounds. `csharp-client-test.sh` in `seqeron-service/src/test/scripts` runs all
+four against a live cluster, the pair through a handover and `SnapshotApp` through a restore, adding the policy and
+`snapshot="true"` rows as it loads the list.
 
 ## Application state from a snapshot
 
@@ -121,7 +124,8 @@ with `SNAPSHOT_UNRESTORABLE`.
 
 The application takes part in rounds only if its topology row says `snapshot="true"` and a `<snapshots>`
 element enables them, so `topology.xml` lists `SnapshotApp` under `<applications>` (`sourceId` 14 in Java,
-15 in C++) and starts a round every 10 s. Each replica's snapshot directory must survive its restarts and
+15 in C++) and starts a round every 10 s. The C# twin's row, `sourceId` 19, is in `topology-csharp.xml`, which has
+no policy. Each replica's snapshot directory must survive its restarts and
 belong to it alone.
 
 **Both are separate builds, not subprojects of the repo they sit in.** The Java one resolves

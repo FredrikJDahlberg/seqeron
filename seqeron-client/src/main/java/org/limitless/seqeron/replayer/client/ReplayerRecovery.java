@@ -55,9 +55,9 @@ final class ReplayerRecovery {
     private static final int LEADERSHIP_CHANGED = SystemFrame.LEADERSHIP_CHANGED;
 
     /** Caps on frames retained ahead of a hole; past either, recovery resumes at the last dispatched frame. */
-    private static final int MAX_RETAINED_FRAMES = 65536;
+    static final int MAX_RETAINED_FRAMES = 65536;
 
-    private static final long MAX_RETAINED_BYTES = 16L * 1024 * 1024;
+    static final long MAX_RETAINED_BYTES = 16L * 1024 * 1024;
 
     /** Records one duty cycle restores at most, so a large snapshot does not stall the session. */
     static final int MAX_RESTORE_RECORDS_PER_CYCLE = 1024;

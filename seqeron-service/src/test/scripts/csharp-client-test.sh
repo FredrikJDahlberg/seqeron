@@ -2,7 +2,7 @@
 # The C# client tier against a live three-node cluster.
 #
 # Seqeron.ClusterProbe (seqeron-client/src/test/csharp-probe) is the C# twin of ClusterProbe's confirm and follow
-# modes, on Aeron.NET against the members' own embedded Java drivers. Six phases:
+# modes, on Aeron.NET against the members' own embedded Java drivers. Eight phases:
 #
 #   A  UDP ingress from a follower's host, through PendingSends            confirm EXACT
 #   B  IPC ingress co-located with the leader (ConnectColocated)            confirm EXACT, no UDP fallback
@@ -12,6 +12,9 @@
 #   F  the C# examples, built against the packed NuGet package: FollowStream and ColocatedApp echo their pings,
 #      and the active GatewayApp of the pair in seqeron-examples/topology-csharp.xml is killed — the standby
 #      is designated, resumes past its predecessor's connection id, and serves
+#   G  SnapshotApp confirms a snapshot round, and its restart restores from it with the ledger's total intact
+#   H  a member restarted at a cut: a ReplayerStreamReceiver with no snapshot file walks it from its start
+#                                                                            follow FAILED
 #
 # and no member logs a rejected ingress frame. The control in D reports what the kill had in flight; like
 # failover-test.sh's, it is not asserted, since a kill can land between two frames.
@@ -45,13 +48,14 @@ EXAMPLES_OUT="${TMP_DIR}/seqeron-csharp-examples"
   >> "$LOG_DIR/build.log" 2>&1 || { echo "pack failed: $LOG_DIR/build.log"; exit 1; }
 # NuGet serves a version it has cached rather than the one just packed under the same number.
 rm -rf "${NUGET_PACKAGES:-$HOME/.nuget/packages}/org.limitless.seqeron/$(cat "${REPO_ROOT}/VERSION")"
-for ex in FollowStream ColocatedApp GatewayApp; do
+for ex in FollowStream ColocatedApp GatewayApp SnapshotApp; do
   "$DOTNET" build -c Release -o "$EXAMPLES_OUT/$ex" "${REPO_ROOT}/seqeron-examples/src/csharp/$ex/$ex.csproj" \
     >> "$LOG_DIR/build.log" 2>&1 || { echo "$ex build failed: $LOG_DIR/build.log"; exit 1; }
 done
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqcs"
+SNAPSHOT_DIR="${BASE_DIR}/snapshot-app"
 CLUSTER_HOSTS="$(cluster_hosts_string 3)"
 aeron_dir() { seqeron_aeron_dir "$1"; }
 
@@ -173,9 +177,13 @@ example gw-a GatewayApp "$Q" SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-CS-A; GW_A_PID=$
 example gw-b GatewayApp "$L2" SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-CS-B; GW_B_PID=$!
 F_OK=1
 # Both instances are up before the list lands, and read their queue as soon as their rows do, so the bootstrap
-# designation is answered inside its 5 s.
+# designation is answered inside its 5 s. topology.xml's round every 10 s comes with it, for G's restore and H's
+# cut; of the C# examples only SnapshotApp has a SnapshotListener, so it is the one that joins a round.
+sed -e 's/ group="\([a-z]*\)"/ group="\1" snapshot="true"/' \
+    -e 's|</topology>|<snapshots interval="10"/></topology>|' \
+    "${REPO_ROOT}/seqeron-examples/topology-csharp.xml" > "$LOG_DIR/topology-snapshots.xml"
 CLUSTERCTL_MEMBER_ID="$Q" "${REPO_ROOT}/seqeron-service/src/main/scripts/clusterctl.sh" load-topology \
-  "${REPO_ROOT}/seqeron-examples/topology-csharp.xml" > "$LOG_DIR/load-topology.log" 2>&1 ||
+  "$LOG_DIR/topology-snapshots.xml" > "$LOG_DIR/load-topology.log" 2>&1 ||
   { echo "    load-topology failed: $LOG_DIR/load-topology.log"; F_OK=0; }
 for f in gw-a gw-b; do
   wait_for_log "$LOG_DIR/$f.log" "# caught up" 60 || { echo "    $f never caught up"; F_OK=0; }
@@ -201,14 +209,58 @@ wait "$GW_B_PID"; GW_B_RC=$?
 echo "    GW-EX-CS-A: $(grep -c "ping echoed" "$LOG_DIR/gw-a.log") pings echoed;" \
      "GW-EX-CS-B: $(grep -m1 "designated" "$LOG_DIR/gw-b.log"), $(grep -c "ping echoed" "$LOG_DIR/gw-b.log") pings echoed"
 
+# On the leader, so the replica submits transfers and its rounds' SnapshotEnd.
+echo "=== G: SnapshotApp restores from its own confirmed snapshot"
+G_OK=1
+example snap-1 SnapshotApp "$L2" SEQERON_EXAMPLE_SNAPSHOT_DIR="$SNAPSHOT_DIR"; SNAP_PID=$!
+CONFIRMED=""
+for ((i = 0; i < 80; i++)); do
+  CONFIRMED=$(find "$SNAPSHOT_DIR" -name '*.snapshot' 2>/dev/null | head -1)
+  [[ -n "$CONFIRMED" ]] && break
+  sleep 0.5
+done
+[[ -n "$CONFIRMED" ]] || { echo "    no round confirmed a snapshot in 40 s"; G_OK=0; }
+kill "$SNAP_PID" 2>/dev/null
+wait "$SNAP_PID"; SNAP_1_RC=$?
+echo "    confirmed $(basename "${CONFIRMED:-none}") after $(grep -c " transfer " "$LOG_DIR/snap-1.log") transfers"
+example snap-2 SnapshotApp "$L2" SEQERON_EXAMPLE_SNAPSHOT_DIR="$SNAPSHOT_DIR"; SNAP_PID=$!
+wait_for_log "$LOG_DIR/snap-2.log" "# caught up" 30 || { echo "    the restart never caught up"; G_OK=0; }
+grep -q "# restored after" "$LOG_DIR/snap-2.log" || { echo "    the restart restored no snapshot"; G_OK=0; }
+# Transfers move money and never make it: eight accounts of 1000.
+grep -q "# caught up at .* total 8000$" "$LOG_DIR/snap-2.log" || { echo "    the ledger's total changed"; G_OK=0; }
+kill "$SNAP_PID" 2>/dev/null
+wait "$SNAP_PID"; SNAP_2_RC=$?
+((SNAP_1_RC == 0 && SNAP_2_RC == 0)) || { echo "    exits: SnapshotApp=$SNAP_1_RC, restarted=$SNAP_2_RC"; G_OK=0; }
+echo "    $(grep -m1 "# restored after" "$LOG_DIR/snap-2.log")"
+
+# Q's restart restores the newest restart-safe round and records each queue from the cut. With L1 still down, the
+# cluster has no quorum until Q is back.
+echo "=== H: a cold start on member $Q, restarted at a cut"
+H_OK=1
+for ((i = 0; i < 120; i++)); do
+  grep -q "^safe " "$BASE_DIR/cluster-$Q/restart-safe.log" 2>/dev/null && break
+  sleep 0.5
+done
+grep -q "^safe " "$BASE_DIR/cluster-$Q/restart-safe.log" 2>/dev/null || { echo "    member $Q has no restart-safe cut"; H_OK=0; }
+kill "${SEQ_PIDS[$Q]}" 2>/dev/null; wait "${SEQ_PIDS[$Q]}" 2>/dev/null
+java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$Q" -Dsequencer.baseDir="$BASE_DIR" \
+     -Dsequencer.hosts="$CLUSTER_HOSTS" -jar "$JAR" > "$LOG_DIR/seq-$Q-restart.log" 2>&1 &
+SEQ_PIDS[$Q]=$!
+wait_for_log "$LOG_DIR/seq-$Q-restart.log" "serving replay" 60 || { echo "    member $Q not back"; H_OK=0; }
+# With no snapshot file, the ReplayerStreamReceiver walks the recording from its start, and its Poll throws.
+probe walk follow "$Q" 37 --live-seconds 1; WALK_RC=$?
+echo "    $(verdict walk)"
+((WALK_RC != 0)) && grep -q "follow failed: .*expected 1" "$LOG_DIR/walk.log" ||
+  { echo "    expected the walk from the recording's start to fail on the cut"; H_OK=0; }
+
 REJECTED=$(cat "$LOG_DIR"/seq-*.log | grep -cE "skipping (malformed )?ingress message")
 echo "=== ingress frames rejected by the sequencer: $REJECTED"
 
 if ((A_RC == 0 && B_RC == 0 && B_FELL_BACK == 0 && C_RC == 0 && C_FELL_BACK == 1 && D_RC == 0 && E_RC == 0 &&
-      REPLAYS >= 1 && F_OK == 1 && REJECTED == 0)); then
+      REPLAYS >= 1 && F_OK == 1 && G_OK == 1 && H_OK == 1 && REJECTED == 0)); then
   echo "C# CLIENT TEST: PASS"; exit 0
 else
   echo "C# CLIENT TEST: FAIL (A=$A_RC B=$B_RC/fallback $B_FELL_BACK C=$C_RC/fallback $C_FELL_BACK D=$D_RC E=$E_RC" \
-       "replays=$REPLAYS F=$F_OK rejected=$REJECTED)"
+       "replays=$REPLAYS F=$F_OK G=$G_OK H=$H_OK rejected=$REJECTED)"
   exit 1
 fi

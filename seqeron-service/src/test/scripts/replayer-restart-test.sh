@@ -4,7 +4,7 @@
 # client after a leader kill against a node whose own queue recording was never rotated; gap-recovery-test.sh
 # deliberately keeps its consumer's own member (0) alive throughout. Neither restarts the consumer's OWN
 # node. This script does, against real Aeron/Archive processes — not fabricated frames (that
-# precision-testing already lives in ReplayerStreamReceiverTest.cpp's unit suite).
+# precision-testing already lives in ReplayerRecoveryTest's unit suites).
 #
 # It targets member 0, started last after members 1/2 elect a leader between themselves, so member 0 is
 # never the leader and this stays clear of Raft election behaviour — that is failover-test.sh's/

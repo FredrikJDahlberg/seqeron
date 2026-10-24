@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The gateway pair src/csharp/GatewayApp runs, and the C# co-located application, in a list of their own: a listed pair no process starts
+    The gateway pair src/csharp/GatewayApp runs, and the C# co-located applications, in a list of their own: a listed pair no process starts
     trades the role every 5 s for the life of the cluster (doc/clusterctl.md). Load it once, into a cluster
     that has not bootstrapped another list (the bootstrap GatewayActive latches once per cluster lifetime):
 
@@ -29,10 +29,13 @@
                  description="seqeron-examples GatewayApp (C#) standby"/>
     </gateways>
 
-    <!-- ColocatedApp (C#): sourceId 17 (spec §5). -->
+    <!-- ColocatedApp and SnapshotApp (C#): sourceIds 17 and 19 (spec §5). SnapshotApp takes part in rounds only
+         under a <snapshots> policy and snapshot="true" on every row, which csharp-client-test.sh adds. -->
     <applications>
         <application name="COLO-EX-CS" sourceId="17" group="applications"
                      description="seqeron-examples ColocatedApp (C#)"/>
+        <application name="SNAP-EX-CS" sourceId="19" group="applications"
+                     description="seqeron-examples SnapshotApp (C#)"/>
     </applications>
 
 </topology>

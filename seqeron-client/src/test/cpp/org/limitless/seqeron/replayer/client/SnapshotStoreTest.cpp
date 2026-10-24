@@ -270,6 +270,23 @@ TEST(SnapshotStore, ARoundWhoseFileNeverBecameDurableDeletesNothingOlder)
     EXPECT_TRUE(std::filesystem::is_regular_file(directory.path() / "2.tmp"));
 }
 
+TEST(SnapshotStore, ARoundWhoseFileCannotBeCreatedConfirmsNothingAndTheNextRoundIsWrittenAsUsual)
+{
+    helpers::TempDirectory directory;
+    SnapshotStore store(directory.path());
+    write(store, 1, records());
+    std::filesystem::create_directories(directory.path() / "2.tmp" / "occupied"); // the file cannot be created
+
+    write(store, 2, records());
+    EXPECT_EQ(1, store.durableRound());
+    EXPECT_EQ(1, store.latestRound());
+
+    write(store, 3, records());
+    EXPECT_EQ(3, store.durableRound());
+    EXPECT_EQ((std::vector<std::int32_t>{ HEADER_LENGTH, 1000, 1302, 698, SnapshotStore::Reader::END }),
+              readAll(store.open(3)));
+}
+
 TEST(SnapshotStore, ARecordOfTheMostBytesItsLengthPrefixCanSayReadsBackWhole)
 {
     helpers::TempDirectory directory;

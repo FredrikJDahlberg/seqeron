@@ -28,6 +28,8 @@ import org.limitless.seqeron.sbe.replay.QueueResolvedDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
+import org.limitless.seqeron.sbe.replay.SnapshotConfirmedEncoder;
+import org.limitless.seqeron.sbe.replay.SnapshotJoinedEncoder;
 import org.limitless.seqeron.util.Logger;
 
 /**
@@ -136,6 +138,43 @@ class ReplayerServiceTest {
         assertEquals(ReplayingDecoder.TEMPLATE_ID, request(CLIENT, 2, FROM_START).templateId());
     }
 
+    @Test
+    void aMessageOfAnotherSchemaOrAnUnknownTemplateIsNotAnswered() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+
+        final byte[] otherSchema = replayRequest(CLIENT, 1, FROM_START);
+        new MessageHeaderEncoder().wrap(new UnsafeBuffer(otherSchema), 0).schemaId(ReplayRequestEncoder.SCHEMA_ID + 1);
+        fakeReplayer.offerRequest(otherSchema);
+        replayerService.poll();
+        final byte[] unknownTemplate = replayRequest(CLIENT, 2, FROM_START);
+        new MessageHeaderEncoder().wrap(new UnsafeBuffer(unknownTemplate), 0).templateId(99);
+        fakeReplayer.offerRequest(unknownTemplate);
+        replayerService.poll();
+
+        assertTrue(fakeReplayer.controlReplies().isEmpty());
+        assertTrue(noClientReplayStarted());
+    }
+
+    @Test
+    void aSnapshotSignalToAReplayerThatTracksNoCutsIsIgnored() {
+        // A gateway or application whose snapshot="true" row has no <snapshots> policy beside it still signals.
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+
+        final SnapshotJoinedEncoder joined = new SnapshotJoinedEncoder();
+        joined.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder).clientId(CLIENT).sourceId(16).round(1);
+        fakeReplayer.offerRequest(encoded(joined.encodedLength()));
+        replayerService.poll();
+        final SnapshotConfirmedEncoder confirmed = new SnapshotConfirmedEncoder();
+        confirmed.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder).clientId(CLIENT).sourceId(16).round(1);
+        fakeReplayer.offerRequest(encoded(confirmed.encodedLength()));
+        replayerService.poll();
+
+        assertTrue(fakeReplayer.controlReplies().isEmpty());
+        assertEquals(0, fatalCount.get());
+    }
+
     // ── Cold-start walk ─────────────────────────────────────────────────────────
 
     @Test
@@ -166,6 +205,20 @@ class ReplayerServiceTest {
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID),
                      "the client's resend is the retry");
         assertTrue(noClientReplayFor(6));
+    }
+
+    @Test
+    void aQueueWithNoActiveRecordingAnymoreHoldsTheRequestWithoutQueueingIt() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        fakeReplayer.stopRecording(6); // nothing records the queue now
+
+        final Reply reply = request(CLIENT, 1, FROM_START);
+
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId());
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID),
+                     "the client's resend is the retry");
+        assertTrue(noClientReplayStarted());
     }
 
     @Test
@@ -331,6 +384,18 @@ class ReplayerServiceTest {
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId(), "not refused, which costs the snapshot");
         assertTrue(noClientReplayStarted());
         assertEquals(List.of(6144L, 4096L), fakeReplayer.scans(), "a stalled hint falls back to the start");
+    }
+
+    @Test
+    void aCutWhoseHintedScanStallsIsFoundByReadingFromTheStart() {
+        recordingWithCuts();
+        fakeReplayer.stallNextScan();
+
+        final Reply reply = cutRequest(CLIENT, 1, 6144, 50);
+
+        assertEquals(8192, reply.catchUpPosition());
+        assertEquals(6144, lastClientReplay().position());
+        assertEquals(List.of(6144L, 4096L), fakeReplayer.scans());
     }
 
     @Test
@@ -587,6 +652,19 @@ class ReplayerServiceTest {
     }
 
     @Test
+    void aBacklogTheCountersCannotBeReadForThrottlesNothing() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        fakeReplayer.failQueueBacklog(new IllegalStateException("counters gone"));
+
+        assertEquals(ReplayingDecoder.TEMPLATE_ID, request(CLIENT, 1, FROM_START).templateId());
+        assertEquals(ReplayingDecoder.TEMPLATE_ID, request(OTHER_CLIENT, 1, FROM_START).templateId());
+
+        assertEquals(2, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID));
+    }
+
+    @Test
     void aSlotIsHeldForAsLongAsItsReplayRunsAndFreedWhenItEnds() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
@@ -603,6 +681,21 @@ class ReplayerServiceTest {
 
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
         assertFalse(fakeReplayer.stoppedReplays().contains(session), "nothing is left to stop");
+    }
+
+    @Test
+    void aResendWhoseLastReplayTheArchiveCannotStopIsServedAnyway() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        request(CLIENT, 1, FROM_START);
+        final long superseded = lastClientReplay().replaySessionId();
+        fakeReplayer.failStops(new IllegalStateException("unknown replay session")); // it ended on its own
+
+        assertEquals(ReplayingDecoder.TEMPLATE_ID, request(CLIENT, 2, FROM_START).templateId());
+
+        assertTrue(lastClientReplay().replaySessionId() != superseded, "a replay of its own");
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
     }
 
     @Test
@@ -666,6 +759,14 @@ class ReplayerServiceTest {
     @Test
     void aClosedControlPublicationTakesTheDutyCycleDownLoudly() {
         fakeReplayer.controlOfferResult(Publication.CLOSED);
+        fakeReplayer.offerRequest(replayRequest(CLIENT, 1, FROM_START));
+
+        assertThrows(IllegalStateException.class, () -> replayerService.poll());
+    }
+
+    @Test
+    void aControlPublicationAtItsMaximumPositionTakesTheDutyCycleDownLoudly() {
+        fakeReplayer.controlOfferResult(Publication.MAX_POSITION_EXCEEDED);
         fakeReplayer.offerRequest(replayRequest(CLIENT, 1, FROM_START));
 
         assertThrows(IllegalStateException.class, () -> replayerService.poll());

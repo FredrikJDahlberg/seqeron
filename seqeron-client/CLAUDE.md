@@ -81,7 +81,9 @@ ones.
 decision it makes about them lives in **`ReplayerRecovery`**, which holds none of them and is where the
 unit suite drives the walk/resume/gap state machine — `ReplayerRecoveryTest` names one situation per case,
 `ReplayerRecoveryPropertyTest` drives seeded fault sequences against a model of the archive/queue/Replayer and
-asserts gap-freedom and convergence over whatever comes out; both tests exist in every language. The Java,
+asserts gap-freedom and convergence over whatever comes out; both tests exist in every language. What the model
+assumes of the Replayer is held to `ReplayerService` itself by `seqeron-service`'s `ReplaySeamTest`, Java only, as
+the server is, through the test-side `ReplayerRecoveryBridge`, since neither the class nor its transport is public. The Java,
 C++ and C# classes are faithful ports of each other: same protocol, same state machine, same adapter/seam
 split. Keep all six files and all six tests in step — the three `ReplayerRecoveryTest`s are case for
 case in the same order precisely so a divergence is visible as a missing case rather than as a

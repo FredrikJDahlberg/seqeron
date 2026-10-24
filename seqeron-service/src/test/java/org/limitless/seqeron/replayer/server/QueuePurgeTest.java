@@ -2,6 +2,7 @@ package org.limitless.seqeron.replayer.server;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -128,6 +129,43 @@ class QueuePurgeTest {
         replayerService.poll();
         assertEquals(2, fakeReplayer.purgeAttempts().size(), "done once it is purged");
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
+    }
+
+    @Test
+    @DisplayName("a purge that throws is counted as an archive error and retried after the interval")
+    void aFailedPurgeIsCountedAndRetried() {
+        start(0);
+        fakeReplayer.failPurges(new IllegalStateException("archive gone"));
+        cutAt(50, 8_192, 2 * SEGMENT);
+        assertEquals(1, fakeReplayer.purgeAttempts().size());
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
+
+        fakeReplayer.advanceMillis(4_999);
+        replayerService.poll();
+        assertEquals(1, fakeReplayer.purgeAttempts().size(), "not before the interval");
+
+        fakeReplayer.failPurges(null);
+        fakeReplayer.advanceMillis(1);
+        replayerService.poll();
+        assertEquals(2, fakeReplayer.purgeAttempts().size());
+    }
+
+    @Test
+    @DisplayName("a cut handed over while the archive cannot list is counted, purged below nowhere, and found by reading")
+    void aCutTheArchiveCannotListIsFoundByReading() {
+        start(0);
+        fakeReplayer.addFrames(RECORDING_ID, 0, 49, 2 * SEGMENT, 50);
+        fakeReplayer.failArchive(new IllegalStateException("archive gone"));
+        cutAt(50, 8_192, 2 * SEGMENT);
+
+        assertEquals(2, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID),
+                     "keeping the cut, and the purge floor once it was safe");
+        assertTrue(fakeReplayer.purgeAttempts().isEmpty());
+
+        fakeReplayer.answerArchiveAgain();
+        assertTrue(cutRequest(50) >= 0);
+        assertFalse(fakeReplayer.scans().isEmpty(), "it was not kept");
+        assertEquals(2 * SEGMENT, fakeReplayer.startedReplays().getLast().position());
     }
 
     @Test

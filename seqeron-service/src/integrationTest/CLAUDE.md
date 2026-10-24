@@ -9,7 +9,12 @@ replays a run's draws. Both then check every queue recording on every archive fr
 which a client's `ReplayerRecovery` would paper over. `CommittedEntryLossTest` scripts the fault sequence under which
 Aeron Cluster 1.53.2 loses a committed entry. Its check that the entry survives fails on that Aeron, so only
 `-PknownAeronFaults` runs it, against an upgrade; its check that the member that truncated it takes itself down and
-rejoins on restart runs by default. `SystemTestWatcher` fails
+rejoins on restart runs by default. `ReplaySlotsTest` holds the Replayer's two counter readings to a real driver, which
+`ReplayerServiceTest` takes from a fake: a replay keeps its slot until its subscriber lets it go, each queue's backlog
+is matched to its own recording, and a backlog past a quarter of the window holds a second replay. That backlog is the
+gateway host's: `GatedChecksum` holds its archive's recorder, which a member's cannot spare, since it records the Raft
+log too. `ScanDeadlineTest` drives `AeronReplayer.scan` on a bare driver, since an archive's
+replay always connects. `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;
 neither `test` nor `check` runs it. A member stopped in-process is closed rather than killed, and a cut drops frames

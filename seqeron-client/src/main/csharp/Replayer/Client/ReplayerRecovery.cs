@@ -42,8 +42,8 @@ internal sealed class ReplayerRecovery
     private const long RecoveryProgressTimeoutMs = 30_000;
 
     // Caps on frames retained ahead of a hole; past either, recovery resumes at the last dispatched frame.
-    private const int MaxRetainedFrames = 65536;
-    private const long MaxRetainedBytes = 16L * 1024 * 1024;
+    internal const int MaxRetainedFrames = 65536;
+    internal const long MaxRetainedBytes = 16L * 1024 * 1024;
 
     /// <summary>Records one duty cycle restores at most, so a large snapshot does not stall the session.</summary>
     internal const int MaxRestoreRecordsPerCycle = 1024;
