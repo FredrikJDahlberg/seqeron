@@ -125,6 +125,28 @@ class QueueRelayTest {
         assertEquals(QueueRelay.Verdict.DROP_SOURCE, relay.onFrame(5, 0));
     }
 
+    /**
+     * A member purged past what the relay has published, so its first frame is beyond the next one. The relay
+     * publishes nothing from it and, with every member purged past it, keeps trying them after a pause.
+     */
+    @Test
+    @DisplayName("members purged past the last published frame are left in turn, and nothing is published from them")
+    void membersPurgedPastTheRelayAreLeftWithoutPublishing() {
+        relay.replayFrom(START, end(100), 0);
+        publish(1, 10, 0);
+        relay.onSourceLost(0);
+
+        for (int member = 0; member < 3; member++) {
+            assertEquals(end(20), relay.replayFrom(end(20), end(200), 0), "from its own start");
+            assertEquals(QueueRelay.Verdict.DROP_SOURCE, relay.onFrame(21, 0));
+            relay.onSourceLost(0);
+        }
+
+        assertEquals(10, relay.lastGroupSeqNo());
+        assertFalse(relay.mayAttempt(QueueRelay.RETRY_INTERVAL_MS - 1), "every member failed in a row");
+        assertTrue(relay.mayAttempt(QueueRelay.RETRY_INTERVAL_MS));
+    }
+
     @Test
     @DisplayName("a recording that starts at a cut is relayed from its first frame, whatever its groupSeqNo")
     void aRecordingStartingAtACutIsRelayedFromItsFirstFrame() {

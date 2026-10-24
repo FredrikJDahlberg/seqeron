@@ -29,6 +29,9 @@ import org.limitless.seqeron.sbe.replay.QueueResolvedEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayingEncoder;
+import org.limitless.seqeron.sbe.replay.SnapshotConfirmedDecoder;
+import org.limitless.seqeron.sbe.replay.SnapshotJoinedDecoder;
+import org.limitless.seqeron.sbe.replay.SnapshotRoundEncoder;
 import org.limitless.seqeron.sequencer.SequencerService;
 import org.limitless.seqeron.util.Logger;
 
@@ -41,6 +44,9 @@ public final class ReplayerService {
 
     // How long the Replayer's own archive call (readiness) waits after one threw.
     private static final long ARCHIVE_RETRY_INTERVAL_MS = 1_000;
+
+    /** How long a purge the archive refused waits to be tried again; each try is a blocking archive call. */
+    private static final long PURGE_RETRY_INTERVAL_MS = 5_000;
 
     // Bounds {@link #offerControl}'s retry spin,
     private static final int MAX_CONTROL_OFFER_SPINS = 1_000;
@@ -88,6 +94,19 @@ public final class ReplayerService {
     private final ReplaySlotAllocator replaySlots = new ReplaySlotAllocator(MAX_CONCURRENT_REPLAYS);
     private final CutLookup cutLookup = new CutLookup();
 
+    /** The cuts to track, or null where there are none to: a gateway host. */
+    private final CutIntake cutIntake;
+    private final RestartSafety restartSafety;
+
+    /** The cut handed over last, which is the round {@link #restartSafety} is tracking. */
+    private CutHandover inFlightCut;
+
+    /** Per queue, slot groupId − 1: the position its recording may be purged below, or -1 once that is done. */
+    private final long[] purgeFloors = new long[FrameLayer.MAX_GROUPS];
+
+    // When a purge the archive refused may be tried again.
+    private long purgeRetryAtMs = 0;
+
     // Operator counters (see SeqeronCounters)
     private final AtomicCounter archiveErrorsCounter;
     private final AtomicCounter readyCounter;
@@ -100,6 +119,9 @@ public final class ReplayerService {
     private final MessageHeaderDecoder inHeaderDecoder = new MessageHeaderDecoder();
     private final ReplayRequestDecoder replayRequestDecoder = new ReplayRequestDecoder();
     private final QueueRequestDecoder queueRequestDecoder = new QueueRequestDecoder();
+    private final SnapshotJoinedDecoder snapshotJoinedDecoder = new SnapshotJoinedDecoder();
+    private final SnapshotConfirmedDecoder snapshotConfirmedDecoder = new SnapshotConfirmedDecoder();
+    private final SnapshotRoundEncoder snapshotRoundEncoder = new SnapshotRoundEncoder();
     private final MessageHeaderEncoder outHeaderEncoder = new MessageHeaderEncoder();
     private final ReplayingEncoder replayingEncoder = new ReplayingEncoder();
     private final ReplayPendingEncoder pendingEncoder = new ReplayPendingEncoder();
@@ -125,7 +147,18 @@ public final class ReplayerService {
                            final IdleStrategy idleStrategy, final Queue<byte[]> topologyRows, final int relayedGroups,
                            final Runnable fatalHandler) {
         this(new AeronReplayer(aeron, archive, memberId), memberId, idleStrategy, topologyRows, relayedGroups,
-             fatalHandler);
+             fatalHandler, null);
+    }
+
+    /**
+     * As above, tracking the cluster snapshots a member takes (doc/snapshot.md §10.8).
+     * @param cutIntake the cuts handed over, the member's {@code restart-safe.log} and the join window
+     */
+    public ReplayerService(final Aeron aeron, final AeronArchive archive, final int memberId,
+                           final IdleStrategy idleStrategy, final Queue<byte[]> topologyRows, final int relayedGroups,
+                           final Runnable fatalHandler, final CutIntake cutIntake) {
+        this(new AeronReplayer(aeron, archive, memberId), memberId, idleStrategy, topologyRows, relayedGroups,
+             fatalHandler, cutIntake);
     }
 
     /**
@@ -139,6 +172,17 @@ public final class ReplayerService {
      */
     ReplayerService(final Replayer replayer, final int memberId, final IdleStrategy idleStrategy,
                     final Queue<byte[]> topologyRows, final int relayedGroups, final Runnable fatalHandler) {
+        this(replayer, memberId, idleStrategy, topologyRows, relayedGroups, fatalHandler, null);
+    }
+
+    /**
+     * @param cutIntake the cuts to track, or null where there are none
+     */
+    ReplayerService(final Replayer replayer, final int memberId, final IdleStrategy idleStrategy,
+                    final Queue<byte[]> topologyRows, final int relayedGroups, final Runnable fatalHandler,
+                    final CutIntake cutIntake) {
+        this.cutIntake = cutIntake;
+        this.restartSafety = cutIntake == null ? null : new RestartSafety(cutIntake.joinWindowMs());
         this.replayer = replayer;
         this.memberId = memberId;
         this.idleStrategy = idleStrategy;
@@ -147,6 +191,7 @@ public final class ReplayerService {
         this.fatalHandler = fatalHandler;
         this.replayLive = replayer::isReplayLive;
         Arrays.fill(staleReportedFor, NULL_VALUE);
+        Arrays.fill(purgeFloors, NULL_VALUE);
 
         this.archiveErrorsCounter = counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID, "archiveErrorsCount");
         this.readyCounter = counter(SeqeronCounters.REPLAYER_READY_TYPE_ID, "ready");
@@ -217,6 +262,7 @@ public final class ReplayerService {
             onArchiveError("a replay", new IllegalStateException(archiveError));
         }
         int work = drainTopologyRows();
+        work += cutIntake == null ? 0 : trackCuts() + purgeBelowFloors();
         work += replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);
         if (replayer.epochMillis() < archiveRetryAtMs) {
             // the Replayer's own archive call threw a moment ago; requests are still answered
@@ -226,6 +272,87 @@ public final class ReplayerService {
         reclaimEndedSlots();
         activeReplaySlotsCounter.set(replaySlots.activeCount());
         pendingRequestsCounter.set(replaySlots.pendingCount());
+        return work;
+    }
+
+    /**
+     * Takes the cuts the service has handed over since the last cycle: each queue keeps where its marker was recorded,
+     * every application replica is told of the round, and a cut that every replica that joined has confirmed is written
+     * to the member's log as safe to restart from (doc/snapshot.md §10.8).
+     */
+    private int trackCuts() {
+        int work = 0;
+        CutHandover cut;
+        while ((cut = cutIntake.cuts().poll()) != null) {
+            for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+                if (cut.markerPositions()[groupId - 1] >= 0 && resolver.serves(groupId)) {
+                    try {
+                        keepCut(groupId, cut.clusterSeqNo(), cut.markerPositions()[groupId - 1]);
+                    } catch (final RuntimeException ex) {
+                        onArchiveError("listing the queue recordings to keep a cut", ex); // it is found by reading
+                    }
+                }
+            }
+            inFlightCut = cut;
+            restartSafety.onCut(cut.round(), cut.logPosition(), replayer.epochMillis());
+            snapshotRoundEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
+                .round(cut.round())
+                .clusterSeqNo(cut.clusterSeqNo());
+            offerControl(MessageHeaderEncoder.ENCODED_LENGTH + snapshotRoundEncoder.encodedLength());
+            ++work;
+        }
+        final long safe = restartSafety.poll(replayer.epochMillis());
+        if (safe != RestartSafety.NO_POSITION) {
+            cutIntake.log().appendSafe(safe);
+            if (inFlightCut != null && inFlightCut.logPosition() == safe) {
+                for (int slot = 0; slot < FrameLayer.MAX_GROUPS; slot++) {
+                    purgeFloors[slot] = Math.max(purgeFloors[slot], inFlightCut.markerPositions()[slot]);
+                }
+            }
+            Logger.info(Logger.CoreComponent.ReplayerService, memberId,
+                        "the snapshot at log position %d may be restarted from", safe);
+            ++work;
+        }
+        return work;
+    }
+
+    /**
+     * Purges each queue's recording below the newest restart-safe cut (doc/snapshot.md §10.6). A refusal, such as a
+     * replay reading below the floor, is no fault: the floor stays and is tried again after an interval.
+     */
+    private int purgeBelowFloors() {
+        int work = 0;
+        for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+            final long floor = purgeFloors[groupId - 1];
+            if (floor < 0 || replayer.epochMillis() < purgeRetryAtMs) {
+                continue;
+            }
+            try {
+                final Replayer.RecordingSpan active = findActiveRecording(groupId);
+                if (active == null) {
+                    continue;
+                }
+                final long target = SegmentPurge.target(
+                    active.startPosition(), active.termBufferLength(), active.segmentFileLength(), floor);
+                if (target == SegmentPurge.NOTHING) {
+                    purgeFloors[groupId - 1] = NULL_VALUE;
+                } else if (replayer.purgeSegments(active.recordingId(), target)) {
+                    purgeFloors[groupId - 1] = NULL_VALUE;
+                    activeRecordings[groupId - 1] = new Replayer.RecordingSpan(
+                        active.recordingId(), target, true, active.termBufferLength(), active.segmentFileLength());
+                    cutLookup.forgetBelow(active.recordingId(), target);
+                    Logger.info(Logger.CoreComponent.ReplayerService, memberId,
+                                "purged group %d's queue recording %d below position %d", groupId,
+                                active.recordingId(), target);
+                    ++work;
+                } else {
+                    purgeRetryAtMs = replayer.epochMillis() + PURGE_RETRY_INTERVAL_MS;
+                }
+            } catch (final RuntimeException ex) {
+                onArchiveError("purging a queue recording", ex);
+                purgeRetryAtMs = replayer.epochMillis() + PURGE_RETRY_INTERVAL_MS;
+            }
+        }
         return work;
     }
 
@@ -291,6 +418,22 @@ public final class ReplayerService {
             queueRequestDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
                                      inHeaderDecoder.blockLength(), inHeaderDecoder.version());
             onQueueRequest();
+            return;
+        }
+        if (inHeaderDecoder.templateId() == SnapshotJoinedDecoder.TEMPLATE_ID) {
+            snapshotJoinedDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
+                                       inHeaderDecoder.blockLength(), inHeaderDecoder.version());
+            if (restartSafety != null) {
+                restartSafety.onJoined(snapshotJoinedDecoder.round(), snapshotJoinedDecoder.sourceId());
+            }
+            return;
+        }
+        if (inHeaderDecoder.templateId() == SnapshotConfirmedDecoder.TEMPLATE_ID) {
+            snapshotConfirmedDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
+                                          inHeaderDecoder.blockLength(), inHeaderDecoder.version());
+            if (restartSafety != null) {
+                restartSafety.onConfirmed(snapshotConfirmedDecoder.round(), snapshotConfirmedDecoder.sourceId());
+            }
             return;
         }
         if (inHeaderDecoder.templateId() != ReplayRequestDecoder.TEMPLATE_ID) {

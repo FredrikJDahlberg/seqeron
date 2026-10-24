@@ -146,9 +146,10 @@ The Replayer runs in the member's JVM, on its media driver, and takes no configu
 ## Restart and failover
 
 A member keeps its archive and cluster directories across restarts (`deleteArchiveOnStart=false`,
-`deleteDirOnStart=false`), rejoins, and replays the Raft log from `clusterSeqNo` 1. The cluster takes no
-snapshots, which is what keeps every member's recording a complete copy of history, and for the same
-reason `clusterctl shutdown` stops the cluster with `ABORT`, which takes none. To start clean, delete the
+`deleteDirOnStart=false`), rejoins, and replays the Raft log from `clusterSeqNo` 1, or from the newest cluster
+snapshot its `restart-safe.log` names when a `<snapshots>` policy is loaded (`snapshot.md` §10). Without a policy
+every member's recording is a complete copy of history, and `clusterctl shutdown` stops the cluster with `ABORT`,
+which takes no snapshot. To start clean, delete the
 `archive-<id>` and `cluster-<id>` directories under `baseDir`, or run `purgelog.sh`.
 
 The media driver's directory is recreated at every start, but only once no live driver holds it, and the

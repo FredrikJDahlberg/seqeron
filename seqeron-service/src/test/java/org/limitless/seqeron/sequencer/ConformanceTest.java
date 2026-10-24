@@ -273,6 +273,8 @@ class ConformanceTest {
         sequencer.sequenceMessage(ingress, 0, policy, SESSION_ID, TIMESTAMP);
         final int request = systemFrame(SystemFrame.SNAPSHOT_REQUESTED, CLUSTERCTL_SOURCE_ID, snapshotRequestedBody());
         sequencer.sequenceMessage(ingress, 0, request, SESSION_ID, TIMESTAMP);
+        assertTrue(sequencer.snapshotDue(), "the request calls for a round, which the cluster's snapshot action takes");
+        sequencer.takeSnapshot(TIMESTAMP);
         assertEquals(SnapshotStartedDecoder.TEMPLATE_ID, lastTemplateId());
         assertEquals(60, frames.lastLength());
         assertEquals(SystemFrame.SNAPSHOT_STARTED, wrapSequenced().systemEventType());

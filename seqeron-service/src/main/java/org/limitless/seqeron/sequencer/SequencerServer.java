@@ -32,8 +32,11 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.replayer.server.CutHandover;
+import org.limitless.seqeron.replayer.server.CutIntake;
 import org.limitless.seqeron.replayer.server.NodeDriver;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
+import org.limitless.seqeron.replayer.server.RestartSafeLog;
 import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
@@ -81,6 +84,8 @@ import org.limitless.seqeron.util.Logger;
  *   aeron.ipc.term.buffer.length — the embedded driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
  *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
  *                               10ms, 100ms, 100ms (doc/ops.md, "Untethered subscribers")
+ *   replayer.snapshotJoinMs    — how long after a cluster snapshot an application has to join its round; default
+ *                               5000 (doc/snapshot.md §10.8)
  * </pre>
  *
  * <p>Launch example, member 0 of three:
@@ -100,6 +105,15 @@ public final class SequencerServer {
     private static final String PROP_LEADER_HEARTBEAT_INTERVAL_MS = "sequencer.leaderHeartbeatIntervalMs";
     private static final String PROP_LEADER_HEARTBEAT_TIMEOUT_MS = "sequencer.leaderHeartbeatTimeoutMs";
     private static final String PROP_ELECTION_TIMEOUT_MS = "sequencer.electionTimeoutMs";
+
+    private static final String PROP_SNAPSHOT_JOIN_MS = "replayer.snapshotJoinMs";
+
+    /**
+     * How long after a cluster snapshot an application has to join its round before the member stops waiting for it
+     * (doc/snapshot.md §10.8). Generous, since an application mid-serialization answers late, and an application that
+     * joins after it is not waited for.
+     */
+    public static final long DEFAULT_SNAPSHOT_JOIN_MS = 5000;
 
     public static final long DEFAULT_SESSION_TIMEOUT_MS = 5000;
     public static final long DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS = 200;
@@ -125,6 +139,7 @@ public final class SequencerServer {
     private final ClusteredMediaDriver driver;
     private final ClusteredServiceContainer container;
     private final ReplayerServer replayer;
+    private final RestartSafeLog safeLog;
 
     /** Which UDP frames a node's driver drops, for test harnesses. */
     @FunctionalInterface
@@ -180,10 +195,11 @@ public final class SequencerServer {
     }
 
     private SequencerServer(final ClusteredMediaDriver driver, final ClusteredServiceContainer container,
-                            final ReplayerServer replayer) {
+                            final ReplayerServer replayer, final RestartSafeLog safeLog) {
         this.driver = driver;
         this.container = container;
         this.replayer = replayer;
+        this.safeLog = safeLog;
     }
 
     public static void main(final String[] args) {
@@ -298,6 +314,8 @@ public final class SequencerServer {
                 .clusterMemberId(memberId)
                 .clusterMembers(clusterMembers)
                 .clusterClock(new NanosecondClusterClock())
+                .appVersion(LogVersion.APP_VERSION)
+                .appVersionValidator(LogVersion.VALIDATOR)
                 .clusterDir(clusterDir)
                 .ingressChannel(udp(host, ingressPort))
                 .replicationChannel(udp(host, 0))
@@ -327,9 +345,21 @@ public final class SequencerServer {
             consensusCtx.maxConcurrentSessions(DEFAULT_MAX_CONCURRENT_SESSIONS);
         }
 
+        final List<Long> invalidated = SnapshotChoice.invalidateUnsafe(
+            clusterDir, RestartSafeLog.read(clusterDir.toPath().resolve(RestartSafeLog.FILE_NAME)));
+        if (!invalidated.isEmpty()) {
+            Logger.info(Logger.CoreComponent.SequencerServer, memberId,
+                        "starting without the snapshots at log positions %s: no co-located application is known to "
+                            + "hold a file for them (doc/snapshot.md §10.8)",
+                        invalidated);
+        }
+
         final Queue<byte[]> topologyRows = new ConcurrentLinkedQueue<>();
+        final Queue<CutHandover> cuts = new ConcurrentLinkedQueue<>();
+        final RestartSafeLog safeLog = RestartSafeLog.open(clusterDir.toPath());
         final SequencerService service =
-            new SequencerService(memberId, localArchiveCtx.clone(), topologyRows, fatalHandler);
+            new SequencerService(memberId, localArchiveCtx.clone(), topologyRows, fatalHandler, safeLog, cuts,
+                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength());
 
         final ClusteredServiceContainer.Context serviceCtx =
             new ClusteredServiceContainer.Context()
@@ -337,6 +367,8 @@ public final class SequencerServer {
                 .archiveContext(localArchiveCtx.clone())
                 .clusterDir(clusterDir)
                 .clusteredService(service)
+                .appVersion(LogVersion.APP_VERSION)
+                .appVersionValidator(LogVersion.VALIDATOR)
                 .terminationHook(terminationHook)
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
@@ -350,9 +382,12 @@ public final class SequencerServer {
             container = ClusteredServiceContainer.launch(serviceCtx);
             return new SequencerServer(
                 driver, container,
-                ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, topologyRows, fatalHandler));
+                ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, topologyRows, fatalHandler,
+                                      new CutIntake(cuts, safeLog, Long.getLong(PROP_SNAPSHOT_JOIN_MS,
+                                                                                DEFAULT_SNAPSHOT_JOIN_MS))),
+                safeLog);
         } catch (final RuntimeException ex) {
-            CloseHelper.quietCloseAll(container, driver);
+            CloseHelper.quietCloseAll(container, driver, safeLog);
             throw ex;
         }
     }
@@ -366,7 +401,7 @@ public final class SequencerServer {
         try {
             return replayer.stop();
         } finally {
-            CloseHelper.closeAll(container, driver);
+            CloseHelper.closeAll(container, driver, safeLog);
         }
     }
 

@@ -7,6 +7,7 @@ import io.aeron.FragmentAssembler;
 import io.aeron.Image;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.ArchiveException;
 import io.aeron.archive.status.RecordingPos;
 import io.aeron.driver.Configuration;
 import io.aeron.driver.status.StreamCounter;
@@ -66,7 +67,8 @@ public final class AeronReplayer implements Replayer {
              initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
              originalChannel, sourceIdentity)
                 -> spans.add(new Replayer.RecordingSpan(
-                    recordingId, startPosition, stopTimestamp == AeronArchive.NULL_TIMESTAMP, termBufferLength)));
+                    recordingId, startPosition, stopTimestamp == AeronArchive.NULL_TIMESTAMP, termBufferLength,
+                    segmentFileLength)));
         return spans;
     }
 
@@ -161,6 +163,16 @@ public final class AeronReplayer implements Replayer {
     @Override
     public long stopPosition(final long recordingId) {
         return archive.getStopPosition(recordingId);
+    }
+
+    @Override
+    public boolean purgeSegments(final long recordingId, final long newStartPosition) {
+        try {
+            archive.purgeSegments(recordingId, newStartPosition);
+            return true;
+        } catch (final ArchiveException refused) {
+            return false;
+        }
     }
 
     @Override

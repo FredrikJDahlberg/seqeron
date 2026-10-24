@@ -2,6 +2,7 @@ package org.limitless.seqeron.sequencer;
 
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
+import java.util.function.IntFunction;
 import org.agrona.DirectBuffer;
 import org.limitless.seqeron.util.Logger;
 
@@ -16,8 +17,11 @@ import org.limitless.seqeron.util.Logger;
 public final class QueuePublisher {
     /** Everything {@link QueuePublisher} cannot do itself; {@link SequencerService} implements it against Aeron. */
     public interface Actions {
-        /** Creates group {@code groupId}'s queue and asks the co-located archive to record it. May throw. */
-        void openQueue(int groupId);
+        /**
+         * Creates group {@code groupId}'s queue, at the position {@code start} names, and asks the co-located archive
+         * to record it. May throw.
+         */
+        void openQueue(int groupId, QueueStart.Decision start);
 
         /**
          * Whether the archive has started recording group {@code groupId}'s queue; once it has, the queue's
@@ -103,6 +107,8 @@ public final class QueuePublisher {
 
     private static final int[] NO_GROUPS = new int[0];
 
+    private static final QueueStart.Decision GENESIS = new QueueStart.Decision(QueueStart.Kind.GENESIS, 0);
+
     private final Actions actions;
 
     /** The groups whose queues are open, ascending; none before activation. */
@@ -127,11 +133,21 @@ public final class QueuePublisher {
      * @param groupIds the groups to activate, ascending
      */
     public void activate(final int[] groupIds) {
+        activate(groupIds, groupId -> GENESIS);
+    }
+
+    /**
+     * As {@link #activate(int[])}, each queue starting where {@code starts} says: a member restoring a snapshot
+     * starts its queues at the cut (doc/snapshot.md §10.3).
+     * @param groupIds the groups to activate, ascending
+     * @param starts   where each group's queue starts
+     */
+    void activate(final int[] groupIds, final IntFunction<QueueStart.Decision> starts) {
         activeGroups = groupIds.clone();
         final long deadlineNs = actions.nanoTime() + QUEUE_RECORDING_START_TIMEOUT_NS;
         for (final int groupId : activeGroups) {
             try {
-                actions.openQueue(groupId);
+                actions.openQueue(groupId, starts.apply(groupId));
             } catch (final RuntimeException ex) {
                 fatalQueueFailure("group " + groupId + "'s queue could not be opened and recorded: " + ex, true);
                 return;
@@ -164,8 +180,9 @@ public final class QueuePublisher {
      * @param groupId the queue's group
      * @param buffer  holding the frame from offset 0
      * @param length  of the frame
+     * @return the position of the queue just past the frame
      */
-    public void emit(final int groupId, final DirectBuffer buffer, final int length) {
+    public long emit(final int groupId, final DirectBuffer buffer, final int length) {
         int spins = 0;
         long nextAlertNs = 0;
         long result;
@@ -194,6 +211,7 @@ public final class QueuePublisher {
             Logger.info(Logger.CoreComponent.Sequencer, actions.memberId(),
                         "RECOVERED: queue back-pressure cleared at clusterSeqNo=%d", actions.clusterSeqNo());
         }
+        return result;
     }
 
     /**

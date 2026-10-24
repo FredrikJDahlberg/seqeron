@@ -32,6 +32,22 @@ import org.limitless.seqeron.sbe.frame.UnsequencedDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemHeaderDecoder;
+import org.limitless.seqeron.sbe.sequencer.DesignationDecoder;
+import org.limitless.seqeron.sbe.sequencer.DesignationEncoder;
+import org.limitless.seqeron.sbe.sequencer.GatewayRowDecoder;
+import org.limitless.seqeron.sbe.sequencer.GatewayRowEncoder;
+import org.limitless.seqeron.sbe.sequencer.PendingActivationDecoder;
+import org.limitless.seqeron.sbe.sequencer.PendingActivationEncoder;
+import org.limitless.seqeron.sbe.sequencer.SequencerEndDecoder;
+import org.limitless.seqeron.sbe.sequencer.SequencerEndEncoder;
+import org.limitless.seqeron.sbe.sequencer.SequencerStateDecoder;
+import org.limitless.seqeron.sbe.sequencer.SequencerStateEncoder;
+import org.limitless.seqeron.sbe.sequencer.SessionBindingDecoder;
+import org.limitless.seqeron.sbe.sequencer.SessionBindingEncoder;
+import org.limitless.seqeron.sbe.sequencer.SourceGroupDecoder;
+import org.limitless.seqeron.sbe.sequencer.SourceGroupEncoder;
+import org.limitless.seqeron.sbe.sequencer.TopologyRowDecoder;
+import org.limitless.seqeron.sbe.sequencer.TopologyRowEncoder;
 import org.limitless.seqeron.util.Logger;
 
 /**
@@ -48,7 +64,7 @@ import org.limitless.seqeron.util.Logger;
  * <p>Deterministic: no clock reads, randomness or I/O — the consensus timestamp is always passed in — so
  * every node encodes byte-identical frames. Single-threaded: driven only from the cluster's service thread.
  */
-public final class Sequencer {
+public final class Sequencer implements SequencerSnapshot {
     /** Where every frame goes, in {@code clusterSeqNo} order. */
     public interface FrameSink {
         /**
@@ -262,8 +278,28 @@ public final class Sequencer {
     /** Bytes sequenced since the last {@code SnapshotStarted}, each frame once however many queues it reaches. */
     private long bytesSinceSnapshot = 0;
 
-    /** A {@code SnapshotRequested} being sequenced; its {@code SnapshotStarted} is published behind it. */
-    private boolean snapshotRequested = false;
+    /**
+     * A round is due: the interval or the byte count has passed, or an operator asked for one. Set from state every
+     * member holds, so a new leader asks for it where the last stopped; cleared when the round's marker is
+     * published, by {@link #takeSnapshot} (doc/snapshot.md §10.2).
+     */
+    private boolean roundDue = false;
+
+    /**
+     * Each topology row as it was sequenced, the latest of each: the group table, a gateway instance's row, an
+     * application's. The Replayer resolves instances' queues from them (spec R-6), and a restored node's log no longer
+     * replays them. Keyed in order, so every member snapshots them in the same order.
+     */
+    private final java.util.TreeMap<Long, byte[]> topologyFrames = new java.util.TreeMap<>();
+
+    /** Where each queue's last marker started in this node's recording, slot {@code groupId - 1}; a hint. */
+    private final long[] markerPositions = new long[FrameLayer.MAX_GROUPS];
+
+    /** The term length of each queue publication when its last marker was published. */
+    private final int[] queueTermLengths = new int[FrameLayer.MAX_GROUPS];
+
+    /** The MTU of each queue publication when its last marker was published. */
+    private final int[] queueMtus = new int[FrameLayer.MAX_GROUPS];
 
     /** This node's memberId, for the log lines only. */
     private final int memberId;
@@ -412,19 +448,42 @@ public final class Sequencer {
             .timestamp(timestamp);
         encodeBuffer.putBytes(QUEUE_BODY_PREFIX_OFFSET, buffer, prefixOffset,
                               UnsequencedDecoder.payloadHeaderLength() + bodyLength);
+        if (system) {
+            keepTopologyRow(systemEventType, QUEUE_BODY_OFFSET + bodyLength);
+        }
         publish(encodeBuffer, QUEUE_BODY_OFFSET + bodyLength, system ? activeGroupMask : groupMask);
 
         for (int i = 0; i < designations.size(); i++) {
             publishSynthesized(gatewayActive(designations.getInt(i), timestamp));
         }
         designations.clear();
-        if (snapshotRequested) {
-            snapshotRequested = false;
-            if (snapshotIntervalNs != NO_SNAPSHOT_POLICY) {
-                publishSynthesized(snapshotStarted(timestamp));
+        return true;
+    }
+
+    /** Keeps the frame in {@link #encodeBuffer} if it is a topology row, in place of the last of its key. */
+    private void keepTopologyRow(final int systemEventType, final int length) {
+        final long key;
+        switch (systemEventType) {
+            case SystemFrame.GROUPS_REGISTERED -> key = (long)systemEventType << 32;
+            case SystemFrame.GATEWAY_REGISTERED -> key = (long)systemEventType << 32 | gatewayRegisteredDecoder.gatewayId();
+            case SystemFrame.APPLICATION_REGISTERED ->
+                key = (long)systemEventType << 32 | applicationRegisteredDecoder.applicationSourceId() & 0xFFFFFFFFL;
+            default -> {
+                return;
             }
         }
-        return true;
+        final byte[] frame = new byte[length];
+        encodeBuffer.getBytes(0, frame);
+        topologyFrames.put(key, frame);
+    }
+
+    /**
+     * Hands the topology rows this holds to the Replayer, in key order, as a node restored from a snapshot must:
+     * the log no longer replays the frames it resolves queues from.
+     * @param rows receives each row as it was sequenced
+     */
+    void replayTopologyRows(final java.util.function.Consumer<byte[]> rows) {
+        topologyFrames.values().forEach(rows);
     }
 
     /**
@@ -629,7 +688,7 @@ public final class Sequencer {
                     bytesSinceSnapshot = 0;
                 }
             }
-            case SystemFrame.SNAPSHOT_REQUESTED -> snapshotRequested = true;
+            case SystemFrame.SNAPSHOT_REQUESTED -> roundDue |= snapshotIntervalNs != NO_SNAPSHOT_POLICY;
             default -> {
                 // Derived from by nothing.
             }
@@ -669,7 +728,7 @@ public final class Sequencer {
     /**
      * Publishes the 1 Hz cluster clock frame — consumers read its consensus timestamp while producers are
      * silent — then everything that runs off it: a hand-over for each designated instance that never answered
-     * with {@code GatewayStarted}, then a {@code SnapshotStarted} the interval or the byte count calls for.
+     * with {@code GatewayStarted}, then notes that the interval or the byte count calls for a round.
      * @param timestamp now
      */
     public void clusterHeartbeat(final long timestamp) {
@@ -684,7 +743,7 @@ public final class Sequencer {
         }
         if (snapshotIntervalNs > 0 && timestamp - lastSnapshotStart >= snapshotIntervalNs ||
             snapshotIntervalNs != NO_SNAPSHOT_POLICY && snapshotBytes > 0 && bytesSinceSnapshot >= snapshotBytes) {
-            publishSynthesized(snapshotStarted(timestamp));
+            roundDue = true;
         }
     }
 
@@ -712,6 +771,57 @@ public final class Sequencer {
     /** The last round started; 0 before the first. */
     public long snapshotRound() {
         return snapshotRound;
+    }
+
+    /** Whether a {@code SnapshotPolicyRegistered} has been sequenced: without one no round is taken. */
+    public boolean hasSnapshotPolicy() {
+        return snapshotIntervalNs != NO_SNAPSHOT_POLICY;
+    }
+
+    /**
+     * Whether a round is due and has not been taken: the interval or the byte count has passed, or an operator
+     * asked. The leader's service then asks the cluster for a snapshot, whose {@code onTakeSnapshot} is
+     * {@link #takeSnapshot}.
+     */
+    public boolean snapshotDue() {
+        return roundDue;
+    }
+
+    /**
+     * Publishes the next round's {@code SnapshotStarted} on every queue, its {@code clusterSeqNo} the round's cut, and
+     * clears {@link #snapshotDue}. Called from the cluster's snapshot action, which every member takes at the same
+     * place in the log with the same timestamp (doc/snapshot.md §10.8). With no group active there is no queue to cut,
+     * and nothing is published.
+     * @param timestamp the action's consensus timestamp
+     */
+    public void takeSnapshot(final long timestamp) {
+        roundDue = false;
+        if (activeGroupMask != 0) {
+            publishSynthesized(snapshotStarted(timestamp));
+        }
+    }
+
+    /**
+     * Publishes the marker of the round a restored snapshot was taken at, as the first frame of each queue, as
+     * {@link #takeSnapshot} published it: the same {@code clusterSeqNo}, timestamp and {@code groupSeqNo}, so that the
+     * restored queue begins as the queue it replaces did at the cut (doc/snapshot.md §10.3). Counts for nothing.
+     */
+    void reemitMarker() {
+        if (activeGroupMask == 0) {
+            return;
+        }
+        snapshotStartedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        stampSynthesized(snapshotStartedEncoder.header(), SystemFrame.SNAPSHOT_STARTED, clusterSeqNo,
+                         lastSnapshotStart);
+        snapshotStartedEncoder.round(snapshotRound);
+        final int length = MessageHeaderEncoder.ENCODED_LENGTH + snapshotStartedEncoder.encodedLength();
+        for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+            if ((activeGroupMask & groupBit(groupId)) != 0) {
+                queueHeaderEncoder.wrap(encodeBuffer, MessageHeaderEncoder.ENCODED_LENGTH)
+                    .groupSeqNo(groupSeqNos[groupId - 1]);
+                sink.publish(groupId, encodeBuffer, length);
+            }
+        }
     }
 
     /** Encodes the next round's {@code SnapshotStarted}; its {@code clusterSeqNo} is the round's cut. */
@@ -998,5 +1108,338 @@ public final class Sequencer {
             }
         }
         return null;
+    }
+
+    // ── Snapshot (doc/snapshot.md §10.2) ─────────────────────────────────────────
+
+    /** The format {@link #onSnapshot} writes. */
+    static final int SNAPSHOT_FORMAT_VERSION = 1;
+
+    private final org.limitless.seqeron.sbe.sequencer.MessageHeaderEncoder snapshotHeaderEncoder =
+        new org.limitless.seqeron.sbe.sequencer.MessageHeaderEncoder();
+    private final org.limitless.seqeron.sbe.sequencer.MessageHeaderDecoder snapshotHeaderDecoder =
+        new org.limitless.seqeron.sbe.sequencer.MessageHeaderDecoder();
+    private final SequencerStateEncoder stateEncoder = new SequencerStateEncoder();
+    private final SourceGroupEncoder sourceGroupEncoder = new SourceGroupEncoder();
+    private final SessionBindingEncoder sessionBindingEncoder = new SessionBindingEncoder();
+    private final DesignationEncoder designationEncoder = new DesignationEncoder();
+    private final GatewayRowEncoder gatewayRowEncoder = new GatewayRowEncoder();
+    private final PendingActivationEncoder pendingActivationEncoder = new PendingActivationEncoder();
+    private final SequencerEndEncoder endEncoder = new SequencerEndEncoder();
+
+    /** The keys of the maps, in order, as the snapshot being written holds them. */
+    private int[] snapshotSources = new int[0];
+    private long[] snapshotSessions = new long[0];
+    private long[] snapshotDesignated = new long[0];
+    private long[] snapshotTopology = new long[0];
+    private final TopologyRowEncoder topologyRowEncoder = new TopologyRowEncoder();
+
+    /** How many entries of each kind the snapshot being read has carried. */
+    private int restoredSources, restoredBindings, restoredDesignations, restoredRows, restoredPending, restoredTopology;
+
+    /** Whether {@link #onRestore} has read a whole snapshot, its end included. */
+    private boolean restored;
+
+    /**
+     * Records where a queue's marker started, for the snapshot taken next: the service knows the position, and the
+     * term length and MTU it was published with (doc/snapshot.md §10.3).
+     * @param groupId    the queue's group
+     * @param position   where its marker started in this node's recording
+     * @param termLength of the queue publication
+     * @param mtu        of the queue publication
+     */
+    void queueCut(final int groupId, final long position, final int termLength, final int mtu) {
+        markerPositions[groupId - 1] = position;
+        queueTermLengths[groupId - 1] = termLength;
+        queueMtus[groupId - 1] = mtu;
+    }
+
+    /** Where group {@code groupId}'s last marker started in the recording of the node that took the snapshot. */
+    long markerPosition(final int groupId) {
+        return markerPositions[groupId - 1];
+    }
+
+    /** The term length group {@code groupId}'s queue was published with when its last marker was. */
+    int queueTermLength(final int groupId) {
+        return queueTermLengths[groupId - 1];
+    }
+
+    /** The MTU group {@code groupId}'s queue was published with when its last marker was. */
+    int queueMtu(final int groupId) {
+        return queueMtus[groupId - 1];
+    }
+
+    /** Whether the groups are active: the first {@code GroupsRegistered} has been sequenced. */
+    boolean isActive() {
+        return activeGroupMask != 0;
+    }
+
+    /** The active groups, ascending. */
+    int[] activeGroups() {
+        final IntArrayList groupIds = new IntArrayList();
+        for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+            if ((activeGroupMask & groupBit(groupId)) != 0) {
+                groupIds.addInt(groupId);
+            }
+        }
+        return groupIds.toIntArray();
+    }
+
+    @Override
+    public int formatVersion() {
+        return SNAPSHOT_FORMAT_VERSION;
+    }
+
+    @Override
+    public int onSnapshot(final MutableDirectBuffer buffer, final int recordIndex) {
+        if (recordIndex == 0) {
+            if (designations.size() != 0) {
+                throw new IllegalStateException("a snapshot is taken between events, with no designation unpublished");
+            }
+            snapshotSources = sortedInts(sourceGroup.keySet());
+            snapshotSessions = sortedLongs(sessionGateway.keySet());
+            snapshotDesignated = sortedLongs(designatedGateway.keySet());
+            snapshotTopology = topologyFrames.keySet().stream().mapToLong(Long::longValue).toArray();
+            return encodeState(buffer);
+        }
+        int index = recordIndex - 1;
+        if (index < snapshotSources.length) {
+            final int sourceId = snapshotSources[index];
+            sourceGroupEncoder.wrapAndApplyHeader(buffer, 0, snapshotHeaderEncoder)
+                .sourceId(sourceId)
+                .groupId(sourceGroup.get(sourceId));
+            return MessageHeaderEncoder.ENCODED_LENGTH + sourceGroupEncoder.encodedLength();
+        }
+        index -= snapshotSources.length;
+        if (index < snapshotSessions.length) {
+            final long sessionId = snapshotSessions[index];
+            sessionBindingEncoder.wrapAndApplyHeader(buffer, 0, snapshotHeaderEncoder)
+                .sessionId(sessionId)
+                .gatewayId(sessionGateway.get(sessionId));
+            return MessageHeaderEncoder.ENCODED_LENGTH + sessionBindingEncoder.encodedLength();
+        }
+        index -= snapshotSessions.length;
+        if (index < snapshotDesignated.length) {
+            final long gatewaySourceId = snapshotDesignated[index];
+            designationEncoder.wrapAndApplyHeader(buffer, 0, snapshotHeaderEncoder)
+                .gatewaySourceId(gatewaySourceId)
+                .gatewayId(designatedGateway.get(gatewaySourceId));
+            return MessageHeaderEncoder.ENCODED_LENGTH + designationEncoder.encodedLength();
+        }
+        index -= snapshotDesignated.length;
+        if (index < gatewayRows.size()) {
+            final GatewayRow row = gatewayRows.get(index);
+            gatewayRowEncoder.wrapAndApplyHeader(buffer, 0, snapshotHeaderEncoder)
+                .gatewayId(row.gatewayId)
+                .gatewaySourceId(row.gatewaySourceId)
+                .preferenceRank(row.preferenceRank)
+                .boundSession(row.boundSession);
+            return MessageHeaderEncoder.ENCODED_LENGTH + gatewayRowEncoder.encodedLength();
+        }
+        index -= gatewayRows.size();
+        if (index < pendingActivations.size()) {
+            final PendingActivation pending = pendingActivations.get(index);
+            pendingActivationEncoder.wrapAndApplyHeader(buffer, 0, snapshotHeaderEncoder)
+                .gatewaySourceId(pending.gatewaySourceId())
+                .gatewayId(pending.gatewayId())
+                .deadline(pending.deadline());
+            return MessageHeaderEncoder.ENCODED_LENGTH + pendingActivationEncoder.encodedLength();
+        }
+        index -= pendingActivations.size();
+        if (index < snapshotTopology.length) {
+            final byte[] frame = topologyFrames.get(snapshotTopology[index]);
+            topologyRowEncoder.wrapAndApplyHeader(buffer, 0, snapshotHeaderEncoder).putFrame(frame, 0, frame.length);
+            return MessageHeaderEncoder.ENCODED_LENGTH + topologyRowEncoder.encodedLength();
+        }
+        index -= snapshotTopology.length;
+        if (index == 0) {
+            endEncoder.wrapAndApplyHeader(buffer, 0, snapshotHeaderEncoder)
+                .sourceGroups(snapshotSources.length)
+                .sessionBindings(snapshotSessions.length)
+                .designations(snapshotDesignated.length)
+                .gatewayRows(gatewayRows.size())
+                .pendingActivations(pendingActivations.size())
+                .topologyRows(snapshotTopology.length);
+            return MessageHeaderEncoder.ENCODED_LENGTH + endEncoder.encodedLength();
+        }
+        return 0;
+    }
+
+    private int encodeState(final MutableDirectBuffer buffer) {
+        stateEncoder.wrapAndApplyHeader(buffer, 0, snapshotHeaderEncoder)
+            .formatVersion(SNAPSHOT_FORMAT_VERSION)
+            .clusterSeqNo(clusterSeqNo)
+            .topologySession(topologySession)
+            .rejectedFrameCount(rejectedFrameCount)
+            .gatewayPromotionCount(gatewayPromotionCount)
+            .gatewayPromotionFailedCount(gatewayPromotionFailedCount)
+            .bootstrapActivationScheduled((short)(bootstrapActivationScheduled ? 1 : 0))
+            .bootstrapActivationEmitted((short)(bootstrapActivationEmitted ? 1 : 0))
+            .snapshotIntervalNs(snapshotIntervalNs)
+            .snapshotRound(snapshotRound)
+            .lastSnapshotStart(lastSnapshotStart)
+            .snapshotBytes(snapshotBytes)
+            .bytesSinceSnapshot(bytesSinceSnapshot)
+            .roundDue((short)(roundDue ? 1 : 0));
+        final byte[] names = new byte[SequencerStateEncoder.groupNamesLength()];
+        for (int slot = 0; slot < FrameLayer.MAX_GROUPS; slot++) {
+            if (groupNames[slot] != null) {
+                final byte[] name = groupNames[slot].getBytes(StandardCharsets.US_ASCII);
+                System.arraycopy(name, 0, names, slot * GROUP_NAME_LENGTH, name.length);
+            }
+            stateEncoder.groupSeqNos(slot, groupSeqNos[slot])
+                .markerPositions(slot, markerPositions[slot])
+                .termLengths(slot, queueTermLengths[slot])
+                .mtus(slot, queueMtus[slot]);
+        }
+        stateEncoder.putGroupNames(names, 0).putPrologue(prologue, 0, prologueLength);
+        return MessageHeaderEncoder.ENCODED_LENGTH + stateEncoder.encodedLength();
+    }
+
+    @Override
+    public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex,
+                          final int formatVersion) {
+        if (formatVersion > SNAPSHOT_FORMAT_VERSION) {
+            throw new IllegalStateException("the Sequencer's snapshot is in format " + formatVersion +
+                                            ", which this build, reading up to " + SNAPSHOT_FORMAT_VERSION +
+                                            ", does not read");
+        }
+        snapshotHeaderDecoder.wrap(buffer, 0);
+        if (snapshotHeaderDecoder.schemaId() != SequencerStateDecoder.SCHEMA_ID) {
+            throw new IllegalStateException("record " + recordIndex + " of the Sequencer's snapshot is schema " +
+                                            snapshotHeaderDecoder.schemaId() + ", not " +
+                                            SequencerStateDecoder.SCHEMA_ID);
+        }
+        final int templateId = snapshotHeaderDecoder.templateId();
+        if ((recordIndex == 0) != (templateId == SequencerStateDecoder.TEMPLATE_ID)) {
+            throw new IllegalStateException("record " + recordIndex + " of the Sequencer's snapshot is template " +
+                                            templateId + ", and the state is the first");
+        }
+        final int body = MessageHeaderDecoder.ENCODED_LENGTH;
+        final int blockLength = snapshotHeaderDecoder.blockLength();
+        final int version = snapshotHeaderDecoder.version();
+        switch (templateId) {
+            case SequencerStateDecoder.TEMPLATE_ID -> restoreState(buffer, body, blockLength, version);
+            case SourceGroupDecoder.TEMPLATE_ID -> {
+                final SourceGroupDecoder entry = new SourceGroupDecoder().wrap(buffer, body, blockLength, version);
+                sourceGroup.put(entry.sourceId(), entry.groupId());
+                restoredSources++;
+            }
+            case SessionBindingDecoder.TEMPLATE_ID -> {
+                final SessionBindingDecoder entry = new SessionBindingDecoder().wrap(buffer, body, blockLength, version);
+                sessionGateway.put(entry.sessionId(), entry.gatewayId());
+                restoredBindings++;
+            }
+            case DesignationDecoder.TEMPLATE_ID -> {
+                final DesignationDecoder entry = new DesignationDecoder().wrap(buffer, body, blockLength, version);
+                designatedGateway.put(entry.gatewaySourceId(), entry.gatewayId());
+                restoredDesignations++;
+            }
+            case GatewayRowDecoder.TEMPLATE_ID -> {
+                final GatewayRowDecoder entry = new GatewayRowDecoder().wrap(buffer, body, blockLength, version);
+                final GatewayRow row = new GatewayRow(entry.gatewayId(), entry.gatewaySourceId(), entry.preferenceRank());
+                row.boundSession = entry.boundSession();
+                gatewayRows.add(row);
+                restoredRows++;
+            }
+            case PendingActivationDecoder.TEMPLATE_ID -> {
+                final PendingActivationDecoder entry =
+                    new PendingActivationDecoder().wrap(buffer, body, blockLength, version);
+                pendingActivations.add(
+                    new PendingActivation(entry.gatewaySourceId(), entry.gatewayId(), entry.deadline()));
+                restoredPending++;
+            }
+            case TopologyRowDecoder.TEMPLATE_ID -> {
+                final TopologyRowDecoder entry = new TopologyRowDecoder().wrap(buffer, body, blockLength, version);
+                final byte[] frame = new byte[entry.frameLength()];
+                entry.getFrame(frame, 0, frame.length);
+                topologyFrames.put(topologyKey(frame), frame);
+                restoredTopology++;
+            }
+            case SequencerEndDecoder.TEMPLATE_ID -> {
+                final SequencerEndDecoder end = new SequencerEndDecoder().wrap(buffer, body, blockLength, version);
+                if (end.sourceGroups() != restoredSources || end.sessionBindings() != restoredBindings ||
+                    end.designations() != restoredDesignations || end.gatewayRows() != restoredRows ||
+                    end.pendingActivations() != restoredPending || end.topologyRows() != restoredTopology) {
+                    throw new IllegalStateException("the Sequencer's snapshot ends with counts that differ from the "
+                                                    + "entries it carried");
+                }
+                restored = true;
+            }
+            default -> throw new IllegalStateException(
+                "record " + recordIndex + " of the Sequencer's snapshot is template " + templateId);
+        }
+    }
+
+    private void restoreState(final DirectBuffer buffer, final int body, final int blockLength, final int version) {
+        final SequencerStateDecoder state = new SequencerStateDecoder().wrap(buffer, body, blockLength, version);
+        clusterSeqNo = state.clusterSeqNo();
+        topologySession = state.topologySession();
+        rejectedFrameCount = state.rejectedFrameCount();
+        gatewayPromotionCount = state.gatewayPromotionCount();
+        gatewayPromotionFailedCount = state.gatewayPromotionFailedCount();
+        bootstrapActivationScheduled = state.bootstrapActivationScheduled() != 0;
+        bootstrapActivationEmitted = state.bootstrapActivationEmitted() != 0;
+        snapshotIntervalNs = state.snapshotIntervalNs();
+        snapshotRound = state.snapshotRound();
+        lastSnapshotStart = state.lastSnapshotStart();
+        snapshotBytes = state.snapshotBytes();
+        bytesSinceSnapshot = state.bytesSinceSnapshot();
+        roundDue = state.roundDue() != 0;
+        state.getGroupNames(groupNamesBytes, 0);
+        activeGroupMask = 0;
+        for (int slot = 0; slot < FrameLayer.MAX_GROUPS; slot++) {
+            groupNames[slot] = groupName(slot);
+            if (groupNames[slot] != null) {
+                activeGroupMask |= groupBit(slot + 1);
+            }
+            groupSeqNos[slot] = state.groupSeqNos(slot);
+            markerPositions[slot] = state.markerPositions(slot);
+            queueTermLengths[slot] = state.termLengths(slot);
+            queueMtus[slot] = state.mtus(slot);
+        }
+        prologueLength = state.prologueLength();
+        state.getPrologue(prologue, 0, prologueLength);
+        restoredSources = restoredBindings = restoredDesignations = restoredRows = restoredPending = 0;
+        restoredTopology = 0;
+        restored = false;
+    }
+
+    /** The key {@link #keepTopologyRow} gave a topology row's frame. */
+    private long topologyKey(final byte[] frame) {
+        final org.agrona.concurrent.UnsafeBuffer buffer = new org.agrona.concurrent.UnsafeBuffer(frame);
+        final int body = QUEUE_BODY_OFFSET;
+        final int systemEventType = new org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder()
+            .wrap(buffer, MessageHeaderEncoder.ENCODED_LENGTH).systemEventType();
+        return switch (systemEventType) {
+            case SystemFrame.GATEWAY_REGISTERED -> {
+                gatewayRegisteredDecoder.wrap(buffer, body, GatewayRegisteredDecoder.BLOCK_LENGTH,
+                                              MessageHeaderDecoder.SCHEMA_VERSION);
+                yield (long)systemEventType << 32 | gatewayRegisteredDecoder.gatewayId();
+            }
+            case SystemFrame.APPLICATION_REGISTERED -> {
+                applicationRegisteredDecoder.wrap(buffer, body, ApplicationRegisteredDecoder.BLOCK_LENGTH,
+                                                  MessageHeaderDecoder.SCHEMA_VERSION);
+                yield (long)systemEventType << 32 | applicationRegisteredDecoder.applicationSourceId() & 0xFFFFFFFFL;
+            }
+            default -> (long)systemEventType << 32;
+        };
+    }
+
+    /** Whether a whole snapshot has been restored into this. */
+    boolean isRestored() {
+        return restored;
+    }
+
+    private static int[] sortedInts(final java.util.Set<Integer> keys) {
+        final int[] sorted = keys.stream().mapToInt(Integer::intValue).toArray();
+        Arrays.sort(sorted);
+        return sorted;
+    }
+
+    private static long[] sortedLongs(final java.util.Set<Long> keys) {
+        final long[] sorted = keys.stream().mapToLong(Long::longValue).toArray();
+        Arrays.sort(sorted);
+        return sorted;
     }
 }
