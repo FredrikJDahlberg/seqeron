@@ -42,10 +42,8 @@ final class QueueRelay {
     /** Pause before trying the members again once every one of them has failed in a row. */
     static final long RETRY_INTERVAL_MS = 500;
 
-    /** How long the local recording may make no progress under back-pressure before the relay stops. */
-    static final long RECORDING_STALL_FATAL_MS = 1_000;
-
     private final int sourceCount;
+    private final long stallTimeoutMs;
     private int sourceIndex;
     private int failedAttempts;
     private long nextAttemptMs;
@@ -69,14 +67,21 @@ final class QueueRelay {
     /**
      * A relay that has published nothing.
      *
-     * @param sourceCount how many member archives it may read from
+     * @param sourceCount    how many member archives it may read from
+     * @param stallTimeoutMs how long the local recording may make no progress under back-pressure, then it stops
      */
-    QueueRelay(final int sourceCount) {
+    QueueRelay(final int sourceCount, final long stallTimeoutMs) {
         if (sourceCount < 1) {
             throw new IllegalArgumentException("a relay needs at least one member archive");
         }
         this.sourceCount = sourceCount;
+        this.stallTimeoutMs = stallTimeoutMs;
         this.startsPast = new boolean[sourceCount];
+    }
+
+    /** How long the local recording may make no progress under back-pressure before the relay stops. */
+    long stallTimeoutMs() {
+        return stallTimeoutMs;
     }
 
     /** Which member archive to read next, as an index into the configured list. */
@@ -171,7 +176,7 @@ final class QueueRelay {
      *
      * @param nowMs            the clock
      * @param recordedPosition how far the local archive has recorded the local queue
-     * @return true once the local recording has made no progress for {@link #RECORDING_STALL_FATAL_MS}
+     * @return true once the local recording has made no progress for {@link #stallTimeoutMs}
      */
     boolean onBackPressured(final long nowMs, final long recordedPosition) {
         lastFrameMs = nowMs; // the member is not the one holding this up
@@ -181,7 +186,7 @@ final class QueueRelay {
             backPressuredRecordedPosition = recordedPosition;
             return false;
         }
-        return nowMs - backPressuredSinceMs >= RECORDING_STALL_FATAL_MS;
+        return nowMs - backPressuredSinceMs >= stallTimeoutMs;
     }
 
     /**

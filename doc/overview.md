@@ -210,9 +210,11 @@ encrypted, authenticated layer.
 
 ## Snapshots
 
-The cluster takes no snapshots. A member restored from one would hold a recording that starts where the
-snapshot did, and could no longer serve full history to its clients. The cost is that a member's
-recovery time and archive size grow with uptime.
+Without a `<snapshots>` policy the cluster takes no snapshots, and a member's recovery time and archive size
+grow with uptime. With one, a cluster snapshot is also an application round: a restarted member records each
+queue from the round's cut, and purging moves each recording's start forward while it runs. Neither member can
+then serve history from `groupSeqNo` 1, so every consumer of its queues must be able to restart from a snapshot
+file.
 
 Applications can snapshot their own state instead, and the log makes those snapshots safe. The sequencer
 starts a round by sequencing `SnapshotStarted`, whose position in the order is the round's cut. Every
@@ -257,7 +259,7 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 | members | up to seven, bounded by the 70-port cluster block |
 | payload | 8,874 bytes per message; larger payloads are split by the application |
 | node recovery | full-log replay without a `<snapshots>` policy, so time and archive size grow with uptime (the heartbeat alone is about 86,400 messages a day); with one, a replay of the log since a cluster snapshot |
-| queue history | with a `<snapshots>` policy, purged on each member below the newest restart-safe cut; a gateway host purges nothing, so its recordings grow with uptime |
+| queue history | with a `<snapshots>` policy, purged on each member and each gateway host below its newest restart-safe cut |
 | Raft log | trimmed by hand: `clusterctl trim-log` on each member |
 | gateway relay | one cut off from every member while they purge past it stops relaying until its host restarts |
 | concurrent replays | four per member, one while its queue recording falls behind; more clients wait |

@@ -48,6 +48,9 @@ import org.limitless.seqeron.util.Logger;
  *   replayer.idleStrategy      — duty-cycle idle strategy: {@code backoff} (default), {@code yielding}, or
  *                                {@code busyspin}; busy-spin pays only on an isolated core
  *   replayer.snapshotJoinMs    — how long after a cut an application or gateway has to join its round; default 10s
+ *   replayer.queueStallTimeoutMs — how long a relayed queue's local recording may make no progress under
+ *                                back-pressure before the host terminates; default 5000, at least 1000
+ *                                (doc/ops.md, "A node that terminates itself")
  *   replayer.host              — this host's name as the members reach it; default localhost
  *   replayer.baseDir           — data directory root; default {tmpdir}/seqeron-seq
  *   aeron.threading.mode       — the driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
@@ -75,13 +78,14 @@ public final class ReplayerServer {
     private static final String PROP_BASE_DIR = "replayer.baseDir";
     private static final String PROP_GROUPS = "replayer.groups";
     private static final String PROP_SNAPSHOT_JOIN_MS = "replayer.snapshotJoinMs";
+    private static final String PROP_QUEUE_STALL_TIMEOUT_MS = "replayer.queueStallTimeoutMs";
 
     /** Above a member's, since a host's purge cannot be undone (doc/snapshot.md §10.6). */
     static final long DEFAULT_SNAPSHOT_JOIN_MS = 10_000;
 
     /**
-     * How long shutdown waits for the duty cycle's current iteration, which never blocks on a timeout of
-     * its own; within Agrona's 10s shutdown-hook budget.
+     * How long shutdown waits for the duty cycle's current iteration, which blocks only on a cut search's
+     * replay, until it stops delivering; within Agrona's 10s shutdown-hook budget.
      */
     private static final long SHUTDOWN_JOIN_TIMEOUT_MS = 5_000;
 
@@ -178,13 +182,15 @@ public final class ReplayerServer {
      */
     public static ReplayerServer launchGatewayHost(final GatewayHostConfig config, final Runnable fatalHandler,
                                                    final Queue<RelayedCut> cutReports) {
+        final long stallTimeoutMs = NodeDriver.queueStallTimeoutMs(PROP_QUEUE_STALL_TIMEOUT_MS);
         final ArchivingMediaDriver driver = launchDriver(config);
         try {
             final Queue<RelayedCut> reports = cutReports == null ? new ConcurrentLinkedQueue<>() : cutReports;
             return new ReplayerServer(
                 config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(), config.host(), config.groups(),
                 new ConcurrentLinkedQueue<>(), reports, config.idleStrategies(), fatalHandler,
-                CutIntake.ofHost(reports, Long.getLong(PROP_SNAPSHOT_JOIN_MS, DEFAULT_SNAPSHOT_JOIN_MS)));
+                CutIntake.ofHost(reports, Long.getLong(PROP_SNAPSHOT_JOIN_MS, DEFAULT_SNAPSHOT_JOIN_MS)),
+                stallTimeoutMs);
         } catch (final RuntimeException ex) {
             CloseHelper.quietClose(driver);
             throw ex;
@@ -217,14 +223,15 @@ public final class ReplayerServer {
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake) {
         return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, List.of(), topologyRows,
-                                  null, idleStrategies, fatalHandler, cutIntake);
+                                  null, idleStrategies, fatalHandler, cutIntake,
+                                  NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS);
     }
 
     private ReplayerServer(final int memberId, final ArchivingMediaDriver driver, final String aeronDir,
                            final List<String> archiveEndpoints, final String host, final List<Integer> groups,
                            final Queue<byte[]> topologyRows, final Queue<RelayedCut> cutReports,
                            final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler,
-                           final CutIntake cutIntake) {
+                           final CutIntake cutIntake, final long relayStallTimeoutMs) {
         this.memberId = memberId;
         this.driver = driver;
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
@@ -245,8 +252,8 @@ public final class ReplayerServer {
             for (final int groupId : groups) {
                 // The lowest relayed queue is the host's default queue, and it alone feeds the resolver.
                 relays.add(new AeronQueueRelay(aeron, archive, archiveEndpoints, host, memberId, groupId,
-                                               relays.isEmpty() ? topologyRows : null, cutReports,
-                                               idleStrategies.get(), fatalHandler));
+                                               relays.isEmpty() ? topologyRows : null, cutReports, idleStrategies.get(),
+                                               fatalHandler, relayStallTimeoutMs));
                 relayedGroups |= 1 << (groupId - 1);
             }
         }

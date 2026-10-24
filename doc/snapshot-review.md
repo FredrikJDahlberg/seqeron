@@ -125,7 +125,7 @@ peer's file copied in by hand. A replica that was down across one round is in th
   (lines 19-22) says "the cluster takes no snapshots of its own". All of §10 is implemented except the audit tool.
 - `overview.md:260` says "a gateway host purges nothing". It does, since `2796724`.
 - `snapshot.md` §10.6 "Order" and "Tests" describe steps as future work. Two plan documents,
-  [`snapshot-plan.md`](snapshot-plan.md) and [`snapshot-gateway-purge-plan.md`](snapshot-gateway-purge-plan.md),
+  `snapshot-plan.md` and `snapshot-gateway-purge-plan.md`,
   are done; decide whether they stay as history or go.
 
 ## Test gaps

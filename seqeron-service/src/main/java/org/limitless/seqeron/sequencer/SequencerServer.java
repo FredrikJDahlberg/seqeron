@@ -78,6 +78,9 @@ import org.limitless.seqeron.util.Logger;
  *                               election, and how long a member copying the log waits on progress; default
  *                               2000
  *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 1000
+ *   sequencer.queueStallTimeoutMs — how long a queue's recording may make no progress under back-pressure before
+ *                               the node terminates; default 5000, at least 1000 (doc/ops.md, "A node that
+ *                               terminates itself")
  *   aeron.cluster.max.sessions — the most client sessions the cluster holds at once; default 64 rather than
  *                               Aeron's 10 (doc/ops.md, "Cluster sessions")
  *   aeron.threading.mode       — the embedded driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
@@ -105,6 +108,7 @@ public final class SequencerServer {
     private static final String PROP_LEADER_HEARTBEAT_INTERVAL_MS = "sequencer.leaderHeartbeatIntervalMs";
     private static final String PROP_LEADER_HEARTBEAT_TIMEOUT_MS = "sequencer.leaderHeartbeatTimeoutMs";
     private static final String PROP_ELECTION_TIMEOUT_MS = "sequencer.electionTimeoutMs";
+    private static final String PROP_QUEUE_STALL_TIMEOUT_MS = "sequencer.queueStallTimeoutMs";
 
     private static final String PROP_SNAPSHOT_JOIN_MS = "replayer.snapshotJoinMs";
 
@@ -269,6 +273,7 @@ public final class SequencerServer {
         final Supplier<IdleStrategy> idleStrategySupplier = config.idleStrategies();
         final int archivePort = PortLayout.archivePort(memberId);
         final int ingressPort = PortLayout.ingressPort(memberId);
+        final long queueStallTimeoutMs = NodeDriver.queueStallTimeoutMs(PROP_QUEUE_STALL_TIMEOUT_MS);
 
         final String clusterMembers = buildClusterMembers(config.hosts());
         // Whichever of the consensus module and the service container stop() closes second sees the other go and
@@ -370,7 +375,7 @@ public final class SequencerServer {
         final RestartSafeLog safeLog = RestartSafeLog.open(clusterDir.toPath());
         final SequencerService service =
             new SequencerService(memberId, localArchiveCtx.clone(), topologyRows, fatalHandler, safeLog, cuts,
-                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength());
+                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(), queueStallTimeoutMs);
 
         final ClusteredServiceContainer.Context serviceCtx =
             new ClusteredServiceContainer.Context()

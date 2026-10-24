@@ -38,7 +38,9 @@ public interface Replayer {
         /** The scan reached the position it was bounded to. */
         TIP,
         /** The recording does not hold a frame where the scan began or went on: not a frame boundary. */
-        UNREADABLE
+        UNREADABLE,
+        /** The archive stopped delivering, or never connected: the search is left for the client's resend. */
+        STALLED
     }
 
     /**

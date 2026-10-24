@@ -50,7 +50,21 @@ class ReplayerServerTest {
         // Each timeout is noticed up to one timer interval late.
         final long evictionNs = ctx.untetheredWindowLimitTimeoutNs() + ctx.untetheredLingerTimeoutNs() +
                                 2 * ctx.timerIntervalNs();
-        assertTrue(evictionNs < TimeUnit.MILLISECONDS.toNanos(QueueRelay.RECORDING_STALL_FATAL_MS) / 2);
+        assertTrue(evictionNs < TimeUnit.MILLISECONDS.toNanos(NodeDriver.MIN_QUEUE_STALL_TIMEOUT_MS) / 2);
+    }
+
+    @Test
+    void theQueueStallTimeoutDefaultsToFiveSecondsAndRefusesLessThanOne() {
+        final String property = "seqeron.test.queueStallTimeoutMs";
+        try {
+            assertEquals(5_000, NodeDriver.queueStallTimeoutMs(property));
+            System.setProperty(property, "1000");
+            assertEquals(1_000, NodeDriver.queueStallTimeoutMs(property));
+            System.setProperty(property, "999");
+            assertThrows(IllegalArgumentException.class, () -> NodeDriver.queueStallTimeoutMs(property));
+        } finally {
+            System.clearProperty(property);
+        }
     }
 
     @Test

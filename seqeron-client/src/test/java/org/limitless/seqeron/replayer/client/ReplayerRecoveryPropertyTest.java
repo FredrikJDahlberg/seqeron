@@ -170,7 +170,7 @@ class ReplayerRecoveryPropertyTest {
 
         void execute() {
             // History before the client starts. A cold start over an EMPTY archive that then drops the very
-            // first queue frame is the one designed abort — the first frame observed must be groupSeqNo 1 —
+            // first queue frame is the one designed fault — the first frame observed must be groupSeqNo 1 —
             // and not a recovery failure, so the model does not construct it.
             if (restoring) {
                 publishSnapshotRounds();

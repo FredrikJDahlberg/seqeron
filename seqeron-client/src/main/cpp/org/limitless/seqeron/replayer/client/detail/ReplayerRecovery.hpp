@@ -4,7 +4,6 @@
 //
 #include <array>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -110,8 +109,9 @@ class RetainBlockPool
     std::vector<RetainBlock*> m_freeList;
 };
 
-// A cold start walks the node's active recording of its queue from its start, which holds the whole queue; a gap in
-// groupSeqNo is repaired by resuming it at the last dispatched frame.
+// A cold start walks the node's active recording of its queue from its start, which must be the queue's: a recording
+// that starts at a cut or was purged stops the walk at its first frame. A gap in groupSeqNo is repaired by resuming
+// it at the last dispatched frame.
 //
 // Given a snapshot store (restoreFrom), a cold start first restores the newest snapshot it holds (doc/snapshot.md
 // §7): it replays the recording from the snapshot's cut, and if the frame there is the round's SnapshotStarted the
@@ -338,9 +338,11 @@ class ReplayerRecovery
             }
             util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::FirstFrameNotOne,
                                 "FATAL: first frame observed has groupSeqNo=%lld, expected 1 — "
-                                "this node's recording does not reach the start of the queue; aborting",
+                                "this node's recording does not reach the start of the queue",
                                 static_cast<long long>(groupSeqNo));
-            std::abort();
+            latchFault("first frame observed has groupSeqNo=" + std::to_string(groupSeqNo) +
+                       ", expected 1 — this node's recording does not reach the start of the queue");
+            return;
         }
         dispatchFrame(frame, length, sequenceNumber, framePosition, receiveNs, fromReplay);
         drainRetained();
@@ -715,13 +717,15 @@ class ReplayerRecovery
         m_restoreFailure = std::move(reason);
     }
 
+    // Re-asks for whatever is in flight; a resume goes back through requestResume for a fresh anchor, and so does a
+    // walk that has dispatched a frame.
     void reRequestCurrent()
     {
         if (m_checkingCut)
         {
             requestCut();
         }
-        else if (m_reqFromPosition == protocol::REPLAYER_FROM_START)
+        else if (m_reqFromPosition == protocol::REPLAYER_FROM_START && m_lastGroupSeqNo == 0)
         {
             requestReplay(protocol::REPLAYER_FROM_START); // same request verbatim, new requestId
         }
@@ -764,12 +768,18 @@ class ReplayerRecovery
     // Stops recovering: the recording does not hold what the request expected of it.
     void fail(std::string reason)
     {
-        m_awaitingReplay = false;
-        m_replaySessionId = -1;
-        m_actions.closeReplay();
         util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
                             "FATAL: %s — this node's recording does not match the positions this client holds",
                             reason.c_str());
+        latchFault(std::move(reason));
+    }
+
+    // Stops recovering, for the receiver to raise the reason from its duty cycle.
+    void latchFault(std::string reason)
+    {
+        m_awaitingReplay = false;
+        m_replaySessionId = -1;
+        m_actions.closeReplay();
         m_fault = std::move(reason);
     }
 

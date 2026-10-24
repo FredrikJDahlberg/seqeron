@@ -974,9 +974,9 @@ no header composite and are never sequenced or recorded.
 - **R-2.** `NO_REPLAY_NEEDED` means nothing is to be replayed from where the request asked. For
   `FROM_START` the recording holds nothing yet and the client is at the tip. For a position, the replayer
   refuses it: it is before the recording's start or not a frame boundary in it. A client MUST treat that
-  as fatal: positions follow from the frames, and the recording changes only with the node, so the
-  recording does not match the positions the client holds. A position the recording has not reached
-  yet is answered `ReplayPending`.
+  as fatal: positions follow from the frames, and neither a restart at a cut nor a purge moves a frame, so
+  either the recording does not match the positions the client holds or its start has passed them
+  (`doc/snapshot.md` §10.6). A position the recording has not reached yet is answered `ReplayPending`.
 - **R-3.** A replay holds its slot until the replay's publication is gone: the archive has ended the
   replay and its subscriber has let it go, or the subscriber's client has died. A replay has no time
   limit. A client releases its slot by closing its replay subscription.
@@ -1004,11 +1004,12 @@ no header composite and are never sequenced or recorded.
   passes it without a frame there, which means the cut was made in another log. The client checks the frame it
   receives, and anchors its resume at that frame's position.
 
-The replayer serves only the active recording of each of its node's queues, whatever its first frame. The cluster takes no
-snapshots, so a node's every start replays the log from `clusterSeqNo` 1 into new recordings: the active
-one alone holds the whole of its queue, and an older one is a prefix of it. A client replaying from
-`FROM_START` checks that the first frame it dispatches is `groupSeqNo` 1; one restoring a snapshot takes
-its first `groupSeqNo` from the frame at the cut (`doc/snapshot.md` §7).
+The replayer serves only the active recording of each of its node's queues, whatever its first frame. With no
+`<snapshots>` policy, a node's every start replays the log from `clusterSeqNo` 1 into a new recording, which
+holds the whole queue. With one, a member restarted at a cut records from the cut, and a purge moves a
+recording's start forward while the node runs (`doc/snapshot.md` §10.3, §10.6). A client replaying from
+`FROM_START` checks that the first frame it dispatches is `groupSeqNo` 1, and stops if it is not; one restoring a
+snapshot takes its first `groupSeqNo` from the frame at the cut (`doc/snapshot.md` §7).
 
 The client detects completion by reaching `catchUpPosition`, not by the replay image closing: a
 bounded replay of an active recording does not close its image at the bound. The first frame of a

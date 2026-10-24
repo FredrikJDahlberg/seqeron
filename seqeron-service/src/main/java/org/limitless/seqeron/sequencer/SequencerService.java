@@ -68,7 +68,7 @@ public final class SequencerService implements ClusteredService {
     private final Sequencer sequencer;
 
     /** Everything here that can back-pressure, and the decision to terminate rather than wait. */
-    private final QueuePublisher queue = new QueuePublisher(new QueueActions());
+    private final QueuePublisher queue;
 
     /** Brings the whole node down; wired by {@link SequencerServer}. See {@link QueuePublisher}. */
     private final Runnable fatalHandler;
@@ -135,11 +135,14 @@ public final class SequencerService implements ClusteredService {
      * @param cuts           receives each cluster snapshot this member takes, for its Replayer
      * @param nodeTermLength the IPC term length of the node's driver, which its queues are published with
      * @param nodeMtu        the IPC MTU of the node's driver
+     * @param stallTimeoutMs how long a queue's recording may make no progress under back-pressure before this node
+     *                       terminates
      */
     public SequencerService(final int memberId, final AeronArchive.Context archiveContext,
-                            final Queue<byte[]> topologyRows, final Runnable fatalHandler,
-                            final RestartSafeLog safeLog, final Queue<CutHandover> cuts, final int nodeTermLength,
-                            final int nodeMtu) {
+                            final Queue<byte[]> topologyRows, final Runnable fatalHandler, final RestartSafeLog safeLog,
+                            final Queue<CutHandover> cuts, final int nodeTermLength, final int nodeMtu,
+                            final long stallTimeoutMs) {
+        this.queue = new QueuePublisher(new QueueActions(), TimeUnit.MILLISECONDS.toNanos(stallTimeoutMs));
         this.topologyRows = topologyRows;
         this.safeLog = safeLog;
         this.cuts = cuts;

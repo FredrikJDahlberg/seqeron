@@ -752,7 +752,7 @@ s = content("The queue", "Every cluster member publishes and records its own cop
             "leadership change, so a recording is one continuous run across every leader tenure. The offer is reliable "
             "because a dropped frame is a permanent hole, and bounded because only the archive, the one tethered "
             "subscriber, can hold it back. A slow archive that still advances is never timed out. One that makes no "
-            "progress for 200 ms raises the stall gauge, and after 1 s the member exits with code 70 rather than "
+            "progress for 200 ms raises the stall gauge, and after 5 s the member exits with code 70 rather than "
             "throw: a throwing cluster callback has already had its log position advanced.")
 for i in range(3):
     x = L + i * 1.95
@@ -1115,7 +1115,7 @@ s = content("Failure model", "Each failure and its recovery",
             "Walk the table top to bottom. Note what is absent: there is no recovery procedure that is not a replay. "
             "clusterSeqNo, the gateway list and the active instance are all functions of the log. "
             "The timings are the defaults. A follower starts an election after 200 ms without a leader heartbeat; how "
-            "long the election takes is not measured. A member exits after 1 s of back-pressure with no recording "
+            "long the election takes is not measured. A member exits after 5 s of back-pressure with no recording "
             "progress, and a stopped recording is caught by the 1 Hz heartbeat's liveness check. A slow consumer's "
             "driver drops it within about 0.2 s. A missed frame shows at the next frame, which the heartbeat bounds at "
             "about a second. The cluster closes a silent client's session after the 1 s session timeout, which is what "

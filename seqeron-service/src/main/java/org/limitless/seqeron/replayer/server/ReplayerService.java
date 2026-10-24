@@ -532,16 +532,16 @@ public final class ReplayerService {
         drainPending();
     }
 
-    /**
-     * Answers which queue an instance reads (R-6), or {@code ReplayPending} until its row is on the log. Holds no
-     * slot; a request naming both a gateway and an application is logged and not answered.
-     */
     private void logSharedSource(final long round, final int sourceId) {
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                     "round %d: source %d joined under a second client, so the round stays unsafe; a gateway's "
                     + "instances must not share a node", round, sourceId);
     }
 
+    /**
+     * Answers which queue an instance reads (R-6), or {@code ReplayPending} until its row is on the log. Holds no
+     * slot; a request naming both a gateway and an application is logged and not answered.
+     */
     private void onQueueRequest() {
         final long clientId = queueRequestDecoder.clientId();
         final long requestId = queueRequestDecoder.requestId();
@@ -645,14 +645,12 @@ public final class ReplayerService {
 
         final Replayer.RecordingSpan active = findActiveRecording(queueId);
         if (active == null) {
-            replaySlots.addPending(clientId, requestId, fromPosition, queueId, cutClusterSeqNo);
-            sendPending(clientId, requestId);
+            sendPending(clientId, requestId); // the client's resend is the retry
             return;
         }
         final long recordingId = active.recordingId();
         final long tip = tipOf(recordingId);
         if (tip < 0) {
-            replaySlots.addPending(clientId, requestId, fromPosition, queueId, cutClusterSeqNo);
             sendPending(clientId, requestId);
             return;
         }

@@ -19,12 +19,14 @@ import org.junit.jupiter.api.Test;
 class QueueRelayTest {
     private static final long START = 0;
 
+    private static final long STALL_TIMEOUT_MS = NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS;
+
     /** Where frame {@code n} ends in every member's recording, when the layouts agree. */
     private static long end(final long groupSeqNo) {
         return groupSeqNo * 64;
     }
 
-    private final QueueRelay relay = new QueueRelay(3);
+    private final QueueRelay relay = new QueueRelay(3, STALL_TIMEOUT_MS);
 
     /** Plays frames {@code from..to} through, publishing each one the relay asks for. */
     private void publish(final long from, final long to, final long nowMs) {
@@ -281,8 +283,8 @@ class QueueRelayTest {
 
         assertFalse(relay.onBackPressured(0, 100));
         assertFalse(relay.onBackPressured(900, 200), "the recording advanced, so the clock restarts");
-        assertFalse(relay.onBackPressured(900 + QueueRelay.RECORDING_STALL_FATAL_MS - 1, 200));
-        assertTrue(relay.onBackPressured(900 + QueueRelay.RECORDING_STALL_FATAL_MS, 200));
+        assertFalse(relay.onBackPressured(900 + STALL_TIMEOUT_MS - 1, 200));
+        assertTrue(relay.onBackPressured(900 + STALL_TIMEOUT_MS, 200));
     }
 
     @Test
@@ -295,13 +297,13 @@ class QueueRelayTest {
         assertFalse(relay.isSourceStalled(QueueRelay.SOURCE_TIMEOUT_MS), "the local queue is what is slow");
 
         relay.onPublished(1, end(1));
-        assertFalse(relay.onBackPressured(10 * QueueRelay.RECORDING_STALL_FATAL_MS, 100), "a new episode");
+        assertFalse(relay.onBackPressured(10 * STALL_TIMEOUT_MS, 100), "a new episode");
     }
 
     @Test
     @DisplayName("a relay needs at least one member archive")
     void needsAMember() {
-        assertThrows(IllegalArgumentException.class, () -> new QueueRelay(0));
+        assertThrows(IllegalArgumentException.class, () -> new QueueRelay(0, STALL_TIMEOUT_MS));
     }
 
     @Test

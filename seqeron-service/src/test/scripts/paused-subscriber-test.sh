@@ -2,8 +2,8 @@
 # Paused-subscriber test: a queue subscriber that stops polling must not take its member down.
 #
 # A co-located app subscribes to the queue untethered. Until its driver evicts it, a stopped one still holds
-# the queue's window, and a full window behind it back-pressures the sequencer, which terminates after 1 s of
-# back-pressure with no recording progress (exit 70). seqeron's drivers evict well inside that second
+# the queue's window, and a full window behind it back-pressures the sequencer, which terminates after 5 s of
+# back-pressure with no recording progress (exit 70). seqeron's drivers evict well inside it
 # (doc/ops.md, "Untethered subscribers"); at Aeron's own defaults the eviction takes ~10 s and this fails.
 #
 # Sequence:

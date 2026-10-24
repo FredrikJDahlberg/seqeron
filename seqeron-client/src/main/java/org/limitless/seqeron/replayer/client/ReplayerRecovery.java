@@ -17,7 +17,8 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * The state machine of {@link ReplayerStreamReceiver}. A cold start walks the node's active recording of its queue
- * from its start, which holds the whole queue; catch-up is detected by position ({@code Replaying.catchUpPosition});
+ * from its start, which must be the queue's: a recording that starts at a cut or was purged stops the walk at its
+ * first frame. Catch-up is detected by position ({@code Replaying.catchUpPosition});
  * a gap by groupSeqNo (spec F-6), repaired by resuming the active recording at the last dispatched frame.
  * De-duplication and a resume's anchor go by clusterSeqNo, which increases along a queue but jumps (spec P-3).
  *
@@ -275,9 +276,9 @@ final class ReplayerRecovery {
                          "FATAL: first frame observed has groupSeqNo=%d, expected 1 — this node's recording "
                              + "does not reach the start of the queue",
                          groupSeqNo);
-            throw new IllegalStateException(
-                "first frame observed has groupSeqNo=" + groupSeqNo +
-                ", expected 1 — this node's recording does not reach the start of the queue");
+            latchFault("first frame observed has groupSeqNo=" + groupSeqNo +
+                       ", expected 1 — this node's recording does not reach the start of the queue");
+            return;
         }
         dispatchFrame(buffer, offset, length, clusterSeqNo, framePosition, receiveNs, fromReplay);
         drainRetained();
@@ -669,11 +670,14 @@ final class ReplayerRecovery {
                      actions.memberId(), "cannot restore a snapshot: %s", reason);
     }
 
-    /** Re-asks for whatever is in flight; a resume goes back through {@link #requestResume()} for a fresh anchor. */
+    /**
+     * Re-asks for whatever is in flight; a resume goes back through {@link #requestResume()} for a fresh anchor, and so
+     * does a walk that has dispatched a frame.
+     */
     private void reRequestCurrent() {
         if (checkingCut) {
             requestCut();
-        } else if (requestFromPosition == ReplayProtocol.FROM_START) {
+        } else if (requestFromPosition == ReplayProtocol.FROM_START && lastGroupSeqNo == 0) {
             requestReplay(ReplayProtocol.FROM_START); // same request verbatim, new requestId
         } else {
             requestResume();
@@ -707,12 +711,17 @@ final class ReplayerRecovery {
 
     /** Stops recovering: the recording does not hold what the request expected of it. */
     private void fail(final String reason) {
+        latchFault(reason);
+        Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.QueueGap, actions.memberId(),
+                     "FATAL: %s — this node's recording does not match the positions this client holds", reason);
+    }
+
+    /** Stops recovering, for the receiver to raise {@code reason} from its duty cycle. */
+    private void latchFault(final String reason) {
         fault = reason;
         awaitingReplay = false;
         replaySessionId = -1;
         actions.closeReplay();
-        Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.QueueGap, actions.memberId(),
-                     "FATAL: %s — this node's recording does not match the positions this client holds", reason);
     }
 
     /** An attached (or expected) replay stopped delivering — see the watchdog in {@link #doTimers}. */

@@ -78,14 +78,14 @@ A dropped frame would leave a permanent gap in a member's recording, so `QueuePu
 offer until it succeeds. Only the local archive can back-pressure that offer for long: the recording is the
 queue's one tethered subscriber, and client subscriptions are untethered. A client that stops polling holds
 the window only until its driver drops it, within about 0.2 s ([`ops.md`](ops.md), "Untethered
-subscribers"), well inside the 1 s below.
+subscribers"), well inside the stall timeout below.
 
 The retry is bounded. `QueuePublisher` watches the archive's recording position and tells three cases apart:
 
 | archive state | response |
 | --- | --- |
 | slow: back-pressured, recording position advancing | keep retrying; raise the back-pressure alert after 200 ms |
-| stalled: no progress for 1 s | fatal |
+| stalled: no progress for `sequencer.queueStallTimeoutMs`, default 5 s | fatal |
 | recording gone | fatal at once |
 
 A stopped recording back-pressures nothing, since the untethered client subscriptions keep the publication
@@ -278,8 +278,8 @@ which is unit-tested directly, case for case across the languages.
   a second gap. Past the bound, the client drops them and walks again.
 - **`isCaughtUp()` is not latched.** It can clear again on a later gap; the gateway fences (§2.1) and the
   leader gate (§4) depend on that.
-- **The first frame is 1.** The first frame a client ever delivers must have `groupSeqNo` 1, or the process
-  aborts: the member's recording must reach the start of the queue.
+- **The first frame is 1.** The first frame a client ever delivers must have `groupSeqNo` 1, or recovery
+  stops and the receiver's next poll throws: the member's recording must reach the start of the queue.
 - **One replay subscription per replay.** The replay stream (201) is shared by every client on the member,
   and an Aeron publication runs at its slowest tethered subscriber. A client therefore subscribes to it only
   for the duration of its replay, filtered to that replay's session id. A subscription held open between
@@ -287,8 +287,9 @@ which is unit-tested directly, case for case across the languages.
   half of a 64 MiB term.
 - **Stalled replays.** A bounded replay of a recording still being written does not close its image at the
   bound, so an open, attached, stalled image would go unnoticed. A replay that makes no progress for 5 s
-  (`REPLAY_STALL_TIMEOUT_MS`), or whose image never attaches, is requested again. A resume is retried by
-  re-anchoring through `requestResume()`, so the anchor check above still applies.
+  (`REPLAY_STALL_TIMEOUT_MS`), or whose image never attaches, is requested again. A resume, and a walk that
+  has delivered a frame, are retried by re-anchoring through `requestResume()`, so the anchor check above
+  still applies.
 
 `ClusterStreamClient` (C++) reads an archive's recording directly where no Replayer is available: from its
 start and without a bound, so one image delivers history followed by live data.
@@ -317,7 +318,8 @@ directly.
   whole history over the network per restart.
 - **The local recording.** A local queue that refuses a frame is not spun on: the frame is offered again next
   cycle, and the member's replay waits under Aeron flow control. A local recording that stops, or makes no
-  progress for 1 s while the queue is back-pressured, exits the process with code 70.
+  progress for `replayer.queueStallTimeoutMs` (default 5 s) while the queue is back-pressured, exits the process
+  with code 70.
 - **No member reachable.** The host's queue goes silent, and its clients' queue-stall checks (§2.1) fire, as
   they would on a member whose cluster lost quorum.
 
@@ -427,7 +429,7 @@ Each failure above has a harness that produces it against a live cluster, all un
 | `gateway-host-test.sh` | a gateway host whose relay reads the leader, which is then killed; a `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to another member. The host is then restarted, and a cold start there must catch up from its new recording (§3.3) |
 | `snapshot-test.sh` | the `TestGateway` pair on three members with snapshot rounds every 2 s. The standby restarts and restores, the active instance is killed and the restored one takes over, and the killed one returns as a hot standby, restoring from the file it confirmed while it served. Each restore must report the state the client traffic implies, and no instance may be fenced, so every round is also compared against the restored state (§3.4) |
 | `csharp-client-test.sh` | the C# client against three members: confirmed ingress across a leader kill (§5), a cold start from `clusterSeqNo` 1 (§3.2), and a C# gateway pair handed over when its active instance is killed (§2.2, §2.3) |
-| `cpp-client-test.sh` | the C++ client against three members: confirmed ingress across a leader kill (§5), a cold start from `clusterSeqNo` 1 (§3.2), the C++ gateway pair handed over when its active instance is killed (§2.2, §2.3), and an application replica restored from a snapshot it confirmed (§3.4) |
+| `cpp-client-test.sh` | the C++ client against three members: confirmed ingress across a leader kill (§5), a cold start from `clusterSeqNo` 1 (§3.2), the C++ gateway pair handed over when its active instance is killed (§2.2, §2.3), an application replica restored from a snapshot it confirmed (§3.4), and `ClusterStreamClient` replaying a member's recording that starts at a cut |
 | `csharp-windows-test.sh` | the C# client on Windows beside a gateway host, against one member in WSL1: confirmed ingress (§5), a cold start through the gateway host (§3.2, §3.3), and the C# gateway pair handed over (§2.2, §2.3). One member, because three cannot hold Raft's heartbeats under WSL1; the leader kill is `csharp-client-test.sh`'s |
 | `docker-failover-test.sh` | `ROUNDS` (default 15) leader kills against `docker/compose.yml` under continuous `ProbeMarker` load, restoring each killed member before the next. Every round must change leadership and the killed member must rejoin; an observer on each surviving member must deliver in `clusterSeqNo` order throughout; and a cold start at the end must replay the whole multi-tenure history from one recording and reach live. Needs Docker and `./gradlew operatorDist`; CI runs it as `failover.yml`, and `ROUNDS=3` is a quick local run |
 | `replay-bench.sh` | times a cold `ClusterProbe follow` from launch to caught up against a preloaded archive, optionally under load. `replay-bench.sh 400000` builds about 70 MB of history, which must converge in well under a second; `NEVER CAUGHT UP` indicates a replay stall (§3.2), not a slow machine |
