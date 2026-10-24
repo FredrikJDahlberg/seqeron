@@ -140,6 +140,7 @@ public final class SequencerServer {
     private final ClusteredServiceContainer container;
     private final ReplayerServer replayer;
     private final RestartSafeLog safeLog;
+    private final AtomicBoolean stopping;
 
     /** Which UDP frames a node's driver drops, for test harnesses. */
     @FunctionalInterface
@@ -195,11 +196,12 @@ public final class SequencerServer {
     }
 
     private SequencerServer(final ClusteredMediaDriver driver, final ClusteredServiceContainer container,
-                            final ReplayerServer replayer, final RestartSafeLog safeLog) {
+                            final ReplayerServer replayer, final RestartSafeLog safeLog, final AtomicBoolean stopping) {
         this.driver = driver;
         this.container = container;
         this.replayer = replayer;
         this.safeLog = safeLog;
+        this.stopping = stopping;
     }
 
     public static void main(final String[] args) {
@@ -241,7 +243,8 @@ public final class SequencerServer {
      * Launches one node in this process; {@link #main} is this over {@link Config#fromProperties()}.
      *
      * @param config          the node's settings
-     * @param terminationHook run when the consensus module or the service container terminates the node
+     * @param terminationHook run when the consensus module or the service container terminates the node, but not
+     *                        during {@link #stop()}
      * @param fatalHandler    run when the node cannot go on: its queue recording stopped, its Replayer failed, or
      *                        its log was truncated below what it applied
      * @return the running node, which {@link #stop()} stops
@@ -268,6 +271,14 @@ public final class SequencerServer {
         final int ingressPort = PortLayout.ingressPort(memberId);
 
         final String clusterMembers = buildClusterMembers(config.hosts());
+        // Whichever of the consensus module and the service container stop() closes second sees the other go and
+        // terminates as if unexpectedly.
+        final AtomicBoolean stopping = new AtomicBoolean();
+        final Runnable unlessStopping = () -> {
+            if (!stopping.get()) {
+                terminationHook.run();
+            }
+        };
 
         final File archiveDir = new File(config.baseDir() + "/archive-" + memberId);
         final File clusterDir = new File(config.baseDir() + "/cluster-" + memberId);
@@ -321,7 +332,7 @@ public final class SequencerServer {
                 .replicationChannel(udp(host, 0))
                 .archiveContext(localArchiveCtx.clone())
                 .isIpcIngressAllowed(true) // Lets a co-located client share aeron directory
-                .terminationHook(terminationHook)
+                .terminationHook(unlessStopping)
                 .deleteDirOnStart(false)
                 .leaderHeartbeatIntervalNs(TimeUnit.MILLISECONDS.toNanos(config.leaderHeartbeatIntervalMs()))
                 .leaderHeartbeatTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.leaderHeartbeatTimeoutMs()))
@@ -369,7 +380,7 @@ public final class SequencerServer {
                 .clusteredService(service)
                 .appVersion(LogVersion.APP_VERSION)
                 .appVersionValidator(LogVersion.VALIDATOR)
-                .terminationHook(terminationHook)
+                .terminationHook(unlessStopping)
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
                               -> Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError,
@@ -385,7 +396,7 @@ public final class SequencerServer {
                 ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, topologyRows, fatalHandler,
                                       new CutIntake(cuts, safeLog, Long.getLong(PROP_SNAPSHOT_JOIN_MS,
                                                                                 DEFAULT_SNAPSHOT_JOIN_MS))),
-                safeLog);
+                safeLog, stopping);
         } catch (final RuntimeException ex) {
             CloseHelper.quietCloseAll(container, driver, safeLog);
             throw ex;
@@ -398,6 +409,7 @@ public final class SequencerServer {
      * @return false if the Replayer did not stop within its timeout
      */
     public boolean stop() {
+        stopping.set(true);
         try {
             return replayer.stop();
         } finally {

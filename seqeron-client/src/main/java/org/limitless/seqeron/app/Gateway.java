@@ -138,6 +138,17 @@ public final class Gateway implements AutoCloseable {
     private final Listener listener;
     private final SnapshotTaker snapshots;
     private final SnapshotFrames snapshotFrames;
+    private final SnapshotTaker.Signals snapshotSignals = new SnapshotTaker.Signals() {
+        @Override
+        public boolean joined(final long round) {
+            return session.sendSnapshotJoined(sourceId, round);
+        }
+
+        @Override
+        public boolean confirmed(final long round) {
+            return session.sendSnapshotConfirmed(sourceId, round);
+        }
+    };
     private final int sourceId;
     private final int memberId;
     private final int clientId;
@@ -226,6 +237,7 @@ public final class Gateway implements AutoCloseable {
         }
         work += drainLifecycle();
         work += session.isCaughtUp() ? lifecycle.advance() : 0;
+        work += snapshots.signal(snapshotSignals);
         work += snapshots.submit(snapshotFrames);
         return work;
     }
@@ -558,6 +570,11 @@ public final class Gateway implements AutoCloseable {
             default:
                 break;
             }
+        }
+
+        @Override
+        public void onSnapshotRound(final long round) {
+            snapshots.onSnapshotRound(round);
         }
 
         @Override

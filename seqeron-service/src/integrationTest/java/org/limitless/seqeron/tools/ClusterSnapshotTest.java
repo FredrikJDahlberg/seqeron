@@ -10,7 +10,21 @@ import io.aeron.test.SystemTestWatcher;
 import io.aeron.test.Tests;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.limitless.seqeron.replayer.server.RelayedCut;
+import io.aeron.Aeron;
+import org.agrona.DirectBuffer;
+import org.agrona.MutableDirectBuffer;
+import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.Gateway;
+import org.limitless.seqeron.app.GroupDirectory;
+import org.limitless.seqeron.app.Payload;
+import org.limitless.seqeron.app.SnapshotListener;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,6 +49,7 @@ class ClusterSnapshotTest {
     Path baseDir;
 
     private InProcessCluster cluster;
+    private Boolean gatewayRow;
     private String joinMs;
 
     @BeforeEach
@@ -58,6 +73,9 @@ class ClusterSnapshotTest {
     private void start(final String joinWindowMs, final int intervalSeconds) {
         System.setProperty(JOIN_PROPERTY, joinWindowMs);
         cluster = new InProcessCluster(baseDir);
+        if (gatewayRow != null) {
+            cluster.withGateway(1, GATEWAY_SOURCE_ID, "gateway-1", gatewayRow);
+        }
         cluster.startAll(intervalSeconds, 0);
     }
 
@@ -253,5 +271,303 @@ class ClusterSnapshotTest {
         }
         assertTrue(safeLog(member).safe().size() >= count, "member " + member + " marked " + safeLog(member).safe().size()
                                                            + " snapshot(s) restart-safe, not " + count);
+    }
+
+    @Test
+    @InterruptAfter(180)
+    void aGatewayThatJoinedAndNeverConfirmsKeepsTheMembersCutUnsafeUntilItGoes() throws Exception {
+        // Not the last row, so no designation follows: the gateway joins every round, and no instance ends one.
+        gatewayRow = false;
+        start("200", 1);
+        final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
+        awaitSafe(member);
+        final int safeBefore;
+        try (GatewayInstance gateway = new GatewayInstance(member)) {
+            gateway.awaitCaughtUp();
+            Tests.sleep(2_500); // the rounds cut before it joined, or in flight as it did, may be safe
+            safeBefore = safeLog(member).safe().size();
+            Tests.sleep(5_000);
+            assertEquals(safeBefore, safeLog(member).safe().size(), "a round the gateway joined was marked safe");
+        }
+        awaitSafeRounds(member, safeBefore + 1);
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+    }
+
+    @Test
+    @InterruptAfter(180)
+    void aGatewayThatConfirmsItsRoundsLetsTheMembersCutBeSafe() throws Exception {
+        gatewayRow = true;
+        start("200", 1);
+        final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
+        awaitSafe(member);
+        try (GatewayInstance gateway = new GatewayInstance(member)) {
+            gateway.awaitCaughtUp();
+            Tests.sleep(2_500);
+            final int safeBefore = safeLog(member).safe().size();
+            awaitSafeRounds(member, safeBefore + 2);
+        }
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+    }
+
+    @Test
+    @InterruptAfter(180)
+    void aGatewayHostRelayReportsEachMarkerAtItsStartInTheHostsOwnRecording() throws Exception {
+        start("3600000", 1);
+        // The host's Replayer consumes the reports; this one only records what it takes.
+        final List<RelayedCut> cuts = new CopyOnWriteArrayList<>();
+        cluster.startGatewayHost(new ConcurrentLinkedQueue<>() {
+            @Override
+            public RelayedCut poll() {
+                final RelayedCut cut = super.poll();
+                if (cut != null) {
+                    cuts.add(cut);
+                }
+                return cut;
+            }
+        });
+        for (int i = 0; i < 600 && cuts.size() < 3; i++) {
+            Tests.sleep(50);
+        }
+        assertTrue(cuts.size() >= 3, "the relay reported " + cuts.size() + " marker(s) in 30 s");
+
+        for (final RelayedCut cut : cuts) {
+            final List<QueueFrames.Frame> frame = QueueFrames.readFrom(
+                cluster.aeronDir(InProcessCluster.GATEWAY_HOST), cut.groupId(), cut.position(), 1);
+            assertEquals(SystemFrame.SNAPSHOT_STARTED, frame.getFirst().systemEventType(), "at " + cut);
+            assertEquals(cut.clusterSeqNo(), frame.getFirst().clusterSeqNo(), "at " + cut);
+        }
+        assertEquals(cuts.size(), cuts.stream().map(cut -> cut.clusterSeqNo() + "/" + cut.groupId()).distinct().count(),
+                     "a marker is reported once per queue: " + cuts);
+        assertFalse(cluster.fatal(), "a member or the host raised a fatal");
+    }
+
+    @Test
+    @InterruptAfter(180)
+    void aGatewayHostRestartedTwiceHoldsOneRecordingPerRelayedQueue() throws Exception {
+        start("3600000", 1);
+        for (int run = 0; run < 3; run++) {
+            cluster.startGatewayHost();
+            Tests.sleep(2_500);
+            for (final int groupId : InProcessCluster.GROUP_IDS) {
+                final List<QueueFrames.Span> spans =
+                    QueueFrames.recordings(cluster.aeronDir(InProcessCluster.GATEWAY_HOST), groupId);
+                assertEquals(1, spans.size(), "run " + run + ", group " + groupId + ": " + spans);
+                assertTrue(spans.getFirst().active(), "run " + run + ", group " + groupId + ": " + spans);
+            }
+            if (run < 2) {
+                cluster.stopGatewayHost();
+            }
+        }
+        assertFalse(cluster.fatal(), "a member or the host raised a fatal");
+    }
+
+    private static final String TERM_PROPERTY = "aeron.ipc.term.buffer.length";
+    private static final String SEGMENT_PROPERTY = "aeron.archive.segment.file.length";
+    private static final int SMALL_SEGMENT = 64 * 1024;
+
+    private static String setProperty(final String name, final String value) {
+        final String before = System.getProperty(name);
+        System.setProperty(name, value);
+        return before;
+    }
+
+    private static void restoreProperty(final String name, final String before) {
+        if (before == null) {
+            System.clearProperty(name);
+        } else {
+            System.setProperty(name, before);
+        }
+    }
+
+    /** The start of the gateway host's active recording of group 1's queue. */
+    private long hostStart() {
+        return hostStart(InProcessCluster.GROUP_ID);
+    }
+
+    private long hostStart(final int groupId) {
+        return QueueFrames.recordings(cluster.aeronDir(InProcessCluster.GATEWAY_HOST), groupId)
+            .stream().filter(QueueFrames.Span::active).findFirst().orElseThrow().startPosition();
+    }
+
+    /**
+     * Runs a host with one gateway on it through rounds over a queue of small segments, carrying traffic for several
+     * of them, and returns the start of its recording of group 1 once the traffic has drained and rounds have followed.
+     * Closes the gateway first, so the host may be stopped.
+     */
+    private long hostStartAfterTraffic(final boolean gatewayConfirms, final boolean awaitPurge) throws Exception {
+        final String term = setProperty(TERM_PROPERTY, String.valueOf(SMALL_SEGMENT));
+        final String segment = setProperty(SEGMENT_PROPERTY, String.valueOf(SMALL_SEGMENT));
+        try {
+            gatewayRow = gatewayConfirms;
+            start("200", 1);
+            final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
+            cluster.startGatewayHost();
+            try (GatewayInstance gateway = new GatewayInstance(InProcessCluster.GATEWAY_HOST);
+                 ConfirmProducer producer = new ConfirmProducer(cluster.aeronDir(member), member, 1_500, 5_000_000, 1_000)) {
+                gateway.awaitCaughtUp();
+                while (!producer.isDrained() && !producer.isStalled()) {
+                    producer.doWork();
+                    Tests.yield();
+                }
+                assertTrue(producer.isDrained(), "the producer did not drain");
+                for (int i = 0; i < 1200 && awaitPurge && hostStart() == 0; i++) {
+                    Tests.sleep(50);
+                }
+                Tests.sleep(2_500);
+            }
+            return hostStart();
+        } finally {
+            restoreProperty(TERM_PROPERTY, term);
+            restoreProperty(SEGMENT_PROPERTY, segment);
+        }
+    }
+
+    @Test
+    @InterruptAfter(240)
+    void aGatewayHostPurgesItsQueueBelowTheCutsItsGatewayConfirmsAndServesAfterARestart() throws Exception {
+        final long start = hostStartAfterTraffic(true, true);
+        assertTrue(start > 0, "the host's recording still starts at 0");
+        assertEquals(0, start % SMALL_SEGMENT, "and a purge leaves it at a segment boundary");
+        assertTrue(hostStart(InProcessCluster.OTHER_GROUP_ID) > 0, "group 2's too, from the same rounds");
+
+        final List<QueueFrames.Frame> first =
+            QueueFrames.readFrom(cluster.aeronDir(InProcessCluster.GATEWAY_HOST), InProcessCluster.GROUP_ID, start, 3);
+        assertEquals(3, first.size(), "the recording is readable from its new start");
+        final List<QueueFrames.Frame> run =
+            QueueFrames.readFrom(cluster.aeronDir(InProcessCluster.GATEWAY_HOST), InProcessCluster.GROUP_ID, start, 100);
+        for (int i = 1; i < run.size(); i++) {
+            assertEquals(run.get(i - 1).groupSeqNo() + 1, run.get(i).groupSeqNo(), "a gap after " + run.get(i - 1));
+        }
+
+        cluster.stopGatewayHost();
+        cluster.startGatewayHost();
+        Tests.sleep(2_500);
+        final List<QueueFrames.Span> spans =
+            QueueFrames.recordings(cluster.aeronDir(InProcessCluster.GATEWAY_HOST), InProcessCluster.GROUP_ID);
+        assertEquals(1, spans.size(), "a restarted host holds one recording: " + spans);
+        final List<QueueFrames.Frame> frames = QueueFrames.readFrom(
+            cluster.aeronDir(InProcessCluster.GATEWAY_HOST), InProcessCluster.GROUP_ID, spans.getFirst().startPosition(), 1);
+        assertEquals(1, frames.size(), "it is readable from its start");
+        assertTrue(frames.getFirst().groupSeqNo() > 1, "which is the member's purged start, not its first frame");
+        assertFalse(cluster.fatal(), "a member or the host raised a fatal");
+    }
+
+    @Test
+    @InterruptAfter(240)
+    void aGatewayOnAHostThatNeverConfirmsHoldsTheHostsRecordingWhole() throws Exception {
+        final long start = hostStartAfterTraffic(false, false);
+        assertEquals(0, start, "a round the gateway joined was purged below");
+
+        // Its instance gone, the next round does not wait for it: it misses the join window.
+        for (int i = 0; i < 1200 && hostStart() == 0; i++) {
+            Tests.sleep(50);
+        }
+        assertTrue(hostStart() > 0, "the host never purged once the gateway was gone");
+        assertFalse(cluster.fatal(), "a member or the host raised a fatal");
+    }
+
+    private static final int GATEWAY_SOURCE_ID = 40;
+
+    /** A gateway with an empty snapshot, driven on its own thread against member {@code member}'s node. */
+    private final class GatewayInstance implements AutoCloseable, Gateway.Listener, SnapshotListener {
+        private final Aeron aeron;
+        private final Gateway gateway;
+        private final AtomicBoolean running = new AtomicBoolean(true);
+        private final Thread duty;
+        private final AtomicBoolean caughtUp = new AtomicBoolean();
+
+        GatewayInstance(final int member) {
+            aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
+            gateway = Gateway.builder()
+                .gatewayName("gateway-1")
+                .clientId(60)
+                .memberId(member)
+                .egressChannel("aeron:udp?endpoint=" + PortLayout.DEFAULT_HOST + ":0")
+                .ingressEndpoints(PortLayout.ingressEndpoints(InProcessCluster.MEMBERS))
+                .listener(this)
+                .sourceId(GATEWAY_SOURCE_ID)
+                .snapshotListener(this)
+                .snapshotDirectory(baseDir.resolve("gateway-snapshots"))
+                .build();
+            gateway.start(aeron);
+            duty = new Thread(() -> {
+                while (running.get()) {
+                    if (gateway.doWork() == 0) {
+                        Tests.sleep(1);
+                    }
+                }
+            }, "gateway-instance");
+            duty.start();
+        }
+
+        void awaitCaughtUp() {
+            for (int i = 0; i < 600 && !caughtUp.get(); i++) {
+                Tests.sleep(50);
+            }
+            assertTrue(caughtUp.get(), "the gateway did not catch up in 30 s");
+        }
+
+        @Override
+        public void close() throws InterruptedException {
+            running.set(false);
+            duty.join(5_000);
+            gateway.close();
+            aeron.close();
+        }
+
+        @Override
+        public void onGroupsResolved(final GroupDirectory directory) {
+        }
+
+        @Override
+        public boolean onActivated(final int firstConnectionId) {
+            return true;
+        }
+
+        @Override
+        public void onStandby() {
+        }
+
+        @Override
+        public void onSequenced(final Payload payload) {
+        }
+
+        @Override
+        public void onConnectionOpened(final int connectionId, final DirectBuffer connectionData, final int offset,
+                                       final int length) {
+        }
+
+        @Override
+        public void onConnectionClosed(final int connectionId) {
+        }
+
+        @Override
+        public void onCaughtUp(final long clusterSeqNo) {
+            caughtUp.set(true);
+        }
+
+        @Override
+        public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
+        }
+
+        @Override
+        public void onFenced(final ClusterError fence, final String detail) {
+            throw new AssertionError("gateway fenced: " + fence + " " + detail);
+        }
+
+        @Override
+        public int formatVersion() {
+            return 1;
+        }
+
+        @Override
+        public int onSnapshot(final MutableDirectBuffer buffer, final int recordIndex) {
+            return 0;
+        }
+
+        @Override
+        public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex,
+                              final int formatVersion) {
+        }
     }
 }

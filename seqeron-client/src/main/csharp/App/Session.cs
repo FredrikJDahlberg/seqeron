@@ -55,7 +55,7 @@ internal sealed class Session : IDisposable
         /// term.</summary>
         void OnLeadershipChanged();
 
-        /// <summary>The Replayer cut a snapshot round on this node; a gateway has nothing to say to it.</summary>
+        /// <summary>The Replayer cut a snapshot round on this node.</summary>
         void OnSnapshotRound(long round);
 
         void OnPayload(Payload payload);

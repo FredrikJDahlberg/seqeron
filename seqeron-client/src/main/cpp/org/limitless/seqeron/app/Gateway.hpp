@@ -200,6 +200,7 @@ class Gateway
         }
         work += drainLifecycle();
         work += m_session.isCaughtUp() ? m_lifecycle.advance() : 0;
+        work += m_snapshots.signal(m_snapshotSignals);
         work += m_snapshots.submit(m_snapshotFrames);
         return work;
     }
@@ -665,9 +666,9 @@ class Gateway
             // A gateway is elected by the cluster rather than gated on its node leading: nothing to do.
         }
 
-        void onSnapshotRound(std::int64_t)
+        void onSnapshotRound(const std::int64_t round)
         {
-            // A node cannot see a gateway's instances, so it expects no answer from one (doc/snapshot.md §10.8).
+            m_gateway.m_snapshots.onSnapshotRound(round);
         }
 
         void onPayload(const Payload& payload)
@@ -748,6 +749,21 @@ class Gateway
     SessionDispatch m_dispatch;
     detail::Session<SessionDispatch> m_session;
     detail::SnapshotFrames<detail::Session<SessionDispatch>> m_snapshotFrames;
+    // How this instance tells its node's Replayer where a round stands.
+    struct SnapshotSignals
+    {
+        Gateway& m_gateway;
+
+        bool joined(const std::int64_t round)
+        {
+            return m_gateway.m_session.sendSnapshotJoined(m_gateway.m_config.sourceId, round);
+        }
+
+        bool confirmed(const std::int64_t round)
+        {
+            return m_gateway.m_session.sendSnapshotConfirmed(m_gateway.m_config.sourceId, round);
+        }
+    } m_snapshotSignals{ *this };
 
     // Connection lifecycle frames still to be placed, in the order they were asked for.
     std::deque<Lifecycle> m_lifecycleBacklog;

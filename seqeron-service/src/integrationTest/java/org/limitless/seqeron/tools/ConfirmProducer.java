@@ -39,6 +39,7 @@ final class ConfirmProducer implements AutoCloseable {
 
     private long count;
     private final long pacingNs;
+    private final byte[] filler;
     private final Aeron aeron;
     private final ClusterStreamSender sender = new ClusterStreamSender();
     private final ReplayerStreamReceiver receiver;
@@ -58,8 +59,15 @@ final class ConfirmProducer implements AutoCloseable {
 
     /** Attaches to member {@code memberId}'s driver, catches up on its queue, and connects over UDP ingress. */
     ConfirmProducer(final String aeronDir, final int memberId, final int count, final long pacingNs) {
+        this(aeronDir, memberId, count, pacingNs, 0);
+    }
+
+    /** As above, each frame padded with {@code fillerLength} bytes. */
+    ConfirmProducer(final String aeronDir, final int memberId, final int count, final long pacingNs,
+                    final int fillerLength) {
         this.count = count;
         this.pacingNs = pacingNs;
+        this.filler = fillerLength == 0 ? NO_FILLER : new byte[fillerLength];
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
         receiver = new ReplayerStreamReceiver(CLIENT_ID, this::onSequenced, (leaderMemberId, leadershipTermId, gsn) -> {
             pending.onLeadershipChanged(leadershipTermId);
@@ -126,7 +134,7 @@ final class ConfirmProducer implements AutoCloseable {
         resent += resentNow;
         if (next <= count && !pending.isHolding() && !pending.isFull() && now >= nextSendNs) {
             final int length = marker.encode(next, NO_ID, ClusterProbe.PROBE_SOURCE_ID,
-                                             next % 2 == 0 ? BOTH_MASK : GROUP_MASK, NO_FILLER);
+                                             next % 2 == 0 ? BOTH_MASK : GROUP_MASK, filler);
             if (sender.send(marker.frame(), length)) {
                 pending.track(marker.frame(), length, sender.clusterSessionId(), sender.leadershipTermId());
                 next++;

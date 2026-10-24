@@ -8,10 +8,12 @@ import io.aeron.ExclusivePublication;
 import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.ArchiveException;
 import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.archive.status.RecordingPos;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
 import io.aeron.logbuffer.Header;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.TimeUnit;
@@ -24,6 +26,8 @@ import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
+import org.limitless.seqeron.protocol.SystemFrame;
+import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
 
@@ -62,6 +66,7 @@ final class AeronQueueRelay implements AutoCloseable {
     private final int groupId;
     private final int streamId;
     private final Queue<byte[]> topologyRows;
+    private final Queue<RelayedCut> cutReports;
     private final IdleStrategy idleStrategy;
     private final Runnable fatalHandler;
     private final QueueRelay relay;
@@ -71,6 +76,7 @@ final class AeronQueueRelay implements AutoCloseable {
     private final long recordingId;
 
     private final SequencedFrameDecoder view = new SequencedFrameDecoder();
+    private final SnapshotStartedDecoder marker = new SnapshotStartedDecoder();
     private final ControlledFragmentAssembler assembler = new ControlledFragmentAssembler(this::onFragment);
 
     private AeronArchive source;
@@ -94,13 +100,14 @@ final class AeronQueueRelay implements AutoCloseable {
      * @param groupId          the group whose queue this relays
      * @param topologyRows     where to hand a copy of each topology row it publishes, or {@code null}: the
      *                         relay of the host's default queue feeds its {@link ReplayerService}
+     * @param cutReports       where to report each snapshot marker once it is on the local queue, or {@code null}
      * @param idleStrategy     what a wait on the driver or the archive does between checks
      * @param fatalHandler     run once, from the duty cycle, when the relay can no longer keep the local
      *                         history; it must signal a shutdown and return
      */
     AeronQueueRelay(final Aeron aeron, final AeronArchive localArchive, final List<String> archiveEndpoints,
                     final String host, final int nodeId, final int groupId, final Queue<byte[]> topologyRows,
-                    final IdleStrategy idleStrategy, final Runnable fatalHandler) {
+                    final Queue<RelayedCut> cutReports, final IdleStrategy idleStrategy, final Runnable fatalHandler) {
         this.aeron = aeron;
         this.localArchive = localArchive;
         this.archiveEndpoints = archiveEndpoints;
@@ -109,6 +116,7 @@ final class AeronQueueRelay implements AutoCloseable {
         this.groupId = groupId;
         this.streamId = FrameLayer.queueStreamId(groupId);
         this.topologyRows = topologyRows;
+        this.cutReports = cutReports;
         this.idleStrategy = idleStrategy;
         this.fatalHandler = fatalHandler;
         this.relay = new QueueRelay(archiveEndpoints.size());
@@ -128,6 +136,33 @@ final class AeronQueueRelay implements AutoCloseable {
         }
         recordingCounterId = counterId;
         recordingId = RecordingPos.getRecordingId(counters, counterId);
+        purgeOlderRecordings();
+    }
+
+    /**
+     * Purges the recordings of this queue that an earlier run of the host made: the relay starts from the member's
+     * recording start into the new one, and the Replayer serves the one recording (doc/snapshot.md §10.3). One the
+     * archive will not purge is left, and the Replayer serves the newest. This runs before the Replayer starts.
+     */
+    private void purgeOlderRecordings() {
+        final List<Long> older = new ArrayList<>();
+        localArchive.listRecordingsForUri(
+            0, Integer.MAX_VALUE, "", streamId,
+            (controlSessionId, correlationId, id, startTimestamp, stopTimestamp, startPosition, stopPosition,
+             initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, stream, strippedChannel,
+             originalChannel, sourceIdentity) -> {
+                if (id < recordingId) {
+                    older.add(id);
+                }
+            });
+        for (final long id : older) {
+            try {
+                localArchive.purgeRecording(id);
+            } catch (final ArchiveException ex) {
+                Logger.error(Logger.CoreComponent.QueueRelay, Logger.CoreEventCode.ServiceError, nodeId,
+                             "could not purge group %d's earlier queue recording %d: %s", groupId, id, ex.getMessage());
+            }
+        }
     }
 
     /**
@@ -194,6 +229,11 @@ final class AeronQueueRelay implements AutoCloseable {
         if (pending == QueueRelay.Verdict.REPLAY_FROM_START) {
             pending = null;
             restartReplay();
+        } else if (pending == QueueRelay.Verdict.HISTORY_LOST) {
+            pending = null;
+            fatal("every member archive's queue recording starts past groupSeqNo " + (relay.lastGroupSeqNo() + 1) +
+                  ", which they purged while this relay was disconnected; a restart relays from the member's start "
+                  + "into a new recording");
         } else if (pending == QueueRelay.Verdict.DROP_SOURCE) {
             pending = null;
             dropSource("its queue recording has a hole where this relay needs groupSeqNo " +
@@ -239,6 +279,9 @@ final class AeronQueueRelay implements AutoCloseable {
                 buffer.getBytes(offset, row);
                 topologyRows.add(row);
             }
+            if (cutReports != null && view.isSystem() && view.systemEventType() == SystemFrame.SNAPSHOT_STARTED) {
+                reportCut(result, length);
+            }
             return Action.CONTINUE;
         }
         if (result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED) {
@@ -251,6 +294,14 @@ final class AeronQueueRelay implements AutoCloseable {
             return Action.BREAK;
         }
         return Action.ABORT;
+    }
+
+    /** Reports the marker just offered, whose frame ends at {@code end} on the local queue. */
+    private void reportCut(final long end, final int length) {
+        marker.wrap(view.buffer(), view.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
+                    SnapshotStartedDecoder.SCHEMA_VERSION);
+        cutReports.add(new RelayedCut(marker.round(), view.clusterSeqNo(), groupId, RelayedCut.startOf(end, length),
+                                      relay.isLive()));
     }
 
     /** A stopped local recording back-pressures nothing, so it is checked for rather than waited on. */

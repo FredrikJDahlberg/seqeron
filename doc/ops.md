@@ -415,6 +415,22 @@ a replay of its whole log.
 - **`replayer.snapshotJoinMs`** (default 5000) is how long after a cut an application has to join its round. One that
   joins later is not waited for, and the cut is restart-safe without it: its restart is then fenced until a peer's file
   is copied in. Keep it above the longest time an application takes to serialize.
+- **A gateway host purges its queue recordings too**, below the newest cut that every instance on the host that joined
+  the round has confirmed ([`snapshot.md`](snapshot.md) §10.6). Its join window is `replayer.snapshotJoinMs` on the
+  host's own JVM, default 10000, above a member's because a host's purge cannot be undone. An instance that is down or
+  late at a round and restarts after the host has purged past its file is fenced until a peer's file is copied in, so
+  this window is the operator's fence-risk knob. A host with no `<snapshots>` policy sees no markers and purges nothing.
+- **A gateway host's relay holds its member's purge back** while it is connected, however far behind it is, so a lagging
+  relay grows that member's recording instead of losing history. A relay that was disconnected from every member while
+  they purged past the next frame it needs has nothing left to relay: it stops with a fatal, and the host's process
+  exits. Its restart relays from a member's recording start into a new recording, which fences only an instance on the
+  host whose newest snapshot file is below that start.
+- **The two instances of a gateway pair never run on one node**, member or host. They share a `sourceId`, so a node
+  holding both would count them as one. The Replayer logs the second `clientId` it sees join for a `sourceId` in a
+  round and leaves that round unsafe: that node marks no cut restart-safe and purges nothing.
+- **An instance more than a round behind blocks purging** on its node. The Replayer tracks one round, and a later one
+  replaces an unfinished one, so such an instance keeps every round unfinished. Nothing is fenced and the recording
+  grows. `seqeron_app_snapshot_round` names the instance, on a host as on a member.
 - **`restart-safe.log`** in each member's cluster directory holds `cut`, `safe` and `trimmed` lines. Do not edit it. A
   member that has not marked its newest snapshot safe starts from the one before, so a missing mark costs replay and
   nothing else.

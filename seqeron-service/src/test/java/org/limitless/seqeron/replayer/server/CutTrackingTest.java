@@ -78,14 +78,22 @@ class CutTrackingTest {
     }
 
     private void join(final long round, final int sourceId) {
+        join(round, sourceId, 7);
+    }
+
+    private void join(final long round, final int sourceId, final long clientId) {
         final SnapshotJoinedEncoder encoder = new SnapshotJoinedEncoder();
-        encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder).clientId(7).sourceId(sourceId).round(round);
+        encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder).clientId(clientId).sourceId(sourceId).round(round);
         send(encoder.encodedLength());
     }
 
     private void confirm(final long round, final int sourceId) {
+        confirm(round, sourceId, 7);
+    }
+
+    private void confirm(final long round, final int sourceId, final long clientId) {
         final SnapshotConfirmedEncoder encoder = new SnapshotConfirmedEncoder();
-        encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder).clientId(7).sourceId(sourceId).round(round);
+        encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder).clientId(clientId).sourceId(sourceId).round(round);
         send(encoder.encodedLength());
     }
 
@@ -155,5 +163,38 @@ class CutTrackingTest {
         fakeReplayer.advanceMillis(JOIN_WINDOW_MS);
         replayerService.poll();
         assertFalse(log.isSafe(LOG_POSITION));
+    }
+
+    @Test
+    @DisplayName("a gateway's two instances on one node leave the round unsafe, and the Replayer says so once")
+    void aPairOnOneNodeLeavesTheRoundUnsafe() {
+        handOver(1);
+        join(1, 16, 7);
+        join(1, 16, 8);
+        confirm(1, 16, 7);
+        confirm(1, 16, 8);
+        fakeReplayer.advanceMillis(JOIN_WINDOW_MS + 10_000);
+        replayerService.poll();
+        assertFalse(log.isSafe(LOG_POSITION), "both confirmed, and the round is still unsafe");
+        assertEquals(1, events.stream().filter(event -> event.toString().contains("second client")).count());
+
+        handOver(2);
+        join(2, 16, 8);
+        confirm(2, 16, 8);
+        fakeReplayer.advanceMillis(JOIN_WINDOW_MS);
+        replayerService.poll();
+        assertTrue(log.isSafe(LOG_POSITION), "the next round is judged afresh");
+    }
+
+    @Test
+    @DisplayName("an application that confirmed before the Replayer saw the cut still lets it be safe")
+    void aConfirmationBeforeTheCutCounts() {
+        confirm(1, 16); // the Replayer's cycle was late: the instance confirmed first
+        handOver(1);
+        join(1, 16);
+        fakeReplayer.advanceMillis(JOIN_WINDOW_MS);
+        replayerService.poll();
+
+        assertTrue(log.isSafe(LOG_POSITION));
     }
 }

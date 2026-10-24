@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReferenceArray;
@@ -23,7 +24,9 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
+import org.limitless.seqeron.replayer.server.RelayedCut;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
+import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
 import org.limitless.seqeron.sequencer.SequencerServer;
@@ -56,6 +59,8 @@ final class InProcessCluster implements AutoCloseable {
     private final AtomicBoolean[] fatal = new AtomicBoolean[MEMBERS + 1];
     private final AtomicBoolean terminated = new AtomicBoolean();
     private ReplayerServer gatewayHost;
+    private ExpandableArrayBuffer gatewayRow;
+    private int gatewayRowLength;
 
     InProcessCluster(final Path baseDir) {
         this.baseDir = baseDir;
@@ -109,6 +114,13 @@ final class InProcessCluster implements AutoCloseable {
                                            SystemFrame.GROUPS_REGISTERED, body, length) != Publish.Published) {
                 Tests.yield();
             }
+            if (gatewayRow != null) {
+                while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
+                                               SystemFrame.GATEWAY_REGISTERED, gatewayRow, gatewayRowLength)
+                       != Publish.Published) {
+                    Tests.yield();
+                }
+            }
             if (snapshotIntervalSeconds != NO_SNAPSHOT_POLICY) {
                 final ExpandableArrayBuffer policy = new ExpandableArrayBuffer(SnapshotPolicyRegisteredEncoder.BLOCK_LENGTH);
                 final int policyLength = new SnapshotPolicyRegisteredEncoder()
@@ -132,6 +144,26 @@ final class InProcessCluster implements AutoCloseable {
         }
     }
 
+    /**
+     * Has the next {@link #startAll} register a gateway row that takes part in snapshots, from the session that
+     * registers the groups (<b>S-9</b>). With {@code last} the row ends the topology and the cluster designates the
+     * gateway; without, the designation is withheld.
+     */
+    void withGateway(final int gatewayId, final int gatewaySourceId, final String name, final boolean last) {
+        final ExpandableArrayBuffer body = new ExpandableArrayBuffer(GatewayRegisteredEncoder.BLOCK_LENGTH);
+        gatewayRowLength = new GatewayRegisteredEncoder()
+                               .wrap(body, 0)
+                               .remaining(last ? 0 : 1)
+                               .gatewayId(gatewayId)
+                               .gatewaySourceId(gatewaySourceId)
+                               .gatewayName(name)
+                               .preferenceRank((short)0)
+                               .snapshot((short)1)
+                               .groupId((short)GROUP_ID)
+                               .encodedLength();
+        gatewayRow = body;
+    }
+
     /** Launches member {@code m} on its directories, which a previous run of it may have left. */
     void start(final int m) {
         final SequencerServer.Config config = new SequencerServer.Config(
@@ -152,13 +184,24 @@ final class InProcessCluster implements AutoCloseable {
 
     /** Launches the gateway host: its own driver and archive, relaying a member's queue of each group onto its own. */
     void startGatewayHost() {
+        startGatewayHost(null);
+    }
+
+    /** As {@link #startGatewayHost()}, with the host's relays reporting the markers they publish to {@code cutReports}. */
+    void startGatewayHost(final Queue<RelayedCut> cutReports) {
         final List<String> archives = IntStream.range(0, MEMBERS)
                                           .mapToObj(m -> PortLayout.DEFAULT_HOST + ":" + PortLayout.archivePort(m))
                                           .toList();
         gatewayHost = ReplayerServer.launchGatewayHost(
             new ReplayerServer.GatewayHostConfig(GATEWAY_HOST, aeronDir(GATEWAY_HOST), baseDir.toString(), archives,
                                                  PortLayout.DEFAULT_HOST, GROUP_IDS, BackoffIdleStrategy::new),
-            () -> fatal[GATEWAY_HOST].set(true));
+            () -> fatal[GATEWAY_HOST].set(true), cutReports);
+    }
+
+    /** Stops the gateway host, whose archive and Aeron directory stay for the next {@link #startGatewayHost()}. */
+    void stopGatewayHost() {
+        gatewayHost.stop();
+        gatewayHost = null;
     }
 
     /** Stops member {@code m}, which a member stopped in-process does by closing rather than by dying. */

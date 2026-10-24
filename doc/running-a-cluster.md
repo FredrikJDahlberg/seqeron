@@ -31,6 +31,9 @@ snapshot's cut, and is the only component that reads the archive. Its decisions 
 (`Replayer`, `ReplaySlotAllocator`); `AeronReplayer` is the only part that touches Aeron. On a gateway host the relay (`QueueRelay`, `AeronQueueRelay`) copies a member's
 queues over UDP, those of the groups in `replayer.groups`, and moves to the next member when that one is lost
 ([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)).
+The host's Replayer also purges those recordings as rounds are confirmed, and `replayer.snapshotJoinMs` (default
+10000) is how long after a cut an instance on the host has to join its round ([`ops.md`](ops.md), "Cluster
+snapshots"). The two instances of a gateway never run on one host.
 
 The client tier runs in the application's own process: Java, the header-only C++ library, or the C#
 package ([`client-api.md`](client-api.md)). There is no C++ or C# server; the cluster is Java.

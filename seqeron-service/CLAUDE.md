@@ -102,6 +102,9 @@ as a member's restart does, so the host's recording starts where a client checks
 Aeron directory with the host's node id (one no member uses) where they take a member id, and submit over UDP
 ingress — an `Application` with `offCluster` set, since no leadership there is its own, which makes it the
 one instance whose gate opens once caught up. The member pays one archive replay per gateway host and its sequencer nothing.
+Each relay reports the snapshot markers it publishes, and the host's Replayer tracks rounds and purges its queue
+recordings as a member's does (`doc/snapshot.md` §10.6). A restarted host purges the earlier recordings of each
+relayed queue before its Replayer starts.
 
 ## Two kinds of producer, and only one of them is elected
 A **gateway** is an edge producer deployed as an **active/hot-standby pair**: it is named in the topology

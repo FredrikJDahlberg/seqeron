@@ -103,8 +103,8 @@
 
     <!-- ReplayerService -> Apps: "a cluster snapshot round was cut." -->
     <sbe:message name="SnapshotRound" id="11"
-                 description="A round was cut on this node. Addressed to no client: every application replica on the
-                              stream answers it with a SnapshotJoined, and a gateway ignores it (doc/snapshot.md
+                 description="A round was cut on this node. Addressed to no client: every application replica and
+                              gateway instance on the stream answers it with a SnapshotJoined (doc/snapshot.md
                               §10.8)">
         <field name="round"        id="20019" type="int64"
                description="The round's number, as SnapshotStarted.round"/>
