@@ -75,6 +75,8 @@ public final class SnapshotStore {
     private long cutTimestampNs;
     /** The round whose file was last completed, which {@link #confirm} may name; -1 for none. */
     private long committedRound = -1;
+    /** The newest round whose file is durable under its name, which the writer sets; -1 for none. */
+    private volatile long durableRound = -1;
     /** What runs off the caller's thread, one step after another: confirming files and deleting what they replace. */
     private CompletableFuture<Void> writes = CompletableFuture.completedFuture(null);
 
@@ -184,7 +186,7 @@ public final class SnapshotStore {
     /**
      * The log confirms {@code round}: off this thread, its file is made durable under its name, and every older
      * file but the newest confirmed one, and any write of one a crash left behind, is deleted. Nothing if its file
-     * was not completed.
+     * was not completed. {@link #durableRound} names it once it is durable.
      * @param round the round last committed
      */
     public void confirm(final long round) {
@@ -198,6 +200,11 @@ public final class SnapshotStore {
     /** Waits until the rounds confirmed so far are durable, or failed, and the files they replace deleted. */
     public void awaitWrites() {
         writes.join();
+    }
+
+    /** The newest round {@link #confirm}ed whose file is durable under its name; -1 for none. Any thread. */
+    public long durableRound() {
+        return durableRound;
     }
 
     /**
@@ -279,6 +286,7 @@ public final class SnapshotStore {
                        round, directory, ex);
             return;
         }
+        durableRound = round;
         final long kept = latestRound(round);
         try (DirectoryStream<Path> files = Files.newDirectoryStream(directory)) {
             for (final Path path : files) {

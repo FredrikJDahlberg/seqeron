@@ -41,11 +41,11 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     private uint _crc;
     private bool _participating;
     private long _round = -1;
-    // The last round this instance confirmed; 0 for none yet.
+    // The last round this instance confirmed whose file is durable; 0 for none yet.
     private long _confirmedRound;
     // The round to answer a SnapshotRound for, or 0; only the latest is kept.
     private long _pendingJoined;
-    // The round whose file is confirmed and not yet told to the Replayer, or 0.
+    // The round confirmed and not yet told to the Replayer, or 0; told once its file is durable.
     private long _pendingConfirmed;
     private bool _serialized;
     private bool _publishing;
@@ -66,7 +66,8 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     /// <summary>Whether this build takes part in rounds at all: it was given a listener.</summary>
     internal bool IsListening => _listener != null;
 
-    /// <summary>The last round this instance confirmed, its snapshot counter's value; 0 for none yet.</summary>
+    /// <summary>The last round this instance confirmed whose file is durable, its snapshot counter's value; 0 for none
+    /// yet.</summary>
     internal long ConfirmedRound => _confirmedRound;
 
     /// <summary>Whether the source's topology row takes part. Without a listener it cannot, whatever the row
@@ -143,7 +144,6 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
             return false;
         }
         _store.Confirm(_round);
-        _confirmedRound = _round;
         _pendingConfirmed = _round;
         return true;
     }
@@ -185,8 +185,9 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
         }
     }
 
-    /// <summary>Places what the Replayer is still owed, a declined offer being placed again on the next
-    /// call.</summary>
+    /// <summary>Places what the Replayer is still owed, a declined offer being placed again on the next call. A
+    /// confirmation waits until its file is durable, and one whose file never becomes durable is never
+    /// placed.</summary>
     /// <returns>signals placed</returns>
     internal int Signal(ISignals signals)
     {
@@ -196,10 +197,14 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
             _pendingJoined = 0;
             placed++;
         }
-        if (_pendingConfirmed != 0 && signals.Confirmed(_pendingConfirmed))
+        if (_pendingConfirmed != 0 && _store.DurableRound >= _pendingConfirmed)
         {
-            _pendingConfirmed = 0;
-            placed++;
+            _confirmedRound = _pendingConfirmed;
+            if (signals.Confirmed(_pendingConfirmed))
+            {
+                _pendingConfirmed = 0;
+                placed++;
+            }
         }
         return placed;
     }

@@ -78,7 +78,7 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         return m_listener != nullptr;
     }
 
-    // The last round this instance confirmed, its snapshot counter's value; 0 for none yet.
+    // The last round this instance confirmed whose file is durable, its snapshot counter's value; 0 for none yet.
     [[nodiscard]] std::int64_t confirmedRound() const
     {
         return m_confirmedRound;
@@ -154,7 +154,6 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
             return false;
         }
         m_store->confirm(round);
-        m_confirmedRound = round;
         m_pendingConfirmed = round;
         return true;
     }
@@ -169,7 +168,8 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     }
 
     /**
-     * Places what the Replayer is still owed, a declined offer being placed again on the next call.
+     * Places what the Replayer is still owed, a declined offer being placed again on the next call. A confirmation
+     * waits until its file is durable, and one whose file never becomes durable is never placed.
      *
      * @param signals places the signals
      * @return signals placed
@@ -183,10 +183,14 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
             m_pendingJoined = 0;
             ++placed;
         }
-        if (m_pendingConfirmed != 0 && signals.confirmed(m_pendingConfirmed))
+        if (m_pendingConfirmed != 0 && m_store->durableRound() >= m_pendingConfirmed)
         {
-            m_pendingConfirmed = 0;
-            ++placed;
+            m_confirmedRound = m_pendingConfirmed;
+            if (signals.confirmed(m_pendingConfirmed))
+            {
+                m_pendingConfirmed = 0;
+                ++placed;
+            }
         }
         return placed;
     }
@@ -255,11 +259,11 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     std::vector<std::uint8_t> m_encoding = std::vector<std::uint8_t>(protocol::MAX_SNAPSHOT_RECORD_LENGTH);
     bool m_participating = false;
     std::int64_t m_round = -1;
-    // The last round this instance confirmed; 0 for none yet.
+    // The last round this instance confirmed whose file is durable; 0 for none yet.
     std::int64_t m_confirmedRound = 0;
     // The round to answer a SnapshotRound for, or 0; only the latest is kept.
     std::int64_t m_pendingJoined = 0;
-    // The round whose file is confirmed and not yet told to the Replayer, or 0.
+    // The round confirmed and not yet told to the Replayer, or 0; told once its file is durable.
     std::int64_t m_pendingConfirmed = 0;
     bool m_serialized = false;
     bool m_publishing = false;

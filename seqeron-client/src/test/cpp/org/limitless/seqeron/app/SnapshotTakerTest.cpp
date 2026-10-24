@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <span>
 #include <string>
@@ -149,6 +150,12 @@ struct Instances
         return *stores.back();
     }
 
+    // The last instance's directory.
+    [[nodiscard]] std::filesystem::path lastDirectory() const
+    {
+        return directory.path() / std::to_string(stores.size() - 1);
+    }
+
     helpers::TempDirectory directory;
     State state;
     Frames frames;
@@ -287,8 +294,10 @@ TEST(SnapshotTaker, AMatchingEndConfirmsItsRoundsFileWhichReplacesEveryOlderOneB
     const Frames::End end = t.frames.ends[0];
     EXPECT_EQ(0, taker.confirmedRound());
     EXPECT_TRUE(taker.onSnapshotEnd(1, end.recordCount, end.length, end.crc32c));
-    EXPECT_EQ(1, taker.confirmedRound());
     EXPECT_EQ(1, t.lastStore().latestRound());
+    Signals signals;
+    taker.signal(signals);
+    EXPECT_EQ(1, taker.confirmedRound());
 
     started(taker, 2, false);
     EXPECT_FALSE(taker.onSnapshotEnd(2, 99, 0, 0));
@@ -297,8 +306,9 @@ TEST(SnapshotTaker, AMatchingEndConfirmsItsRoundsFileWhichReplacesEveryOlderOneB
 
     started(taker, 3, false);
     EXPECT_TRUE(taker.onSnapshotEnd(3, end.recordCount, end.length, end.crc32c));
-    EXPECT_EQ(3, taker.confirmedRound());
     EXPECT_EQ(3, t.lastStore().latestRound());
+    taker.signal(signals);
+    EXPECT_EQ(3, taker.confirmedRound());
     EXPECT_EQ(1, t.lastStore().latestRound(3)) << "the round before it stays";
     EXPECT_EQ(-1, t.lastStore().latestRound(1));
 }
@@ -448,6 +458,7 @@ TEST(SnapshotTaker, AConfirmedFileIsToldToTheReplayerAgainUntilTheOfferLandsADiv
     EXPECT_EQ(0, taker.signal(signals)) << "written is not confirmed";
 
     EXPECT_TRUE(taker.onSnapshotEnd(1, end.recordCount, end.length, end.crc32c));
+    t.lastStore();
     signals.declines = 1;
     EXPECT_EQ(0, taker.signal(signals));
     EXPECT_EQ(1, taker.signal(signals));
@@ -456,6 +467,43 @@ TEST(SnapshotTaker, AConfirmedFileIsToldToTheReplayerAgainUntilTheOfferLandsADiv
     started(taker, 2, false);
     EXPECT_FALSE(taker.onSnapshotEnd(2, 99, 0, 0));
     EXPECT_EQ(0, taker.signal(signals)) << "a diverged instance confirms nothing";
+}
+
+TEST(SnapshotTaker, AConfirmedRoundWhoseFileNeverBecomesDurableIsNeitherToldToTheReplayerNorCounted)
+{
+    Instances t;
+    Signals signals;
+    SnapshotTaker& taker = t.participating();
+    std::filesystem::create_directories(t.lastDirectory() / "1.snapshot" / "occupied"); // the name cannot be taken
+    started(taker, 1, true);
+    taker.submit(t.frames);
+    const Frames::End end = t.frames.ends[0];
+    EXPECT_TRUE(taker.onSnapshotEnd(1, end.recordCount, end.length, end.crc32c));
+    t.lastStore();
+    EXPECT_EQ(0, taker.signal(signals));
+    EXPECT_EQ(0, taker.confirmedRound());
+
+    started(taker, 2, false);
+    EXPECT_TRUE(taker.onSnapshotEnd(2, end.recordCount, end.length, end.crc32c));
+    t.lastStore();
+    EXPECT_EQ(1, taker.signal(signals));
+    EXPECT_EQ((std::vector<std::string>{ "confirmed 2" }), signals.placed);
+    EXPECT_EQ(2, taker.confirmedRound());
+}
+
+TEST(SnapshotTaker, ARoundWhoseFileCouldNotBeWrittenIsNeitherToldToTheReplayerNorCounted)
+{
+    Instances t;
+    Signals signals;
+    SnapshotTaker& taker = t.participating();
+    std::filesystem::create_directories(t.lastDirectory() / "1.tmp" / "occupied"); // the file cannot be created
+    started(taker, 1, true);
+    taker.submit(t.frames);
+    const Frames::End end = t.frames.ends[0];
+    EXPECT_TRUE(taker.onSnapshotEnd(1, end.recordCount, end.length, end.crc32c));
+    EXPECT_EQ(-1, t.lastStore().latestRound());
+    EXPECT_EQ(0, taker.signal(signals));
+    EXPECT_EQ(0, taker.confirmedRound());
 }
 
 } // namespace

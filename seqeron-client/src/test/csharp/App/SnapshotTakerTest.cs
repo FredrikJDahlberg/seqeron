@@ -227,8 +227,9 @@ public class SnapshotTakerTest : IDisposable
         End end = _frames.Ends[0];
         Assert.Equal(0, taker.ConfirmedRound);
         Assert.True(taker.OnSnapshotEnd(1, end.RecordCount, end.Length, end.Crc32C));
-        Assert.Equal(1, taker.ConfirmedRound);
         Assert.Equal(1, StoreOf(1).LatestRound(long.MaxValue));
+        taker.Signal(new Signals());
+        Assert.Equal(1, taker.ConfirmedRound);
 
         Started(taker, 2, false);
         Assert.False(taker.OnSnapshotEnd(2, 99, 0, 0));
@@ -237,8 +238,9 @@ public class SnapshotTakerTest : IDisposable
 
         Started(taker, 3, false);
         Assert.True(taker.OnSnapshotEnd(3, end.RecordCount, end.Length, end.Crc32C));
-        Assert.Equal(3, taker.ConfirmedRound);
         Assert.Equal(3, StoreOf(1).LatestRound(long.MaxValue));
+        taker.Signal(new Signals());
+        Assert.Equal(3, taker.ConfirmedRound);
         Assert.Equal(1, StoreOf(1).LatestRound(3)); // the round before it stays
         Assert.Equal(-1, StoreOf(1).LatestRound(1));
     }
@@ -388,6 +390,7 @@ public class SnapshotTakerTest : IDisposable
         Assert.Equal(0, taker.Signal(signals)); // written is not confirmed
 
         Assert.True(taker.OnSnapshotEnd(1, end.RecordCount, end.Length, end.Crc32C));
+        StoreOf(1);
         signals.Declines = 1;
         Assert.Equal(0, taker.Signal(signals));
         Assert.Equal(1, taker.Signal(signals));
@@ -396,6 +399,44 @@ public class SnapshotTakerTest : IDisposable
         Started(taker, 2, false);
         Assert.False(taker.OnSnapshotEnd(2, 99, 0, 0));
         Assert.Equal(0, taker.Signal(signals)); // a diverged instance confirms nothing
+    }
+
+    [Fact(DisplayName =
+              "a confirmed round whose file never becomes durable is neither told to the Replayer nor counted")]
+    public void UndurableFileIsNotToldToTheReplayer()
+    {
+        var signals = new Signals();
+        SnapshotTaker taker = Participating();
+        Directory.CreateDirectory(Path.Combine(LastDirectory(), "1.snapshot", "occupied")); // the name cannot be taken
+        Started(taker, 1, true);
+        taker.Submit(_frames);
+        End end = _frames.Ends[0];
+        Assert.True(taker.OnSnapshotEnd(1, end.RecordCount, end.Length, end.Crc32C));
+        StoreOf(1);
+        Assert.Equal(0, taker.Signal(signals));
+        Assert.Equal(0, taker.ConfirmedRound);
+
+        Started(taker, 2, false);
+        Assert.True(taker.OnSnapshotEnd(2, end.RecordCount, end.Length, end.Crc32C));
+        StoreOf(1);
+        Assert.Equal(1, taker.Signal(signals));
+        Assert.Equal(new List<string> { "confirmed 2" }, signals.Placed);
+        Assert.Equal(2, taker.ConfirmedRound);
+    }
+
+    [Fact(DisplayName = "a round whose file could not be written is neither told to the Replayer nor counted")]
+    public void UnwrittenFileIsNotToldToTheReplayer()
+    {
+        var signals = new Signals();
+        SnapshotTaker taker = Participating();
+        Directory.CreateDirectory(Path.Combine(LastDirectory(), "1.tmp", "occupied")); // the file cannot be created
+        Started(taker, 1, true);
+        taker.Submit(_frames);
+        End end = _frames.Ends[0];
+        Assert.True(taker.OnSnapshotEnd(1, end.RecordCount, end.Length, end.Crc32C));
+        Assert.Equal(-1, StoreOf(1).LatestRound(long.MaxValue));
+        Assert.Equal(0, taker.Signal(signals));
+        Assert.Equal(0, taker.ConfirmedRound);
     }
 
     private void KeepAlive()
@@ -435,6 +476,12 @@ public class SnapshotTakerTest : IDisposable
         SnapshotStore store = _stores[_stores.Count - back];
         store.AwaitWrites();
         return store;
+    }
+
+    // The directory of the instance created last.
+    private string LastDirectory()
+    {
+        return Path.Combine(_directory.Path, "instance-" + (_stores.Count - 1));
     }
 
     private static byte[] Filled(int value)

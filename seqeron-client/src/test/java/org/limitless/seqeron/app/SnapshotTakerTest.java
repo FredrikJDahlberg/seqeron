@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -151,6 +153,11 @@ class SnapshotTakerTest {
         return store;
     }
 
+    /** The directory of the instance {@link #participating} created last. */
+    private Path lastDirectory() {
+        return directory.resolve("instance-" + (stores.size() - 1));
+    }
+
     @Test
     @DisplayName("without a listener, or with the row off, a replica serializes, writes and submits nothing")
     void notParticipating() {
@@ -248,8 +255,9 @@ class SnapshotTakerTest {
         final long[] end = frames.ends.get(0);
         assertEquals(0, taker.confirmedRound());
         assertTrue(taker.onSnapshotEnd(1, (int)end[1], end[2], end[3]));
-        assertEquals(1, taker.confirmedRound());
         assertEquals(1, storeOf(1).latestRound(Long.MAX_VALUE));
+        taker.signal(new Signals());
+        assertEquals(1, taker.confirmedRound());
 
         started(taker, 2, false);
         assertFalse(taker.onSnapshotEnd(2, 99, 0, 0));
@@ -258,8 +266,9 @@ class SnapshotTakerTest {
 
         started(taker, 3, false);
         assertTrue(taker.onSnapshotEnd(3, (int)end[1], end[2], end[3]));
-        assertEquals(3, taker.confirmedRound());
         assertEquals(3, storeOf(1).latestRound(Long.MAX_VALUE));
+        taker.signal(new Signals());
+        assertEquals(3, taker.confirmedRound());
         assertEquals(1, storeOf(1).latestRound(3), "the round before it stays");
         assertEquals(-1, storeOf(1).latestRound(1));
     }
@@ -410,6 +419,7 @@ class SnapshotTakerTest {
         assertEquals(0, taker.signal(signals), "written is not confirmed");
 
         assertTrue(taker.onSnapshotEnd(1, (int)end[1], end[2], end[3]));
+        storeOf(1);
         signals.declines = 1;
         assertEquals(0, taker.signal(signals));
         assertEquals(1, taker.signal(signals));
@@ -418,6 +428,43 @@ class SnapshotTakerTest {
         started(taker, 2, false);
         assertFalse(taker.onSnapshotEnd(2, 99, 0, 0));
         assertEquals(0, taker.signal(signals), "a diverged instance confirms nothing");
+    }
+
+    @Test
+    @DisplayName("a confirmed round whose file never becomes durable is neither told to the Replayer nor counted")
+    void undurableFileIsNotToldToTheReplayer() throws IOException {
+        final Signals signals = new Signals();
+        final SnapshotTaker taker = participating();
+        Files.createDirectories(lastDirectory().resolve("1.snapshot").resolve("occupied")); // the name cannot be taken
+        started(taker, 1, true);
+        taker.submit(frames);
+        final long[] end = frames.ends.get(0);
+        assertTrue(taker.onSnapshotEnd(1, (int)end[1], end[2], end[3]));
+        storeOf(1);
+        assertEquals(0, taker.signal(signals));
+        assertEquals(0, taker.confirmedRound());
+
+        started(taker, 2, false);
+        assertTrue(taker.onSnapshotEnd(2, (int)end[1], end[2], end[3]));
+        storeOf(1);
+        assertEquals(1, taker.signal(signals));
+        assertEquals(List.of("confirmed 2"), signals.placed);
+        assertEquals(2, taker.confirmedRound());
+    }
+
+    @Test
+    @DisplayName("a round whose file could not be written is neither told to the Replayer nor counted")
+    void unwrittenFileIsNotToldToTheReplayer() throws IOException {
+        final Signals signals = new Signals();
+        final SnapshotTaker taker = participating();
+        Files.createDirectories(lastDirectory().resolve("1.tmp").resolve("occupied")); // the file cannot be created
+        started(taker, 1, true);
+        taker.submit(frames);
+        final long[] end = frames.ends.get(0);
+        assertTrue(taker.onSnapshotEnd(1, (int)end[1], end[2], end[3]));
+        assertEquals(-1, storeOf(1).latestRound(Long.MAX_VALUE));
+        assertEquals(0, taker.signal(signals));
+        assertEquals(0, taker.confirmedRound());
     }
 
     private static byte[] filled(final int value) {
