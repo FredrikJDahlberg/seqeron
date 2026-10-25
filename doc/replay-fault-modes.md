@@ -1,7 +1,7 @@
 # Replay fault modes: disturbances the replayer's tests do not yet apply
 
 Written 2026-10-24, at `3750dfa` on `main`. "R-n" and "§n" refer to
-[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md). It proposes tests, and tier 1, tier 2 modes 1, 2, 4 and 5, and tier 3's server decorator and client hook have been done. Gaps closed
+[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md). It proposes tests, and tier 1, tier 2 modes 1 to 5, and tier 3's server decorator and client hook have been done. Gaps closed
 in [`replay-test-review.md`](replay-test-review.md)'s status table are not repeated.
 
 **Scope.** Faults that reach the replayer and its clients through their transport, as opposed to the decisions the
@@ -70,12 +70,17 @@ frames, so faulteron's value here is partial loss, one half of repair, delay, ji
 - Tests: `ReplaySlotAllocatorTest` and `ReplayerServiceTest` at the seam. `ReplaySlotsTest` on a real driver: four
   holders that stop reading lose their slots and a fifth client is served.
 
-**3. A stalled Replayer on a gateway host.**
+**3. A stalled Replayer on a gateway host. Done.**
 - On a host, `ReplayerServer` is its own JVM, so it can be SIGSTOPped or CPU-throttled alone. On a member it shares
   the node's JVM.
 - The request subscription is tethered, so clients' offers fail while it is stopped. `sendReplayRequest` ignores the
   result, and the resend timer retries.
 - Assert: clients see `ReplayPending` and stalls, not faults, and converge after.
+- Test: `StalledHostReplayerTest` reads no requests of the host's Replayer through `FaultableReplayer`, which
+  `launchGatewayHost`'s wrapper overload installs, while a client cold-starts on a host whose queue holds history and
+  the relay adds more. For 7 s the client is answered nothing, dispatches nothing and is never caught up. Once the
+  Replayer reads again it walks the queue in order from groupSeqNo 1 and catches up at the tip. A stopped Replayer
+  answers not even `ReplayPending`, so the client sees silence, which its resend timer covers.
 
 **4. A CPU-throttled member under replay load. Done.**
 - `lib.sh`'s `throttle` slows the Replayer's duty cycle, the archive and a co-located client together.
@@ -118,7 +123,7 @@ recovery-progress timeout, and the 1 000-spin control drop.
   - end a replay, or hold its `replayProgress` still, mid-replay.
   - `ReplayerFaultsTest` applies each: the control drop, a starved `pollRequests`, resends behind a slow `startReplay`
     starting one replay, a throwing `startReplay`, a frozen `replayProgress` freeing its slot at the stall timeout, and
-    ended replays freeing theirs at once. It does not cover a gateway host, whose Replayer is launched separately.
+    ended replays freeing theirs at once.
 - **Client. Done.** `ReplayerStreamReceiver`'s fault overload takes `controlFaults` and `replayFaults` beside
   `queueFaults`, to drop a reply or a replay fragment on the poll thread. `ReceiverFaultsTest` cold-starts a client
   over a history with each: a dropped `Replaying` is resent under its request id and starts no second replay, and a

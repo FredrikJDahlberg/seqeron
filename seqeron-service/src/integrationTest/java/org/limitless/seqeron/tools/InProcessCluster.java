@@ -60,8 +60,8 @@ final class InProcessCluster implements AutoCloseable {
     private final AtomicBoolean[] muted = new AtomicBoolean[MEMBERS];
     /** Each member's consensus clock, which outlives a restart of it, as its host's does. */
     private final SteppableClusterClock[] clocks = new SteppableClusterClock[MEMBERS];
-    /** Each member's Replayer, which fails or stalls on cue and outlives a restart of it. */
-    private final FaultableReplayer[] replayers = new FaultableReplayer[MEMBERS];
+    /** Each member's Replayer, and the gateway host's last, which fail or stall on cue and outlive a restart of it. */
+    private final FaultableReplayer[] replayers = new FaultableReplayer[MEMBERS + 1];
     private final AtomicBoolean[] fatal = new AtomicBoolean[MEMBERS + 1];
     private final AtomicBoolean terminated = new AtomicBoolean();
     private ReplayerServer gatewayHost;
@@ -76,9 +76,9 @@ final class InProcessCluster implements AutoCloseable {
             cutArchive[m] = new AtomicBoolean();
             muted[m] = new AtomicBoolean();
             clocks[m] = new SteppableClusterClock();
-            replayers[m] = new FaultableReplayer();
         }
         for (int m = 0; m <= MEMBERS; m++) {
+            replayers[m] = new FaultableReplayer();
             fatal[m] = new AtomicBoolean();
         }
     }
@@ -208,7 +208,7 @@ final class InProcessCluster implements AutoCloseable {
         gatewayHost = ReplayerServer.launchGatewayHost(
             new ReplayerServer.GatewayHostConfig(GATEWAY_HOST, aeronDir(GATEWAY_HOST), baseDir.toString(), archives,
                                                  PortLayout.DEFAULT_HOST, GROUP_IDS, BackoffIdleStrategy::new),
-            () -> fatal[GATEWAY_HOST].set(true), cutReports);
+            () -> fatal[GATEWAY_HOST].set(true), cutReports, replayers[GATEWAY_HOST]::wrap);
     }
 
     /** Stops the gateway host, whose archive and Aeron directory stay for the next {@link #startGatewayHost()}. */
@@ -256,7 +256,7 @@ final class InProcessCluster implements AutoCloseable {
         muted[m].set(isMuted);
     }
 
-    /** Member {@code m}'s Replayer, to make fail or stall. */
+    /** Member {@code m}'s Replayer, or the gateway host's for {@link #GATEWAY_HOST}, to make fail or stall. */
     FaultableReplayer replayer(final int m) {
         return replayers[m];
     }

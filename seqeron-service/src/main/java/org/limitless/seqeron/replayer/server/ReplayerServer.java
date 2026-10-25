@@ -183,6 +183,18 @@ public final class ReplayerServer {
      */
     public static ReplayerServer launchGatewayHost(final GatewayHostConfig config, final Runnable fatalHandler,
                                                    final Queue<RelayedCut> cutReports) {
+        return launchGatewayHost(config, fatalHandler, cutReports, UnaryOperator.identity());
+    }
+
+    /**
+     * As above, serving through {@code wrapper}'s decoration of the host's {@link AeronReplayer}. Test harnesses
+     * only: a Replayer that fails or stalls on cue.
+     *
+     * @param wrapper decorates the host's Replayer
+     */
+    public static ReplayerServer launchGatewayHost(final GatewayHostConfig config, final Runnable fatalHandler,
+                                                   final Queue<RelayedCut> cutReports,
+                                                   final UnaryOperator<Replayer> wrapper) {
         final long stallTimeoutMs = NodeDriver.queueStallTimeoutMs(PROP_QUEUE_STALL_TIMEOUT_MS);
         final ArchivingMediaDriver driver = launchDriver(config);
         try {
@@ -191,7 +203,7 @@ public final class ReplayerServer {
                 config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(), config.host(), config.groups(),
                 new ConcurrentLinkedQueue<>(), reports, config.idleStrategies(), fatalHandler,
                 CutIntake.ofHost(reports, Long.getLong(PROP_SNAPSHOT_JOIN_MS, DEFAULT_SNAPSHOT_JOIN_MS)),
-                stallTimeoutMs, UnaryOperator.identity());
+                stallTimeoutMs, wrapper);
         } catch (final RuntimeException ex) {
             CloseHelper.quietClose(driver);
             throw ex;
