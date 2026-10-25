@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.aeron.archive.CatalogView;
+import io.aeron.cluster.RecordingLog;
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
 import io.aeron.test.SystemTestWatcher;
@@ -231,14 +233,31 @@ class ClusterSnapshotTest {
     }
 
     /** Runs {@code clusterctl trim-log} against a member, in a process of its own as an operator would. */
-    private int trimLog(final int member) throws Exception {
-        return new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                                  "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
-                                  "-cp", System.getProperty("java.class.path"),
-                                  "-Dclusterctl.memberId=" + member, "-Dclusterctl.baseDir=" + baseDir,
-                                  "-Dclusterctl.aeronDir=" + cluster.aeronDir(member),
-                                  ClusterCtl.class.getName(), "trim-log")
-            .inheritIO().start().waitFor();
+    private int trimLog(final int member, final String... options) throws Exception {
+        final List<String> command = new ArrayList<>(List.of(
+            Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+            "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
+            "-cp", System.getProperty("java.class.path"),
+            "-Dclusterctl.memberId=" + member, "-Dclusterctl.baseDir=" + baseDir,
+            "-Dclusterctl.aeronDir=" + cluster.aeronDir(member),
+            ClusterCtl.class.getName(), "trim-log"));
+        command.addAll(List.of(options));
+        return new ProcessBuilder(command).inheritIO().start().waitFor();
+    }
+
+    /** The start position of the recording of a member's first log term, which a purged segment moves. */
+    private long firstTermStart(final int member) {
+        final long[] start = {-1};
+        try (RecordingLog log = new RecordingLog(baseDir.resolve("cluster-" + member).toFile(), false)) {
+            final long recordingId = log.entries().stream().filter(e -> e.type == RecordingLog.ENTRY_TYPE_TERM)
+                                        .findFirst().orElseThrow().recordingId;
+            CatalogView.listRecording(baseDir.resolve("archive-" + member).toFile(), recordingId,
+                                      (controlSessionId, correlationId, id, startTimestamp, stopTimestamp,
+                                       startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
+                                       mtuLength, sessionId, streamId, strippedChannel, originalChannel,
+                                       sourceIdentity) -> start[0] = startPosition);
+        }
+        return start[0];
     }
 
     @Test
@@ -249,9 +268,11 @@ class ClusterSnapshotTest {
         final int member = (leader + 1) % InProcessCluster.MEMBERS;
         awaitSafeRounds(member, 3);
 
+        assertEquals(0, trimLog(member, "--dry-run"));
         assertEquals(0, trimLog(member));
         assertEquals(0, trimLog(member), "a second run finds the first's work done");
-        assertTrue(safeLog(member).trimmed());
+        // Less than a segment of log, so only the snapshots went and the log still begins at its first term.
+        assertEquals(0, firstTermStart(member));
 
         cluster.stop(member);
         cluster.start(member);

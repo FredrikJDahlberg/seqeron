@@ -527,8 +527,12 @@ each member. It does what that policy does, with the count fixed at two (§10.2)
   service's, older than the two.
 - **Per member, and safe to repeat.** Each member trims its own archive; a run that fails leaves more than
   it needs, never less.
-- **Record the trim** in `restart-safe.log`, so that a start never falls back to a replay of a log that no
-  longer begins at its first term (§10.8).
+- **The trim is in the archive's catalog.** A purged segment moves the first term's recording start above 0,
+  and a start reads that instead of a record of its own, so a start never falls back to a replay of a log that no
+  longer begins at its first term (§10.8), and a rebuilt member or a lost `restart-safe.log` cannot lose the fence.
+- **`--dry-run`** prints each recording `trim-log` would purge, and for a log recording the position it would purge
+  below, and purges nothing. It computes them as a run does. An operator who wants the history first copies it
+  from the archive directory, whose rolled segment files do not change.
 - **Recovery needs a snapshot.** With a snapshot, Aeron's recovery plan starts the log at the snapshot's
   position and reads nothing below it. With none, it starts at the recording's start, which a trim has moved,
   and would replay a partial log. A trimmed member therefore never runs without a snapshot (§10.8).
@@ -601,7 +605,8 @@ of the Replayer drops a round in flight, which stays unsafe.
 invalidates the newest snapshot, as `clusterctl invalidate-latest-snapshot` does (`ClusterTool`'s, run on the
 stopped member's cluster directory), until the newest is one the file names. The member then restores it and
 replays the log from it (§10.5). It falls back to no snapshot, a replay of the whole log, only while
-`trim-log` has not run, which `restart-safe.log` records (§10.7); otherwise the member does not start.
+the log still begins at its first term, which the archive's catalog says: the first term's recording starts at
+position 0 until `trim-log` purges a segment (§10.7). Otherwise the member does not start.
 
 **A replica that is down.** It joins nothing and is not expected, so the cut is restart-safe without it and
 the member's history is not held for it. The cost falls on the replica. The member's recording now starts at
@@ -634,7 +639,7 @@ round.
 | --- | --- |
 | `Sequencer` | Aeron's snapshot, as §10.2. |
 | applications, gateways | Their own files (§4.1), cut at `R`. Every source takes part, as in §10.6. |
-| member | `restart-safe.log`: the log positions of the snapshots whose cut was restart-safe, and whether `trim-log` has run. Local to the member, in no replicated state. |
+| member | `restart-safe.log`: the log positions of the snapshots whose cut was restart-safe. Local to the member, in no replicated state. |
 | Replayer | The round in flight, in memory (§10.4). |
 | queue | Nothing. A restored member's recording starts at `R`; running members purge below their floor (§10.6). |
 

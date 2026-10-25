@@ -24,7 +24,6 @@ class RestartSafeLogTest {
             log.appendCut(100);
             log.appendCut(200);
             log.appendSafe(100);
-            log.appendTrimmed();
             assertTrue(log.isCut(200));
             assertFalse(log.isSafe(200));
         }
@@ -32,7 +31,6 @@ class RestartSafeLogTest {
         final RestartSafeLog.State state = RestartSafeLog.read(directory.resolve(RestartSafeLog.FILE_NAME));
         assertEquals(Set.of(100L, 200L), state.cuts());
         assertEquals(Set.of(100L), state.safe());
-        assertTrue(state.trimmed());
 
         try (RestartSafeLog reopened = RestartSafeLog.open(directory)) {
             assertTrue(reopened.isCut(100));
@@ -46,7 +44,7 @@ class RestartSafeLogTest {
     @DisplayName("no file is an empty log, and a last line a crash cut short is ignored")
     void anAbsentOrTornLogReadsWhatItHolds() throws Exception {
         final Path file = directory.resolve(RestartSafeLog.FILE_NAME);
-        assertEquals(new RestartSafeLog.State(Set.of(), Set.of(), false), RestartSafeLog.read(file));
+        assertEquals(new RestartSafeLog.State(Set.of(), Set.of()), RestartSafeLog.read(file));
 
         Files.writeString(file, "cut 100\nsafe 10", StandardCharsets.US_ASCII);
         final RestartSafeLog.State state = RestartSafeLog.read(file);

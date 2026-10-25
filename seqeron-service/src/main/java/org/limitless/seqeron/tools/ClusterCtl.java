@@ -77,8 +77,9 @@ import org.xml.sax.SAXParseException;
  *       {@code SnapshotStarted} the sequencer synthesizes behind it (doc/snapshot.md §3).</li>
  *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's validated topology document, checked
  *       against the log (spec §6.4); the first command an archive accepts.
- *   <li><b>trim-log</b> — purges this member's Raft log and snapshot recordings below its two newest restart-safe
- *       snapshots (doc/snapshot.md §10.7); needs no leader, and is safe to repeat.</li>
+ *   <li><b>trim-log [--dry-run]</b> — purges this member's Raft log and snapshot recordings below its two newest
+ *       restart-safe snapshots (doc/snapshot.md §10.7); needs no leader, and is safe to repeat. {@code --dry-run}
+ *       prints what it would purge and purges nothing.</li>
  *   <li><b>counters</b> — lists this node's operator counters off the CnC file; needs no leader.</li>
  *   <li><b>help</b> — usage.</li>
  *   <li><i>anything else</i> — passed through to {@link ClusterTool} against this node's
@@ -168,7 +169,7 @@ public final class ClusterCtl {
             System.exit(loadTopology(args));
             break;
         case "trim-log":
-            System.exit(trimLog());
+            System.exit(trimLog(args.length > 1 && args[1].equals("--dry-run")));
             break;
         case "counters":
             System.exit(counters());
@@ -197,11 +198,11 @@ public final class ClusterCtl {
     }
 
     /**
-     * Purges what the member's two newest restart-safe snapshots make unneeded (doc/snapshot.md §10.7). The trim is
-     * recorded first: a run that dies half way leaves the log no longer beginning at its first term, and the next
-     * start must not fall back to replaying it.
+     * Purges what the member's two newest restart-safe snapshots make unneeded (doc/snapshot.md §10.7), or with
+     * {@code dryRun} prints it. The archive's catalog records the trim: the first term's recording starts above 0 from
+     * its first purged segment, and the next start does not fall back to replaying the log whole.
      */
-    private static int trimLog() {
+    private static int trimLog(final boolean dryRun) {
         if (!new File(CLUSTER_DIR, RecordingLog.RECORDING_LOG_FILE_NAME).exists()) {
             System.err.println("[clusterctl] trim-log: no recording log in " + CLUSTER_DIR);
             return 1;
@@ -215,9 +216,6 @@ public final class ClusterCtl {
             System.out.println("[clusterctl] trim-log: fewer than two restart-safe snapshots — nothing to trim");
             return 0;
         }
-        try (RestartSafeLog safeLog = RestartSafeLog.open(CLUSTER_DIR.toPath())) {
-            safeLog.appendTrimmed();
-        }
 
         int failures = 0;
         try (AeronArchive archive = AeronArchive.connect(
@@ -228,6 +226,17 @@ public final class ClusterCtl {
                 .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
                 .controlResponseStreamId(NodeDriver.CLUSTERCTL_ARCHIVE_RESPONSE_STREAM_ID))) {
             for (final long recordingId : plan.snapshotRecordings()) {
+                if (dryRun) {
+                    try {
+                        archive.getStartPosition(recordingId);
+                        System.out.printf("[clusterctl] trim-log: would purge snapshot recording %d%n", recordingId);
+                    } catch (final ArchiveException ex) {
+                        if (ex.errorCode() != ArchiveException.UNKNOWN_RECORDING) {
+                            throw ex;
+                        }
+                    }
+                    continue;
+                }
                 try {
                     archive.purgeRecording(recordingId);
                     System.out.printf("[clusterctl] trim-log: purged snapshot recording %d%n", recordingId);
@@ -240,7 +249,7 @@ public final class ClusterCtl {
                 }
             }
             for (final long recordingId : plan.logRecordings()) {
-                failures += trimLogRecording(archive, recordingId, plan.floor());
+                failures += trimLogRecording(archive, recordingId, plan.floor(), dryRun);
             }
         } catch (final RuntimeException ex) {
             System.err.println("[clusterctl] trim-log: the member's archive is unreachable (" + ex.getMessage() + ")");
@@ -253,8 +262,9 @@ public final class ClusterCtl {
         return 0;
     }
 
-    /** Purges a log recording's segments below {@code floor}; 1 if the archive refused. */
-    private static int trimLogRecording(final AeronArchive archive, final long recordingId, final long floor) {
+    /** Purges, or with {@code dryRun} prints, a log recording's segments below {@code floor}; 1 if the archive refused. */
+    private static int trimLogRecording(final AeronArchive archive, final long recordingId, final long floor,
+                                        final boolean dryRun) {
         final long[] summary = new long[4]; // start, stop, term length, segment length
         if (archive.listRecording(recordingId, (controlSessionId, correlationId, id, startTimestamp, stopTimestamp,
                                                 startPosition, stopPosition, initialTermId, segmentFileLength,
@@ -271,6 +281,11 @@ public final class ClusterCtl {
             summary[1] != AeronArchive.NULL_POSITION ? summary[1] : archive.getRecordingPosition(recordingId);
         final long target = SegmentPurge.target(summary[0], (int)summary[2], (int)summary[3], Math.min(floor, end));
         if (target == SegmentPurge.NOTHING) {
+            return 0;
+        }
+        if (dryRun) {
+            System.out.printf("[clusterctl] trim-log: would purge log recording %d below position %d%n", recordingId,
+                              target);
             return 0;
         }
         try {
@@ -957,9 +972,10 @@ public final class ClusterCtl {
                            the co-located applications, the protocol registry and the
                            snapshot policy; run it first, before start and before any
                            gateway starts: the cluster refuses everything before it
-              trim-log     purge this member's Raft log and snapshot recordings below its two
+              trim-log [--dry-run]
+                           purge this member's Raft log and snapshot recordings below its two
                            newest restart-safe snapshots; per member, safe to repeat, no leader
-                           needed (doc/clusterctl.md)
+                           needed; --dry-run prints what it would purge (doc/clusterctl.md)
               counters     list this node's seqeron operator counters (SequencerService/
                            ReplayerService); no cluster connection needed, safe on every node
               snapshot     Aeron's cluster snapshot; not supported (see request-snapshot)

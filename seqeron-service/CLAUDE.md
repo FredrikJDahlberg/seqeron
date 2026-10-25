@@ -58,7 +58,7 @@ file cannot follow it.
 
 A cut may be restarted from only once it is *restart-safe*: every co-located application that joined the round
 (`SnapshotJoined`, within `replayer.snapshotJoinMs`) has confirmed its file (`SnapshotConfirmed`). The member's
-`restart-safe.log` in its cluster directory holds `cut`, `safe` and `trimmed` lines, forced to disk; the service writes
+`restart-safe.log` in its cluster directory holds `cut` and `safe` lines, forced to disk; the service writes
 `cut` before it acks, which is also how a snapshot action replayed from the log is told from a live one, and the
 Replayer writes `safe` (`RestartSafety`). Before the consensus module starts, the launcher invalidates every snapshot at
 the head of `recording.log` that the file does not name as safe (`SnapshotChoice`), so an unsafe cut costs a longer

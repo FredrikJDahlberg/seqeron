@@ -35,7 +35,7 @@ The defaults match `SequencerServer`'s, so a default single-member cluster needs
 | `activate <gatewayId>` | yes | ask the cluster to make a gateway instance active |
 | `request-snapshot` | yes | start an application snapshot round |
 | `load-topology <file>` | yes | publish the deployment's topology document |
-| `trim-log` | no | purge this member's Raft log and snapshot recordings below its two newest restart-safe snapshots |
+| `trim-log [--dry-run]` | no | purge this member's Raft log and snapshot recordings below its two newest restart-safe snapshots |
 | `counters` | no | list this member's operator counters |
 | `help` | no | print usage |
 | `snapshot` | — | refused: the cluster takes no Aeron snapshots (`request-snapshot` is the application kind) |
@@ -192,15 +192,17 @@ member alone, needs no leader, and is run on each member. It reads the member's 
 
 1. It keeps the two newest snapshots that `restart-safe.log` names and the log from the older one. With fewer than two
    it does nothing and exits 0.
-2. It records `trimmed` in `restart-safe.log` before it purges anything. From then on the member never starts without a
-   snapshot, since the log no longer begins at its first term.
-3. It purges every snapshot recording older than the two, the consensus module's and the service's.
-4. It purges each log recording's segments below the older snapshot's log position, at the segment boundary at or below it.
+2. It purges every snapshot recording older than the two, the consensus module's and the service's.
+3. It purges each log recording's segments below the older snapshot's log position, at the segment boundary at or below it.
 
 It is safe to repeat: a recording already gone counts as done. The archive refuses a log purge while a replay reads
 below the position or while another delete runs; the command prints the refusal, leaves the log as it was and exits 1,
 and the next run trims it. A member that was down past the trim horizon may need log its leader has purged and is
 rebuilt from `ClusterBackup` (`snapshot.md` §10.7).
+
+`trim-log --dry-run` prints what a run would purge and purges nothing, one line per recording, each already-purged
+recording left out: `would purge snapshot recording <id>` and `would purge log recording <id> below position <p>`. It
+exits 0. Purging cannot be undone, so an operator who wants the history keeps a copy of the archive directory first.
 
 ### counters
 

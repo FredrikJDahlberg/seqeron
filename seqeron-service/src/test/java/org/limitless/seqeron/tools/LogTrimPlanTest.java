@@ -28,7 +28,7 @@ class LogTrimPlanTest {
     }
 
     private static RestartSafeLog.State safe(final Long... positions) {
-        return new RestartSafeLog.State(Set.of(positions), Set.of(positions), false);
+        return new RestartSafeLog.State(Set.of(positions), Set.of(positions));
     }
 
     @Test

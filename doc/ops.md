@@ -436,7 +436,7 @@ a replay of its whole log.
 - **An instance more than a round behind blocks purging** on its node. The Replayer tracks one round, and a later one
   replaces an unfinished one, so such an instance keeps every round unfinished. Nothing is fenced and the recording
   grows. `seqeron_app_snapshot_round` names the instance, on a host as on a member.
-- **`restart-safe.log`** in each member's cluster directory holds `cut`, `safe` and `trimmed` lines. Do not edit it. A
+- **`restart-safe.log`** in each member's cluster directory holds `cut` and `safe` lines. Do not edit it. A
   member that has not marked its newest snapshot safe starts from the one before, so a missing mark costs replay and
   nothing else.
 - **`LogVersion`** is the major of Aeron's `appVersion` on the consensus module and the service. A node started on a
