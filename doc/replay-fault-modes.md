@@ -129,7 +129,10 @@ recovery-progress timeout, and the 1 000-spin control drop.
   over a history with each: a dropped `Replaying` is resent under its request id and starts no second replay, and a
   run of dropped replay fragments is healed by a resume. It found that a replay reaching its bound past a hole in
   its history reported the client caught up short of the tip, since the image's position advances over dropped frames.
-  `ReplayerRecovery` now resumes instead, in all three languages. The hooks are Java only.
+  `ReplayerRecovery` now resumes instead, in all three languages, through the resend timer so that a hole every
+  replay repeats is retried every 500 ms and not as fast as a replay runs. A recording that keeps its hole shows as
+  `recoveryStalled` after the 30 s no-progress timeout, which `ReceiverFaultsTest` holds it to, and heals once the
+  recording covers the hole. The hooks are Java only; `replayFaults` takes the position each frame starts at.
 - **Relay.** `SequencerServer.UdpFaults` picks frames by stream id and direction. Picking by frame type as well would
   give the unrepaired relay in-process, without the compose service.
 

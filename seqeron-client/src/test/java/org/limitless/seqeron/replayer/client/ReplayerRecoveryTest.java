@@ -917,6 +917,9 @@ class ReplayerRecoveryTest {
 
         assertFalse(receiver.isCaughtUp(), "frames 2..6 were never dispatched");
         assertTrue(receiver.isAwaitingReplay(), "the hole is resumed, not left");
+        final int sends = actions.requestsSent;
+        advancePastTimers(); // the resend timer sends it, at its pace: a hole every replay repeats is not a hot loop
+        assertEquals(sends + 1, actions.requestsSent);
 
         answerReplaying(8, 500);
         deliverReplay(1); // anchored on the last dispatched frame

@@ -543,6 +543,20 @@ final class ReplayerRecovery {
     }
 
     /**
+     * As {@link #requestResume}, but left to the resend timer to send. A recording that keeps its hole gives every
+     * resume the same one, which would otherwise be retried as fast as a replay runs.
+     */
+    private void deferResume() {
+        requestFromPosition = lastFramePosition;
+        requestCutClusterSeqNo = ReplayProtocol.NO_CUT;
+        resumeAnchorClusterSeqNo = lastClusterSeqNo;
+        awaitingReplay = true;
+        replaySessionId = -1;
+        lastRequestMs = actions.nowMs();
+        ++requestId;
+    }
+
+    /**
      * Opens the newest snapshot file below {@code belowRound} and replays the recording from its cut, or walks the
      * recording when there is none. A format this build does not read stops recovery.
      * @param belowRound {@link Long#MAX_VALUE} for the newest of all
@@ -778,7 +792,7 @@ final class ReplayerRecovery {
         replaySessionId = -1;
         if (replayGapLogged) {
             replayGapLogged = false; // the replay skipped a hole, so it did not reach the tip: resume from before it
-            requestResume();
+            deferResume();
             return;
         }
         if (reachedTip()) {

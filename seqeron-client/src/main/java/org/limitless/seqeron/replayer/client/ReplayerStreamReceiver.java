@@ -9,6 +9,7 @@ import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongPredicate;
 import org.agrona.concurrent.SystemEpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
@@ -50,7 +51,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     private final ReplayerRecovery recovery;
     private final BooleanSupplier queueFaults;
     private final BooleanSupplier controlFaults;
-    private final BooleanSupplier replayFaults;
+    private final LongPredicate replayFaults;
 
     private final MessageHeaderEncoder requestHeader = new MessageHeaderEncoder();
     private final ReplayRequestEncoder replayRequest = new ReplayRequestEncoder();
@@ -106,16 +107,17 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     }
 
     /**
-     * As above, also dropping a Replayer reply whenever {@code controlFaults} answers true, and a replay fragment
+     * As above, also dropping a Replayer reply whenever {@code controlFaults} answers true, and a replay frame
      * whenever {@code replayFaults} does. Test harnesses only.
      * @param controlFaults polled once per {@code Replaying} or {@code ReplayPending}, on the poll thread; null drops
      *                      nothing. A {@code SnapshotRound} is not a reply and is never dropped.
-     * @param replayFaults  polled once per replay fragment, on the poll thread; null drops nothing
+     * @param replayFaults  polled once per replay frame with where it starts in the recording, on the poll thread;
+     *                      null drops nothing
      */
     public ReplayerStreamReceiver(final int clientId, final SequencedHandler onSequenced,
                                   final LeadershipHandler onLeadershipChanged, final CaughtUpHandler onCaughtUp,
                                   final BooleanSupplier queueFaults, final BooleanSupplier controlFaults,
-                                  final BooleanSupplier replayFaults) {
+                                  final LongPredicate replayFaults) {
         this.clientId = clientId;
         this.queueFaults = queueFaults;
         this.controlFaults = controlFaults;
@@ -346,8 +348,11 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     /** Drops the rest of a poll's batch once a frame in it has superseded the replay, which closes the image. */
     private void onReplayFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
                                   final io.aeron.logbuffer.Header header) {
-        if (replayImage != null && !(replayFaults != null && replayFaults.getAsBoolean())) {
-            recovery.onFrame(buffer, offset, length, frameStartPosition(header), nowNs(), true);
+        if (replayImage != null) {
+            final long position = frameStartPosition(header);
+            if (replayFaults == null || !replayFaults.test(position)) {
+                recovery.onFrame(buffer, offset, length, position, nowNs(), true);
+            }
         }
     }
 

@@ -579,6 +579,19 @@ class ReplayerRecovery
         m_resumeAnchorSequenceNumber = m_lastClusterSeqNo;
     }
 
+    // As requestResume, but left to the resend timer to send. A recording that keeps its hole gives every resume the
+    // same one, which would otherwise be retried as fast as a replay runs.
+    void deferResume()
+    {
+        m_reqFromPosition = m_lastFramePosition;
+        m_reqCutClusterSeqNo = protocol::REPLAYER_NO_CUT;
+        m_resumeAnchorSequenceNumber = m_lastClusterSeqNo;
+        m_awaitingReplay = true;
+        m_replaySessionId = -1;
+        m_lastRequestMs = m_actions.nowMs();
+        ++m_requestId;
+    }
+
     // Opens the newest snapshot file below a round and replays the recording from its cut, or walks the recording
     // when there is none. A format this build does not read stops recovery.
     void chooseBelow(const std::int64_t belowRound)
@@ -837,7 +850,7 @@ class ReplayerRecovery
         if (m_replayGapLogged)
         {
             m_replayGapLogged = false; // the replay skipped a hole, so it did not reach the tip: resume from before it
-            requestResume();
+            deferResume();
             return;
         }
         if (reachedTip())

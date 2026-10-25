@@ -921,6 +921,9 @@ public class ReplayerRecoveryTest : IDisposable
 
         Assert.False(_receiver.IsCaughtUp, "frames 2..6 were never dispatched");
         Assert.True(_receiver.IsAwaitingReplay, "the hole is resumed, not left");
+        int sends = _actions.RequestsSent;
+        AdvancePastTimers(); // the resend timer sends it, at its pace: a hole every replay repeats is not a hot loop
+        Assert.Equal(sends + 1, _actions.RequestsSent);
 
         AnswerReplaying(8, 500);
         DeliverReplay(1); // anchored on the last dispatched frame

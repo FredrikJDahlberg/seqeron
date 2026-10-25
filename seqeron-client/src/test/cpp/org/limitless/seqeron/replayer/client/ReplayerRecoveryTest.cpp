@@ -1166,6 +1166,9 @@ TEST(ReplayerRecoveryGapRecovery, AReplayReachingItsBoundPastAHoleResumesInstead
 
     EXPECT_FALSE(client.recovery.isCaughtUp()) << "frames 2..6 were never dispatched";
     EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "the hole is resumed, not left";
+    const int sends = client.requestsSent;
+    advancePastTimers(client); // the resend timer sends it, at its pace: a hole every replay repeats is not a hot loop
+    EXPECT_EQ(sends + 1, client.requestsSent);
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/8,
                                            /*catchUpPosition=*/500));

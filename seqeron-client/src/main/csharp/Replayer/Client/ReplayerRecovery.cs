@@ -548,6 +548,21 @@ internal sealed class ReplayerRecovery
         _resumeAnchorClusterSeqNo = _lastClusterSeqNo;
     }
 
+    /// <summary>
+    /// As <see cref="RequestResume"/>, but left to the resend timer to send. A recording that keeps its hole gives
+    /// every resume the same one, which would otherwise be retried as fast as a replay runs.
+    /// </summary>
+    private void DeferResume()
+    {
+        _requestFromPosition = _lastFramePosition;
+        _requestCutClusterSeqNo = ReplayProtocol.NoCut;
+        _resumeAnchorClusterSeqNo = _lastClusterSeqNo;
+        _awaitingReplay = true;
+        _replaySessionId = -1;
+        _lastRequestMs = _actions.NowMs();
+        ++_requestId;
+    }
+
     /// <summary>Opens the newest snapshot file below <paramref name="belowRound"/> and replays the recording from its
     /// cut, or walks the recording when there is none. A format this build does not read stops recovery.</summary>
     /// <param name="belowRound"><see cref="long.MaxValue"/> for the newest of all</param>
@@ -819,7 +834,7 @@ internal sealed class ReplayerRecovery
         if (_replayGapLogged)
         {
             _replayGapLogged = false; // the replay skipped a hole, so it did not reach the tip: resume from before it
-            RequestResume();
+            DeferResume();
             return;
         }
         if (ReachedTip())
