@@ -185,7 +185,8 @@ document in this repository lists only what its user starts:
 ### trim-log
 
 Purges what this member's two newest restart-safe snapshots make unneeded ([`snapshot.md`](snapshot.md) §10.7). Open
-source Aeron trims nothing, so a member's Raft log and snapshot recordings otherwise grow with uptime. It acts on this
+source Aeron trims nothing, so a member's Raft log and snapshot recordings otherwise grow with uptime, which matters
+for a deployment that runs for weeks and not for one that resets daily. It acts on this
 member alone, needs no leader, and is run on each member. It reads the member's `recording.log` and
 `restart-safe.log` from its cluster directory and purges through the member's archive, over `aeron:ipc`:
 

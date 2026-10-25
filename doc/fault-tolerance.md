@@ -18,8 +18,8 @@ newest snapshot the log confirms (§3.4); the snapshot is a file of its own, and
 The cluster takes snapshots only while a `<snapshots>` policy is loaded; without one `SequencerService.onTakeSnapshot`
 throws, and `clusterctl shutdown` stops the cluster with Aeron's `ABORT`, which takes no snapshot, rather than
 `SHUTDOWN`, which does. Without a policy every member records the whole sequenced stream (§1.1), so any member can
-serve history to its clients without a peer, and the cost is that recovery time and archive size grow with uptime;
-the 1 Hz heartbeat alone adds about 86,400 frames a day.
+serve history to its clients without a peer, and the cost is that recovery time and archive size grow with the history the archive holds,
+which suits a deployment that resets it between runs. The 1 Hz heartbeat alone adds about 86,400 frames a day.
 
 With a policy, a member restarts from the newest cluster snapshot that its `restart-safe.log` names, and its queue
 recording starts at that snapshot's cut rather than at `groupSeqNo` 1. What lies below the cut is in the
