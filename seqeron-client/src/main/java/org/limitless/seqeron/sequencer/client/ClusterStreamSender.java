@@ -246,10 +246,12 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
 
     /**
      * Offers one pre-encoded frame to cluster ingress, spinning until it lands. {@code CLOSED} is not
-     * terminal: during an election {@code AeronCluster} closes the ingress publication and waits for a
-     * {@code NewLeader}, which {@code pollEgress} installs — hence the spin polls. Bounded, since losing
-     * quorum would otherwise stop the caller's duty cycle. No keep-alive from in here: it would offer on the
-     * same stuck publication.
+     * terminal: once it sees the leader's egress end, {@code AeronCluster} closes the ingress publication and
+     * waits for a {@code NewLeader}, which {@code pollEgress} installs — hence the spin polls. A leader that dies
+     * ends no egress, so its publication takes frames until the {@code NewLeader}, which discards what it has not
+     * sent: a frame that lands can still be lost, and only the queue confirms it (doc/fault-tolerance.md §1.2).
+     * Bounded, since losing quorum would otherwise stop the caller's duty cycle. No keep-alive from in here: it
+     * would offer on the same stuck publication.
      *
      * @return false when there is no session left to take it, or when a {@code NewLeader} arrived mid-spin
      *     while the {@link IngressTracker} holds: nothing was placed, and the frame goes again once it releases

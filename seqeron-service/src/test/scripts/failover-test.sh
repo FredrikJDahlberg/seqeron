@@ -11,7 +11,8 @@
 # It also proves failover loss recovery end to end: two ClusterProbe confirm producers, co-located with a
 # member that survives, stream ProbeMarkers across the kill. The one sending through PendingSends must see
 # every frame on its queue exactly once, in order. The control sends untracked; its loss count is what the kill
-# had in flight, and is reported rather than asserted, since a kill can land between two frames.
+# cost, and is reported rather than asserted, since a kill can land between two frames. The leader is SIGKILLed,
+# since a leader that dies ends no egress, so every run costs what a crash does (doc/fault-tolerance.md §1.2).
 #
 # PASS iff the fresh client prints "following live", its ReplayerService served it >= 1 replay, and
 # the PendingSends producer came out exact.
@@ -77,8 +78,8 @@ done
 echo "confirm + control producers streaming on member $P"
 sleep 1  # both mid-stream when the leader dies
 
-kill "${SEQ_PIDS[$L1]}" 2>/dev/null
-echo "killed tenure-1 leader (member $L1) -> forcing failover"
+kill -9 "${SEQ_PIDS[$L1]}" 2>/dev/null
+echo "SIGKILLed tenure-1 leader (member $L1) -> forcing failover"
 
 W=0; NEWLEADER=""
 until [[ -n "$NEWLEADER" ]]; do

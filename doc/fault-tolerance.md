@@ -66,10 +66,24 @@ history of leadership, and a client can tell the current leader from the log alo
 - The Java and C# senders get the same behaviour from `AeronCluster`, with one difference: a co-located
   sender whose leader moves away reconnects over UDP on a new session.
 
-**A failover can lose ingress without any error.** A send returns once the frame is on the leader's ingress
-publication, and the cluster confirms nothing on egress. Frames the old leader had not committed are lost,
-as is everything offered to its publication before the producer learns of the new leader — in
-`failover-test.sh`, at 100 µs pacing, either about 100 frames or about 10,000, in roughly equal shares of runs. The session survives, so neither side sees a fault.
+**A failover can lose ingress without any error.** A send returns once the frame is in the producer's own
+ingress publication, and the cluster confirms nothing on egress. Frames the old leader had not committed are
+lost, and so is everything offered before the producer learns the leader is gone. How much that is depends on
+how the leader went:
+
+- **A leader that dies ends no stream**, so the producer learns of it only from the new leader's `NewLeader`,
+  after the election: 3 to 5 s at the default timeouts. Until then its offers succeed. A UDP publication takes
+  frames up to its term window, half its term length (8 MB at Aeron's default 16 MB), ahead of what it has sent,
+  and on `NewLeader` `AeronCluster` closes it and discards what it holds: everything offered in those seconds,
+  up to the window, is lost.
+- **A leader stopped gracefully may end its egress streams before its driver goes.** A producer that sees its
+  egress end refuses offers (`CLOSED`) until `NewLeader`, and loses only what was in flight. Whether the streams
+  end first is a race.
+
+At 100 µs pacing a producer loses about 100 frames on the second path, and on the first the whole rest of the
+tests' 20,000-frame stream, 10,000 to 15,000. `failover-test.sh` and `FailoverProcessTest` `SIGKILL` the
+leader, and take the first every time; a leader stopped with `SIGTERM` leaves each path to about half the runs.
+The session survives either way, so neither side sees a fault.
 §5 describes how a producer detects and resends those frames.
 
 ### 1.3 A node that cannot record terminates itself
@@ -410,9 +424,12 @@ From the first sign of a new term, or from a session's replacement, until every 
 (`setIngressHold`). The lost frames are resent oldest first, never onto a session the queue has shown closed.
 The result is every frame sequenced exactly once, in order.
 
-`failover-test.sh` runs two producers across a leader kill: the one using `PendingSends` must see every frame
-on the queue exactly once and in order, and the other reports what it lost. `cpp-client-test.sh` and
-`csharp-client-test.sh` run the same check with the C++ and C# clients.
+A producer that cannot see the leader is gone keeps placing frames until `PendingSends` is full, then places
+nothing until the new term; `ClusterProbe`'s holds 4,096, and after a leader's death resends all of them.
+
+`failover-test.sh` and `FailoverProcessTest` run two producers across a leader kill: the one using `PendingSends`
+must see every frame on the queue exactly once and in order, and the other reports what it lost.
+`cpp-client-test.sh` and `csharp-client-test.sh` run the same check with the C++ and C# clients.
 
 ## 6. Operational tooling and verification
 
