@@ -22,7 +22,12 @@ pause to starting no other replay. `ClusterClockStepTest` steps the leader's con
 `InProcessCluster.stepClock` and `SequencerServer.launch`'s clock overload: 5 s holds the heartbeat 5 s and costs no
 term, and 30 s terminates the stepped member at the driver timeout on Aeron 1.53.2. It also fails over onto followers
 started with clocks behind the leader's, which costs only the election, since the new leader's heartbeat is due on its
-own clock. In every case no queue goes silent for the queue-stall fence's default, and no frame is lost. `SystemTestWatcher` fails
+own clock. `ReplayerFaultsTest` makes a member's Replayer fail or stall on cue, through `FaultableReplayer`
+(a decorator over `AeronReplayer`, installed by `SequencerServer.launch`'s `replayerWrapper` overload): a control
+stream that back-pressures drops its reply at the spin bound, a Replayer that reads no requests answers them once it does,
+resends queued behind a slow `startReplay` start one replay, a `startReplay` that throws is counted and answered
+`ReplayPending`, a replay whose progress freezes loses its slot only after the stall timeout, and ended replays free theirs
+at once. In every case no queue goes silent for the queue-stall fence's default, and no frame is lost. `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;
 neither `test` nor `check` runs it. A member stopped in-process is closed rather than killed, and a cut drops frames

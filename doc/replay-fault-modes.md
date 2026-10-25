@@ -1,7 +1,7 @@
 # Replay fault modes: disturbances the replayer's tests do not yet apply
 
 Written 2026-10-24, at `3750dfa` on `main`. "R-n" and "§n" refer to
-[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md). It proposes tests, and tier 1 and tier 2 modes 1, 2, 4 and 5 have been done. Gaps closed
+[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md). It proposes tests, and tier 1, tier 2 modes 1, 2, 4 and 5, and tier 3's server decorator have been done. Gaps closed
 in [`replay-test-review.md`](replay-test-review.md)'s status table are not repeated.
 
 **Scope.** Faults that reach the replayer and its clients through their transport, as opposed to the decisions the
@@ -110,12 +110,15 @@ as mode 4 does through a CPU cap.
 This tier pins the timer boundaries the scripts can only approach: the 500 ms resend, the 5 s replay stall, the
 recovery-progress timeout, and the 1 000-spin control drop.
 
-- **Server.** A `Replayer` decorator around `AeronReplayer` in `InProcessCluster` keeps real Aeron and makes the
-  timing exact. It would:
+- **Server. Done.** `FaultableReplayer`, a `Replayer` decorator around `AeronReplayer` that `InProcessCluster` installs
+  through `SequencerServer.launch`'s `replayerWrapper` overload, keeps real Aeron and makes the timing exact. It can:
   - return `BACK_PRESSURED` from `offerControl`, reaching `MAX_CONTROL_OFFER_SPINS` and `onControlReplyDropped`;
   - starve `pollRequests` for a set time;
   - make `startReplay` slow, or throw;
   - end a replay, or hold its `replayProgress` still, mid-replay.
+  - `ReplayerFaultsTest` applies each: the control drop, a starved `pollRequests`, resends behind a slow `startReplay`
+    starting one replay, a throwing `startReplay`, a frozen `replayProgress` freeing its slot at the stall timeout, and
+    ended replays freeing theirs at once. It does not cover a gateway host, whose Replayer is launched separately.
 - **Client.** `ClusterProbe` already passes a `queueFaults` supplier to `ReplayerStreamReceiver`. The same hook on
   the control and replay handlers would drop a `Replaying` reply, or a run of replay fragments, which the position
   check must catch.
@@ -125,4 +128,4 @@ recovery-progress timeout, and the 1 000-spin control drop.
 ## Suggested order
 
 1. Replay load under the existing faulteron tests, which use harnesses that exist.
-2. Tier 3's `Replayer` decorator. It replaces timing guesswork in the scripts.
+2. Tier 3's client hook, now that the server decorator exists.

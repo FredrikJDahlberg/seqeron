@@ -13,6 +13,7 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
@@ -190,7 +191,7 @@ public final class ReplayerServer {
                 config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(), config.host(), config.groups(),
                 new ConcurrentLinkedQueue<>(), reports, config.idleStrategies(), fatalHandler,
                 CutIntake.ofHost(reports, Long.getLong(PROP_SNAPSHOT_JOIN_MS, DEFAULT_SNAPSHOT_JOIN_MS)),
-                stallTimeoutMs);
+                stallTimeoutMs, UnaryOperator.identity());
         } catch (final RuntimeException ex) {
             CloseHelper.quietClose(driver);
             throw ex;
@@ -222,16 +223,31 @@ public final class ReplayerServer {
     public static ReplayerServer launch(final int memberId, final String aeronDir,
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake) {
+        return launch(memberId, aeronDir, idleStrategies, topologyRows, fatalHandler, cutIntake,
+                      UnaryOperator.identity());
+    }
+
+    /**
+     * As above, serving through {@code wrapper}'s decoration of the node's {@link AeronReplayer}. Test harnesses
+     * only: a Replayer that fails or stalls on cue.
+     *
+     * @param wrapper decorates the node's Replayer
+     */
+    public static ReplayerServer launch(final int memberId, final String aeronDir,
+                                        final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
+                                        final Runnable fatalHandler, final CutIntake cutIntake,
+                                        final UnaryOperator<Replayer> wrapper) {
         return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, List.of(), topologyRows,
                                   null, idleStrategies, fatalHandler, cutIntake,
-                                  NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS);
+                                  NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS, wrapper);
     }
 
     private ReplayerServer(final int memberId, final ArchivingMediaDriver driver, final String aeronDir,
                            final List<String> archiveEndpoints, final String host, final List<Integer> groups,
                            final Queue<byte[]> topologyRows, final Queue<RelayedCut> cutReports,
                            final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler,
-                           final CutIntake cutIntake, final long relayStallTimeoutMs) {
+                           final CutIntake cutIntake, final long relayStallTimeoutMs,
+                           final UnaryOperator<Replayer> wrapper) {
         this.memberId = memberId;
         this.driver = driver;
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
@@ -262,8 +278,8 @@ public final class ReplayerServer {
             ? null
             : new Thread(() -> AeronQueueRelay.run(relays, running, relayIdleStrategy), "relay-" + memberId);
         final ReplayerService replayer =
-            new ReplayerService(aeron, archive, memberId, idleStrategy, topologyRows, relayedGroups, fatalHandler,
-                                cutIntake);
+            new ReplayerService(wrapper.apply(new AeronReplayer(aeron, archive, memberId)), memberId, idleStrategy,
+                                topologyRows, relayedGroups, fatalHandler, cutIntake);
         replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         if (relayThread != null) {
             relayThread.start();

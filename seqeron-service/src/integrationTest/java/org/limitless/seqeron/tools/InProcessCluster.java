@@ -60,6 +60,8 @@ final class InProcessCluster implements AutoCloseable {
     private final AtomicBoolean[] muted = new AtomicBoolean[MEMBERS];
     /** Each member's consensus clock, which outlives a restart of it, as its host's does. */
     private final SteppableClusterClock[] clocks = new SteppableClusterClock[MEMBERS];
+    /** Each member's Replayer, which fails or stalls on cue and outlives a restart of it. */
+    private final FaultableReplayer[] replayers = new FaultableReplayer[MEMBERS];
     private final AtomicBoolean[] fatal = new AtomicBoolean[MEMBERS + 1];
     private final AtomicBoolean terminated = new AtomicBoolean();
     private ReplayerServer gatewayHost;
@@ -74,6 +76,7 @@ final class InProcessCluster implements AutoCloseable {
             cutArchive[m] = new AtomicBoolean();
             muted[m] = new AtomicBoolean();
             clocks[m] = new SteppableClusterClock();
+            replayers[m] = new FaultableReplayer();
         }
         for (int m = 0; m <= MEMBERS; m++) {
             fatal[m] = new AtomicBoolean();
@@ -188,7 +191,8 @@ final class InProcessCluster implements AutoCloseable {
         final AtomicBoolean isFatal = fatal[m];
         nodes.set(
             m,
-            SequencerServer.launch(config, () -> terminated.set(true), () -> isFatal.set(true), udpFaults, clocks[m]));
+            SequencerServer.launch(config, () -> terminated.set(true), () -> isFatal.set(true), udpFaults, clocks[m],
+                                   replayers[m]::wrap));
     }
 
     /** Launches the gateway host: its own driver and archive, relaying a member's queue of each group onto its own. */
@@ -250,6 +254,11 @@ final class InProcessCluster implements AutoCloseable {
     /** Drops, or stops dropping, member {@code m}'s consensus messages to its peers, though it still hears theirs. */
     void mute(final int m, final boolean isMuted) {
         muted[m].set(isMuted);
+    }
+
+    /** Member {@code m}'s Replayer, to make fail or stall. */
+    FaultableReplayer replayer(final int m) {
+        return replayers[m];
     }
 
     /** Steps member {@code m}'s consensus clock by {@code millis}, backward when negative. */
