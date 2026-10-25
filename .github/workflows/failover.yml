@@ -153,6 +153,12 @@ jobs:
         env:
           REPAIR: retransmit
 
+      - name: Unrepaired follower (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: |
+          ./gradlew :seqeron-service:networkFaultTest --tests '*UnrepairedFollowerTest'
+          REPAIR=retransmit ./gradlew :seqeron-service:networkFaultTest --tests '*UnrepairedFollowerTest' --rerun
+
       - name: Slow, duplicating leader links
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/jittery-leader-test.sh

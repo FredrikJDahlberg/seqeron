@@ -228,6 +228,18 @@ final class DockerCluster implements AutoCloseable {
         return total;
     }
 
+    /** The {@code dropped} counters summed over the rules of one frame type in {@code stats}. */
+    static long dropped(final String stats, final String type) {
+        long total = 0;
+        for (final String line : stats.split("\n")) {
+            final String[] fields = line.trim().split("\\s+");
+            if (fields.length > 1 && fields[1].equals(type)) {
+                total += dropped(line);
+            }
+        }
+        return total;
+    }
+
     /** SIGKILLs the member's container, as a crash does: its mark files stay active. */
     void kill(final int member) {
         require(run(Duration.ofSeconds(30), "docker", "kill", "-s", "KILL", "node-" + member),
