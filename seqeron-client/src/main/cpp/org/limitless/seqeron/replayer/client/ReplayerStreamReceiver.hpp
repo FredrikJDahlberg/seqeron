@@ -72,12 +72,23 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
      * @param onDisconnected      each ConnectionClosed
      * @param onLeadershipChanged each LeadershipChanged
      * @param onCaughtUp          every transition to caught up, the first included
+     * @param queueFaults         test harnesses only: polled once per live queue frame, on the poll thread, to drop
+     *                            it; empty drops nothing
+     * @param controlFaults       test harnesses only: polled once per Replaying or ReplayPending, on the poll
+     *                            thread, to drop it; empty drops nothing. A SnapshotRound is never dropped.
+     * @param replayFaults        test harnesses only: polled once per replay frame with where it starts in the
+     *                            recording, on the poll thread, to drop it; empty drops nothing
      * @throws std::invalid_argument if onSequenced is empty
      */
     ReplayerStreamReceiver(std::int32_t clientId, OnSequenced onSequenced, OnConnected onConnected = {},
                            OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
-                           OnCaughtUp onCaughtUp = {}) :
+                           OnCaughtUp onCaughtUp = {}, std::function<bool()> queueFaults = {},
+                           std::function<bool()> controlFaults = {},
+                           std::function<bool(std::int64_t)> replayFaults = {}) :
       m_clientId(clientId),
+      m_queueFaults(std::move(queueFaults)),
+      m_controlFaults(std::move(controlFaults)),
+      m_replayFaults(std::move(replayFaults)),
       m_recovery(*this, std::move(onSequenced), std::move(onConnected), std::move(onDisconnected),
                  std::move(onLeadershipChanged), std::move(onCaughtUp)),
       // Temporaries: FragmentAssembler copies the delegate into its own member.
@@ -386,6 +397,10 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     void onQueueFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                          const aeron::util::index_t length, const aeron::Header& header)
     {
+        if (m_queueFaults && m_queueFaults())
+        {
+            return;
+        }
         m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length),
                            protocol::frameStartPosition(header), protocol::nowNs(), /*fromReplay=*/false);
     }
@@ -398,8 +413,13 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         {
             return;
         }
-        m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length),
-                           protocol::frameStartPosition(header), protocol::nowNs(), /*fromReplay=*/true);
+        const auto position = protocol::frameStartPosition(header);
+        if (m_replayFaults && m_replayFaults(position))
+        {
+            return;
+        }
+        m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length), position, protocol::nowNs(),
+                           /*fromReplay=*/true);
     }
 
     void onControlFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
@@ -422,6 +442,10 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
                 return;
             }
         }
+        if (m_controlFaults && m_controlFaults())
+        {
+            return;
+        }
         m_recovery.onControl(frameAt(buffer, offset), static_cast<std::uint64_t>(length));
     }
 
@@ -442,6 +466,9 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     }
 
     const std::int32_t m_clientId;
+    std::function<bool()> m_queueFaults;
+    std::function<bool()> m_controlFaults;
+    std::function<bool(std::int64_t)> m_replayFaults;
     detail::ReplayerRecovery m_recovery;
     OnSnapshotRound m_onSnapshotRound;
 

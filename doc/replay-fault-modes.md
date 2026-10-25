@@ -132,7 +132,8 @@ recovery-progress timeout, and the 1 000-spin control drop.
   `ReplayerRecovery` now resumes instead, in all three languages, through the resend timer so that a hole every
   replay repeats is retried every 500 ms and not as fast as a replay runs. A recording that keeps its hole shows as
   `recoveryStalled` after the 30 s no-progress timeout, which `ReceiverFaultsTest` holds it to, and heals once the
-  recording covers the hole. The hooks are Java only; `replayFaults` takes the position each frame starts at.
+  recording covers the hole. The C++ and C# receivers take the same three hooks as trailing arguments, which no
+  test there drives; `replayFaults` takes the position each frame starts at.
 - **Relay.** `SequencerServer.UdpFaults` picks frames by stream id and direction. Picking by frame type as well would
   give the unrepaired relay in-process, without the compose service.
 
