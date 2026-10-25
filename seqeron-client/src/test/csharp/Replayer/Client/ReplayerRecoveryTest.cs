@@ -911,6 +911,27 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_logged.Count == 2, "the latch clears once history goes contiguous again");
     }
 
+    [Fact(DisplayName = "a replay reaching its bound past a hole in its history resumes instead of reporting caught up")]
+    public void AReplayReachingItsBoundPastAHoleResumesInsteadOfReportingCaughtUp()
+    {
+        AnswerReplaying(7, 500);
+        DeliverReplay(1);
+        DeliverReplay(7); // the recording does not cover 2..6
+        CompleteReplay();
+
+        Assert.False(_receiver.IsCaughtUp, "frames 2..6 were never dispatched");
+        Assert.True(_receiver.IsAwaitingReplay, "the hole is resumed, not left");
+
+        AnswerReplaying(8, 500);
+        DeliverReplay(1); // anchored on the last dispatched frame
+        DeliverReplay(2);
+        DeliverReplay(3);
+        CompleteReplay();
+
+        Assert.Equal(new long[] { 1, 2, 3 }, _dispatched);
+        Assert.True(_receiver.IsCaughtUp);
+    }
+
     [Fact(DisplayName = "dropped queue frames are reported once per episode")]
     public void DroppedQueueFramesAreReportedOncePerEpisode()
     {

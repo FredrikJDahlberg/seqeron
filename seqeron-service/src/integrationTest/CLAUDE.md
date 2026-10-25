@@ -27,7 +27,9 @@ own clock. `ReplayerFaultsTest` makes a member's Replayer fail or stall on cue, 
 stream that back-pressures drops its reply at the spin bound, a Replayer that reads no requests answers them once it does,
 resends queued behind a slow `startReplay` start one replay, a `startReplay` that throws is counted and answered
 `ReplayPending`, a replay whose progress freezes loses its slot only after the stall timeout, and ended replays free theirs
-at once. In every case no queue goes silent for the queue-stall fence's default, and no frame is lost. `SystemTestWatcher` fails
+at once. `ReceiverFaultsTest` drops a client's `Replaying` or a run of its replay fragments through
+`ReplayerStreamReceiver`'s fault hooks, and holds it to a gap-free, in-order walk that is never caught up short of the
+tip. In every case no queue goes silent for the queue-stall fence's default, and no frame is lost. `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;
 neither `test` nor `check` runs it. A member stopped in-process is closed rather than killed, and a cut drops frames

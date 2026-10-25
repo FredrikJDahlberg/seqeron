@@ -1154,6 +1154,30 @@ TEST(ReplayerRecoveryGapRecovery, GapInReplayedHistoryIsReportedOncePerEpisode)
     EXPECT_EQ(2u, sink.events.size()) << "the latch clears once history goes contiguous again";
 }
 
+TEST(ReplayerRecoveryGapRecovery, AReplayReachingItsBoundPastAHoleResumesInsteadOfReportingCaughtUp)
+{
+    int delivered = 0;
+    Client client{ [&](const SequencedEvent&) { ++delivered; } };
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500));
+    deliverReplay(client, 1);
+    deliverReplay(client, 7); // the recording does not cover 2..6
+    completeReplay(client);
+
+    EXPECT_FALSE(client.recovery.isCaughtUp()) << "frames 2..6 were never dispatched";
+    EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "the hole is resumed, not left";
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/8,
+                                           /*catchUpPosition=*/500));
+    deliverReplay(client, 1); // anchored on the last dispatched frame
+    deliverReplay(client, 2);
+    deliverReplay(client, 3);
+    completeReplay(client);
+
+    EXPECT_EQ(3, delivered);
+    EXPECT_TRUE(client.recovery.isCaughtUp());
+}
+
 TEST(ReplayerRecoveryGapRecovery, DroppedQueueFramesAreReportedOncePerEpisode)
 {
     Client client{ [](const SequencedEvent&) {} };

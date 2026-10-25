@@ -834,6 +834,12 @@ class ReplayerRecovery
     {
         m_actions.closeReplay();
         m_replaySessionId = -1;
+        if (m_replayGapLogged)
+        {
+            m_replayGapLogged = false; // the replay skipped a hole, so it did not reach the tip: resume from before it
+            requestResume();
+            return;
+        }
         if (reachedTip())
         {
             notifyCaughtUp();

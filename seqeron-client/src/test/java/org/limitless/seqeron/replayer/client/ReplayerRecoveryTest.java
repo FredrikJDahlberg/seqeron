@@ -908,6 +908,27 @@ class ReplayerRecoveryTest {
     }
 
     @Test
+    @DisplayName("a replay reaching its bound past a hole in its history resumes instead of reporting caught up")
+    void aReplayReachingItsBoundPastAHoleResumesInsteadOfReportingCaughtUp() {
+        answerReplaying(7, 500);
+        deliverReplay(1);
+        deliverReplay(7); // the recording does not cover 2..6
+        completeReplay();
+
+        assertFalse(receiver.isCaughtUp(), "frames 2..6 were never dispatched");
+        assertTrue(receiver.isAwaitingReplay(), "the hole is resumed, not left");
+
+        answerReplaying(8, 500);
+        deliverReplay(1); // anchored on the last dispatched frame
+        deliverReplay(2);
+        deliverReplay(3);
+        completeReplay();
+
+        assertEquals(List.of(1L, 2L, 3L), dispatched);
+        assertTrue(receiver.isCaughtUp());
+    }
+
+    @Test
     @DisplayName("dropped queue frames are reported once per episode")
     void droppedQueueFramesAreReportedOncePerEpisode() {
         deliverQueue(1);

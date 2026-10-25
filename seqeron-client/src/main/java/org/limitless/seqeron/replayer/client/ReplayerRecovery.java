@@ -776,6 +776,11 @@ final class ReplayerRecovery {
     private void onReplayReachedBound() {
         actions.closeReplay();
         replaySessionId = -1;
+        if (replayGapLogged) {
+            replayGapLogged = false; // the replay skipped a hole, so it did not reach the tip: resume from before it
+            requestResume();
+            return;
+        }
         if (reachedTip()) {
             notifyCaughtUp();
         }

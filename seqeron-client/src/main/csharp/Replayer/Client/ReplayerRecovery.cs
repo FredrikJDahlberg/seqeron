@@ -816,6 +816,12 @@ internal sealed class ReplayerRecovery
     {
         _actions.CloseReplay();
         _replaySessionId = -1;
+        if (_replayGapLogged)
+        {
+            _replayGapLogged = false; // the replay skipped a hole, so it did not reach the tip: resume from before it
+            RequestResume();
+            return;
+        }
         if (ReachedTip())
         {
             NotifyCaughtUp();
