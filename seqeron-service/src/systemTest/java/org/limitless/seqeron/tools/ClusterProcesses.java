@@ -35,7 +35,7 @@ final class ClusterProcesses implements AutoCloseable {
     private static final String JAR = System.getProperty("seqeron.jar");
     private static final String JAVA = Path.of(System.getProperty("java.home"), "bin", "java").toString();
     // seqeron-home.sh's SEQERON_JAVA_OPTS.
-    private static final List<String> JAVA_OPTS = List.of(
+    static final List<String> JAVA_OPTS = List.of(
         "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED", "--add-opens=java.base/java.lang=ALL-UNNAMED",
         "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED", "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
         "--add-opens=java.base/java.util.zip=ALL-UNNAMED");
@@ -238,7 +238,7 @@ final class ClusterProcesses implements AutoCloseable {
         private final Process process;
         private final Path log;
 
-        private Child(final Process process, final Path log) {
+        Child(final Process process, final Path log) {
             this.process = process;
             this.log = log;
         }

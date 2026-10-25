@@ -128,6 +128,11 @@ jobs:
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/partition-leader-test.sh
 
+      # The same test as JUnit, beside the script until it has run green here.
+      - name: Leader partitioned from its peers (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: ./gradlew :seqeron-service:networkFaultTest
+
       - name: Asymmetric partition
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/asymmetric-partition-test.sh

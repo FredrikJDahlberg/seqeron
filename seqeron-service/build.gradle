@@ -66,11 +66,30 @@ testing {
                     systemProperty 'seqeron.systemTestLogs',
                                    layout.buildDirectory.dir('system-test').get().asFile.absolutePath
                     doFirst { systemProperty 'seqeron.jar', uberJar.get().asFile.absolutePath }
+                    // The docker cluster's tests need the faulteron image: networkFaultTest runs them.
+                    useJUnitPlatform { excludeTags 'docker' }
                     shouldRunAfter tasks.named('integrationTest')
                 }
             }
         }
     }
+}
+
+// The systemTest tests tagged `docker`: the docker/compose.yml cluster with the faulteron injector aimed at a member
+// (a faulteron checkout at FAULTERON_DIR, default ../faulteron; Docker). The containers use the default port base.
+tasks.register('networkFaultTest', Test) {
+    description = 'Runs the systemTest tests tagged docker against the docker/compose.yml cluster'
+    group       = 'verification'
+
+    testClassesDirs = sourceSets.systemTest.output.classesDirs
+    classpath       = sourceSets.systemTest.runtimeClasspath
+    useJUnitPlatform { includeTags 'docker' }
+    dependsOn 'operatorDist'
+    environment 'SEQERON_PORT_BASE', '9300'
+    systemProperty 'seqeron.repoRoot', rootProject.projectDir.absolutePath
+    systemProperty 'seqeron.topologyGroups', file('src/test/resources/topology-test-groups.xml').absolutePath
+    systemProperty 'seqeron.systemTestLogs', layout.buildDirectory.dir('system-test').get().asFile.absolutePath
+    shouldRunAfter tasks.named('systemTest')
 }
 
 // ── SBE code generation ────────────────────────────────────────────────────────
