@@ -160,8 +160,8 @@ leaves them out. They need Docker and a faulteron checkout (`FAULTERON_DIR`, def
 ```
 
 `DockerCluster` drives the `docker` CLI rather than Testcontainers, whose compose support refuses the file's fixed
-`container_name`, and reads a member's state with `docker exec node-N clusterctl counters`. `PartitionLeaderTest` is
-`faulteron/partition-leader-test.sh`. `TIMEOUT_SCALE` stretches its deadlines as it does the scripts'.
+`container_name`, and reads a member's state with `docker exec node-N clusterctl counters`. `PartitionLeaderTest` and
+`AsymmetricPartitionTest` are `faulteron/partition-leader-test.sh` and `asymmetric-partition-test.sh`. `TIMEOUT_SCALE` stretches its deadlines as it does the scripts'.
 
 ## End-to-end harnesses
 

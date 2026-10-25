@@ -97,21 +97,35 @@ final class DockerCluster implements AutoCloseable {
     int awaitLeader(final Duration timeout, final int excluded) {
         final int[] leader = {NO_MEMBER};
         await("agreed leader" + (excluded == NO_MEMBER ? "" : " other than member " + excluded), timeout, () -> {
-            long agreed = NO_VALUE;
-            for (int m = 0; m < MEMBERS; m++) {
-                if (m == excluded) {
-                    continue;
-                }
-                final long view = counter(m, "seqeron.sequencer.currentLeaderMemberId");
-                if (view < 0 || view >= MEMBERS || view == excluded || (agreed != NO_VALUE && view != agreed)) {
-                    return false;
-                }
-                agreed = view;
-            }
-            leader[0] = (int)agreed;
-            return true;
+            leader[0] = agreedLeader(excluded);
+            return leader[0] != NO_MEMBER;
         });
         return leader[0];
+    }
+
+    /** The member every member but {@code excluded} records as leader right now, or {@link #NO_MEMBER}. */
+    int agreedLeader(final int excluded) {
+        long agreed = NO_VALUE;
+        for (int m = 0; m < MEMBERS; m++) {
+            if (m == excluded) {
+                continue;
+            }
+            final long view = counter(m, "seqeron.sequencer.currentLeaderMemberId");
+            if (view < 0 || view >= MEMBERS || view == excluded || (agreed != NO_VALUE && view != agreed)) {
+                return NO_MEMBER;
+            }
+            agreed = view;
+        }
+        return (int)agreed;
+    }
+
+    /** Leadership changes the members have applied, summed: one each per term, so an election adds to it. */
+    long leadershipChanges() {
+        long total = 0;
+        for (int m = 0; m < MEMBERS; m++) {
+            total += Math.max(0, counter(m, "seqeron.sequencer.leadershipChangeCount"));
+        }
+        return total;
     }
 
     /** The member's seqeron counters, by name without the member label; empty if its sequencer is not up. */
@@ -166,6 +180,12 @@ final class DockerCluster implements AutoCloseable {
                                                             "faulteron"));
         command.addAll(List.of(arguments));
         return run(Duration.ofSeconds(60), command.toArray(String[]::new));
+    }
+
+    /** The member's faulteron rules' stats and then a detach, in one run, so the fault ends as soon as it is read. */
+    Result heal(final int member) {
+        return run(Duration.ofSeconds(60), "docker", "run", "--rm", "--privileged", "--network",
+                   "container:node-" + member, "faulteron:local", "sh", "-c", "faulteron stats && faulteron detach");
     }
 
     /** Every member's archive, consensus, log and transfer port: what members speak among themselves. */
