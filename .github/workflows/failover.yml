@@ -163,6 +163,10 @@ jobs:
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/jittery-leader-test.sh
 
+      - name: Jittery leader (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: ./gradlew :seqeron-service:networkFaultTest --tests '*JitteryLeaderTest'
+
       - name: Mute voter
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/mute-voter-test.sh

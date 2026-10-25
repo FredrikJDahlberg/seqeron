@@ -36,7 +36,6 @@ final class DockerCluster implements AutoCloseable {
     private static final List<String> COMPOSE =
         List.of("docker", "compose", "-f", REPO_ROOT.resolve("docker/compose.yml").toString());
     private static final Pattern COUNTER = Pattern.compile("^(\\S+) member=\\d+\\s+= (-?\\d+)$");
-    private static final Pattern DROPPED = Pattern.compile("dropped=(\\d+)");
     private static final long POLL_MS = 500;
 
     private final Path logDir;
@@ -220,8 +219,13 @@ final class DockerCluster implements AutoCloseable {
 
     /** The sum of the {@code dropped} counters over the rules in {@code stats}. */
     static long dropped(final String stats) {
+        return counter(stats, "dropped");
+    }
+
+    /** The sum of the named counters ({@code delayed}, {@code duplicated}, ...) over the rules in {@code stats}. */
+    static long counter(final String stats, final String name) {
         long total = 0;
-        final Matcher matcher = DROPPED.matcher(stats);
+        final Matcher matcher = Pattern.compile("\\b" + name + "=(\\d+)").matcher(stats);
         while (matcher.find()) {
             total += Long.parseLong(matcher.group(1));
         }
