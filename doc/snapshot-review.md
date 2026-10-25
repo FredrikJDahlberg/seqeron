@@ -69,15 +69,13 @@ rename that fails and a file that cannot be created, case for case. As found:
 - `restart-safe.log` is the member's own and `ClusterBackup` does not copy it. `SnapshotChoice.invalidateUnsafe`
   invalidates every snapshot the file does not name, so a rebuilt member invalidates them all and replays the whole
   backed-up log. That works only because the backup never trims, and it takes the longest replay there is.
-- The `trimmed` line that fences a whole-log replay lives in the same file. A rebuilt member has none, and a member
-  whose `restart-safe.log` is lost loses the line with it. Either then invalidates every snapshot and attempts a
-  whole-log replay of a log that no longer begins at its first term; `SnapshotChoice`'s "the Raft log has been
-  trimmed" never fires.
+- The trim fence no longer lives in that file: a start reads it from the archive's catalog, where the first term's
+  recording starts above 0 once `trim-log` has purged a segment, so a rebuilt member or a lost `restart-safe.log`
+  keeps it.
 - No runbook covers either case. `ops.md` and `running-a-cluster.md` do not mention `ClusterBackup`;
   `clusterctl.md` names it in one line and gives no procedure.
 - Decide: a documented seeding step (copy a peer's `safe` lines for the snapshots the backup holds, which is sound only
-  if the peer's cut was restart-safe on this member's clients), or state that a rebuild is a full replay. Either way,
-  the trim fence needs a home that survives the loss of `restart-safe.log`.
+  if the peer's cut was restart-safe on this member's clients), or state that a rebuild is a full replay.
 
 **3. A source that joins late is not waited for.** `replayer.snapshotJoinMs` defaults to 5 s on a member and 10 s
 on a host. `Joined` is placed by `SnapshotTaker.signal`, from the duty cycle, and the same duty cycle serializes

@@ -17,7 +17,6 @@ import java.util.Set;
  * <pre>
  *   cut &lt;logPosition&gt;    a snapshot was taken at that log position, which the member then hands to its Replayer
  *   safe &lt;logPosition&gt;   every co-located application that joined its round holds a confirmed file for it
- *   trimmed               {@code clusterctl trim-log} has run, so the Raft log no longer begins at its first term
  * </pre>
  * Each line is forced to disk before the call that wrote it returns. Written from the service thread ({@code cut})
  * and the Replayer's ({@code safe}), so every method is synchronized.
@@ -27,18 +26,16 @@ public final class RestartSafeLog implements AutoCloseable {
     public static final String FILE_NAME = "restart-safe.log";
 
     /** What a log holds. */
-    public record State(Set<Long> cuts, Set<Long> safe, boolean trimmed) { }
+    public record State(Set<Long> cuts, Set<Long> safe) { }
 
     private final FileChannel channel;
     private final Set<Long> cuts;
     private final Set<Long> safe;
-    private boolean trimmed;
 
     private RestartSafeLog(final FileChannel channel, final State state) {
         this.channel = channel;
         this.cuts = new HashSet<>(state.cuts());
         this.safe = new HashSet<>(state.safe());
-        this.trimmed = state.trimmed();
     }
 
     /**
@@ -68,7 +65,6 @@ public final class RestartSafeLog implements AutoCloseable {
     public static State read(final Path file) {
         final Set<Long> cuts = new HashSet<>();
         final Set<Long> safe = new HashSet<>();
-        boolean trimmed = false;
         if (Files.exists(file)) {
             try {
                 // Every line ends in a newline, so what follows the last one is a write a crash cut short.
@@ -80,8 +76,6 @@ public final class RestartSafeLog implements AutoCloseable {
                             cuts.add(Long.parseLong(words[1]));
                         } else if (words.length == 2 && words[0].equals("safe")) {
                             safe.add(Long.parseLong(words[1]));
-                        } else if (words.length == 1 && words[0].equals("trimmed")) {
-                            trimmed = true;
                         }
                     } catch (final NumberFormatException torn) {
                         // A line a crash cut short.
@@ -91,7 +85,7 @@ public final class RestartSafeLog implements AutoCloseable {
                 throw new UncheckedIOException(ex);
             }
         }
-        return new State(cuts, safe, trimmed);
+        return new State(cuts, safe);
     }
 
     /** Records that a snapshot was taken at {@code logPosition}; durable on return. */
@@ -104,12 +98,6 @@ public final class RestartSafeLog implements AutoCloseable {
     public synchronized void appendSafe(final long logPosition) {
         append("safe " + logPosition);
         safe.add(logPosition);
-    }
-
-    /** Records that the Raft log has been trimmed; durable on return. */
-    public synchronized void appendTrimmed() {
-        append("trimmed");
-        trimmed = true;
     }
 
     /** Whether a snapshot at {@code logPosition} was taken in this run or an earlier one. */

@@ -390,7 +390,8 @@ public final class SequencerServer {
         }
 
         final List<Long> invalidated = SnapshotChoice.invalidateUnsafe(
-            clusterDir, RestartSafeLog.read(clusterDir.toPath().resolve(RestartSafeLog.FILE_NAME)));
+            clusterDir, RestartSafeLog.read(clusterDir.toPath().resolve(RestartSafeLog.FILE_NAME)),
+            SnapshotChoice.catalogStart(archiveDir));
         if (!invalidated.isEmpty()) {
             Logger.info(Logger.CoreComponent.SequencerServer, memberId,
                         "starting without the snapshots at log positions %s: no co-located application is known to "
