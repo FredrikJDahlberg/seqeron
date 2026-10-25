@@ -40,7 +40,8 @@ Features
   system message reaches every group. An instance reads, replays and relays only its group's queue, so its
   read cost and recovery time follow the traffic addressed to its group rather than the whole deployment's.
   The cost is one archive write per queue a message reaches.
-- **Fault tolerance.** The cluster survives the loss of a minority of its members, and a new leader resumes at
+- **Fault tolerance.** The cluster runs one to seven members, three or five in practice, survives the loss of a
+  minority of them, and a new leader resumes at
   the next `clusterSeqNo`. Producers confirm their messages on the stream and resend what a failover lost, so
   each is sequenced exactly once, in order. Edge producers run as active/hot-standby pairs that the cluster
   elects and hands over, and a member that can no longer record its history stops rather than keep a gap.
@@ -73,15 +74,17 @@ Features
 Limitations
 -----------
 
-- **Cluster snapshots need a `<snapshots>` policy.** Without one, a node recovers by replaying the Raft log from
-  `clusterSeqNo` 1, and its recovery time and archive size grow with uptime. With one, each member purges its queue
-  recordings below the newest restart-safe cut ([design](doc/snapshot.md#10-cluster-snapshots)).
+- **Without a `<snapshots>` policy, a node replays the whole Raft log on restart.** Recovery time and archive size
+  grow with the history the archive holds, so it suits a deployment whose archive is reset between runs. With a
+  policy, each member purges its queue recordings below the newest restart-safe cut
+  ([design](doc/snapshot.md#10-cluster-snapshots)).
 - **The Raft log is trimmed by hand.** Aeron's open-source release trims nothing; `clusterctl trim-log` is run on
-  each member.
+  each member. A deployment that resets daily does not need it; one that runs for weeks does.
 - **Gateway hosts do not purge.** A gateway host's queue recordings grow with uptime. A host whose relay is cut off
   from every member while they purge past it stops relaying, with error logs, until it is restarted.
-- **Groups are fixed at the first topology load.** No group can be added, removed or renamed on an existing
-  archive, and no gateway or application can move to another group.
+- **Groups are fixed for the life of an archive.** A deployment that starts from an empty archive can declare any
+  groups. On an existing archive no group can be added, removed or renamed, and no gateway or application can move
+  to another group.
 - **No authentication or encryption.** Anyone who reaches the cluster's ports can submit messages, operator
   events included, and read or delete recordings. Run it inside a trusted network.
 - **seqeron protocol changes are not rolling.** seqeron's own protocol — the message envelope and system
@@ -89,7 +92,6 @@ Limitations
   gateway host and client moves together, and the recorded history is purged. seqeron is pre-1.0, and minor releases break the API.
 - **No performance figures.** Latency, throughput and capacity have not been measured on production
   hardware, so a deployment is sized by measuring on its own.
-- **At most seven cluster nodes.** The cluster's port block is 70 ports wide.
 - **C# trails by one Aeron version.** Aeron.NET is a release behind Aeron. Spec **V-1** records the
   exception and the evidence that the two interoperate; it is re-verified on every Aeron upgrade.
 
