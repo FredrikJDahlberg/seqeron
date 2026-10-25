@@ -179,6 +179,10 @@ jobs:
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/throttled-leader-test.sh
 
+      - name: Leader starved of CPU (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: ./gradlew :seqeron-service:networkFaultTest --tests '*ThrottledLeaderTest'
+
       - name: Gateway host's relay without NAKs
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/relay-link-test.sh

@@ -260,6 +260,25 @@ final class DockerCluster implements AutoCloseable {
         });
     }
 
+    /** Caps the member's container at {@code cpus} CPUs at once, while it runs (CFS bandwidth, per 100 ms period). */
+    void throttle(final int member, final String cpus) {
+        require(run(Duration.ofSeconds(30), "docker", "update", "--cpus", cpus, "node-" + member),
+                "could not cap node-" + member);
+    }
+
+    /** Lifts the cap: {@code --cpus 0} leaves the quota in place, so the cap becomes every CPU of the docker host. */
+    void unthrottle(final int member) {
+        final Result host = run(Duration.ofSeconds(30), "docker", "info", "-f", "{{.NCPU}}");
+        require(host, "could not read the docker host's CPU count");
+        throttle(member, host.output().trim());
+    }
+
+    /** The member's cgroup {@code cpu.max}: quota and period in microseconds. */
+    String cpuMax(final int member) {
+        return run(Duration.ofSeconds(30), "docker", "exec", "node-" + member, "cat", "/sys/fs/cgroup/cpu.max")
+            .output().trim();
+    }
+
     boolean isRunning(final int member) {
         final Result result = run(Duration.ofSeconds(30), "docker", "inspect", "-f", "{{.State.Running}}",
                                   "node-" + member);
