@@ -1,7 +1,7 @@
 # Replay fault modes: disturbances the replayer's tests do not yet apply
 
 Written 2026-10-24, at `3750dfa` on `main`. "R-n" and "§n" refer to
-[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md). It proposes tests, and tier 1, tier 2 modes 1 to 5, and tier 3's server decorator and client hook have been done. Gaps closed
+[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md). It proposes tests, and tier 1, tier 2 modes 1 to 5, replay load under the faulteron tests, and tier 3's server decorator and client hook have been done. Gaps closed
 in [`replay-test-review.md`](replay-test-review.md)'s status table are not repeated.
 
 **Scope.** Faults that reach the replayer and its clients through their transport, as opposed to the decisions the
@@ -106,9 +106,9 @@ frames, so faulteron's value here is partial loss, one half of repair, delay, ji
 - Both now read `Clocks.monotonicMs()`, as the client and `AeronQueueRelay` already did, through
   `Replayer.monotonicMs()`. A wall-clock step reaches nothing in the replayer, so no test applies one.
 
-**Replay load under the existing faulteron tests.** `unrepaired-follower` only pings the impaired member. A `follow`
-cold-started there, during the fault and after the heal, would put the replayer under load through a network fault,
-as mode 4 does through a CPU cap.
+**Replay load under the existing faulteron tests. Done.** `unrepaired-follower-test.sh` cold-starts a `follow` on the
+starved follower under the fault and another after the heal, each through its Replayer, and holds both to ending
+caught up rather than evicted from the queue, as mode 4 does through a CPU cap.
 
 ## Tier 3: deterministic IPC faults, in-process
 
@@ -138,4 +138,4 @@ recovery-progress timeout, and the 1 000-spin control drop.
 
 ## Suggested order
 
-1. Replay load under the existing faulteron tests, which use harnesses that exist.
+1. Tier 3 relay frame-type selection.
