@@ -461,7 +461,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(-1, _receiver.ReplaySessionId);
     }
 
-    // clientId alone cannot identify WHICH request a reply answers. A resend makes the Replayer stop the in-flight
+    // clientId alone cannot identify WHICH request a reply answers. A new request makes the Replayer stop the in-flight
     // session and start a new one, so both replies sit in order on the one shared control publication and the stale
     // one is always processed first.
     [Fact(DisplayName = "a reply carrying a superseded requestId is ignored")]
@@ -487,6 +487,19 @@ public class ReplayerRecoveryTest : IDisposable
         AnswerReplaying(43, 1000);
 
         Assert.True(_receiver.ReplaySessionId == 43, "the reply to the current request must be applied");
+        Assert.False(_receiver.IsAwaitingReplay);
+    }
+
+    // Resends queued behind a slow answer each draw it again, under the same requestId.
+    [Fact(DisplayName = "a repeat of the answer already taken is ignored")]
+    public void ARepeatOfTheAnswerAlreadyTakenIsIgnored()
+    {
+        _receiver.Start();
+        AnswerReplaying(43, 1000);
+
+        AnswerReplaying(44, 2000);
+
+        Assert.True(_receiver.ReplaySessionId == 43, "the replay it attached to is kept");
         Assert.False(_receiver.IsAwaitingReplay);
     }
 
@@ -603,6 +616,7 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverQueue(5); // gap -> arms the resend timer
         Assert.True(_receiver.IsAwaitingReplay);
         int sends = _actions.RequestsSent;
+        long requestId = _receiver.RequestId;
 
         _actions.ClockMs += 300; // inside ResendIntervalMs (500)
         _receiver.DoTimers(false);
@@ -613,14 +627,15 @@ public class ReplayerRecoveryTest : IDisposable
         _receiver.DoTimers(false);
 
         Assert.True(sends + 1 == _actions.RequestsSent, "the duty cycle must re-send rather than give up");
+        Assert.True(requestId == _receiver.RequestId, "a resend keeps its requestId, so its reply is still current");
         Assert.True(_receiver.IsAwaitingReplay, "still stuck at the gap: a resend, not a new state");
         Assert.Equal(-1, _receiver.ReplaySessionId);
         Assert.True(_receiver.RequestFromPosition != FromStart, "a resend repeats the same request verbatim");
     }
 
-    // Every send advances the request id and OnControl acts only on a reply carrying the CURRENT id, so a per-poll
-    // retry runs the counter away and every reply that arrives is discarded as stale, leaving the client awaiting a
-    // replay that can never correlate, hence never caught up.
+    // OnControl acts only on a reply carrying the CURRENT id, so a retry that took a new id per poll would run the
+    // counter away and discard every reply that arrives as stale, leaving the client awaiting a replay that can never
+    // correlate, hence never caught up.
     [Fact(DisplayName = "a request that never went out is not re-sent once per poll")]
     public void AnUnsentRequestIsNotReSentOncePerPoll()
     {
@@ -702,6 +717,67 @@ public class ReplayerRecoveryTest : IDisposable
 
         Assert.True(_receiver.IsCaughtUp, "the retained frame closes the seam with no further round trip");
         Assert.True(_caughtUpAt.Count == 2, "consumers must be able to re-arm on re-convergence");
+    }
+
+    // An evicted subscriber hears nothing until its driver rejoins it at the tip, so the hole shows only then.
+    [Fact(DisplayName = "an eviction from the queue revokes caught-up until a live frame after the rejoin")]
+    public void AnEvictionFromTheQueueRevokesCaughtUpUntilALiveFrameAfterTheRejoin()
+    {
+        _receiver.OnQueueImage(true);
+        DeliverQueue(1);
+        DeliverQueue(2);
+        Assert.True(_receiver.IsCaughtUp);
+
+        _receiver.OnQueueImage(false);
+        Assert.False(_receiver.IsCaughtUp, "nothing live reaches an evicted client");
+        Assert.True(_actions.RequestsSent == 0, "the hole shows on the first live frame after the rejoin");
+
+        _receiver.OnQueueImage(true);
+        DeliverQueue(5);
+        Assert.False(_receiver.IsCaughtUp);
+        Assert.True(_actions.RequestsSent == 1, "the rejoin's first frame shows the hole, and a resume is requested");
+
+        DeliverReplay(2);
+        DeliverReplay(3);
+        DeliverReplay(4);
+        Assert.True(_receiver.IsCaughtUp);
+        Assert.Equal(2, _caughtUpAt.Count);
+    }
+
+    [Fact(DisplayName = "a walk reaching its bound while evicted from the queue is not caught up")]
+    public void AWalkReachingItsBoundWhileEvictedFromTheQueueIsNotCaughtUp()
+    {
+        _receiver.OnQueueImage(true);
+        AttachReplay(7, 3 * 1024);
+        DeliverReplay(1);
+        DeliverReplay(2);
+        _receiver.OnQueueImage(false);
+
+        CompleteReplay();
+        Assert.False(_receiver.IsCaughtUp, "the queue may be any distance past the bound");
+        Assert.False(_receiver.IsRecovering, "nothing is requested before the rejoin");
+
+        _receiver.OnQueueImage(true);
+        DeliverQueue(3);
+        Assert.True(_receiver.IsCaughtUp, "a contiguous live frame after the rejoin closes the seam");
+    }
+
+    [Fact(DisplayName = "frames retained before an eviction do not catch the client up when the replay reaches them")]
+    public void FramesRetainedBeforeAnEvictionDoNotCatchTheClientUp()
+    {
+        _receiver.OnQueueImage(true);
+        AttachReplay(11, 8 * 1024);
+        DeliverReplay(1);
+        DeliverQueue(3); // retained behind the hole at 2
+        _receiver.OnQueueImage(false);
+
+        DeliverReplay(2); // hands 3 straight over
+        Assert.Equal(new List<long> { 1, 2, 3 }, _dispatched);
+        Assert.False(_receiver.IsCaughtUp, "a retained frame is not the live queue");
+
+        _receiver.OnQueueImage(true);
+        DeliverQueue(4);
+        Assert.True(_receiver.IsCaughtUp);
     }
 
     // ── the retained-ahead FIFO ───────────────────────────────────────────────────────────────────
@@ -833,6 +909,30 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(2, _dispatched.Count);
         DeliverReplay(9);
         Assert.True(_logged.Count == 2, "the latch clears once history goes contiguous again");
+    }
+
+    [Fact(DisplayName = "a replay reaching its bound past a hole in its history resumes instead of reporting caught up")]
+    public void AReplayReachingItsBoundPastAHoleResumesInsteadOfReportingCaughtUp()
+    {
+        AnswerReplaying(7, 500);
+        DeliverReplay(1);
+        DeliverReplay(7); // the recording does not cover 2..6
+        CompleteReplay();
+
+        Assert.False(_receiver.IsCaughtUp, "frames 2..6 were never dispatched");
+        Assert.True(_receiver.IsAwaitingReplay, "the hole is resumed, not left");
+        int sends = _actions.RequestsSent;
+        AdvancePastTimers(); // the resend timer sends it, at its pace: a hole every replay repeats is not a hot loop
+        Assert.Equal(sends + 1, _actions.RequestsSent);
+
+        AnswerReplaying(8, 500);
+        DeliverReplay(1); // anchored on the last dispatched frame
+        DeliverReplay(2);
+        DeliverReplay(3);
+        CompleteReplay();
+
+        Assert.Equal(new long[] { 1, 2, 3 }, _dispatched);
+        Assert.True(_receiver.IsCaughtUp);
     }
 
     [Fact(DisplayName = "dropped queue frames are reported once per episode")]

@@ -77,7 +77,8 @@ jobs:
 
   # The faults no kill or pause produces, against the same docker/compose.yml cluster: a leader partitioned from its
   # peers while its clients stay connected, one link cut and no other, a follower whose loss repair is gone, a slow
-  # and duplicating link, a member whose ballots are dropped, and a leader starved of CPU. faulteron
+  # and duplicating link, a member whose ballots are dropped, a leader starved of CPU, and a gateway host's relay
+  # whose link to its member is unrepaired, jittery or slow to answer archive control. faulteron
   # (github.com/FredrikJDahlberg/faulteron) injects them with eBPF from privileged containers, which this VM's
   # daemon runs as it is. The tests are this repo's, under seqeron-service/src/test/scripts/faulteron; faulteron is the
   # tool they drive.
@@ -154,6 +155,39 @@ jobs:
       - name: Leader starved of CPU
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/throttled-leader-test.sh
+
+      - name: Gateway host's relay without NAKs
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: seqeron-service/src/test/scripts/faulteron/relay-link-test.sh
+        env:
+          FAULT: loss
+
+      - name: Slow, duplicating relay link
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: seqeron-service/src/test/scripts/faulteron/relay-link-test.sh
+        env:
+          FAULT: jitter
+
+      - name: Archive control requests past the relay's connect timeout
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: seqeron-service/src/test/scripts/faulteron/slow-archive-control-test.sh
+        env:
+          DIRECTION: request
+          DELAY_MS: '1500'
+
+      - name: Archive control responses past the relay's connect timeout
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: seqeron-service/src/test/scripts/faulteron/slow-archive-control-test.sh
+        env:
+          DIRECTION: response
+          DELAY_MS: '1500'
+
+      - name: Archive control requests under the relay's connect timeout
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: seqeron-service/src/test/scripts/faulteron/slow-archive-control-test.sh
+        env:
+          DIRECTION: request
+          DELAY_MS: '200'
 
       - name: Upload faulteron logs
         if: failure()

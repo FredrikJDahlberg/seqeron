@@ -253,10 +253,13 @@ correctly, to many clients at once, and to say so plainly when it cannot.
   a new replay starts only when none is running: replays compete with the recorder for the disk, and the
   recorder is what holds the sequencer back. A slot frees when its replay's publication is gone: when the
   client closes its replay subscription at the replay's end, or when the driver times out a client that died
-  mid-replay (spec §10, R-3). Many concurrent replays happen mainly when a member restarts and all
+  mid-replay. A replay that its subscriber reads nothing of for 10 s, from a client alive but stuck, is stopped,
+  which frees its slot (spec §10, R-3). Many concurrent replays happen mainly when a member restarts and all
   its clients cold-start together.
 - **Control replies** are offered with a bounded retry, then dropped, never blocked on. The client resends
-  on a timer, so a client that is not reading cannot hold up replies to the others.
+  on a timer, so a client that is not reading cannot hold up replies to the others. A resend keeps its
+  `requestId`, and the Replayer answers it with the replay it already started for that request, so a Replayer
+  slower than the 500 ms resend still starts one replay per request (spec R-1).
 - **Duty-cycle failure.** An exception escaping the duty cycle clears the ready counter and exits the
   process with code 70 — the member's, since the Replayer runs in its JVM — after closing the archive client,
   so a supervisor restarts it, rather than leaving a member that looks ready but serves nothing.
@@ -273,6 +276,11 @@ which is unit-tested directly, case for case across the languages.
   replay's first frame is not the expected `groupSeqNo` — the member restarted, and its recording changed —
   the client falls back to a full walk. A frame is a duplicate by its `clusterSeqNo`, which increases along a
   queue but not by one (spec **F-6**).
+- **Eviction.** A client that stops polling the queue for longer than its driver's untethered window allows is
+  evicted from it, and rejoins at the tip after `aeron.untethered.resting.timeout`, 10 s. `isCaughtUp()` clears
+  once the client's Aeron reports the queue image gone, and holds until the first live frame after the rejoin is
+  contiguous or a resume has closed the hole it shows. Under a `SIGSTOP` the client's Aeron stops too, so one duty
+  cycle can run after `SIGCONT` before it learns of the eviction.
 - **Retained frames.** While a walk or resume is in progress, live frames beyond the gap are kept in a
   bounded FIFO (65,536 frames or 16 MiB) and delivered when the replay reaches them, so recovery ends without
   a second gap. Past the bound, the client drops them and walks again.
@@ -436,8 +444,9 @@ Each failure above has a harness that produces it against a live cluster, all un
 
 `failover.yml` also runs the faults no kill or pause produces, against the same `docker/compose.yml` cluster: a
 leader partitioned from its peers while its clients stay connected, one link cut and no other, a follower without
-NAKs or without retransmits, slow and duplicating leader links, a member whose ballots are dropped, and a leader
-starved of CPU. The tests are under `seqeron-service/src/test/scripts/faulteron` and drive
+NAKs or without retransmits, slow and duplicating leader links, a member whose ballots are dropped, a leader
+starved of CPU, and a gateway host whose relay's member link is unrepaired, jittery or slow to answer archive control
+(§3.3). The tests are under `seqeron-service/src/test/scripts/faulteron` and drive
 [faulteron](https://github.com/FredrikJDahlberg/faulteron), an eBPF injector, at a pinned commit
 ([`building.md`](building.md)).
 

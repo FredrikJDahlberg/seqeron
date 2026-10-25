@@ -6,6 +6,7 @@ import io.aeron.cluster.ClusteredMediaDriver;
 import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.NanosecondClusterClock;
 import io.aeron.cluster.client.ClusterEvent;
+import io.aeron.cluster.service.ClusterClock;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ReceiveChannelEndpointSupplier;
@@ -24,6 +25,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.agrona.CloseHelper;
@@ -35,6 +37,7 @@ import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.replayer.server.CutHandover;
 import org.limitless.seqeron.replayer.server.CutIntake;
 import org.limitless.seqeron.replayer.server.NodeDriver;
+import org.limitless.seqeron.replayer.server.Replayer;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.replayer.server.RestartSafeLog;
 import org.limitless.seqeron.util.IdleStrategies;
@@ -267,6 +270,31 @@ public final class SequencerServer {
      */
     public static SequencerServer launch(final Config config, final Runnable terminationHook,
                                          final Runnable fatalHandler, final UdpFaults udpFaults) {
+        return launch(config, terminationHook, fatalHandler, udpFaults, new NanosecondClusterClock());
+    }
+
+    /**
+     * As above, on {@code clusterClock}, which stamps the log while this node leads and paces its consensus timeouts.
+     * Test harnesses only: a clock that steps.
+     *
+     * @param clusterClock the consensus module's clock, in nanoseconds
+     */
+    public static SequencerServer launch(final Config config, final Runnable terminationHook,
+                                         final Runnable fatalHandler, final UdpFaults udpFaults,
+                                         final ClusterClock clusterClock) {
+        return launch(config, terminationHook, fatalHandler, udpFaults, clusterClock, UnaryOperator.identity());
+    }
+
+    /**
+     * As above, with the node's Replayer serving through {@code replayerWrapper}'s decoration of its {@link
+     * org.limitless.seqeron.replayer.server.AeronReplayer}. Test harnesses only: a Replayer that fails or stalls on cue.
+     *
+     * @param replayerWrapper decorates the node's Replayer
+     */
+    public static SequencerServer launch(final Config config, final Runnable terminationHook,
+                                         final Runnable fatalHandler, final UdpFaults udpFaults,
+                                         final ClusterClock clusterClock,
+                                         final UnaryOperator<Replayer> replayerWrapper) {
         final int memberId = config.memberId();
         final String host = config.host();
         final String aeronDir = config.aeronDir();
@@ -329,7 +357,7 @@ public final class SequencerServer {
                 .aeronDirectoryName(aeronDir)
                 .clusterMemberId(memberId)
                 .clusterMembers(clusterMembers)
-                .clusterClock(new NanosecondClusterClock())
+                .clusterClock(clusterClock)
                 .appVersion(LogVersion.APP_VERSION)
                 .appVersionValidator(LogVersion.VALIDATOR)
                 .clusterDir(clusterDir)
@@ -400,7 +428,8 @@ public final class SequencerServer {
                 driver, container,
                 ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, topologyRows, fatalHandler,
                                       new CutIntake(cuts, safeLog, Long.getLong(PROP_SNAPSHOT_JOIN_MS,
-                                                                                DEFAULT_SNAPSHOT_JOIN_MS))),
+                                                                                DEFAULT_SNAPSHOT_JOIN_MS)),
+                                      replayerWrapper),
                 safeLog, stopping);
         } catch (final RuntimeException ex) {
             CloseHelper.quietCloseAll(container, driver, safeLog);

@@ -9,6 +9,7 @@ import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongPredicate;
 import org.agrona.concurrent.SystemEpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
@@ -49,6 +50,8 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     private final Actions actions = new Actions();
     private final ReplayerRecovery recovery;
     private final BooleanSupplier queueFaults;
+    private final BooleanSupplier controlFaults;
+    private final LongPredicate replayFaults;
 
     private final MessageHeaderEncoder requestHeader = new MessageHeaderEncoder();
     private final ReplayRequestEncoder replayRequest = new ReplayRequestEncoder();
@@ -75,6 +78,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     private Subscription controlSubscription;
     private Publication requestPublication;
     private Image replayImage;
+    private boolean hasQueueImage;
     private Counter recoveryStalledCounter;
 
     /**
@@ -99,8 +103,25 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     public ReplayerStreamReceiver(final int clientId, final SequencedHandler onSequenced,
                                   final LeadershipHandler onLeadershipChanged, final CaughtUpHandler onCaughtUp,
                                   final BooleanSupplier queueFaults) {
+        this(clientId, onSequenced, onLeadershipChanged, onCaughtUp, queueFaults, null, null);
+    }
+
+    /**
+     * As above, also dropping a Replayer reply whenever {@code controlFaults} answers true, and a replay frame
+     * whenever {@code replayFaults} does. Test harnesses only.
+     * @param controlFaults polled once per {@code Replaying} or {@code ReplayPending}, on the poll thread; null drops
+     *                      nothing. A {@code SnapshotRound} is not a reply and is never dropped.
+     * @param replayFaults  polled once per replay frame with where it starts in the recording, on the poll thread;
+     *                      null drops nothing
+     */
+    public ReplayerStreamReceiver(final int clientId, final SequencedHandler onSequenced,
+                                  final LeadershipHandler onLeadershipChanged, final CaughtUpHandler onCaughtUp,
+                                  final BooleanSupplier queueFaults, final BooleanSupplier controlFaults,
+                                  final LongPredicate replayFaults) {
         this.clientId = clientId;
         this.queueFaults = queueFaults;
+        this.controlFaults = controlFaults;
+        this.replayFaults = replayFaults;
         this.recovery = new ReplayerRecovery(actions, onSequenced, onLeadershipChanged, onCaughtUp);
         this.queueHandler = new FragmentAssembler(this::onQueueFragment);
         this.replayHandler = new FragmentAssembler(this::onReplayFragment);
@@ -167,6 +188,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
             }
             return;
         }
+        if (controlFaults != null && controlFaults.getAsBoolean()) {
+            return;
+        }
         recovery.onControl(buffer, offset, length);
     }
 
@@ -221,8 +245,12 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
             throw new IllegalStateException("[ReplayerStreamReceiver] " + recovery.fault());
         }
 
-        final boolean requestPubPending = requestPublication != null && !requestPublication.isConnected();
-        work += recovery.doTimers(requestPubPending);
+        // An image that goes away is an eviction; a queue not yet activated has never had one.
+        final boolean queueImage = queueSubscription != null && queueSubscription.imageCount() > 0;
+        if (queueImage != hasQueueImage) {
+            hasQueueImage = queueImage;
+            recovery.onQueueImage(queueImage);
+        }
 
         if (recovery.replaySessionId() >= 0) {
             if (replayImage == null && replaySubscription != null) {
@@ -240,6 +268,11 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                 }
             }
         }
+
+        // After the image: a duty cycle that was itself held up reads it before the stall watchdog judges the replay.
+        final boolean requestPubPending = requestPublication != null && !requestPublication.isConnected();
+        work += recovery.doTimers(requestPubPending);
+
         if (queueSubscription != null) {
             work += queueSubscription.poll(queueHandler, FRAGMENT_LIMIT);
         }
@@ -248,7 +281,10 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         return work;
     }
 
-    /** Whether this client is following the live tail; revoked on a queue gap, re-established at the seam. */
+    /**
+     * Whether this client is following the live tail; revoked on a queue gap or an eviction from the queue,
+     * re-established at the seam.
+     */
     public boolean isCaughtUp() {
         return recovery.isCaughtUp();
     }
@@ -313,7 +349,10 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     private void onReplayFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
                                   final io.aeron.logbuffer.Header header) {
         if (replayImage != null) {
-            recovery.onFrame(buffer, offset, length, frameStartPosition(header), nowNs(), true);
+            final long position = frameStartPosition(header);
+            if (replayFaults == null || !replayFaults.test(position)) {
+                recovery.onFrame(buffer, offset, length, position, nowNs(), true);
+            }
         }
     }
 

@@ -162,7 +162,8 @@ class ReplayerRecovery
     // cutClusterSeqNo of the current request: the snapshot a restore is checking, else REPLAYER_NO_CUT
     std::int64_t m_reqCutClusterSeqNo = protocol::REPLAYER_NO_CUT;
     std::int64_t m_lastRequestMs = 0;
-    std::int64_t m_requestId = 0;            // advances per send; replies not carrying it are stale (see onControl)
+    std::int64_t m_requestId = 0; // advances per request, and a resend keeps it; replies not carrying it are stale
+    std::int64_t m_answeredRequestId = -1;   // the request whose Replaying was taken: each resend draws it again
     std::int64_t m_lastReplayPosition = -1;  // last replay-image position seen; -1 = not attached yet
     std::int64_t m_lastReplayProgressMs = 0; // when it last changed — the stall watchdog's clock
     std::optional<std::string> m_fault;      // why recovery cannot go on; latched, raised by the receiver
@@ -172,7 +173,8 @@ class ReplayerRecovery
     std::int64_t m_lastFramePosition = 0;          // where that frame starts in the recording; requestResume's anchor
     std::int64_t m_resumeAnchorSequenceNumber = 0; // clusterSeqNo a resume replay must open at, or 0 if not resuming
     bool m_replayGapLogged = false;                // report a hole in replayed history once per episode, not per frame
-    bool m_caughtUp = false;                       // following live; revoked on a queue gap, re-established at the seam
+    bool m_caughtUp = false;  // following live; revoked on a queue gap or an eviction, re-established at the seam
+    bool m_queueLost = false; // evicted from the queue and not yet rejoined: nothing live reaches it
 
     std::int64_t m_noProgressSinceMs = 0; // when the current no-progress episode started; 0 = none timed
     bool m_recoveryStallReported = false;
@@ -365,10 +367,12 @@ class ReplayerRecovery
         {
             sbe::replay::Replaying replaying;
             replaying.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
-            if (replaying.clientId() != clientId || replaying.requestId() != m_requestId)
+            if (replaying.clientId() != clientId || replaying.requestId() != m_requestId ||
+                m_requestId == m_answeredRequestId)
             {
-                return;
+                return; // a superseded request's, or a resend's repeat of the answer already taken
             }
+            m_answeredRequestId = m_requestId;
             onReplaying(replaying.replaySessionId(), replaying.catchUpPosition());
         }
         else if (mh.templateId() == sbe::replay::ReplayPending::sbeTemplateId())
@@ -387,6 +391,23 @@ class ReplayerRecovery
     const std::optional<std::string>& fault() const
     {
         return m_fault;
+    }
+
+    // The queue's image went away or came back. Its driver evicts an untethered subscriber that stops polling, and
+    // rejoins it at the tip once rested, so until then the client is not following live whatever its replay reached.
+    // Nothing is requested: the first live frame after the rejoin shows the hole. A queue that closes, as its node
+    // stops, takes the image too.
+    void onQueueImage(const bool available)
+    {
+        m_queueLost = !available;
+        if (m_queueLost)
+        {
+            m_caughtUp = false;
+            util::Logger::warn(
+                util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
+                "evicted from the queue, or it closed, at clusterSeqNo=%lld — not caught up until it is back",
+                static_cast<long long>(m_lastClusterSeqNo));
+        }
     }
 
     void onReplayPosition(const std::int64_t position)
@@ -425,7 +446,7 @@ class ReplayerRecovery
         const std::int64_t nowMs = m_actions.nowMs();
         if (m_awaitingReplay && (requestPublicationPending || (nowMs - m_lastRequestMs) > RESEND_INTERVAL_MS))
         {
-            requestReplay(m_reqFromPosition, m_reqCutClusterSeqNo); // re-send the same request verbatim
+            resendRequest();
         }
         // >= 0: 0 is an ordinary replaySessionId, and -1 alone means none.
         if (m_replaySessionId >= 0 && (nowMs - m_lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS)
@@ -544,10 +565,31 @@ class ReplayerRecovery
         m_actions.sendReplayRequest(m_requestId, fromPosition, cutClusterSeqNo);
     }
 
+    // Sends the current request again, under its requestId (spec R-1): the Replayer answers a resend of the request a
+    // running replay answers with that replay, so a slow answer costs no replay.
+    void resendRequest()
+    {
+        m_lastRequestMs = m_actions.nowMs();
+        m_actions.sendReplayRequest(m_requestId, m_reqFromPosition, m_reqCutClusterSeqNo);
+    }
+
     void requestResume()
     {
         requestReplay(m_lastFramePosition);
         m_resumeAnchorSequenceNumber = m_lastClusterSeqNo;
+    }
+
+    // As requestResume, but left to the resend timer to send. A recording that keeps its hole gives every resume the
+    // same one, which would otherwise be retried as fast as a replay runs.
+    void deferResume()
+    {
+        m_reqFromPosition = m_lastFramePosition;
+        m_reqCutClusterSeqNo = protocol::REPLAYER_NO_CUT;
+        m_resumeAnchorSequenceNumber = m_lastClusterSeqNo;
+        m_awaitingReplay = true;
+        m_replaySessionId = -1;
+        m_lastRequestMs = m_actions.nowMs();
+        ++m_requestId;
     }
 
     // Opens the newest snapshot file below a round and replays the recording from its cut, or walks the recording
@@ -805,6 +847,12 @@ class ReplayerRecovery
     {
         m_actions.closeReplay();
         m_replaySessionId = -1;
+        if (m_replayGapLogged)
+        {
+            m_replayGapLogged = false; // the replay skipped a hole, so it did not reach the tip: resume from before it
+            deferResume();
+            return;
+        }
         if (reachedTip())
         {
             notifyCaughtUp();
@@ -958,7 +1006,7 @@ class ReplayerRecovery
 
     void notifyCaughtUp()
     {
-        if (!m_caughtUp)
+        if (!m_caughtUp && !m_queueLost)
         {
             m_caughtUp = true;
             if (m_onCaughtUp)

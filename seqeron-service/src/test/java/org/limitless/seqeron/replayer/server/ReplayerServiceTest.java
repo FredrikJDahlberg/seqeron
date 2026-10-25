@@ -374,6 +374,66 @@ class ReplayerServiceTest {
         assertEquals(List.of(6000L, 4096L), fakeReplayer.scans());
     }
 
+    /**
+     * A search slower than the client's 500 ms resend, as on a throttled member: new requests queue behind it, a
+     * stall's or a client's that predates idempotent resends.
+     */
+    @Test
+    void requestsQueuedBehindACutSearchAreAnsweredFromTheCutItKept() {
+        recordingWithCuts();
+        for (int requestId = 1; requestId <= 4; requestId++) {
+            fakeReplayer.offerRequest(replayRequest(CLIENT, requestId, 6000, GROUP_ID, 50));
+        }
+
+        replayerService.poll();
+
+        assertEquals(List.of(6000L, 4096L), fakeReplayer.scans(), "one search, not one per resend");
+        final Reply reply = lastReply();
+        assertEquals(ReplayingDecoder.TEMPLATE_ID, reply.templateId());
+        assertEquals(4, reply.requestId(), "the latest request is answered last");
+        assertEquals(6144, lastClientReplay().position());
+        assertEquals(3, fakeReplayer.stoppedReplays().size(), "each new request supersedes the replay before it");
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
+    }
+
+    /** Resends queued behind a slow answer, as on a throttled member, repeat it rather than start replays. */
+    @Test
+    void resendsOfARequestARunningReplayAnswersAreAnsweredWithIt() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        for (int resend = 0; resend < 4; resend++) {
+            fakeReplayer.offerRequest(replayRequest(CLIENT, 1, ReplayProtocol.FROM_START));
+        }
+
+        replayerService.poll();
+
+        assertEquals(1, clientReplayCount(), "one replay, not one per resend");
+        assertTrue(fakeReplayer.stoppedReplays().isEmpty());
+        final List<byte[]> replies = fakeReplayer.controlReplies();
+        assertEquals(4, replies.size());
+        for (final byte[] reply : replies) {
+            final ReplayingDecoder replaying = new ReplayingDecoder();
+            replaying.wrapAndApplyHeader(new UnsafeBuffer(reply), 0, new MessageHeaderDecoder());
+            assertEquals(1, replaying.requestId());
+            assertEquals(lastClientReplay().replaySessionId(), replaying.replaySessionId());
+            assertEquals(4096, replaying.catchUpPosition());
+        }
+    }
+
+    /** A new request supersedes the running replay, the same request verbatim included: a stall re-requests so. */
+    @Test
+    void aNewRequestForTheSamePositionStartsAnotherReplay() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        request(CLIENT, 1, ReplayProtocol.FROM_START);
+
+        final Reply reply = request(CLIENT, 2, ReplayProtocol.FROM_START);
+
+        assertEquals(2, clientReplayCount());
+        assertEquals(1, fakeReplayer.stoppedReplays().size());
+        assertEquals(lastClientReplay().replaySessionId(), reply.replaySessionId());
+    }
+
     @Test
     void aCutSearchTheArchiveStallsIsHeldForTheResend() {
         recordingWithCuts();
@@ -671,16 +731,54 @@ class ReplayerServiceTest {
         request(CLIENT, 1, FROM_START);
         final long session = lastClientReplay().replaySessionId();
 
-        // A replay has no time limit: a full-log walk over a log that grows with uptime can run long.
-        fakeReplayer.advanceMillis(60_000);
-        replayerService.poll();
+        // A replay that moves has no time limit: a full-log walk over a log that grows with uptime can run long.
+        for (int i = 0; i < 12; i++) {
+            fakeReplayer.advanceMillis(ReplayerService.STALLED_REPLAY_TIMEOUT_MS / 2);
+            fakeReplayer.readReplay(session, 4096);
+            replayerService.poll();
+        }
         assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
+        assertFalse(fakeReplayer.stoppedReplays().contains(session), "a replay that moves is not stopped");
 
         fakeReplayer.endReplay(session); // the archive ended it, or its client died
         replayerService.poll();
 
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
         assertFalse(fakeReplayer.stoppedReplays().contains(session), "nothing is left to stop");
+    }
+
+    @Test
+    void replaysWhoseSubscribersReadNothingAreStoppedAndAClientHeldBehindThemIsServed() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        for (int client = 1; client <= ReplayerService.MAX_CONCURRENT_REPLAYS; client++) {
+            request(client, 1, FROM_START);
+        }
+        final long reading = fakeReplayer.startedReplays().getFirst().replaySessionId();
+        final int lateClient = ReplayerService.MAX_CONCURRENT_REPLAYS + 1;
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, request(lateClient, 1, FROM_START).templateId());
+
+        fakeReplayer.advanceMillis(ReplayerService.STALLED_REPLAY_TIMEOUT_MS - 1);
+        fakeReplayer.readReplay(reading, 4096);
+        replayerService.poll();
+        assertEquals(ReplayerService.MAX_CONCURRENT_REPLAYS,
+                     fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
+        assertTrue(fakeReplayer.stoppedReplays().isEmpty(), "stopped before the stall timeout");
+
+        fakeReplayer.advanceMillis(1);
+        replayerService.poll();
+
+        final List<Long> stuck = fakeReplayer.startedReplays()
+                                     .stream()
+                                     .limit(ReplayerService.MAX_CONCURRENT_REPLAYS)
+                                     .map(FakeReplayer.StartedReplay::replaySessionId)
+                                     .filter(session -> session != reading)
+                                     .toList();
+        assertEquals(stuck, fakeReplayer.stoppedReplays().stream().sorted().toList());
+        final Reply served = lastReply();
+        assertEquals(ReplayingDecoder.TEMPLATE_ID, served.templateId());
+        assertEquals(lateClient, served.clientId());
+        assertEquals(2, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
     }
 
     @Test
@@ -987,6 +1085,13 @@ class ReplayerServiceTest {
                 .toList();
         assertFalse(clientReplays.isEmpty(), "no replay was started for an app");
         return clientReplays.getLast();
+    }
+
+    private long clientReplayCount() {
+        return fakeReplayer.startedReplays()
+            .stream()
+            .filter(replay -> replay.streamId() == ReplayProtocol.REPLAY_STREAM_ID)
+            .count();
     }
 
     private boolean noClientReplayStarted() {

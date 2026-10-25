@@ -127,7 +127,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_replayer_replays_served_total` | counter | replays started since this member came up |
 | `seqeron_replayer_control_replies_dropped_total` | counter | control replies dropped, rather than retried indefinitely, because a client stopped reading. Each costs that client one resend interval, so the rate, not the total, identifies a stuck client |
 | `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because the queue recording trailed the queue by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the queue |
-| `seqeron_replayer_archive_errors_total` | counter | local-archive calls that threw. A request one fails is answered `ReplayPending` and the client's resend is the retry; the Replayer's own call, its readiness check, waits a second before the next. Live delivery is unaffected, so a sustained rate means only that history is not being served |
+| `seqeron_replayer_archive_errors_total` | counter | local-archive calls that threw. A request one fails is answered `ReplayPending` and the client's resend is the retry; the Replayer's own call, its readiness check, waits a second before the next. Live delivery is unaffected, so a sustained rate means only that history is not being served. A replay its client does not subscribe to within the archive's 5 s connect timeout counts one too, logged as a refused replay with `no connection established`: a client paused that long between its request and the answer, by a GC pause for one, requests again 5 s after it resumes, so isolated counts are not an archive fault |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a Replayer that never answers and a gap this member's recording cannot cover; the client's own log line names which |
 | `seqeron_app_snapshot_round` | gauge | the last snapshot round this client confirmed against its source's sequenced `SnapshotEnd` and holds a durable file for ([`snapshot.md`](snapshot.md) §5), 0 until its process confirms one; also labelled `client`, and its label names the `source`. Every instance of a participating source should follow the latest round; one that lags is missing rounds |
 | `seqeron_gateway_connections` | gauge | connections this gateway instance holds open: taken with `openConnection` and not yet closed. 0 on a standby, and reset when the edge closes. Labelled `client` as well as `member`; `sum` over every instance gives a deployment's total |
@@ -426,6 +426,10 @@ a replay of its whole log.
   they purged past the next frame it needs has nothing left to relay: it stops with a fatal, and the host's process
   exits. Its restart relays from a member's recording start into a new recording, which fences only an instance on the
   host whose newest snapshot file is below that start.
+- **A member's archive may log `recording segment file not created`**, with `response publication is closed` on the
+  relay's control session (stream 122), when a relay starts at that member's recording start while the member purges.
+  The archive checks a replay's start before it registers the replay, and a purge in between deletes the segment the
+  replay starts in. The relay times out after 1 s and tries the next member, so isolated pairs are not a fault.
 - **The two instances of a gateway pair never run on one node**, member or host. They share a `sourceId`, so a node
   holding both would count them as one. The Replayer logs the second `clientId` it sees join for a `sourceId` in a
   round and leaves that round unsafe: that node marks no cut restart-safe and purges nothing.
@@ -516,6 +520,12 @@ discipline them.
 - **It is commit time, not event time.** It stamps when the cluster ordered a message, after ingress
   transit and Raft replication. A regulatory event timestamp — an order's receipt, an execution — belongs
   to the application that saw the event, taken at its own edge and carried in its payload.
+- **Slew the clock, never step it after boot** (chrony: `makestep` at startup only). Consensus time is the leader's
+  clock read on every call, so a backward step of N holds the next `ClusterHeartbeat` back N, and every frame's
+  `timestamp` goes back N with it. On Aeron 1.53.2 a backward step past the driver timeout, 10 s, on any member
+  terminates that member: its consensus module services its Aeron client only on a tick paced by that clock. The
+  rest of the cluster elects and loses no frame, so no instance fences at the default queue-stall timeout
+  (`ClusterClockStepTest`).
 - **Clock skew is the time daemon's to report.** Node apply lag reads the leader's clock against
   Prometheus's, so a gross offset shows there as a lag that is implausibly large or negative; anything
   finer comes from the host's own clock monitoring.

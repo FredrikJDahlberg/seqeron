@@ -2,7 +2,8 @@ package org.limitless.seqeron.replayer.server;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.LongPredicate;
+import java.util.function.LongConsumer;
+import java.util.function.LongUnaryOperator;
 
 /**
  * Admission control and pending-request bookkeeping behind {@link ReplayerService}'s {@code
@@ -17,7 +18,22 @@ public final class ReplaySlotAllocator {
     public record PendingRequest(long clientId, long requestId, long fromPosition, int queueId,
                                  long cutClusterSeqNo) { }
 
-    private record ActiveSlot(long clientId, long token) { }
+    private static final class ActiveSlot {
+        final long clientId;
+        final long requestId;
+        final long token;
+        final long catchUpPosition;
+        /** Its replay's progress when last seen to move, and when that was. */
+        long progress = Replayer.REPLAY_ENDED;
+        long sinceMs;
+
+        ActiveSlot(final long clientId, final long requestId, final long token, final long catchUpPosition) {
+            this.clientId = clientId;
+            this.requestId = requestId;
+            this.token = token;
+            this.catchUpPosition = catchUpPosition;
+        }
+    }
 
     private int maxConcurrent;
     private final List<ActiveSlot> active = new ArrayList<>();
@@ -51,16 +67,52 @@ public final class ReplaySlotAllocator {
     /** Removes clientId's active slot, if any (a re-request supersedes it); returns its token, or {@link #NO_SLOT}. */
     public long supersede(final long clientId) {
         for (int i = 0; i < active.size(); i++) {
-            if (active.get(i).clientId() == clientId) {
-                return active.remove(i).token();
+            if (active.get(i).clientId == clientId) {
+                return active.remove(i).token;
             }
         }
         return NO_SLOT;
     }
 
-    /** Records a newly-started replay as occupying a slot. */
-    public void activate(final long clientId, final long token) {
-        active.add(new ActiveSlot(clientId, token));
+    /**
+     * Records a newly-started replay as occupying a slot.
+     * @param clientId        client identity
+     * @param requestId       the request it answers
+     * @param token           the replay
+     * @param catchUpPosition where it ends
+     */
+    public void activate(final long clientId, final long requestId, final long token, final long catchUpPosition) {
+        active.add(new ActiveSlot(clientId, requestId, token, catchUpPosition));
+    }
+
+    /**
+     * The replay that answers a client's request, which a resend of it repeats.
+     * @param clientId  client identity
+     * @param requestId the request
+     * @return its token, or {@link #NO_SLOT} if no active replay answers it
+     */
+    public long answering(final long clientId, final long requestId) {
+        for (int i = 0; i < active.size(); i++) {
+            final ActiveSlot slot = active.get(i);
+            if (slot.clientId == clientId && slot.requestId == requestId) {
+                return slot.token;
+            }
+        }
+        return NO_SLOT;
+    }
+
+    /**
+     * Where the replay a token names ends.
+     * @param token an active replay
+     * @return its catch-up position, or {@link #NO_SLOT} if it is not active
+     */
+    public long catchUpPosition(final long token) {
+        for (int i = 0; i < active.size(); i++) {
+            if (active.get(i).token == token) {
+                return active.get(i).catchUpPosition;
+            }
+        }
+        return NO_SLOT;
     }
 
     /**
@@ -108,16 +160,29 @@ public final class ReplaySlotAllocator {
     }
 
     /**
-     * Removes every slot whose replay has ended.
-     * @param isLive whether the replay a token names is still running
+     * Removes every slot whose replay has ended, or has made no progress for {@code stallMs}.
+     * @param progress the progress of the replay a token names, {@link Replayer#REPLAY_ENDED} once it has ended
+     * @param nowMs    the time now
+     * @param stallMs  how long a replay may go without progress
+     * @param stalled  given the token of each stalled replay, which is still running
      * @return how many were removed
      */
-    public int reclaimEnded(final LongPredicate isLive) {
+    public int reclaim(final LongUnaryOperator progress, final long nowMs, final long stallMs,
+                       final LongConsumer stalled) {
         int removed = 0;
         for (int i = active.size() - 1; i >= 0; i--) {
-            if (!isLive.test(active.get(i).token())) {
+            final ActiveSlot slot = active.get(i);
+            final long now = progress.applyAsLong(slot.token);
+            if (now == Replayer.REPLAY_ENDED) {
                 active.remove(i);
                 ++removed;
+            } else if (now != slot.progress) {
+                slot.progress = now;
+                slot.sinceMs = nowMs;
+            } else if (nowMs - slot.sinceMs >= stallMs) {
+                active.remove(i);
+                ++removed;
+                stalled.accept(slot.token);
             }
         }
         return removed;
@@ -127,7 +192,7 @@ public final class ReplaySlotAllocator {
     public List<Long> clear() {
         final List<Long> tokens = new ArrayList<>(active.size());
         for (final ActiveSlot slot : active) {
-            tokens.add(slot.token());
+            tokens.add(slot.token);
         }
         active.clear();
         return tokens;

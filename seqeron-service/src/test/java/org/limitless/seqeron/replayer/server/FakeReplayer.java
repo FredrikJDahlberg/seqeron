@@ -77,6 +77,7 @@ final class FakeReplayer implements Replayer {
     private long controlOfferResult = 1; // > 0 is a successful offer
 
     private final Set<Long> endedReplays = new HashSet<>();
+    private final Map<Long, Long> replayProgress = new HashMap<>();
 
 
     // Direct buffers, not byte[]: CountersManager requires 8-byte alignment.
@@ -85,7 +86,7 @@ final class FakeReplayer implements Replayer {
         new UnsafeBuffer(ByteBuffer.allocateDirect(COUNTER_CAPACITY* CountersReader.COUNTER_LENGTH)));
     private final Map<Integer, AtomicCounter> countersByTypeId = new HashMap<>();
 
-    private long epochMillis = 1_000_000L;
+    private long monotonicMs = 1_000_000L;
 
     // ── Scripting the node ──────────────────────────────────────────────────────
 
@@ -260,13 +261,18 @@ final class FakeReplayer implements Replayer {
         endedReplays.add(replaySessionId);
     }
 
+    /** Moves a replay's progress, as its subscriber reading it does. */
+    void readReplay(final long replaySessionId, final long bytes) {
+        replayProgress.merge(replaySessionId, bytes, Long::sum);
+    }
+
     /** What every subsequent control offer returns; a negative value is an Aeron offer failure. */
     void controlOfferResult(final long result) {
         controlOfferResult = result;
     }
 
     void advanceMillis(final long millis) {
-        epochMillis += millis;
+        monotonicMs += millis;
     }
 
     // ── Reading back what the service did ───────────────────────────────────────
@@ -420,8 +426,8 @@ final class FakeReplayer implements Replayer {
     }
 
     @Override
-    public boolean isReplayLive(final long replaySessionId) {
-        return !endedReplays.contains(replaySessionId);
+    public long replayProgress(final long replaySessionId) {
+        return endedReplays.contains(replaySessionId) ? REPLAY_ENDED : replayProgress.getOrDefault(replaySessionId, 0L);
     }
 
     @Override
@@ -438,7 +444,7 @@ final class FakeReplayer implements Replayer {
     }
 
     @Override
-    public long epochMillis() {
-        return epochMillis;
+    public long monotonicMs() {
+        return monotonicMs;
     }
 }

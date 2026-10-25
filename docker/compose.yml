@@ -59,6 +59,27 @@ services:
     environment: { MEMBER_ID: "2" }
     volumes: [node-2-data:/var/lib/seqeron]
 
+  # A gateway host: no member, its relay copying group 1's queue from the members' archives over UDP. Only
+  # the faulteron relay tests start it (--profile gateway-host), after a leader is known, since they order
+  # ARCHIVE_ENDPOINTS so that the relay reads a follower first.
+  node-3:
+    <<: *node
+    profiles: [gateway-host]
+    container_name: node-3
+    hostname: node-3
+    environment:
+      MEMBER_ID: "3"
+      ROLE: gateway-host
+      RELAYED_GROUPS: "1"
+      ARCHIVE_ENDPOINTS: "${ARCHIVE_ENDPOINTS:-}"
+    healthcheck:
+      # Its Replayer is serving, which it is only once every relayed queue has a local recording.
+      test: ["CMD-SHELL", "grep -q 'ReplayerService/3\\] ready' /var/log/seqeron/node.log"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 3s
+
 networks:
   seqnet:
 

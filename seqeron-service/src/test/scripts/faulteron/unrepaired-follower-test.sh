@@ -16,6 +16,8 @@
 #   3. The rest of the cluster kept sequencing: a ClusterProbe confirm producer on the other follower, streaming
 #      throughout, sees every frame on its queue exactly once, in order.
 #   4. Healed, the follower catches up: a ping through its queue passes again.
+#   5. A ClusterProbe follow cold-started on the follower under the fault, and another after the heal, each through
+#      its Replayer, ends caught up rather than evicted from the queue.
 set -uo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -69,6 +71,8 @@ sleep 3
 DURING=0
 ping_queue "${F}" > "${LOG_DIR}/ping-during.log" 2>&1 && DURING=1
 echo "ping through node-${F}'s queue under the fault: ${DURING}"
+probe "${F}" follow -Dprobe.clientId=12 > "${LOG_DIR}/follow-during.log" 2>&1 &
+FOLLOW_DURING_PID=$!
 
 REMAINING=$((FAULT_SECS - (SECONDS - FAULT_START)))
 ((REMAINING > 0)) && sleep "${REMAINING}"
@@ -87,6 +91,27 @@ for ((attempt = 1; attempt <= 5; attempt++)); do
 done
 echo "ping through node-${F}'s queue after the heal: ${AFTER} (attempt ${attempt}, $((SECONDS - HEALED))s after the heal)"
 
+probe "${F}" follow -Dprobe.clientId=13 > "${LOG_DIR}/follow-after.log" 2>&1 &
+FOLLOW_AFTER_PID=$!
+
+# Whether the follow's last word is that it is caught up rather than evicted from its queue.
+follow_caught_up() {
+    case "$(grep -E 'following live|re-converged|evicted from the queue' "$1" | tail -1)" in
+        *"following live"* | *re-converged*) return 0 ;;
+    esac
+    return 1
+}
+
+FOLLOWED_DURING=0
+FOLLOWED_AFTER=0
+FOLLOW_END=$((SECONDS + $(deadline 30)))
+until { ((FOLLOWED_DURING == 1)) && ((FOLLOWED_AFTER == 1)); } || ((SECONDS >= FOLLOW_END)); do
+    follow_caught_up "${LOG_DIR}/follow-during.log" && FOLLOWED_DURING=1
+    follow_caught_up "${LOG_DIR}/follow-after.log" && FOLLOWED_AFTER=1
+    sleep 0.5
+done
+kill "${FOLLOW_DURING_PID}" "${FOLLOW_AFTER_PID}" 2> /dev/null
+
 wait "${CONFIRM_PID}"
 CONFIRM_RC=$?
 FINAL="$(await_leader 5)"
@@ -96,6 +121,7 @@ echo "=== RESULT ==="
 echo "rules on node-${T}:"
 sed 's/^/  /' "${LOG_DIR}/rules.txt"
 echo "ping before / during / after : ${BEFORE} / ${DURING} / ${AFTER}"
+echo "follow during / after heal : ${FOLLOWED_DURING} / ${FOLLOWED_AFTER}"
 echo "leader before / after        : ${LEADER} / ${FINAL:-none}"
 echo "PendingSends producer        : $(grep -h 'confirm:' "${LOG_DIR}/confirm.log" | tail -1)"
 
@@ -120,6 +146,15 @@ done
 }
 ((AFTER == 1)) || {
     echo "FAIL: node-${F} did not catch up after the heal"
+    PASS=0
+}
+
+((FOLLOWED_DURING == 1)) || {
+    echo "FAIL: the follow cold-started under the fault did not end caught up; see ${LOG_DIR}/follow-during.log"
+    PASS=0
+}
+((FOLLOWED_AFTER == 1)) || {
+    echo "FAIL: the follow cold-started after the heal did not catch up; see ${LOG_DIR}/follow-after.log"
     PASS=0
 }
 

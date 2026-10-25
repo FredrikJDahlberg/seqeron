@@ -32,7 +32,7 @@ import org.limitless.seqeron.util.Logger;
  * The replay protocol from both ends, with no Aeron runtime: a client's {@code ReplayerRecovery} against {@link
  * ReplayerService} on a {@link FakeReplayer}. Every answer the client acts on is the service's, so what {@code
  * ReplayerRecoveryPropertyTest}'s model assumes of the Replayer is held to the Replayer here. Requests and replies wait
- * in the harness until a case releases them, so a resend can cross the reply to the request it replaces.
+ * in the harness until a case releases them, so a resend can cross the reply to its request.
  *
  * <p>Frame {@code g} of the queue starts at {@code (g − 1) × FRAME_LENGTH} in every recording that holds it, and a
  * replay delivers the frames of the range the service started it over.
@@ -144,7 +144,7 @@ class ReplaySeamTest {
     }
 
     @Test
-    void aReplyCrossedByAResendIsIgnoredAndOnlyTheResendIsServed() {
+    void aResendCrossingItsAnswerIsAnsweredWithTheReplayAlreadyStarted() {
         caughtUpAt(3);
         recordTo(5);
         deliverLive(5); // 4 lost
@@ -153,12 +153,13 @@ class ReplaySeamTest {
         final long first = lastStartedReplay().replaySessionId();
         advance(PAST_RESEND_MS); // the client, having heard nothing, resends
         serve();
-        final long second = lastStartedReplay().replaySessionId();
         deliverReplies(); // both answers, in the order they were sent
 
-        assertFalse(opened.contains(first), "R-1: the answer to a superseded request is not acted on");
-        assertEquals(second, client.replaySessionId());
-        assertTrue(fakeReplayer.stoppedReplays().contains(first), "the Replayer stopped the superseded replay");
+        assertEquals(first, lastStartedReplay().replaySessionId(), "R-1: a resend starts no replay of its own");
+        assertEquals(1, opened.stream().filter(session -> session == first).count(),
+                     "the repeated answer is not acted on again");
+        assertEquals(first, client.replaySessionId());
+        assertTrue(fakeReplayer.stoppedReplays().isEmpty());
         assertEquals(1, activeSlots());
         deliverReplay();
         assertEquals(range(1, 5), dispatched);
@@ -185,15 +186,15 @@ class ReplaySeamTest {
 
         fakeReplayer.endReplay(otherSession);
         advance(PAST_RESEND_MS); // the next resend leaves before the Replayer frees the slot
-        replayerService.poll();  // frees it and serves the request it holds, which the client has since replaced
+        replayerService.poll();  // frees it and serves the request it holds, the client's current one
         final long drained = lastStartedReplay().replaySessionId();
         deliverReplies();
 
-        assertFalse(opened.contains(drained), "R-1: the answer to a replaced request is not acted on");
-        assertTrue(client.isAwaitingReplay());
-
-        exchange(); // the current request supersedes the drained replay
-        assertTrue(fakeReplayer.stoppedReplays().contains(drained));
+        assertEquals(drained, client.replaySessionId(), "R-1: its resends kept the held request's id");
+        exchange(); // the resend still in line is answered with the drained replay
+        assertEquals(drained, lastStartedReplay().replaySessionId());
+        assertEquals(drained, client.replaySessionId());
+        assertFalse(fakeReplayer.stoppedReplays().contains(drained));
         deliverReplay();
         assertEquals(range(1, 5), dispatched);
         assertEquals(ReplayerService.MAX_CONCURRENT_REPLAYS - 1, activeSlots(), "the client left no slot behind");

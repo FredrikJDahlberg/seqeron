@@ -48,8 +48,11 @@ class ReplaySlotsTest {
     private static final long TIMEOUT_MS = 20_000;
     private static final int RESPONSE_STREAM_ID = 125; // beside QueueFrames'
 
-    /** Longer than the driver's 5 s publication linger, so a held slot is held by its subscriber alone. */
-    private static final int HOLD_CHECKS = 7;
+    /**
+     * Longer than the driver's 5 s publication linger, so a held slot is held by its subscriber alone, and shorter
+     * than {@code ReplayerService.STALLED_REPLAY_TIMEOUT_MS}, after which a replay read by no one loses it.
+     */
+    private static final int HOLD_CHECKS = 6;
 
     @RegisterExtension
     final SystemTestWatcher watcher = new SystemTestWatcher();
@@ -99,7 +102,8 @@ class ReplaySlotsTest {
 
             holders.getFirst().close(); // lets its replay go
 
-            final long deadlineMs = System.currentTimeMillis() + TIMEOUT_MS;
+            // Well inside the stall timeout the other holders' replays are still running to.
+            final long deadlineMs = System.currentTimeMillis() + 2_000;
             while (fifth.ask() != ReplayingDecoder.TEMPLATE_ID) {
                 assertTrue(System.currentTimeMillis() < deadlineMs, "the slot its subscriber let go never freed");
                 Tests.sleep(500);
@@ -107,6 +111,28 @@ class ReplaySlotsTest {
         } finally {
             CloseHelper.closeAll(holders);
         }
+    }
+
+    @Test
+    @InterruptAfter(120)
+    void replaysThatTheirSubscribersStopReadingLoseTheirSlotsAndAFifthClientIsServed() {
+        final int member = cluster.awaitLeader();
+        final List<Client> clients = new ArrayList<>();
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)))) {
+            for (int i = 0; i < 4; i++) {
+                final Client holder = new Client(aeron);
+                clients.add(holder);
+                assertEquals(ReplayingDecoder.TEMPLATE_ID, holder.ask(), "holder " + i + " is served");
+                holder.attach(); // and stops reading, its client alive
+            }
+            final Client fifth = new Client(aeron);
+            clients.add(fifth);
+            assertEquals(ReplayPendingDecoder.TEMPLATE_ID, fifth.ask(), "every slot is held");
+            fifth.askUntilServed();
+        } finally {
+            CloseHelper.closeAll(clients);
+        }
+        assertFalse(cluster.fatal(), "a member raised a fatal");
     }
 
     @Test

@@ -969,9 +969,11 @@ no header composite and are never sequenced or recorded.
 | `SnapshotJoined` (12) | application → replayer | this application replica takes part in the round |
 | `SnapshotConfirmed` (13) | application → replayer | this replica's file for the round is confirmed and durable under its name |
 
-- **R-1.** `requestId` identifies the current request. The client increments it on every send,
-  including an unchanged resend, and the replayer echoes it. A client MUST ignore a reply whose
-  `requestId` is not its current one.
+- **R-1.** `requestId` identifies the current request. The client increments it on every new request,
+  an unchanged one included, and keeps it on a resend, and the replayer echoes it. A client MUST ignore a
+  reply whose `requestId` is not its current one, and a repeat of a `Replaying` it has taken. The
+  replayer answers a request whose `requestId` the client's running replay answers with that replay's
+  `Replaying` again, and leaves the replay running.
 - **R-2.** `NO_REPLAY_NEEDED` means nothing is to be replayed from where the request asked. For
   `FROM_START` the recording holds nothing yet and the client is at the tip. For a position, the replayer
   refuses it: it is before the recording's start or not a frame boundary in it. A client MUST treat that
@@ -979,8 +981,11 @@ no header composite and are never sequenced or recorded.
   either the recording does not match the positions the client holds or its start has passed them
   (`doc/snapshot.md` §10.6). A position the recording has not reached yet is answered `ReplayPending`.
 - **R-3.** A replay holds its slot until the replay's publication is gone: the archive has ended the
-  replay and its subscriber has let it go, or the subscriber's client has died. A replay has no time
-  limit. A client releases its slot by closing its replay subscription.
+  replay and its subscriber has let it go, or the subscriber's client has died. A replay that moves has no
+  time limit, but one whose subscriber reads nothing of it for `STALLED_REPLAY_TIMEOUT_MS` = 10 000 ms,
+  twice the client's own replay-stall timeout, the replayer stops, freeing its slot. Its client then sees
+  the image close short of `catchUpPosition` and requests again. A client releases its slot by closing its
+  replay subscription.
 - **R-4.** `clientId` is a correlation id the client draws once from its media driver
   (`Aeron.nextCorrelationId`), which every co-located client shares, so it is unique among the replayer's
   clients, two in one process included. A client MUST ignore a reply carrying another `clientId`.
@@ -1061,7 +1066,8 @@ queue recordings trails its queue by more than a quarter of the publication wind
 `ReplayPending` beyond that. A slot frees when its replay's publication is gone (**R-3**): within a duty
 cycle of the client closing its replay subscription, which it does at `catchUpPosition`, and within the
 media driver's client liveness timeout (`aeron.client.liveness.timeout`, 10 s by default) of a client
-dying. A consumer's recovery-stall timeout MUST exceed that timeout by a margin. A client that receives
+dying. It frees within `STALLED_REPLAY_TIMEOUT_MS` of a client that is alive but has stopped reading. A
+consumer's recovery-stall timeout MUST exceed the longer of the two by a margin. A client that receives
 `ReplayPending` waits at its gap and delivers nothing, so a shorter timeout would fire against a
 replayer that is working correctly. The client tier's default is 60 000 ms.
 

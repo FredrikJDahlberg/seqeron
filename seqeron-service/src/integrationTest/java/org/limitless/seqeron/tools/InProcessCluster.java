@@ -36,8 +36,8 @@ import org.limitless.seqeron.sequencer.client.IngressPublisher;
 
 /**
  * Three members launched in this JVM, each on its own directories under one base, each one's UDP able to be cut,
- * wholly, all but its consensus traffic, or only the consensus messages it sends, and optionally a gateway host beside
- * them.
+ * wholly, all but its consensus traffic, or only the consensus messages it sends, each one's consensus clock able to be
+ * stepped, and optionally a gateway host beside them.
  */
 final class InProcessCluster implements AutoCloseable {
     static final int MEMBERS = 3;
@@ -58,6 +58,10 @@ final class InProcessCluster implements AutoCloseable {
     private final AtomicBoolean[] cutAllButConsensus = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean[] cutArchive = new AtomicBoolean[MEMBERS];
     private final AtomicBoolean[] muted = new AtomicBoolean[MEMBERS];
+    /** Each member's consensus clock, which outlives a restart of it, as its host's does. */
+    private final SteppableClusterClock[] clocks = new SteppableClusterClock[MEMBERS];
+    /** Each member's Replayer, and the gateway host's last, which fail or stall on cue and outlive a restart of it. */
+    private final FaultableReplayer[] replayers = new FaultableReplayer[MEMBERS + 1];
     private final AtomicBoolean[] fatal = new AtomicBoolean[MEMBERS + 1];
     private final AtomicBoolean terminated = new AtomicBoolean();
     private ReplayerServer gatewayHost;
@@ -71,8 +75,10 @@ final class InProcessCluster implements AutoCloseable {
             cutAllButConsensus[m] = new AtomicBoolean();
             cutArchive[m] = new AtomicBoolean();
             muted[m] = new AtomicBoolean();
+            clocks[m] = new SteppableClusterClock();
         }
         for (int m = 0; m <= MEMBERS; m++) {
+            replayers[m] = new FaultableReplayer();
             fatal[m] = new AtomicBoolean();
         }
     }
@@ -183,7 +189,10 @@ final class InProcessCluster implements AutoCloseable {
             (streamId == ConsensusModule.Configuration.CONSENSUS_STREAM_ID_DEFAULT ? publication && isMuted.get()
                                                                                    : isCutAllButConsensus.get());
         final AtomicBoolean isFatal = fatal[m];
-        nodes.set(m, SequencerServer.launch(config, () -> terminated.set(true), () -> isFatal.set(true), udpFaults));
+        nodes.set(
+            m,
+            SequencerServer.launch(config, () -> terminated.set(true), () -> isFatal.set(true), udpFaults, clocks[m],
+                                   replayers[m]::wrap));
     }
 
     /** Launches the gateway host: its own driver and archive, relaying a member's queue of each group onto its own. */
@@ -199,7 +208,7 @@ final class InProcessCluster implements AutoCloseable {
         gatewayHost = ReplayerServer.launchGatewayHost(
             new ReplayerServer.GatewayHostConfig(GATEWAY_HOST, aeronDir(GATEWAY_HOST), baseDir.toString(), archives,
                                                  PortLayout.DEFAULT_HOST, GROUP_IDS, BackoffIdleStrategy::new),
-            () -> fatal[GATEWAY_HOST].set(true), cutReports);
+            () -> fatal[GATEWAY_HOST].set(true), cutReports, replayers[GATEWAY_HOST]::wrap);
     }
 
     /** Stops the gateway host, whose archive and Aeron directory stay for the next {@link #startGatewayHost()}. */
@@ -245,6 +254,16 @@ final class InProcessCluster implements AutoCloseable {
     /** Drops, or stops dropping, member {@code m}'s consensus messages to its peers, though it still hears theirs. */
     void mute(final int m, final boolean isMuted) {
         muted[m].set(isMuted);
+    }
+
+    /** Member {@code m}'s Replayer, or the gateway host's for {@link #GATEWAY_HOST}, to make fail or stall. */
+    FaultableReplayer replayer(final int m) {
+        return replayers[m];
+    }
+
+    /** Steps member {@code m}'s consensus clock by {@code millis}, backward when negative. */
+    void stepClock(final int m, final long millis) {
+        clocks[m].step(millis);
     }
 
     /** Member {@code m}'s Aeron directory, or the gateway host's for {@link #GATEWAY_HOST}. */

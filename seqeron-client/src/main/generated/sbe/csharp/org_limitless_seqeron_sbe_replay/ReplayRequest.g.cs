@@ -166,7 +166,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         public const long RequestIdMaxValue = 9223372036854775807L;
 
         /// <summary>
-        /// Incremented on every send, including an unchanged resend, and echoed in the reply.                             The client ignores a reply whose requestId is not its current one (R-1): a resend                             supersedes the in-flight replay, so a reply to the earlier request may still be                             queued on the control stream
+        /// Incremented on every new request and kept by its resends, and echoed in the reply.                             The client ignores a reply whose requestId is not its current one (R-1): a new request                             supersedes the in-flight replay, so a reply to the earlier request may still be                             queued on the control stream. A resend of the request a running replay answers is                             answered with that replay
         /// </summary>
         public long RequestId
         {

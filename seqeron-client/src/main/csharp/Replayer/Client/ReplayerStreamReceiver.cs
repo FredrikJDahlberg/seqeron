@@ -34,6 +34,8 @@ public sealed class ReplayerStreamReceiver : IDisposable
     private readonly int _clientId;
     private readonly ReplayerRecovery _recovery;
     private readonly Func<bool> _queueFaults;
+    private readonly Func<bool> _controlFaults;
+    private readonly Func<long, bool> _replayFaults;
 
     private readonly Replay.MessageHeader _requestHeader = new Replay.MessageHeader();
     private readonly Replay.ReplayRequest _replayRequest = new Replay.ReplayRequest();
@@ -62,9 +64,12 @@ public sealed class ReplayerStreamReceiver : IDisposable
     private Subscription _controlSubscription;
     private Publication _requestPublication;
     private Image _replayImage;
+    private bool _hasQueueImage;
     private Counter _recoveryStalledCounter;
 
-    /// <summary>A receiver, dropping a live queue frame whenever <paramref name="queueFaults"/> answers true.</summary>
+    /// <summary>A receiver, dropping a live queue frame whenever <paramref name="queueFaults"/> answers true, a
+    /// Replayer reply whenever <paramref name="controlFaults"/> does, and a replay frame whenever
+    /// <paramref name="replayFaults"/> does.</summary>
     /// <param name="clientId">this replica's id on the node, its counters' <c>client</c> label; replicas sharing one
     /// share their counters' series</param>
     /// <param name="onSequenced">receives every in-order frame</param>
@@ -73,12 +78,19 @@ public sealed class ReplayerStreamReceiver : IDisposable
     /// <param name="onCaughtUp">fires on every transition to caught-up, or null</param>
     /// <param name="queueFaults">test harnesses only: polled once per live queue frame, on the poll thread; null drops
     /// nothing</param>
+    /// <param name="controlFaults">test harnesses only: polled once per <c>Replaying</c> or <c>ReplayPending</c>, on
+    /// the poll thread; null drops nothing. A <c>SnapshotRound</c> is not a reply and is never dropped.</param>
+    /// <param name="replayFaults">test harnesses only: polled once per replay frame with where it starts in the
+    /// recording, on the poll thread; null drops nothing</param>
     /// <exception cref="ArgumentNullException">if <paramref name="onSequenced"/> is null</exception>
     public ReplayerStreamReceiver(int clientId, SequencedHandler onSequenced, LeadershipHandler onLeadershipChanged,
-                                  CaughtUpHandler onCaughtUp, Func<bool> queueFaults = null)
+                                  CaughtUpHandler onCaughtUp, Func<bool> queueFaults = null,
+                                  Func<bool> controlFaults = null, Func<long, bool> replayFaults = null)
     {
         _clientId = clientId;
         _queueFaults = queueFaults;
+        _controlFaults = controlFaults;
+        _replayFaults = replayFaults;
         _recovery = new ReplayerRecovery(new Actions(this), onSequenced, onLeadershipChanged, onCaughtUp);
         _queueHandler = new FragmentAssembler(OnQueueFragment);
         _replayHandler = new FragmentAssembler(OnReplayFragment);
@@ -184,8 +196,13 @@ public sealed class ReplayerStreamReceiver : IDisposable
             throw new InvalidOperationException("[ReplayerStreamReceiver] " + _recovery.Fault);
         }
 
-        bool requestPubPending = _requestPublication != null && !_requestPublication.IsConnected;
-        work += _recovery.DoTimers(requestPubPending);
+        // An image that goes away is an eviction; a queue not yet activated has never had one.
+        bool queueImage = _queueSubscription != null && _queueSubscription.ImageCount > 0;
+        if (queueImage != _hasQueueImage)
+        {
+            _hasQueueImage = queueImage;
+            _recovery.OnQueueImage(queueImage);
+        }
 
         if (_recovery.ReplaySessionId >= 0)
         {
@@ -210,6 +227,11 @@ public sealed class ReplayerStreamReceiver : IDisposable
                 }
             }
         }
+
+        // After the image: a duty cycle that was itself held up reads it before the stall watchdog judges the replay.
+        bool requestPubPending = _requestPublication != null && !_requestPublication.IsConnected;
+        work += _recovery.DoTimers(requestPubPending);
+
         if (_queueSubscription != null)
         {
             work += _queueSubscription.Poll(_queueHandler, FragmentLimit);
@@ -219,8 +241,8 @@ public sealed class ReplayerStreamReceiver : IDisposable
         return work;
     }
 
-    /// <summary>Whether this client is following the live tail; revoked on a queue gap, re-established at the
-    /// seam.</summary>
+    /// <summary>Whether this client is following the live tail; revoked on a queue gap or an eviction from the queue,
+    /// re-established at the seam.</summary>
     public bool IsCaughtUp => _recovery.IsCaughtUp;
 
     /// <summary>Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its
@@ -265,7 +287,11 @@ public sealed class ReplayerStreamReceiver : IDisposable
     {
         if (_replayImage != null)
         {
-            _recovery.OnFrame(buffer, offset, length, FrameStartPosition(header), Clocks.EpochNanos(), true);
+            long position = FrameStartPosition(header);
+            if (_replayFaults == null || !_replayFaults(position))
+            {
+                _recovery.OnFrame(buffer, offset, length, position, Clocks.EpochNanos(), true);
+            }
         }
     }
 
@@ -286,6 +312,10 @@ public sealed class ReplayerStreamReceiver : IDisposable
                 }
                 return;
             }
+        }
+        if (_controlFaults != null && _controlFaults())
+        {
+            return;
         }
         _recovery.OnControl(buffer, offset, length);
     }

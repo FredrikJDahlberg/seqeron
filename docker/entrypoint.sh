@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Launches this container's node: the cluster member, whose JVM also runs its Replayer.
+# Launches this container's node: the cluster member, whose JVM also runs its Replayer, or with
+# ROLE=gateway-host a ReplayerServer that relays RELAYED_GROUPS' queues from the members' archives.
 #
 # The member and its peers' host names come from node-env.sh; SequencerServer derives every endpoint
-# from them.
+# from them. A gateway host reads ARCHIVE_ENDPOINTS in the order its relay tries them, else each member's.
 set -euo pipefail
 
 source /opt/seqeron/bin/seqeron-home.sh
@@ -22,6 +23,18 @@ mkdir -p "$(dirname "${LOG_FILE}")"
 exec > >(tee "${LOG_FILE}") 2>&1
 
 JAVA_OPTS=("${SEQERON_SERVER_JAVA_OPTS[@]}")
+
+if [[ "${ROLE:-member}" == gateway-host ]]; then
+    exec java "${JAVA_OPTS[@]}" \
+        -Dreplayer.memberId="${MEMBER_ID}" \
+        -Dreplayer.host="$(hostname)" \
+        -Dreplayer.baseDir="${BASE_DIR}" \
+        -Dreplayer.aeronDir="${AERON_DIR}" \
+        -Dreplayer.idleStrategy="${IDLE_STRATEGY:-backoff}" \
+        -Dreplayer.groups="${RELAYED_GROUPS:?RELAYED_GROUPS must be set}" \
+        ${ARCHIVE_ENDPOINTS:+-Dreplayer.archiveEndpoints="${ARCHIVE_ENDPOINTS}"} \
+        -cp "${SEQERON_JAR}" org.limitless.seqeron.replayer.server.ReplayerServer
+fi
 
 exec java "${JAVA_OPTS[@]}" \
     -Dsequencer.memberId="${MEMBER_ID}" \

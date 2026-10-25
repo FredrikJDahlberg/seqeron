@@ -143,13 +143,16 @@ public interface Replayer {
      */
     long offerControl(DirectBuffer buffer, int offset, int length);
 
+    /** {@link #replayProgress} of a replay whose publication is gone. */
+    long REPLAY_ENDED = -1;
+
     /**
-     * Whether a replay's publication is still open: until the archive has ended the replay and its subscriber
-     * has let it go, or the subscriber's client has died.
+     * How far a replay's subscriber lets it go, its publisher limit, while its publication is open: until the
+     * archive has ended the replay and its subscriber has let it go, or the subscriber's client has died.
      * @param replaySessionId the session returned by {@link #startReplay}
-     * @return false once it is gone
+     * @return the limit, which moves only as the subscriber reads, or {@link #REPLAY_ENDED} once it is gone
      */
-    boolean isReplayLive(long replaySessionId);
+    long replayProgress(long replaySessionId);
 
     /**
      * Allocates one operator counter (see {@code SeqeronCounters}); the member id is the
@@ -161,7 +164,7 @@ public interface Replayer {
     AtomicCounter newCounter(int typeId, String label);
 
     /**
-     * @return wall-clock milliseconds, for archive-retry pacing and error episodes
+     * @return monotonic milliseconds, for every timer above the seam; meaningful only as a difference
      */
-    long epochMillis();
+    long monotonicMs();
 }
