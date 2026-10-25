@@ -426,6 +426,10 @@ a replay of its whole log.
   they purged past the next frame it needs has nothing left to relay: it stops with a fatal, and the host's process
   exits. Its restart relays from a member's recording start into a new recording, which fences only an instance on the
   host whose newest snapshot file is below that start.
+- **A member's archive may log `recording segment file not created`**, with `response publication is closed` on the
+  relay's control session (stream 122), when a relay starts at that member's recording start while the member purges.
+  The archive checks a replay's start before it registers the replay, and a purge in between deletes the segment the
+  replay starts in. The relay times out after 1 s and tries the next member, so isolated pairs are not a fault.
 - **The two instances of a gateway pair never run on one node**, member or host. They share a `sourceId`, so a node
   holding both would count them as one. The Replayer logs the second `clientId` it sees join for a `sourceId` in a
   round and leaves that round unsafe: that node marks no cut restart-safe and purges nothing.

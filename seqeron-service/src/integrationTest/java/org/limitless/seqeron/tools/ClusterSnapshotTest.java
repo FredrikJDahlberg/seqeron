@@ -535,6 +535,11 @@ class ClusterSnapshotTest {
     @Test
     @InterruptAfter(240)
     void aRelayDisconnectedWhileEveryMemberPurgedPastItStopsAndItsRestartRelaysFromTheirStart() throws Exception {
+        // A member's archive checks a replay's start, then registers the replay once its publication exists; a purge
+        // in between deletes the segment it starts in. So a relay asking from a member's start while the member
+        // purges times out, and the archive logs the replay's error to the relay's control session (stream 122), gone.
+        watcher.ignoreErrorsMatching(s -> s.contains("recording segment file not created"));
+        watcher.ignoreErrorsMatching(s -> s.contains("response publication is closed") && s.contains("streamId=122,"));
         final String term = setProperty(TERM_PROPERTY, String.valueOf(SMALL_SEGMENT));
         final String segment = setProperty(SEGMENT_PROPERTY, String.valueOf(SMALL_SEGMENT));
         try {
