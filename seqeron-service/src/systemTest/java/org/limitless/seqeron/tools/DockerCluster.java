@@ -212,9 +212,17 @@ final class DockerCluster implements AutoCloseable {
         return total;
     }
 
-    /** The member's seqeron counters, by name without the member label; empty if its sequencer is not up. */
+    /**
+     * The member's seqeron counters, by name without the member label; empty if its sequencer is not up or, starved of
+     * CPU, does not answer in time.
+     */
     Map<String, Long> counters(final int member) {
-        final Result result = run(Duration.ofSeconds(30), "docker", "exec", "node-" + member, "clusterctl", "counters");
+        final Result result;
+        try {
+            result = run(deadline(60), "docker", "exec", "node-" + member, "clusterctl", "counters");
+        } catch (final AssertionError ex) {
+            return new HashMap<>();
+        }
         final Map<String, Long> counters = new HashMap<>();
         if (result.status() == 0) {
             for (final String line : result.output().split("\n")) {

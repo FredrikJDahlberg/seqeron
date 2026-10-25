@@ -240,4 +240,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: network-fault-logs
-          path: logs/faulteron/
+          path: |
+            logs/faulteron/
+            seqeron-service/build/system-test/
