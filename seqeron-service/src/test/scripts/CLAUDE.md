@@ -3,13 +3,17 @@
 `seqeron-service/src/test/scripts` holds the thirteen harnesses — nine Java-only, plus the containerized
 `docker-failover-test.sh`, the two C# ones, `csharp-client-test.sh` and `csharp-windows-test.sh` (Git
 Bash on Windows, with its member in WSL1), and the C++ one, `cpp-client-test.sh` — and, in `faulteron/`, the
-six network-fault tests that drive the faulteron injector against the docker cluster. The thirteen still resolve
+eight network-fault tests that drive the faulteron injector against the docker cluster. The thirteen still resolve
 paths relative to the repository root — they were written when this tree sat under `cluster/`, so check the
 depth of any `../..` you add.
 
-**Six fault tests drive faulteron** (github.com/FredrikJDahlberg/faulteron, an eBPF injector in its own repository),
+**Eight fault tests drive faulteron** (github.com/FredrikJDahlberg/faulteron, an eBPF injector in its own repository),
 in `seqeron-service/src/test/scripts/faulteron` beside a `lib.sh` they share: the faults no kill or pause produces,
-against the `docker/compose.yml` cluster. They are this repo's because they assert its guarantees and read its
+against the `docker/compose.yml` cluster. The two relay tests, `relay-link-test.sh` and
+`slow-archive-control-test.sh`, add a gateway host, `node-3`, behind the compose file's `gateway-host` profile:
+`start_gateway_host` starts it once a leader is known and orders its archive endpoints followers first, since the
+host's producer talks to the leader and a `--peer` rule aimed at the relay's member must miss it. A member's replay
+streams are IPC, which faulteron cannot reach; the relay is the only replay traffic on UDP. They are this repo's because they assert its guarantees and read its
 probe, logs and topology; faulteron is only the tool, built from a checkout (`FAULTERON_DIR`, default `../faulteron`)
 that `failover.yml` pins.
 

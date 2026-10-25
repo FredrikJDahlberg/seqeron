@@ -47,7 +47,8 @@ inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(protocol::REPLAY
  * whole log, every leader tenure included — riding the replay image and de-duping by clusterSeqNo. The queue
  * is dispatched throughout, so it closes the seam itself the moment the replay reaches it. A steady-state
  * queue gap clears isCaughtUp() and resumes the active recording just below the hole, falling back to a walk
- * if that resume does not land where it was anchored. No archive connection is opened here.
+ * if that resume does not land where it was anchored; an eviction from the queue clears it until the rejoin.
+ * No archive connection is opened here.
  */
 class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
 {
@@ -200,9 +201,13 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
             throw std::runtime_error("[ReplayerStreamReceiver] " + *m_recovery.fault());
         }
 
-        // The request publication's connect is a short race, so retry every poll while it is pending.
-        const bool requestPubPending = m_requestPubRegId >= 0 && (!m_requestPub || !m_requestPub->isConnected());
-        work += m_recovery.doTimers(requestPubPending);
+        // An image that goes away is an eviction; a queue not yet activated has never had one.
+        const bool queueImage = m_queueSub && m_queueSub->imageCount() > 0;
+        if (queueImage != m_hasQueueImage)
+        {
+            m_hasQueueImage = queueImage;
+            m_recovery.onQueueImage(queueImage);
+        }
 
         if (m_recovery.replaySessionId() >= 0)
         {
@@ -232,6 +237,11 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
             // else: Replaying received, image not yet attached — nothing to poll this cycle, fall
             // through to the queue drain below rather than holding the whole duty cycle on it.
         }
+
+        // After the image: a duty cycle that was itself held up reads it before the stall watchdog judges the replay.
+        // The request publication's connect is a short race, so retry every poll while it is pending.
+        const bool requestPubPending = m_requestPubRegId >= 0 && (!m_requestPub || !m_requestPub->isConnected());
+        work += m_recovery.doTimers(requestPubPending);
 
         // Always drain the queue: it is untethered, so an unpolled subscription falls behind. Frames ahead of
         // an in-flight replay are retained or dropped by the contiguity check; the one at the seam is needed.
@@ -448,6 +458,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     std::shared_ptr<aeron::Subscription> m_controlSub;
     std::shared_ptr<aeron::Publication> m_requestPub;
     std::shared_ptr<aeron::Image> m_replayImage;
+    bool m_hasQueueImage = false;
     std::shared_ptr<aeron::Counter> m_recoveryStalledCounter;
 
     std::unique_ptr<aeron::FragmentAssembler> m_queueAssembler;

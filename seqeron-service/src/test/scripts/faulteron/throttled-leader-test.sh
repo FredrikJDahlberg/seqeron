@@ -13,6 +13,9 @@
 #   3. A ClusterProbe confirm producer on a follower, streaming throughout, sees every frame on its queue exactly once,
 #      in order.
 #   4. With its CPU back, the old leader's queue catches up: as a follower of the new leader, or as the leader still.
+#   5. A ClusterProbe follow cold-started on the starved member at the fault's start, its Replayer answering slower
+#      than the client's 500 ms resend, is caught up off its queue's history within 30 s of the producer's end, and
+#      not since evicted from it, and the Replayer drops no control reply.
 set -uo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -43,6 +46,8 @@ throttle "${OLD}" "${CPUS}"
 FAULT_START=${SECONDS}
 CAP="$(docker exec "node-${OLD}" cat /sys/fs/cgroup/cpu.max)"
 echo "node-${OLD} capped at ${CPUS} CPUs (cpu.max ${CAP})"
+probe "${OLD}" follow -Dprobe.clientId=12 > "${LOG_DIR}/follow.log" 2>&1 &
+FOLLOW_PID=$!
 
 NEW="$(await_leader "$(deadline 30)" "${OLD}")"
 STILL_LEADING=0
@@ -80,6 +85,22 @@ echo "node-${OLD} rejoined / caught up: ${REJOINED} / ${CAUGHT_UP} ($((SECONDS -
 wait "${CONFIRM_PID}"
 CONFIRM_RC=$?
 
+# Whether the follow's last word is that it is caught up rather than evicted from its queue.
+follow_caught_up() {
+    case "$(grep -E 'following live|re-converged|evicted from the queue' "${LOG_DIR}/follow.log" | tail -1)" in
+        *"following live"* | *re-converged*) return 0 ;;
+    esac
+    return 1
+}
+
+FOLLOWED=0
+FOLLOW_END=$((SECONDS + $(deadline 30)))
+until follow_caught_up || ((SECONDS >= FOLLOW_END)); do sleep 0.5; done
+follow_caught_up && FOLLOWED=1
+kill "${FOLLOW_PID}" 2> /dev/null
+DROPPED="$(docker exec "node-${OLD}" clusterctl counters 2> /dev/null |
+    grep controlRepliesDroppedCount | grep -oE '[0-9]+ *$' | tr -d ' ')"
+
 echo ""
 echo "=== RESULT ==="
 echo "cap                         : ${CPUS} CPUs, cpu.max ${CAP}"
@@ -87,6 +108,7 @@ echo "new leader                  : ${NEW:-none}$( ((STILL_LEADING == 1)) && ech
 echo "old leader running          : ${RUNNING}"
 echo "old leader rejoined / queue : ${REJOINED} / ${CAUGHT_UP}"
 echo "PendingSends producer       : $(grep -h 'confirm:' "${LOG_DIR}/confirm.log" | tail -1)"
+echo "follow on the old leader    : caught up ${FOLLOWED}, control replies dropped ${DROPPED:-unread}"
 
 PASS=1
 [[ "${CAP}" == "$(awk -v c="${CPUS}" 'BEGIN { printf "%d", c * 100000 }') 100000" ]] || {
@@ -103,6 +125,14 @@ PASS=1
 }
 ((REJOINED == 1 && CAUGHT_UP == 1)) || {
     echo "FAIL: node-${OLD} did not rejoin, or its queue did not catch up"
+    PASS=0
+}
+((FOLLOWED == 1)) || {
+    echo "FAIL: the follow cold-started on node-${OLD} did not catch up; see ${LOG_DIR}/follow.log"
+    PASS=0
+}
+[[ "${DROPPED}" == 0 ]] || {
+    echo "FAIL: node-${OLD}'s Replayer dropped control replies: ${DROPPED:-unread}"
     PASS=0
 }
 

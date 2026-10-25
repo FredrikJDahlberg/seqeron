@@ -5,7 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.function.LongConsumer;
+import java.util.function.LongUnaryOperator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.protocol.ReplayProtocol;
@@ -17,6 +20,12 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
  */
 class ReplaySlotAllocatorTest {
     private static final long NO_CUT = ReplayProtocol.NO_CUT;
+    private static final long STALL_MS = 10_000;
+    private static final long REQUEST_ID = 1;
+    private static final long CATCH_UP = 4096;
+    private static final LongConsumer NO_STALL = token -> {
+        throw new AssertionError("replay " + token + " was taken for stalled");
+    };
 
     @Test
     @DisplayName("capacity holds until the max is reached, then refuses")
@@ -24,9 +33,9 @@ class ReplaySlotAllocatorTest {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(2);
 
         assertTrue(allocator.hasCapacity());
-        allocator.activate(1, 100);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
         assertTrue(allocator.hasCapacity());
-        allocator.activate(2, 200);
+        allocator.activate(2, REQUEST_ID, 200, CATCH_UP);
         assertFalse(allocator.hasCapacity());
         assertEquals(2, allocator.activeCount());
     }
@@ -35,8 +44,8 @@ class ReplaySlotAllocatorTest {
     @DisplayName("a lowered limit admits nothing new until active slots end, and stops none of them")
     void aLoweredLimitAdmitsNothingNewAndStopsNone() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(4);
-        allocator.activate(1, 100);
-        allocator.activate(2, 200);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
+        allocator.activate(2, REQUEST_ID, 200, CATCH_UP);
 
         allocator.limit(1);
 
@@ -47,7 +56,7 @@ class ReplaySlotAllocatorTest {
         allocator.supersede(2);
         assertTrue(allocator.hasCapacity());
 
-        allocator.activate(3, 300);
+        allocator.activate(3, REQUEST_ID, 300, CATCH_UP);
         allocator.limit(4);
         assertTrue(allocator.hasCapacity());
     }
@@ -56,7 +65,7 @@ class ReplaySlotAllocatorTest {
     @DisplayName("superseding a client's active slot frees capacity and returns its token")
     void supersedeFreesCapacityAndReturnsToken() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
-        allocator.activate(1, 100);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
 
         final long token = allocator.supersede(1);
 
@@ -69,7 +78,7 @@ class ReplaySlotAllocatorTest {
     @DisplayName("superseding a client with no active slot is a no-op")
     void supersedingUnknownClientIsNoOp() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
-        allocator.activate(1, 100);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
 
         assertEquals(ReplaySlotAllocator.NO_SLOT, allocator.supersede(99));
         assertEquals(1, allocator.activeCount(), "the unrelated client's slot must survive");
@@ -79,7 +88,7 @@ class ReplaySlotAllocatorTest {
     @DisplayName("pollPending refuses while every slot is taken, even with requests pending")
     void pollPendingRefusesAtCapacity() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
-        allocator.activate(1, 100);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
         allocator.addPending(2, /*requestId=*/1, 500, 1, NO_CUT);
 
         assertNull(allocator.pollPending());
@@ -90,7 +99,7 @@ class ReplaySlotAllocatorTest {
     @DisplayName("pollPending returns pending requests in FIFO order once capacity frees")
     void pollPendingReturnsRequestsInFifoOrderOnceCapacityFrees() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
-        allocator.activate(1, 100);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
         allocator.addPending(2, /*requestId=*/77, 500, /*queueId=*/2, NO_CUT);
         allocator.addPending(3, /*requestId=*/78, 0, 1, NO_CUT);
 
@@ -105,7 +114,7 @@ class ReplaySlotAllocatorTest {
         assertEquals(77, first.requestId());
         assertEquals(1, allocator.pendingCount());
 
-        allocator.activate(first.clientId(), 999); // caller starts serving it, consuming the slot
+        allocator.activate(first.clientId(), REQUEST_ID, 999, CATCH_UP); // caller starts serving it, consuming the slot
 
         assertNull(allocator.pollPending(), "no capacity left for the next pending request");
         assertEquals(1, allocator.pendingCount());
@@ -137,7 +146,7 @@ class ReplaySlotAllocatorTest {
     @DisplayName("a client's re-request replaces its pending entry rather than adding another")
     void aResendReplacesTheClientsPendingEntry() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
-        allocator.activate(1, 100);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
 
         // A pending client resends every ~500ms until it is served. Appending each one grew the list for
         // the whole of a node's cold start (three co-located apps against a cap of two, so one is always
@@ -156,7 +165,7 @@ class ReplaySlotAllocatorTest {
     @DisplayName("a resent request keeps its place in line")
     void aResendKeepsTheClientsPlaceInLine() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
-        allocator.activate(1, 100);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
         allocator.addPending(2, /*requestId=*/1, 0, 1, NO_CUT);
         allocator.addPending(3, /*requestId=*/1, 0, 1, NO_CUT);
 
@@ -202,14 +211,14 @@ class ReplaySlotAllocatorTest {
     }
 
     @Test
-    @DisplayName("reclaimEnded removes only the slots whose replay has ended")
-    void reclaimEndedRemovesOnlyEndedReplays() {
+    @DisplayName("reclaim removes only the slots whose replay has ended")
+    void reclaimRemovesOnlyEndedReplays() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(3);
-        allocator.activate(1, 100);
-        allocator.activate(2, 200);
-        allocator.activate(3, 300);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
+        allocator.activate(2, REQUEST_ID, 200, CATCH_UP);
+        allocator.activate(3, REQUEST_ID, 300, CATCH_UP);
 
-        assertEquals(2, allocator.reclaimEnded(token -> token == 200));
+        assertEquals(2, allocator.reclaim(token -> token == 200 ? 0 : Replayer.REPLAY_ENDED, 0, STALL_MS, NO_STALL));
 
         assertEquals(1, allocator.activeCount());
         assertEquals(ReplaySlotAllocator.NO_SLOT, allocator.supersede(1));
@@ -217,15 +226,77 @@ class ReplaySlotAllocatorTest {
     }
 
     @Test
+    @DisplayName("reclaim removes a replay that made no progress for the stall timeout, and names it")
+    void reclaimRemovesAStalledReplay() {
+        final ReplaySlotAllocator allocator = new ReplaySlotAllocator(2);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
+        allocator.activate(2, REQUEST_ID, 200, CATCH_UP);
+        final long[] progress = { 0, 0 };
+        final LongUnaryOperator progressOf = token -> progress[token == 100 ? 0 : 1];
+        final List<Long> stalled = new ArrayList<>();
+
+        assertEquals(0, allocator.reclaim(progressOf, 0, STALL_MS, stalled::add));
+        progress[1] = 4096; // 200's subscriber reads; 100's does not
+        assertEquals(0, allocator.reclaim(progressOf, STALL_MS - 1, STALL_MS, stalled::add));
+        assertEquals(1, allocator.reclaim(progressOf, STALL_MS, STALL_MS, stalled::add));
+
+        assertEquals(List.of(100L), stalled);
+        assertEquals(ReplaySlotAllocator.NO_SLOT, allocator.supersede(1));
+        assertEquals(200, allocator.supersede(2));
+    }
+
+    @Test
+    @DisplayName("progress restarts a replay's stall timeout")
+    void progressRestartsTheStallTimeout() {
+        final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
+        final long[] progress = { 0 };
+
+        allocator.reclaim(token -> progress[0], 0, STALL_MS, NO_STALL);
+        progress[0] = 4096;
+        allocator.reclaim(token -> progress[0], STALL_MS - 1, STALL_MS, NO_STALL);
+
+        assertEquals(0, allocator.reclaim(token -> progress[0], 2 * STALL_MS - 2, STALL_MS, NO_STALL));
+        assertEquals(1, allocator.activeCount());
+    }
+
+    @Test
     @DisplayName("clear removes and returns every active slot's token")
     void clearRemovesAndReturnsEveryToken() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(3);
-        allocator.activate(1, 100);
-        allocator.activate(2, 200);
+        allocator.activate(1, REQUEST_ID, 100, CATCH_UP);
+        allocator.activate(2, REQUEST_ID, 200, CATCH_UP);
 
         final List<Long> tokens = allocator.clear();
 
         assertEquals(List.of(100L, 200L), tokens);
         assertEquals(0, allocator.activeCount());
+    }
+
+    @Test
+    @DisplayName("a resend of the request an active replay answers finds it, and where it ends")
+    void aResendFindsTheReplayAnsweringIt() {
+        final ReplaySlotAllocator allocator = new ReplaySlotAllocator(2);
+        allocator.activate(1, 7, 100, 8192);
+        allocator.activate(2, 7, 200, CATCH_UP);
+
+        assertEquals(100, allocator.answering(1, 7));
+        assertEquals(8192, allocator.catchUpPosition(100));
+        assertEquals(ReplaySlotAllocator.NO_SLOT, allocator.answering(1, 8), "a new request is not a resend");
+        assertEquals(ReplaySlotAllocator.NO_SLOT, allocator.answering(3, 7));
+    }
+
+    @Test
+    @DisplayName("a replay superseded or reclaimed answers no resend")
+    void aReplayGoneAnswersNoResend() {
+        final ReplaySlotAllocator allocator = new ReplaySlotAllocator(2);
+        allocator.activate(1, 7, 100, CATCH_UP);
+        allocator.activate(2, 7, 200, CATCH_UP);
+
+        allocator.supersede(1);
+        allocator.reclaim(token -> Replayer.REPLAY_ENDED, 0, STALL_MS, NO_STALL);
+
+        assertEquals(ReplaySlotAllocator.NO_SLOT, allocator.answering(1, 7));
+        assertEquals(ReplaySlotAllocator.NO_SLOT, allocator.answering(2, 7));
     }
 }

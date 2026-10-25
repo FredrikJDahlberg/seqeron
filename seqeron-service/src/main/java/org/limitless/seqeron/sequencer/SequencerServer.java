@@ -6,6 +6,7 @@ import io.aeron.cluster.ClusteredMediaDriver;
 import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.NanosecondClusterClock;
 import io.aeron.cluster.client.ClusterEvent;
+import io.aeron.cluster.service.ClusterClock;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ReceiveChannelEndpointSupplier;
@@ -267,6 +268,18 @@ public final class SequencerServer {
      */
     public static SequencerServer launch(final Config config, final Runnable terminationHook,
                                          final Runnable fatalHandler, final UdpFaults udpFaults) {
+        return launch(config, terminationHook, fatalHandler, udpFaults, new NanosecondClusterClock());
+    }
+
+    /**
+     * As above, on {@code clusterClock}, which stamps the log while this node leads and paces its consensus timeouts.
+     * Test harnesses only: a clock that steps.
+     *
+     * @param clusterClock the consensus module's clock, in nanoseconds
+     */
+    public static SequencerServer launch(final Config config, final Runnable terminationHook,
+                                         final Runnable fatalHandler, final UdpFaults udpFaults,
+                                         final ClusterClock clusterClock) {
         final int memberId = config.memberId();
         final String host = config.host();
         final String aeronDir = config.aeronDir();
@@ -329,7 +342,7 @@ public final class SequencerServer {
                 .aeronDirectoryName(aeronDir)
                 .clusterMemberId(memberId)
                 .clusterMembers(clusterMembers)
-                .clusterClock(new NanosecondClusterClock())
+                .clusterClock(clusterClock)
                 .appVersion(LogVersion.APP_VERSION)
                 .appVersionValidator(LogVersion.VALIDATOR)
                 .clusterDir(clusterDir)

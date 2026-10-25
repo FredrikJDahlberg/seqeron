@@ -10,8 +10,11 @@ FAULTERON_DIR="${FAULTERON_DIR:-${REPO_ROOT}/../faulteron}"
 source "${REPO_ROOT}/seqeron-service/src/main/scripts/ports.sh"
 source "${REPO_ROOT}/seqeron-service/src/main/scripts/seqeron-home.sh"
 COMPOSE=(docker compose -f "${REPO_ROOT}/docker/compose.yml")
+# With the gateway host, node-3, which only start_gateway_host brings up.
+HOST_COMPOSE=("${COMPOSE[@]}" --profile gateway-host)
 
 NODE_COUNT=3
+HOST_ID=3
 TIMEOUT_SCALE="${TIMEOUT_SCALE:-1}"
 deadline() { echo $(($1 * TIMEOUT_SCALE)); }
 
@@ -35,7 +38,10 @@ internal_ports() {
 cleanup() {
     local m
     for m in 0 1 2; do "${COMPOSE[@]}" logs --no-color "node-${m}" > "${LOG_DIR}/node-${m}.log" 2>&1; done
-    "${COMPOSE[@]}" down -v --remove-orphans > /dev/null 2>&1
+    if docker inspect "node-${HOST_ID}" > /dev/null 2>&1; then
+        docker logs "node-${HOST_ID}" > "${LOG_DIR}/node-${HOST_ID}.log" 2>&1
+    fi
+    "${HOST_COMPOSE[@]}" down -v --remove-orphans > /dev/null 2>&1
 }
 
 # Builds the injector image and brings the cluster up healthy; exits the test if either fails.
@@ -56,7 +62,7 @@ start_cluster() {
         echo "faulteron image did not build; see ${LOG_DIR}/faulteron-build.log"
         exit 1
     fi
-    "${COMPOSE[@]}" down -v --remove-orphans > /dev/null 2>&1
+    "${HOST_COMPOSE[@]}" down -v --remove-orphans > /dev/null 2>&1
     echo "starting ${NODE_COUNT}-node cluster"
     if ! "${COMPOSE[@]}" up --build -d --wait --wait-timeout "$(deadline 120)" > "${LOG_DIR}/compose-up.log" 2>&1; then
         echo "cluster did not come up healthy; see ${LOG_DIR}/compose-up.log"
@@ -83,6 +89,30 @@ await_every_queue() {
             sleep 1
         done
     done
+}
+
+# start_gateway_host <member>... — node-3 up and serving, its relay trying those members' archives in that order;
+# exits the test if it is not. Run once the groups are active, since the host is ready only once it records them.
+start_gateway_host() {
+    local endpoints="" m
+    for m in "$@"; do endpoints+="${endpoints:+,}$(archive_endpoint_of "${m}")"; done
+    if ! ARCHIVE_ENDPOINTS="${endpoints}" "${HOST_COMPOSE[@]}" up -d --no-deps --wait \
+        --wait-timeout "$(deadline 60)" "node-${HOST_ID}" > "${LOG_DIR}/host-up.log" 2>&1; then
+        echo "gateway host did not come up serving; see ${LOG_DIR}/host-up.log and ${LOG_DIR}/node-${HOST_ID}.log"
+        exit 1
+    fi
+}
+
+archive_endpoint_of() { echo "node-$1:$(archive_port_of "$1")"; }
+
+# relay_sources — each member archive the gateway host's relay followed, in order, one per line.
+relay_sources() {
+    docker logs "node-${HOST_ID}" 2>&1 | sed -nE 's/.*following member archive ([^ ]+): group.*/\1/p'
+}
+
+# relay_departures — each member archive the relay left, and why, in order, one per line.
+relay_departures() {
+    docker logs "node-${HOST_ID}" 2>&1 | sed -nE 's/.*relay left member archive ([^ ]+): (.*)/\1 \2/p'
 }
 
 # The cluster sequences nothing before its groups are active, so the test topology's load first.

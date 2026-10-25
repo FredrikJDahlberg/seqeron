@@ -459,7 +459,7 @@ class ReplayerRecoveryTest {
         assertEquals(-1, receiver.replaySessionId());
     }
 
-    // clientId alone cannot identify WHICH request a reply answers. A resend makes the Replayer stop the
+    // clientId alone cannot identify WHICH request a reply answers. A new request makes the Replayer stop the
     // in-flight session and start a new one, so both replies sit in order on the one shared control
     // publication and the stale one is always processed first.
     @Test
@@ -485,6 +485,19 @@ class ReplayerRecoveryTest {
         answerReplaying(43, 1000);
 
         assertEquals(43, receiver.replaySessionId(), "the reply to the current request must be applied");
+        assertFalse(receiver.isAwaitingReplay());
+    }
+
+    // Resends queued behind a slow answer each draw it again, under the same requestId.
+    @Test
+    @DisplayName("a repeat of the answer already taken is ignored")
+    void aRepeatOfTheAnswerAlreadyTakenIsIgnored() {
+        receiver.start();
+        answerReplaying(43, 1000);
+
+        answerReplaying(44, 2000);
+
+        assertEquals(43, receiver.replaySessionId(), "the replay it attached to is kept");
         assertFalse(receiver.isAwaitingReplay());
     }
 
@@ -601,6 +614,7 @@ class ReplayerRecoveryTest {
         deliverQueue(5); // gap -> arms the resend timer
         assertTrue(receiver.isAwaitingReplay());
         final int sends = actions.requestsSent;
+        final long requestId = receiver.requestId();
 
         actions.clockMs += 300; // inside RESEND_INTERVAL_MS (500)
         receiver.doTimers(false);
@@ -611,14 +625,15 @@ class ReplayerRecoveryTest {
         receiver.doTimers(false);
 
         assertEquals(sends + 1, actions.requestsSent, "the duty cycle must re-send rather than give up");
+        assertEquals(requestId, receiver.requestId(), "a resend keeps its requestId, so its reply is still current");
         assertTrue(receiver.isAwaitingReplay(), "still stuck at the gap — a resend, not a new state");
         assertEquals(-1, receiver.replaySessionId());
         assertNotEquals(FROM_START, receiver.requestFromPosition(), "a resend repeats the same request verbatim");
     }
 
-    // Every send does ++requestId and onControl acts only on a reply carrying the CURRENT id, so a
-    // per-poll retry runs the counter away and every reply that arrives is discarded as stale — leaving
-    // the client awaiting a replay that can never correlate, hence never caught up.
+    // onControl acts only on a reply carrying the CURRENT id, so a retry that took a new id per poll would run
+    // the counter away and discard every reply that arrives as stale — leaving the client awaiting a replay
+    // that can never correlate, hence never caught up.
     @Test
     @DisplayName("a request that never went out is not re-sent once per poll")
     void anUnsentRequestIsNotReSentOncePerPoll() {
@@ -699,6 +714,67 @@ class ReplayerRecoveryTest {
 
         assertTrue(receiver.isCaughtUp(), "the retained frame closes the seam with no further round trip");
         assertEquals(2, caughtUpAt.size(), "consumers must be able to re-arm on re-convergence");
+    }
+
+    // An evicted subscriber hears nothing until its driver rejoins it at the tip, so the hole shows only then.
+    @Test
+    @DisplayName("an eviction from the queue revokes caught-up until a live frame after the rejoin")
+    void anEvictionFromTheQueueRevokesCaughtUpUntilALiveFrameAfterTheRejoin() {
+        receiver.onQueueImage(true);
+        deliverQueue(1);
+        deliverQueue(2);
+        assertTrue(receiver.isCaughtUp());
+
+        receiver.onQueueImage(false);
+        assertFalse(receiver.isCaughtUp(), "nothing live reaches an evicted client");
+        assertEquals(0, actions.requestsSent, "the hole shows on the first live frame after the rejoin");
+
+        receiver.onQueueImage(true);
+        deliverQueue(5);
+        assertFalse(receiver.isCaughtUp());
+        assertEquals(1, actions.requestsSent, "the rejoin's first frame shows the hole, and a resume is requested");
+
+        deliverReplay(2);
+        deliverReplay(3);
+        deliverReplay(4);
+        assertTrue(receiver.isCaughtUp());
+        assertEquals(2, caughtUpAt.size());
+    }
+
+    @Test
+    @DisplayName("a walk reaching its bound while evicted from the queue is not caught up")
+    void aWalkReachingItsBoundWhileEvictedFromTheQueueIsNotCaughtUp() {
+        receiver.onQueueImage(true);
+        attachReplay(7, 3 * 1024);
+        deliverReplay(1);
+        deliverReplay(2);
+        receiver.onQueueImage(false);
+
+        completeReplay();
+        assertFalse(receiver.isCaughtUp(), "the queue may be any distance past the bound");
+        assertFalse(receiver.isRecovering(), "nothing is requested before the rejoin");
+
+        receiver.onQueueImage(true);
+        deliverQueue(3);
+        assertTrue(receiver.isCaughtUp(), "a contiguous live frame after the rejoin closes the seam");
+    }
+
+    @Test
+    @DisplayName("frames retained before an eviction do not catch the client up when the replay reaches them")
+    void framesRetainedBeforeAnEvictionDoNotCatchTheClientUp() {
+        receiver.onQueueImage(true);
+        attachReplay(11, 8 * 1024);
+        deliverReplay(1);
+        deliverQueue(3); // retained behind the hole at 2
+        receiver.onQueueImage(false);
+
+        deliverReplay(2); // hands 3 straight over
+        assertEquals(List.of(1L, 2L, 3L), dispatched);
+        assertFalse(receiver.isCaughtUp(), "a retained frame is not the live queue");
+
+        receiver.onQueueImage(true);
+        deliverQueue(4);
+        assertTrue(receiver.isCaughtUp());
     }
 
     // ── the retained-ahead FIFO ───────────────────────────────────────────────────────────────────

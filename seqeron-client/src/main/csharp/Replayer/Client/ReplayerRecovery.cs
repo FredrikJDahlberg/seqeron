@@ -20,8 +20,9 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// frames beyond the current hole are retained and drained once contiguous. While <see cref="IsRecovering"/> a
 /// non-contiguous queue frame is expected rather than a new gap, and it may not set the baseline before the walk
 /// has: a cold start would otherwise adopt a mid-stream baseline.</para>
-/// <para><see cref="IsCaughtUp"/> is cleared on a live-queue gap and re-established once contiguous: consumers gate
-/// real decisions on it. Single-threaded: every method runs on the one duty-cycle thread.</para>
+/// <para><see cref="IsCaughtUp"/> is cleared on a live-queue gap or an eviction from the queue and re-established once
+/// contiguous: consumers gate real decisions on it. Single-threaded: every method runs on the one duty-cycle
+/// thread.</para>
 /// <para>Given a snapshot store (<see cref="RestoreFrom"/>), a cold start first restores the newest snapshot it holds
 /// (doc/snapshot.md §7): it replays the recording from the snapshot's cut, and if the frame there is the round's
 /// <c>SnapshotStarted</c> the file recorded, reads the file's records into the handler, dispatching nothing, then
@@ -79,8 +80,11 @@ internal sealed class ReplayerRecovery
 
     private long _lastRequestMs;
 
-    // Advances per send; replies not carrying it are stale (see OnControl).
+    // Advances per request, and a resend keeps it; replies not carrying it are stale (see OnControl).
     private long _requestId;
+
+    // The request whose Replaying was taken: each resend of it draws that answer again.
+    private long _answeredRequestId = -1;
 
     private long _lastReplayPosition = -1;
     private long _lastReplayProgressMs;
@@ -100,6 +104,10 @@ internal sealed class ReplayerRecovery
     private bool _replayGapLogged;
 
     private bool _caughtUp;
+
+    // The driver evicted this client from the queue and it has not rejoined: nothing live reaches it.
+    private bool _queueLost;
+
     private int _currentLeaderMemberId = -1;
 
     // Live queue frames from beyond the current hole, retained in arrival order.
@@ -318,10 +326,11 @@ internal sealed class ReplayerRecovery
             {
                 return; // another replica's reply on the shared control stream
             }
-            if (_replaying.RequestId != _requestId)
+            if (_replaying.RequestId != _requestId || _requestId == _answeredRequestId)
             {
-                return;
+                return; // a superseded request's, or a resend's repeat of the answer already taken
             }
+            _answeredRequestId = _requestId;
             OnReplaying(_replaying.ReplaySessionId, _replaying.CatchUpPosition);
         }
         else if (templateId == Replay.ReplayPending.TemplateId)
@@ -339,6 +348,26 @@ internal sealed class ReplayerRecovery
     /// inside a fragment handler is swallowed.
     /// </summary>
     public string Fault { get; private set; }
+
+    /// <summary>
+    /// The queue's image went away or came back. Its driver evicts an untethered subscriber that stops polling, and
+    /// rejoins it at the tip once rested, so until then the client is not following live whatever its replay reached.
+    /// Nothing is requested: the first live frame after the rejoin shows the hole. A queue that closes, as its node
+    /// stops, takes the image too.
+    /// </summary>
+    /// <param name="available">whether the queue subscription has an image</param>
+    public void OnQueueImage(bool available)
+    {
+        _queueLost = !available;
+        if (_queueLost)
+        {
+            _caughtUp = false;
+            Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.QueueGap,
+                       _actions.MemberId,
+                       "evicted from the queue, or it closed, at clusterSeqNo={0} — not caught up until it is back",
+                       _lastClusterSeqNo);
+        }
+    }
 
     /// <summary>
     /// Where the attached replay image has reached. Completion is by position, not by the image closing: a bounded
@@ -392,7 +421,7 @@ internal sealed class ReplayerRecovery
         long nowMs = _actions.NowMs();
         if (_awaitingReplay && (requestPublicationPending || (nowMs - _lastRequestMs) > ResendIntervalMs))
         {
-            RequestReplay(_requestFromPosition, _requestCutClusterSeqNo); // re-send the same request verbatim
+            ResendRequest();
         }
         if (_replaySessionId >= 0 && (nowMs - _lastReplayProgressMs) > ReplayStallTimeoutMs)
         {
@@ -432,8 +461,8 @@ internal sealed class ReplayerRecovery
         return true;
     }
 
-    /// <summary>Whether this client is following the live tail; revoked on a queue gap, re-established at the
-    /// seam.</summary>
+    /// <summary>Whether this client is following the live tail; revoked on a queue gap or an eviction from the queue,
+    /// re-established at the seam.</summary>
     public bool IsCaughtUp => _caughtUp;
 
     /// <summary>Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its own
@@ -478,9 +507,9 @@ internal sealed class ReplayerRecovery
     public int RetainedFrameCount => _retainFrameCount;
 
     /// <summary>
-    /// Sends <c>ReplayRequest</c> and marks us awaiting the reply. The Replayer supersedes any in-flight replay for
-    /// this clientId, so a resend is safe. The request id advances on every send, resends included: only a
-    /// per-send id tells a stale reply from the live one on the shared control stream.
+    /// Sends a new <c>ReplayRequest</c> and marks us awaiting the reply. The Replayer supersedes any in-flight replay
+    /// for this clientId. The request id advances, so a superseded request's reply is told from this one's on the
+    /// shared control stream.
     /// </summary>
     private void RequestReplay(long fromPosition, long cutClusterSeqNo = ReplayProtocol.NoCut)
     {
@@ -496,6 +525,16 @@ internal sealed class ReplayerRecovery
         _lastRequestMs = _actions.NowMs();
         ++_requestId;
         _actions.SendReplayRequest(_requestId, fromPosition, cutClusterSeqNo);
+    }
+
+    /// <summary>
+    /// Sends the current request again, under its request id (spec R-1): the Replayer answers a resend of the request a
+    /// running replay answers with that replay, so a slow answer costs no replay.
+    /// </summary>
+    private void ResendRequest()
+    {
+        _lastRequestMs = _actions.NowMs();
+        _actions.SendReplayRequest(_requestId, _requestFromPosition, _requestCutClusterSeqNo);
     }
 
     /// <summary>
@@ -935,7 +974,7 @@ internal sealed class ReplayerRecovery
 
     private void NotifyCaughtUp()
     {
-        if (_caughtUp)
+        if (_caughtUp || _queueLost)
         {
             return; // idempotent: reached from the replay-tip, no-replay, and first-live-frame paths
         }

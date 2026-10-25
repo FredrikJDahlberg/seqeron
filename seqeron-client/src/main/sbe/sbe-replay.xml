@@ -37,10 +37,11 @@
         <field name="clientId"     id="20010" type="int64"
                description="Drawn once by the client from its media driver (Aeron.nextCorrelationId), so unique among the replayer's clients"/>
         <field name="requestId"    id="20015" type="int64"
-               description="Incremented on every send, including an unchanged resend, and echoed in the reply.
-                            The client ignores a reply whose requestId is not its current one (R-1): a resend
+               description="Incremented on every new request and kept by its resends, and echoed in the reply.
+                            The client ignores a reply whose requestId is not its current one (R-1): a new request
                             supersedes the in-flight replay, so a reply to the earlier request may still be
-                            queued on the control stream"/>
+                            queued on the control stream. A resend of the request a running replay answers is
+                            answered with that replay"/>
         <field name="fromPosition" id="20011" type="int64"
                description="Position to resume the active recording from (SequencedEvent.position of the last
                             in-order frame), or FROM_START (-1) for the recording's start"/>

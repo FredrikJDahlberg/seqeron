@@ -641,7 +641,7 @@ TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundCatchesUp)
 }
 
 // ── Request/reply correlation ────────────────────────────────────────────────────────────────
-// clientId alone cannot identify WHICH request a reply answers. A resend makes the Replayer stop the
+// clientId alone cannot identify WHICH request a reply answers. A new request makes the Replayer stop the
 // in-flight session and start a new one, so both replies sit in order on the one shared control
 // publication and the stale one is always processed first. Acting on it attached the client to a
 // session that no longer exists — and, because onControl cleared m_awaitingReplay unconditionally, also
@@ -674,6 +674,21 @@ TEST(ReplayerRecoveryGapRecovery, CurrentReplyIsStillAcceptedAfterAStaleOne)
                                            /*catchUpPosition=*/1'000));
 
     EXPECT_EQ(43, client.recovery.replaySessionId()) << "the reply to the current request must be applied";
+    EXPECT_FALSE(client.recovery.isAwaitingReplay());
+}
+
+// Resends queued behind a slow answer each draw it again, under the same requestId.
+TEST(ReplayerRecoveryGapRecovery, ARepeatOfTheAnswerAlreadyTakenIsIgnored)
+{
+    Client client{ [](const SequencedEvent&) {} };
+    client.recovery.start();
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/43,
+                                           /*catchUpPosition=*/1'000));
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/44,
+                                           /*catchUpPosition=*/2'000));
+
+    EXPECT_EQ(43, client.recovery.replaySessionId()) << "the replay it attached to is kept";
     EXPECT_FALSE(client.recovery.isAwaitingReplay());
 }
 
@@ -809,6 +824,7 @@ TEST(ReplayerRecoveryGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElap
     deliverLive(client, 5); // gap -> requestReplay(0, 0), arming the resend timer
     ASSERT_TRUE(client.recovery.isAwaitingReplay());
     const int sends = client.requestsSent;
+    const std::int64_t requestId = client.recovery.requestId();
 
     client.clockMs += 300; // inside RESEND_INTERVAL_MS (500)
     client.recovery.doTimers(/*requestPublicationPending=*/false);
@@ -820,15 +836,16 @@ TEST(ReplayerRecoveryGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElap
 
     EXPECT_EQ(sends + 1, client.requestsSent)
         << "the Replayer never answered -> the duty cycle must re-send the same request rather than give up";
+    EXPECT_EQ(requestId, client.recovery.requestId()) << "a resend keeps its requestId, so its reply is still current";
     EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "still stuck at the gap — a resend, not a new state";
     EXPECT_EQ(-1, client.recovery.replaySessionId());
     EXPECT_NE(REPLAYER_FROM_START, client.recovery.requestFromPosition())
         << "resend repeats the same request verbatim, still the resume";
 }
 
-// An unsent request must NOT be retried per duty cycle, only on the resend timer. Every send does
-// ++m_requestId and onControl acts only on a reply carrying the CURRENT id, so a per-poll retry runs the
-// counter away and every reply that arrives is discarded as stale — leaving the client awaiting a replay
+// An unsent request must NOT be retried per duty cycle, only on the resend timer. onControl acts only on a
+// reply carrying the CURRENT id, so a retry that took a new id per poll would run the counter away and
+// discard every reply that arrives as stale — leaving the client awaiting a replay
 // that can never correlate, hence never caught up. Cost of getting this wrong is not a slow resend: it is
 // a consumer wedged out of isCaughtUp(), which on the leader-co-located replica means no ExecutionReport.
 TEST(ReplayerRecoveryGapRecovery, AnUnsentRequestIsNotReSentOncePerPoll)
@@ -924,6 +941,71 @@ TEST(ReplayerRecoveryGapRecovery, QueueGapRevokesCaughtUpUntilTheStreamGoesConti
     EXPECT_TRUE(client.recovery.isCaughtUp()) << "the retained frame closes the seam with no further round trip";
     EXPECT_EQ(2, caughtUpNotifications) << "consumers must be able to re-arm on re-convergence, not just "
                                            "on first catch-up";
+}
+
+// An evicted subscriber hears nothing until its driver rejoins it at the tip, so the hole shows only then.
+TEST(ReplayerRecoveryGapRecovery, AnEvictionFromTheQueueRevokesCaughtUpUntilALiveFrameAfterTheRejoin)
+{
+    int caughtUpNotifications = 0;
+    Client client{ [](const SequencedEvent&) {}, [&] { ++caughtUpNotifications; } };
+    client.recovery.onQueueImage(true);
+    deliverLive(client, 1);
+    deliverLive(client, 2);
+    ASSERT_TRUE(client.recovery.isCaughtUp());
+
+    client.recovery.onQueueImage(false);
+    EXPECT_FALSE(client.recovery.isCaughtUp()) << "nothing live reaches an evicted client";
+    EXPECT_EQ(0, client.requestsSent) << "the hole shows on the first live frame after the rejoin";
+
+    client.recovery.onQueueImage(true);
+    deliverLive(client, 5);
+    EXPECT_FALSE(client.recovery.isCaughtUp());
+    EXPECT_EQ(1, client.requestsSent) << "the rejoin's first frame shows the hole, and a resume is requested";
+
+    deliverReplay(client, 2);
+    deliverReplay(client, 3);
+    deliverReplay(client, 4);
+    EXPECT_TRUE(client.recovery.isCaughtUp());
+    EXPECT_EQ(2, caughtUpNotifications);
+}
+
+TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundWhileEvictedFromTheQueueIsNotCaughtUp)
+{
+    Client client{ [](const SequencedEvent&) {} };
+    client.recovery.onQueueImage(true);
+    deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/3 * 1024));
+    deliverReplay(client, 1);
+    deliverReplay(client, 2);
+    client.recovery.onQueueImage(false);
+
+    completeReplay(client);
+    EXPECT_FALSE(client.recovery.isCaughtUp()) << "the queue may be any distance past the bound";
+    EXPECT_FALSE(client.recovery.isRecovering()) << "nothing is requested before the rejoin";
+
+    client.recovery.onQueueImage(true);
+    deliverLive(client, 3);
+    EXPECT_TRUE(client.recovery.isCaughtUp()) << "a contiguous live frame after the rejoin closes the seam";
+}
+
+TEST(ReplayerRecoveryGapRecovery, FramesRetainedBeforeAnEvictionDoNotCatchTheClientUp)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&](const SequencedEvent& event) { dispatched.push_back(event.clusterSeqNo); } };
+    client.recovery.onQueueImage(true);
+    deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), /*replaySessionId=*/11,
+                                           /*catchUpPosition=*/8 * 1024));
+    deliverReplay(client, 1);
+    deliverLive(client, 3); // retained behind the hole at 2
+    client.recovery.onQueueImage(false);
+
+    deliverReplay(client, 2); // hands 3 straight over
+    EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3 }), dispatched);
+    EXPECT_FALSE(client.recovery.isCaughtUp()) << "a retained frame is not the live queue";
+
+    client.recovery.onQueueImage(true);
+    deliverLive(client, 4);
+    EXPECT_TRUE(client.recovery.isCaughtUp());
 }
 
 TEST(ReplayerRecoveryGapRecovery, RetainedQueueFramesHandStraightOverWhenTheReplayReachesThem)

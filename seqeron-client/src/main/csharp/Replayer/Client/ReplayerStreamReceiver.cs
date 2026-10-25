@@ -62,6 +62,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
     private Subscription _controlSubscription;
     private Publication _requestPublication;
     private Image _replayImage;
+    private bool _hasQueueImage;
     private Counter _recoveryStalledCounter;
 
     /// <summary>A receiver, dropping a live queue frame whenever <paramref name="queueFaults"/> answers true.</summary>
@@ -184,8 +185,13 @@ public sealed class ReplayerStreamReceiver : IDisposable
             throw new InvalidOperationException("[ReplayerStreamReceiver] " + _recovery.Fault);
         }
 
-        bool requestPubPending = _requestPublication != null && !_requestPublication.IsConnected;
-        work += _recovery.DoTimers(requestPubPending);
+        // An image that goes away is an eviction; a queue not yet activated has never had one.
+        bool queueImage = _queueSubscription != null && _queueSubscription.ImageCount > 0;
+        if (queueImage != _hasQueueImage)
+        {
+            _hasQueueImage = queueImage;
+            _recovery.OnQueueImage(queueImage);
+        }
 
         if (_recovery.ReplaySessionId >= 0)
         {
@@ -210,6 +216,11 @@ public sealed class ReplayerStreamReceiver : IDisposable
                 }
             }
         }
+
+        // After the image: a duty cycle that was itself held up reads it before the stall watchdog judges the replay.
+        bool requestPubPending = _requestPublication != null && !_requestPublication.IsConnected;
+        work += _recovery.DoTimers(requestPubPending);
+
         if (_queueSubscription != null)
         {
             work += _queueSubscription.Poll(_queueHandler, FragmentLimit);
@@ -219,8 +230,8 @@ public sealed class ReplayerStreamReceiver : IDisposable
         return work;
     }
 
-    /// <summary>Whether this client is following the live tail; revoked on a queue gap, re-established at the
-    /// seam.</summary>
+    /// <summary>Whether this client is following the live tail; revoked on a queue gap or an eviction from the queue,
+    /// re-established at the seam.</summary>
     public bool IsCaughtUp => _recovery.IsCaughtUp;
 
     /// <summary>Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its

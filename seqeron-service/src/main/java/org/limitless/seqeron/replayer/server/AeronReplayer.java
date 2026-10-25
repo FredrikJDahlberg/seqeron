@@ -24,6 +24,7 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.sequencer.SequencerService;
+import org.limitless.seqeron.util.Clocks;
 
 /**
  * The production {@link Replayer}: {@link ReplayerService}'s calls forwarded to the
@@ -48,7 +49,7 @@ public final class AeronReplayer implements Replayer {
     /** The counter {@link #recordingPosition} last found, while it still counts that recording. */
     private int recordingCounterId = CountersReader.NULL_COUNTER_ID;
 
-    /** The publisher-limit counter of each replay {@link #isReplayLive} has found, by replay session id. */
+    /** The publisher-limit counter of each replay {@link #replayProgress} has found, by replay session id. */
     private final Long2LongHashMap replayCounterIds = new Long2LongHashMap(CountersReader.NULL_COUNTER_ID);
 
     public AeronReplayer(final Aeron aeron, final AeronArchive archive, final int memberId) {
@@ -120,15 +121,15 @@ public final class AeronReplayer implements Replayer {
      */
     static ScanEnd scan(final Subscription subscription, final int replaySessionId, final long endPosition,
                         final FrameVisitor visitor) {
-        long deadlineMs = System.currentTimeMillis() + SCAN_STALL_TIMEOUT_MS;
+        long deadlineMs = Clocks.monotonicMs() + SCAN_STALL_TIMEOUT_MS;
         Image image;
         while ((image = subscription.imageBySessionId(replaySessionId)) == null) {
-            if (System.currentTimeMillis() > deadlineMs) {
+            if (Clocks.monotonicMs() > deadlineMs) {
                 return ScanEnd.STALLED;
             }
             Thread.yield();
         }
-        deadlineMs = System.currentTimeMillis() + SCAN_STALL_TIMEOUT_MS;
+        deadlineMs = Clocks.monotonicMs() + SCAN_STALL_TIMEOUT_MS;
         final ScanEnd[] ended = {null};
         final SequencedFrameDecoder frame = new SequencedFrameDecoder();
         final FragmentHandler handler = new FragmentAssembler((buffer, offset, length, header) -> {
@@ -146,10 +147,10 @@ public final class AeronReplayer implements Replayer {
         });
         while (ended[0] == null) {
             if (image.poll(handler, 1) > 0) {
-                deadlineMs = System.currentTimeMillis() + SCAN_STALL_TIMEOUT_MS;
+                deadlineMs = Clocks.monotonicMs() + SCAN_STALL_TIMEOUT_MS;
             } else if (image.isClosed() || image.position() >= endPosition) {
                 return ScanEnd.TIP;
-            } else if (System.currentTimeMillis() > deadlineMs) {
+            } else if (Clocks.monotonicMs() > deadlineMs) {
                 return ScanEnd.STALLED;
             }
         }
@@ -196,20 +197,20 @@ public final class AeronReplayer implements Replayer {
     }
 
     @Override
-    public boolean isReplayLive(final long replaySessionId) {
+    public long replayProgress(final long replaySessionId) {
         final CountersReader counters = aeron.countersReader();
         final int cached = (int)replayCounterIds.get(replaySessionId);
         if (cached != CountersReader.NULL_COUNTER_ID && isReplayCounter(counters, cached, replaySessionId)) {
-            return true;
+            return counters.getCounterValue(cached);
         }
         replayCounterIds.remove(replaySessionId);
         for (int counterId = 0, maxId = counters.maxCounterId(); counterId <= maxId; counterId++) {
             if (isReplayCounter(counters, counterId, replaySessionId)) {
                 replayCounterIds.put(replaySessionId, counterId);
-                return true;
+                return counters.getCounterValue(counterId);
             }
         }
-        return false;
+        return REPLAY_ENDED;
     }
 
     private static boolean isReplayCounter(final CountersReader counters, final int counterId,
@@ -246,7 +247,7 @@ public final class AeronReplayer implements Replayer {
     }
 
     @Override
-    public long epochMillis() {
-        return System.currentTimeMillis();
+    public long monotonicMs() {
+        return Clocks.monotonicMs();
     }
 }

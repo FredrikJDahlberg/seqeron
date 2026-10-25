@@ -75,6 +75,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     private Subscription controlSubscription;
     private Publication requestPublication;
     private Image replayImage;
+    private boolean hasQueueImage;
     private Counter recoveryStalledCounter;
 
     /**
@@ -221,8 +222,12 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
             throw new IllegalStateException("[ReplayerStreamReceiver] " + recovery.fault());
         }
 
-        final boolean requestPubPending = requestPublication != null && !requestPublication.isConnected();
-        work += recovery.doTimers(requestPubPending);
+        // An image that goes away is an eviction; a queue not yet activated has never had one.
+        final boolean queueImage = queueSubscription != null && queueSubscription.imageCount() > 0;
+        if (queueImage != hasQueueImage) {
+            hasQueueImage = queueImage;
+            recovery.onQueueImage(queueImage);
+        }
 
         if (recovery.replaySessionId() >= 0) {
             if (replayImage == null && replaySubscription != null) {
@@ -240,6 +245,11 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                 }
             }
         }
+
+        // After the image: a duty cycle that was itself held up reads it before the stall watchdog judges the replay.
+        final boolean requestPubPending = requestPublication != null && !requestPublication.isConnected();
+        work += recovery.doTimers(requestPubPending);
+
         if (queueSubscription != null) {
             work += queueSubscription.poll(queueHandler, FRAGMENT_LIMIT);
         }
@@ -248,7 +258,10 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         return work;
     }
 
-    /** Whether this client is following the live tail; revoked on a queue gap, re-established at the seam. */
+    /**
+     * Whether this client is following the live tail; revoked on a queue gap or an eviction from the queue,
+     * re-established at the seam.
+     */
     public boolean isCaughtUp() {
         return recovery.isCaughtUp();
     }

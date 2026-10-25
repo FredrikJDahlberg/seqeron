@@ -27,8 +27,8 @@ import org.limitless.seqeron.util.Logger;
  * non-contiguous queue frame is expected rather than a new gap, and it may not set the baseline before the walk
  * has — a cold start would otherwise adopt a mid-stream baseline.
  *
- * <p>{@link #isCaughtUp()} is cleared on a live-queue gap and re-established once contiguous: consumers gate
- * real decisions on it. Single-threaded: every method runs on the one duty-cycle thread.
+ * <p>{@link #isCaughtUp()} is cleared on a live-queue gap or an eviction from the queue and re-established once
+ * contiguous: consumers gate real decisions on it. Single-threaded: every method runs on the one duty-cycle thread.
  *
  * <p>Given a snapshot store ({@link #restoreFrom}), a cold start first restores the newest snapshot it holds
  * (doc/snapshot.md §7): it replays the recording from the snapshot's cut, and if the frame there is the round's
@@ -94,8 +94,11 @@ final class ReplayerRecovery {
 
     private long lastRequestMs;
 
-    /** Advances per send; replies not carrying it are stale — see {@link #onControl}. */
+    /** Advances per request, and a resend keeps it; replies not carrying it are stale — see {@link #onControl}. */
     private long requestId;
+
+    /** The request whose {@code Replaying} was taken: each resend of it draws that answer again. */
+    private long answeredRequestId = -1;
 
     private long lastReplayPosition = -1;
     private long lastReplayProgressMs;
@@ -118,6 +121,10 @@ final class ReplayerRecovery {
     private boolean replayGapLogged;
 
     private boolean caughtUp;
+
+    /** The driver evicted this client from the queue and it has not rejoined: nothing live reaches it. */
+    private boolean queueLost;
+
     private int currentLeaderMemberId = -1;
 
     // Live queue frames from beyond the current hole, retained in arrival order.
@@ -300,9 +307,10 @@ final class ReplayerRecovery {
             if (replaying.clientId() != clientId) {
                 return; // another replica's reply on the shared control stream
             }
-            if (replaying.requestId() != requestId) {
-                return;
+            if (replaying.requestId() != requestId || requestId == answeredRequestId) {
+                return; // a superseded request's, or a resend's repeat of the answer already taken
             }
+            answeredRequestId = requestId;
             onReplaying(replaying.replaySessionId(), replaying.catchUpPosition());
         } else if (controlHeader.templateId() == ReplayPendingDecoder.TEMPLATE_ID) {
             replayPending.wrap(buffer, bodyOffset, blockLength, version);
@@ -318,6 +326,24 @@ final class ReplayerRecovery {
      */
     public String fault() {
         return fault;
+    }
+
+    /**
+     * The queue's image went away or came back. Its driver evicts an untethered subscriber that stops polling, and
+     * rejoins it at the tip once rested, so until then the client is not following live whatever its replay reached.
+     * Nothing is requested: the first live frame after the rejoin shows the hole. A queue that closes, as its node
+     * stops, takes the image too.
+     * @param available whether the queue subscription has an image
+     */
+    public void onQueueImage(final boolean available) {
+        queueLost = !available;
+        if (queueLost) {
+            caughtUp = false;
+            Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.QueueGap,
+                       actions.memberId(),
+                       "evicted from the queue, or it closed, at clusterSeqNo=%d — not caught up until it is back",
+                       lastClusterSeqNo);
+        }
     }
 
     /**
@@ -364,7 +390,7 @@ final class ReplayerRecovery {
         final int records = restoring ? restoreRecords() : 0;
         final long nowMs = actions.nowMs();
         if (awaitingReplay && (requestPublicationPending || (nowMs - lastRequestMs) > RESEND_INTERVAL_MS)) {
-            requestReplay(requestFromPosition, requestCutClusterSeqNo); // re-send the same request verbatim
+            resendRequest();
         }
         if (replaySessionId >= 0 && (nowMs - lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS) {
             onReplayStalled();
@@ -401,7 +427,10 @@ final class ReplayerRecovery {
         return true;
     }
 
-    /** Whether this client is following the live tail; revoked on a queue gap, re-established at the seam. */
+    /**
+     * Whether this client is following the live tail; revoked on a queue gap or an eviction from the queue,
+     * re-established at the seam.
+     */
     public boolean isCaughtUp() {
         return caughtUp;
     }
@@ -472,9 +501,9 @@ final class ReplayerRecovery {
     }
 
     /**
-     * Sends {@code ReplayRequest} and marks us awaiting the reply. The Replayer supersedes any in-flight
-     * replay for this clientId, so a resend is safe. {@code requestId} advances on every send, resends
-     * included: only a per-send id tells a stale reply from the live one on the shared control stream.
+     * Sends a new {@code ReplayRequest} and marks us awaiting the reply. The Replayer supersedes any in-flight
+     * replay for this clientId. {@code requestId} advances, so a superseded request's reply is told from this one's
+     * on the shared control stream.
      */
     private void requestReplay(final long fromPosition) {
         requestReplay(fromPosition, ReplayProtocol.NO_CUT);
@@ -492,6 +521,15 @@ final class ReplayerRecovery {
         lastRequestMs = actions.nowMs();
         ++requestId;
         actions.sendReplayRequest(requestId, fromPosition, cutClusterSeqNo);
+    }
+
+    /**
+     * Sends the current request again, under its {@code requestId} (spec R-1): the Replayer answers a resend of the
+     * request a running replay answers with that replay, so a slow answer costs no replay.
+     */
+    private void resendRequest() {
+        lastRequestMs = actions.nowMs();
+        actions.sendReplayRequest(requestId, requestFromPosition, requestCutClusterSeqNo);
     }
 
     /**
@@ -873,7 +911,7 @@ final class ReplayerRecovery {
     }
 
     private void notifyCaughtUp() {
-        if (caughtUp) {
+        if (caughtUp || queueLost) {
             return; // idempotent — reached from the replay-tip, no-replay, and first-live-frame paths
         }
         caughtUp = true;

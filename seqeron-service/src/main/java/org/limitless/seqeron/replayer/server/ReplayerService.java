@@ -12,7 +12,8 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.StringJoiner;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.LongPredicate;
+import java.util.function.LongConsumer;
+import java.util.function.LongUnaryOperator;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -41,6 +42,9 @@ import org.limitless.seqeron.util.Logger;
  */
 public final class ReplayerService {
     static final int MAX_CONCURRENT_REPLAYS = 4;
+
+    /** How long a replay may go unread before its slot is reclaimed: twice the client's own replay-stall timeout. */
+    static final long STALLED_REPLAY_TIMEOUT_MS = 10_000;
 
     // How long the Replayer's own archive call (readiness) waits after one threw.
     private static final long ARCHIVE_RETRY_INTERVAL_MS = 1_000;
@@ -134,7 +138,8 @@ public final class ReplayerService {
     private final FragmentHandler requestHandler =
         (buffer, offset, length, header) -> onRequest(buffer, offset, length);
 
-    private final LongPredicate replayLive;
+    private final LongUnaryOperator replayProgress;
+    private final LongConsumer stalledReplay = this::stopStalledReplay;
 
     /**
      * Production constructor: serves member {@code memberId}'s own Aeron client and archive.
@@ -192,7 +197,7 @@ public final class ReplayerService {
         this.topologyRows = topologyRows;
         this.resolver = new QueueResolver(relayedGroups);
         this.fatalHandler = fatalHandler;
-        this.replayLive = replayer::isReplayLive;
+        this.replayProgress = replayer::replayProgress;
         Arrays.fill(staleReportedFor, NULL_VALUE);
         Arrays.fill(purgeFloors, NULL_VALUE);
 
@@ -267,7 +272,7 @@ public final class ReplayerService {
         int work = drainTopologyRows();
         work += cutIntake == null ? 0 : trackCuts() + purgeBelowFloors();
         work += replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);
-        if (replayer.epochMillis() < archiveRetryAtMs) {
+        if (replayer.monotonicMs() < archiveRetryAtMs) {
             // the Replayer's own archive call threw a moment ago; requests are still answered
         } else if (!ready) {
             work += checkReady();
@@ -297,7 +302,7 @@ public final class ReplayerService {
             ++work;
         }
         work += ready ? trackRelayedCuts() : 0;
-        final long safe = restartSafety.poll(replayer.epochMillis());
+        final long safe = restartSafety.poll(replayer.monotonicMs());
         if (safe != RestartSafety.NO_POSITION) {
             if (cutIntake.log() != null) {
                 cutIntake.log().appendSafe(safe);
@@ -349,7 +354,7 @@ public final class ReplayerService {
     /** Starts tracking a round and tells the applications and gateways of it. */
     private void openRound(final CutHandover cut) {
         inFlightCut = cut;
-        restartSafety.onCut(cut.round(), cut.logPosition(), replayer.epochMillis());
+        restartSafety.onCut(cut.round(), cut.logPosition(), replayer.monotonicMs());
         snapshotRoundEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
             .round(cut.round())
             .clusterSeqNo(cut.clusterSeqNo());
@@ -378,7 +383,7 @@ public final class ReplayerService {
         int work = 0;
         for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
             final long floor = purgeFloors[groupId - 1];
-            if (floor < 0 || replayer.epochMillis() < purgeRetryAtMs) {
+            if (floor < 0 || replayer.monotonicMs() < purgeRetryAtMs) {
                 continue;
             }
             try {
@@ -400,11 +405,11 @@ public final class ReplayerService {
                                 active.recordingId(), target);
                     ++work;
                 } else {
-                    purgeRetryAtMs = replayer.epochMillis() + PURGE_RETRY_INTERVAL_MS;
+                    purgeRetryAtMs = replayer.monotonicMs() + PURGE_RETRY_INTERVAL_MS;
                 }
             } catch (final RuntimeException ex) {
                 onArchiveError("purging a queue recording", ex);
-                purgeRetryAtMs = replayer.epochMillis() + PURGE_RETRY_INTERVAL_MS;
+                purgeRetryAtMs = replayer.monotonicMs() + PURGE_RETRY_INTERVAL_MS;
             }
         }
         return work;
@@ -509,6 +514,12 @@ public final class ReplayerService {
 
         if (!ready || !resolver.serves(queueId)) {
             sendPending(clientId, requestId); // R-5: no queue here has an active recording by that id
+            return;
+        }
+        final long answering = replaySlots.answering(clientId, requestId);
+        if (answering != ReplaySlotAllocator.NO_SLOT) {
+            // R-1: a resend of the request a running replay answers, sent before its client read the answer
+            sendReplaying(clientId, requestId, answering, replaySlots.catchUpPosition(answering));
             return;
         }
         stopReplayForClient(clientId);
@@ -692,7 +703,7 @@ public final class ReplayerService {
 
         final long replaySessionId = replayer.startReplay(recordingId, replayFrom, boundedLength, ReplayProtocol.REPLAY_STREAM_ID);
         replaysServedCounter.increment();
-        replaySlots.activate(clientId, replaySessionId);
+        replaySlots.activate(clientId, requestId, replaySessionId, tip);
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                     "replay for client %d: group %d's recording %d [%d,%d) session %d", clientId, queueId, recordingId,
                     replayFrom, tip, replaySessionId);
@@ -734,12 +745,20 @@ public final class ReplayerService {
     }
 
     /**
-     * Frees the slots whose replay is over: the archive ended it and its client let it go, or the client died.
+     * Frees the slots whose replay is over: the archive ended it and its client let it go, the client died, or its
+     * subscriber read nothing for {@link #STALLED_REPLAY_TIMEOUT_MS}.
      */
     private void reclaimEndedSlots() {
-        if (replaySlots.reclaimEnded(replayLive) > 0) {
+        if (replaySlots.reclaim(replayProgress, replayer.monotonicMs(), STALLED_REPLAY_TIMEOUT_MS, stalledReplay) > 0) {
             drainPending();
         }
+    }
+
+    private void stopStalledReplay(final long replaySessionId) {
+        Logger.info(Logger.CoreComponent.ReplayerService, memberId,
+                    "replay session %d read nothing for %dms; stopping it to free its slot", replaySessionId,
+                    STALLED_REPLAY_TIMEOUT_MS);
+        stopReplay(replaySessionId);
     }
 
     /**
@@ -850,7 +869,7 @@ public final class ReplayerService {
      */
     private void onControlReplyDropped(final long result) {
         controlRepliesDroppedCounter.increment();
-        final long nowMs = replayer.epochMillis();
+        final long nowMs = replayer.monotonicMs();
         final boolean newEpisode = lastControlDropMs == 0 || nowMs - lastControlDropMs >= EPISODE_QUIET_MS;
         lastControlDropMs = nowMs;
         if (newEpisode) {
@@ -871,7 +890,7 @@ public final class ReplayerService {
      */
     private void onArchiveError(final String message, final RuntimeException exception) {
         archiveErrorsCounter.increment();
-        final long nowMs = replayer.epochMillis();
+        final long nowMs = replayer.monotonicMs();
         final boolean newEpisode = lastArchiveErrorMs == 0 || nowMs - lastArchiveErrorMs >= EPISODE_QUIET_MS;
         lastArchiveErrorMs = nowMs;
         if (newEpisode) {
@@ -885,7 +904,7 @@ public final class ReplayerService {
     /** One of the Replayer's own archive calls threw: as {@link #onArchiveError}, then wait before the next. */
     private void onOwnArchiveCallFailed(final String message, final RuntimeException exception) {
         onArchiveError(message, exception);
-        archiveRetryAtMs = replayer.epochMillis() + ARCHIVE_RETRY_INTERVAL_MS;
+        archiveRetryAtMs = replayer.monotonicMs() + ARCHIVE_RETRY_INTERVAL_MS;
     }
 
     /**
