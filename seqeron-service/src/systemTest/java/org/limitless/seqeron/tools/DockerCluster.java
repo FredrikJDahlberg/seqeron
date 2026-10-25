@@ -26,6 +26,8 @@ import org.limitless.seqeron.protocol.PortLayout;
 final class DockerCluster implements AutoCloseable {
     static final int MEMBERS = 3;
     static final int NO_MEMBER = -1;
+    /** The gateway host's id: node-3, which only {@link #startGatewayHost} brings up. */
+    static final int HOST = 3;
     /** What {@link #counter} reads from a member that is down or has not started its sequencer. */
     static final long NO_VALUE = Long.MIN_VALUE;
 
@@ -35,10 +37,14 @@ final class DockerCluster implements AutoCloseable {
         "FAULTERON_DIR", REPO_ROOT.resolve("../faulteron").normalize().toString()));
     private static final List<String> COMPOSE =
         List.of("docker", "compose", "-f", REPO_ROOT.resolve("docker/compose.yml").toString());
+    private static final List<String> HOST_COMPOSE = join(COMPOSE, "--profile", "gateway-host");
+    private static final Pattern RELAY_SOURCE = Pattern.compile("following member archive (\\S+): group");
+    private static final Pattern RELAY_DEPARTURE = Pattern.compile("relay left member archive (\\S+): (.*)");
     private static final Pattern COUNTER = Pattern.compile("^(\\S+) member=\\d+\\s+= (-?\\d+)$");
     private static final long POLL_MS = 500;
 
     private final Path logDir;
+    private boolean hostStarted;
 
     DockerCluster(final Path logDir) {
         this.logDir = logDir;
@@ -51,12 +57,27 @@ final class DockerCluster implements AutoCloseable {
 
     /** Builds the injector image, brings the cluster up healthy, loads the groups, and waits for every queue. */
     void start(final Path topology) {
+        start(topology, true);
+    }
+
+    /**
+     * As {@link #start(Path)}, building the injector image only if {@code injector}. The cluster image is built
+     * unless {@code COMPOSE_BUILD} is 0, as CI sets it once it has built the image through buildx.
+     */
+    void start(final Path topology, final boolean injector) {
         mkdirs();
-        compose(Duration.ofSeconds(120), "down", "-v", "--remove-orphans");
-        require(run(Duration.ofSeconds(600), "docker", "build", "-q", "-t", "faulteron:local",
-                    FAULTERON_DIR.toString()), "faulteron image did not build");
-        require(compose(deadline(120).plusSeconds(600), "up", "--build", "-d", "--wait", "--wait-timeout",
-                        "" + deadline(120).toSeconds()), "cluster did not come up healthy");
+        down();
+        if (injector) {
+            require(run(Duration.ofSeconds(600), "docker", "build", "-q", "-t", "faulteron:local",
+                        FAULTERON_DIR.toString()), "faulteron image did not build");
+        }
+        final List<String> up = new ArrayList<>(List.of("up"));
+        if (!"0".equals(System.getenv("COMPOSE_BUILD"))) {
+            up.add("--build");
+        }
+        up.addAll(List.of("-d", "--wait", "--wait-timeout", "" + deadline(120).toSeconds()));
+        require(compose(deadline(120).plusSeconds(600), up.toArray(String[]::new)),
+                "cluster did not come up healthy");
         final int leader = awaitLeader(deadline(60), NO_MEMBER);
         require(run(Duration.ofSeconds(30), "docker", "cp", topology.toString(), "node-0:/tmp/topology.xml"),
                 "could not copy the topology");
@@ -66,6 +87,52 @@ final class DockerCluster implements AutoCloseable {
             final int member = m;
             await("member " + m + "'s queue to answer a ping", deadline(60), () -> ping(member));
         }
+    }
+
+    /**
+     * Brings the gateway host up serving, its relay trying the members' archives in the order given. Call it once the
+     * groups are active, since the host is ready only once it records them.
+     */
+    void startGatewayHost(final int... members) {
+        final StringBuilder endpoints = new StringBuilder();
+        for (final int m : members) {
+            endpoints.append(endpoints.length() == 0 ? "" : ",").append(archiveEndpoint(m));
+        }
+        hostStarted = true;
+        final List<String> command = join(HOST_COMPOSE, "up", "-d", "--no-deps", "--wait", "--wait-timeout",
+                                          "" + deadline(60).toSeconds(), "node-" + HOST);
+        require(run(deadline(60).plusSeconds(120), Map.of("ARCHIVE_ENDPOINTS", endpoints.toString()), command),
+                "gateway host did not come up serving");
+    }
+
+    /** A member's archive as the relay names it. */
+    static String archiveEndpoint(final int member) {
+        return "node-" + member + ":" + PortLayout.archivePort(member);
+    }
+
+    /** Each member archive the gateway host's relay followed, in order. */
+    List<String> relaySources() {
+        final List<String> sources = new ArrayList<>();
+        final Matcher matcher = RELAY_SOURCE.matcher(hostLog());
+        while (matcher.find()) {
+            sources.add(matcher.group(1));
+        }
+        return sources;
+    }
+
+    /** Each member archive the relay left, and why, in order. */
+    List<String> relayDepartures() {
+        final List<String> departures = new ArrayList<>();
+        final Matcher matcher = RELAY_DEPARTURE.matcher(hostLog());
+        while (matcher.find()) {
+            departures.add(matcher.group(1) + " " + matcher.group(2));
+        }
+        return departures;
+    }
+
+    /** Whatever the gateway host has logged. */
+    String hostLog() {
+        return run(Duration.ofSeconds(60), "docker", "logs", "node-" + HOST).output();
     }
 
     /**
@@ -279,6 +346,16 @@ final class DockerCluster implements AutoCloseable {
             .output().trim();
     }
 
+    /** SIGTERMs every ClusterProbe in the member's container, so each releases its barrier and prints its report. */
+    void terminateProbes(final int member) {
+        run(Duration.ofSeconds(30), "docker", "exec", "node-" + member, "pkill", "-TERM", "-f", "ClusterProbe");
+    }
+
+    /** Everything the member's container has logged, across restarts. */
+    String nodeLog(final int member) {
+        return compose(Duration.ofSeconds(60), "logs", "--no-color", "node-" + member).output();
+    }
+
     boolean isRunning(final int member) {
         final Result result = run(Duration.ofSeconds(30), "docker", "inspect", "-f", "{{.State.Running}}",
                                   "node-" + member);
@@ -317,10 +394,16 @@ final class DockerCluster implements AutoCloseable {
     }
 
     private Result run(final Duration timeout, final List<String> command) {
+        return run(timeout, Map.of(), command);
+    }
+
+    private Result run(final Duration timeout, final Map<String, String> environment, final List<String> command) {
         try {
             final Path output = Files.createTempFile(logDir, "run-", ".out");
-            final Process process = new ProcessBuilder(command).redirectErrorStream(true)
-                .redirectOutput(output.toFile()).start();
+            final ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true)
+                .redirectOutput(output.toFile());
+            builder.environment().putAll(environment);
+            final Process process = builder.start();
             if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
                 process.destroyForcibly();
                 throw new AssertionError("timed out after " + timeout + ": " + String.join(" ", command));
@@ -364,7 +447,24 @@ final class DockerCluster implements AutoCloseable {
                 throw new UncheckedIOException(ex);
             }
         }
-        compose(Duration.ofSeconds(120), "down", "-v", "--remove-orphans");
+        if (hostStarted) {
+            try {
+                Files.writeString(logDir.resolve("node-" + HOST + ".log"), hostLog());
+            } catch (final IOException ex) {
+                throw new UncheckedIOException(ex);
+            }
+        }
+        down();
+    }
+
+    private void down() {
+        run(Duration.ofSeconds(120), join(HOST_COMPOSE, "down", "-v", "--remove-orphans"));
+    }
+
+    private static List<String> join(final List<String> base, final String... more) {
+        final List<String> all = new ArrayList<>(base);
+        all.addAll(List.of(more));
+        return all;
     }
 
     /** A finished command's exit status and its output. */

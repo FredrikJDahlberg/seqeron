@@ -68,6 +68,12 @@ jobs:
           COMPOSE_BUILD: '0'
           TIMEOUT_SCALE: '3'
 
+      - name: Failover soak (JUnit)
+        run: ./gradlew :seqeron-service:networkFaultTest --tests '*DockerFailoverSoakTest'
+        env:
+          COMPOSE_BUILD: '0'
+          TIMEOUT_SCALE: '3'
+
       - name: Upload node logs
         if: failure()
         uses: actions/upload-artifact@v7
@@ -215,6 +221,19 @@ jobs:
         env:
           DIRECTION: request
           DELAY_MS: '200'
+
+      - name: Gateway host relay link (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: |
+          FAULT=loss ./gradlew :seqeron-service:networkFaultTest --tests '*RelayLinkTest'
+          FAULT=jitter ./gradlew :seqeron-service:networkFaultTest --tests '*RelayLinkTest' --rerun
+
+      - name: Slow archive control (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: |
+          DIRECTION=request DELAY_MS=1500 ./gradlew :seqeron-service:networkFaultTest --tests '*SlowArchiveControlTest'
+          DIRECTION=response DELAY_MS=1500 ./gradlew :seqeron-service:networkFaultTest --tests '*SlowArchiveControlTest' --rerun
+          DIRECTION=request DELAY_MS=200 ./gradlew :seqeron-service:networkFaultTest --tests '*SlowArchiveControlTest' --rerun
 
       - name: Upload faulteron logs
         if: failure()

@@ -65,7 +65,16 @@ testing {
                                    file('src/test/resources/topology-test-groups.xml').absolutePath
                     systemProperty 'seqeron.systemTestLogs',
                                    layout.buildDirectory.dir('system-test').get().asFile.absolutePath
-                    doFirst { systemProperty 'seqeron.jar', uberJar.get().asFile.absolutePath }
+                    // TestApplication and TestGateway are harness code in the test source set, so in no jar.
+                    dependsOn tasks.named('compileTestJava')
+                    systemProperty 'seqeron.snapshotTopology',
+                                   file('src/test/resources/topology-test-snapshot.xml').absolutePath
+                    systemProperty 'seqeron.gatewayTopology',
+                                   file('src/test/resources/topology-test-gateway.xml').absolutePath
+                    doFirst {
+                        systemProperty 'seqeron.jar', uberJar.get().asFile.absolutePath
+                        systemProperty 'seqeron.testClasses', sourceSets.test.output.classesDirs.asPath
+                    }
                     // The docker cluster's tests need the faulteron image: networkFaultTest runs them.
                     useJUnitPlatform { excludeTags 'docker' }
                     shouldRunAfter tasks.named('integrationTest')
