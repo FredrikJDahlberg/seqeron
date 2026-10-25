@@ -161,6 +161,10 @@ jobs:
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/mute-voter-test.sh
 
+      - name: Mute voter (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: ./gradlew :seqeron-service:networkFaultTest --tests '*MuteVoterTest'
+
       - name: Leader starved of CPU
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/throttled-leader-test.sh

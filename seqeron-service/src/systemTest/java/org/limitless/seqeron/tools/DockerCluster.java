@@ -77,13 +77,21 @@ final class DockerCluster implements AutoCloseable {
      * @param condition the condition
      */
     void await(final String what, final Duration timeout, final BooleanSupplier condition) {
+        if (!poll(timeout, condition)) {
+            throw new AssertionError("no " + what + " within " + timeout + "; logs in " + logDir);
+        }
+    }
+
+    /** Polls {@code condition} until it holds, and says whether it did within {@code timeout}. */
+    boolean poll(final Duration timeout, final BooleanSupplier condition) {
         final long end = System.nanoTime() + timeout.toNanos();
         while (!condition.getAsBoolean()) {
             if (System.nanoTime() > end) {
-                throw new AssertionError("no " + what + " within " + timeout + "; logs in " + logDir);
+                return false;
             }
             sleep(POLL_MS);
         }
+        return true;
     }
 
     /**
@@ -97,6 +105,16 @@ final class DockerCluster implements AutoCloseable {
     int awaitLeader(final Duration timeout, final int excluded) {
         final int[] leader = {NO_MEMBER};
         await("agreed leader" + (excluded == NO_MEMBER ? "" : " other than member " + excluded), timeout, () -> {
+            leader[0] = agreedLeader(excluded);
+            return leader[0] != NO_MEMBER;
+        });
+        return leader[0];
+    }
+
+    /** As {@link #awaitLeader}, but {@link #NO_MEMBER} instead of a failure when none emerges in time. */
+    int pollLeader(final Duration timeout, final int excluded) {
+        final int[] leader = {NO_MEMBER};
+        poll(timeout, () -> {
             leader[0] = agreedLeader(excluded);
             return leader[0] != NO_MEMBER;
         });
@@ -208,6 +226,22 @@ final class DockerCluster implements AutoCloseable {
             total += Long.parseLong(matcher.group(1));
         }
         return total;
+    }
+
+    /** SIGKILLs the member's container, as a crash does: its mark files stay active. */
+    void kill(final int member) {
+        require(run(Duration.ofSeconds(30), "docker", "kill", "-s", "KILL", "node-" + member),
+                "could not kill node-" + member);
+    }
+
+    /** Starts the member's stopped container and waits for its health check. */
+    void restart(final int member, final Duration timeout) {
+        require(run(Duration.ofSeconds(60), "docker", "start", "node-" + member), "could not start node-" + member);
+        await("node-" + member + " to be healthy", timeout, () -> {
+            final Result health = run(Duration.ofSeconds(30), "docker", "inspect", "-f",
+                                      "{{.State.Health.Status}}", "node-" + member);
+            return health.status() == 0 && health.output().trim().equals("healthy");
+        });
     }
 
     boolean isRunning(final int member) {
