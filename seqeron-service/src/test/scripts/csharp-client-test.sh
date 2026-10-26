@@ -16,8 +16,9 @@
 #   H  a member restarted at a cut: a ReplayerStreamReceiver with no snapshot file walks it from its start
 #                                                                            follow FAILED
 #
-# and no member logs a rejected ingress frame. The control in D reports what the kill had in flight; like
-# failover-test.sh's, it is not asserted, since a kill can land between two frames.
+# and no member logs a rejected ingress frame. D SIGKILLs the leader, as failover-test.sh does, so the run costs
+# what a crash does (doc/fault-tolerance.md §1.2). Its control reports what the kill cost; like failover-test.sh's,
+# it is not asserted, since a kill can land between two frames.
 #
 # Needs the uber jar and the .NET SDK (`dotnet`, or DOTNET naming one). Run it on every Aeron upgrade: the C#
 # client is on Aeron.NET, which trails Java (doc/seqeron-protocol-spec.md, V-1).
@@ -142,8 +143,8 @@ for f in confirm control; do
   wait_for_log "$LOG_DIR/$f.log" "confirm: sending" 30 || echo "$f producer never started"
 done
 sleep 1  # both mid-stream when the leader dies
-kill "${SEQ_PIDS[$L1]}" 2>/dev/null
-echo "    killed leader member $L1"
+kill -9 "${SEQ_PIDS[$L1]}" 2>/dev/null
+echo "    SIGKILLed leader member $L1"
 L2=""; W=0
 until [[ -n "$L2" ]]; do
   sleep 0.5; W=$((W+1))

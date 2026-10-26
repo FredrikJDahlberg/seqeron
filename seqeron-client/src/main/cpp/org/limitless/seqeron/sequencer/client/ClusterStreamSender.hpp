@@ -471,8 +471,10 @@ class ClusterStreamSender
 
     /**
      * Wraps a pre-encoded frame in a SessionMessageHeader and offers it, spinning until it lands. The spin
-     * pumps egress itself: a leader change leaves the publication not-connected until a
-     * NewLeaderEvent/REDIRECT swaps it, and that swap runs on this thread. The term and timestamp are
+     * pumps egress itself: a leader change can leave the publication refusing frames until a
+     * NewLeaderEvent/REDIRECT swaps it, and that swap runs on this thread. A leader that dies leaves its
+     * publication taking frames until the swap, which discards what it has not sent: a frame that lands can still
+     * be lost, and only the queue confirms it (doc/fault-tolerance.md §1.2). The term and timestamp are
      * re-stamped before each retry, as AeronCluster.offer() does, since the new leader drops a stale term.
      *
      * @param bytes the frame's first byte, its messageHeader included

@@ -138,6 +138,31 @@ local cluster on 9300. A member stopped in-process is closed rather than killed,
 delaying, reordering or duplicating them, and every member shares one JVM's CPU and GC, so the harnesses below
 remain the evidence for process death, the network faults faulteron injects, and the C# and C++ clients.
 
+## System tests
+
+```bash
+./gradlew :seqeron-service:systemTest
+```
+
+The harnesses below, ported one at a time to JUnit 6. `ClusterProcesses` launches the members, the probes and
+`clusterctl` as child JVMs off the uber jar, so a kill is a process's death, and reads each member's state from the
+counters in its CnC file rather than from its log: the consensus module's state and role, `REPLAYER_READY`, the
+replays served, the leader the sequencer last recorded. A member that exits unasked fails the wait in progress, and
+each process's output is a file of its own under `seqeron-service/build/system-test/<test>/`. `FailoverProcessTest`
+is `failover-test.sh`; both `SIGKILL` the leader, so that every run takes the crash's path
+([`fault-tolerance.md`](fault-tolerance.md) §1.2). The suite runs on cluster port base 9600, clear of a local cluster and the integration suite.
+
+The tests tagged `docker` run the `docker/compose.yml` cluster with faulteron aimed at a member, and `systemTest`
+leaves them out. They need Docker and a faulteron checkout (`FAULTERON_DIR`, default `../faulteron`):
+
+```bash
+./gradlew :seqeron-service:networkFaultTest   # builds the operator distribution first
+```
+
+`DockerCluster` drives the `docker` CLI rather than Testcontainers, whose compose support refuses the file's fixed
+`container_name`, and reads a member's state with `docker exec node-N clusterctl counters`. `PartitionLeaderTest` and
+`AsymmetricPartitionTest` are `faulteron/partition-leader-test.sh` and `asymmetric-partition-test.sh`. `TIMEOUT_SCALE` stretches its deadlines as it does the scripts'.
+
 ## End-to-end harnesses
 
 The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Nine of the thirteen are Java-only**

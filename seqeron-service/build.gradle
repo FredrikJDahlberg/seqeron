@@ -48,7 +48,57 @@ testing {
                 }
             }
         }
+        // Members, probes and clusterctl as child JVMs off the uber jar, so a kill is a process's death: the
+        // harnesses' replacement, one script at a time. On cluster port base 9600, clear of the suite above.
+        systemTest(JvmTestSuite) {
+            useJUnitJupiter('6.1.3')
+            dependencies {
+                implementation project()
+            }
+            targets.all {
+                testTask.configure {
+                    def uberJar = tasks.named('uberJar').flatMap { it.archiveFile }
+                    inputs.file uberJar
+                    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+                    environment 'SEQERON_PORT_BASE', '9600'
+                    systemProperty 'seqeron.topologyGroups',
+                                   file('src/test/resources/topology-test-groups.xml').absolutePath
+                    systemProperty 'seqeron.systemTestLogs',
+                                   layout.buildDirectory.dir('system-test').get().asFile.absolutePath
+                    // TestApplication and TestGateway are harness code in the test source set, so in no jar.
+                    dependsOn tasks.named('compileTestJava')
+                    systemProperty 'seqeron.snapshotTopology',
+                                   file('src/test/resources/topology-test-snapshot.xml').absolutePath
+                    systemProperty 'seqeron.gatewayTopology',
+                                   file('src/test/resources/topology-test-gateway.xml').absolutePath
+                    doFirst {
+                        systemProperty 'seqeron.jar', uberJar.get().asFile.absolutePath
+                        systemProperty 'seqeron.testClasses', sourceSets.test.output.classesDirs.asPath
+                    }
+                    // The docker cluster's tests need the faulteron image: networkFaultTest runs them.
+                    useJUnitPlatform { excludeTags 'docker' }
+                    shouldRunAfter tasks.named('integrationTest')
+                }
+            }
+        }
     }
+}
+
+// The systemTest tests tagged `docker`: the docker/compose.yml cluster with the faulteron injector aimed at a member
+// (a faulteron checkout at FAULTERON_DIR, default ../faulteron; Docker). The containers use the default port base.
+tasks.register('networkFaultTest', Test) {
+    description = 'Runs the systemTest tests tagged docker against the docker/compose.yml cluster'
+    group       = 'verification'
+
+    testClassesDirs = sourceSets.systemTest.output.classesDirs
+    classpath       = sourceSets.systemTest.runtimeClasspath
+    useJUnitPlatform { includeTags 'docker' }
+    dependsOn 'operatorDist'
+    environment 'SEQERON_PORT_BASE', '9300'
+    systemProperty 'seqeron.repoRoot', rootProject.projectDir.absolutePath
+    systemProperty 'seqeron.topologyGroups', file('src/test/resources/topology-test-groups.xml').absolutePath
+    systemProperty 'seqeron.systemTestLogs', layout.buildDirectory.dir('system-test').get().asFile.absolutePath
+    shouldRunAfter tasks.named('systemTest')
 }
 
 // ── SBE code generation ────────────────────────────────────────────────────────

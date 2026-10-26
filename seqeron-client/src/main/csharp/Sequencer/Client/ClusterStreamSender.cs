@@ -205,9 +205,12 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
 
     /// <summary>
     /// Offers one pre-encoded frame to cluster ingress, spinning until it lands. <c>CLOSED</c> is not terminal:
-    /// during an election <c>AeronCluster</c> closes the ingress publication and waits for a <c>NewLeader</c>, which
-    /// <see cref="PollEgress"/> installs — hence the spin polls. Bounded, since losing quorum would otherwise stop the
-    /// caller's duty cycle. No keep-alive from in here: it would offer on the same stuck publication.
+    /// once it sees the leader's egress end, <c>AeronCluster</c> closes the ingress publication and waits for a
+    /// <c>NewLeader</c>, which <see cref="PollEgress"/> installs — hence the spin polls. A leader that dies ends no
+    /// egress, so its publication takes frames until the <c>NewLeader</c>, which discards what it has not sent: a frame
+    /// that lands can still be lost, and only the queue confirms it (doc/fault-tolerance.md §1.2). Bounded, since
+    /// losing quorum would otherwise stop the caller's duty cycle. No keep-alive from in here: it would offer on the
+    /// same stuck publication.
     /// </summary>
     /// <param name="frame">the frame, from offset 0</param>
     /// <param name="length">its length in bytes</param>

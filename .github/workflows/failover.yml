@@ -68,6 +68,12 @@ jobs:
           COMPOSE_BUILD: '0'
           TIMEOUT_SCALE: '3'
 
+      - name: Failover soak (JUnit)
+        run: ./gradlew :seqeron-service:networkFaultTest --tests '*DockerFailoverSoakTest'
+        env:
+          COMPOSE_BUILD: '0'
+          TIMEOUT_SCALE: '3'
+
       - name: Upload node logs
         if: failure()
         uses: actions/upload-artifact@v7
@@ -128,9 +134,18 @@ jobs:
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/partition-leader-test.sh
 
+      # The same test as JUnit, beside the script until it has run green here.
+      - name: Leader partitioned from its peers (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: ./gradlew :seqeron-service:networkFaultTest --tests '*PartitionLeaderTest'
+
       - name: Asymmetric partition
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/asymmetric-partition-test.sh
+
+      - name: Asymmetric partition (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: ./gradlew :seqeron-service:networkFaultTest --tests '*AsymmetricPartitionTest'
 
       - name: Follower without NAKs
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
@@ -144,17 +159,35 @@ jobs:
         env:
           REPAIR: retransmit
 
+      - name: Unrepaired follower (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: |
+          ./gradlew :seqeron-service:networkFaultTest --tests '*UnrepairedFollowerTest'
+          REPAIR=retransmit ./gradlew :seqeron-service:networkFaultTest --tests '*UnrepairedFollowerTest' --rerun
+
       - name: Slow, duplicating leader links
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/jittery-leader-test.sh
+
+      - name: Jittery leader (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: ./gradlew :seqeron-service:networkFaultTest --tests '*JitteryLeaderTest'
 
       - name: Mute voter
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/mute-voter-test.sh
 
+      - name: Mute voter (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: ./gradlew :seqeron-service:networkFaultTest --tests '*MuteVoterTest'
+
       - name: Leader starved of CPU
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: seqeron-service/src/test/scripts/faulteron/throttled-leader-test.sh
+
+      - name: Leader starved of CPU (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: ./gradlew :seqeron-service:networkFaultTest --tests '*ThrottledLeaderTest'
 
       - name: Gateway host's relay without NAKs
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
@@ -189,9 +222,24 @@ jobs:
           DIRECTION: request
           DELAY_MS: '200'
 
+      - name: Gateway host relay link (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: |
+          FAULT=loss ./gradlew :seqeron-service:networkFaultTest --tests '*RelayLinkTest'
+          FAULT=jitter ./gradlew :seqeron-service:networkFaultTest --tests '*RelayLinkTest' --rerun
+
+      - name: Slow archive control (JUnit)
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: |
+          DIRECTION=request DELAY_MS=1500 ./gradlew :seqeron-service:networkFaultTest --tests '*SlowArchiveControlTest'
+          DIRECTION=response DELAY_MS=1500 ./gradlew :seqeron-service:networkFaultTest --tests '*SlowArchiveControlTest' --rerun
+          DIRECTION=request DELAY_MS=200 ./gradlew :seqeron-service:networkFaultTest --tests '*SlowArchiveControlTest' --rerun
+
       - name: Upload faulteron logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: network-fault-logs
-          path: logs/faulteron/
+          path: |
+            logs/faulteron/
+            seqeron-service/build/system-test/
