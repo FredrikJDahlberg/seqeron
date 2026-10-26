@@ -75,8 +75,15 @@ testing {
                         systemProperty 'seqeron.jar', uberJar.get().asFile.absolutePath
                         systemProperty 'seqeron.testClasses', sourceSets.test.output.classesDirs.asPath
                     }
-                    // The docker cluster's tests need the faulteron image: networkFaultTest runs them.
-                    useJUnitPlatform { excludeTags 'docker' }
+                    // The docker cluster's tests need the faulteron image: networkFaultTest runs them. ChaosTest runs
+                    // 20 rounds, so chaos.yml selects it alone with -Pchaos.
+                    useJUnitPlatform {
+                        if (project.hasProperty('chaos')) {
+                            includeTags 'chaos'
+                        } else {
+                            excludeTags 'docker', 'chaos'
+                        }
+                    }
                     shouldRunAfter tasks.named('integrationTest')
                 }
             }
