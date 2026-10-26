@@ -82,13 +82,24 @@ jobs:
           NODE_START_TIMEOUT_SECS: '30'
           APP_CATCHUP_TIMEOUT_SECS: '60'
 
+      # The JUnit port beside the script; ONLY_FAULT takes the same fault names.
+      - name: Chaos run (JUnit)
+        run: ./gradlew :seqeron-service:systemTest --tests '*ChaosTest'
+        env:
+          SEED: ${{ github.event.inputs.seed }}
+          ROUNDS: ${{ github.event.inputs.rounds || '20' }}
+          ONLY_FAULT: ${{ matrix.only_fault }}
+          TIMEOUT_SCALE: '2'
+
       # The SEED is in here, and a failing chaos run is worthless without it.
       - name: Upload chaos logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: chaos-logs-${{ matrix.leg }}
-          path: logs/chaos/
+          path: |
+            logs/chaos/
+            seqeron-service/build/system-test/ChaosTest/
 
   # One leader kill with producers streaming across it: the end-to-end proof that PendingSends recovers
   # what a failover loses, and the check that Aeron still drops ingress stamped with an old term — the

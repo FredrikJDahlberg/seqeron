@@ -152,6 +152,17 @@ each process's output is a file of its own under `seqeron-service/build/system-t
 is `failover-test.sh`; both `SIGKILL` the leader, so that every run takes the crash's path
 ([`fault-tolerance.md`](fault-tolerance.md) §1.2). The suite runs on cluster port base 9600, clear of a local cluster and the integration suite.
 
+The tests tagged `docker` run the `docker/compose.yml` cluster with faulteron aimed at a member, and `systemTest`
+leaves them out. They need Docker and a faulteron checkout (`FAULTERON_DIR`, default `../faulteron`):
+
+```bash
+./gradlew :seqeron-service:networkFaultTest   # builds the operator distribution first
+```
+
+`DockerCluster` drives the `docker` CLI rather than Testcontainers, whose compose support refuses the file's fixed
+`container_name`, and reads a member's state with `docker exec node-N clusterctl counters`. `PartitionLeaderTest` and
+`AsymmetricPartitionTest` are `faulteron/partition-leader-test.sh` and `asymmetric-partition-test.sh`. `TIMEOUT_SCALE` stretches its deadlines as it does the scripts'.
+
 ## End-to-end harnesses
 
 The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Nine of the thirteen are Java-only**
