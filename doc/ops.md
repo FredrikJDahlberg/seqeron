@@ -229,7 +229,7 @@ This repository's processes use the ids below. An application's should start at 
 | `clientId` | used by |
 |---|---|
 | 1 | `start-three-node-cluster.sh` per-member probe; `DockerFailoverSoakTest` observer |
-| 7 | `replay-bench.sh` probe; `seqeron-examples` (Java) |
+| 7 | `ReplayColdStartTest` probe; `seqeron-examples` (Java) |
 | 8 | `seqeron-examples` (C++) |
 | 9 | `ClusterProbe follow`/`confirm` default |
 | 10 | `TestGateway serve` default; `ChaosTest` second consumer |
