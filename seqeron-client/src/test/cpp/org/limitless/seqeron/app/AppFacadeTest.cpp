@@ -4,6 +4,8 @@
 // the end-to-end scripts. The Java twins' reference consumer is tools/TestGateway; this side's are
 // seqeron-examples' ColocatedApp.cpp and GatewayApp.cpp.
 
+#include <array>
+#include <stdexcept>
 #include <type_traits>
 
 #include <gtest/gtest.h>
@@ -80,6 +82,71 @@ struct OwningListener : StubListener
     Gateway<OwningListener> gateway{ { .gatewayName = "GW-T-A", .clientId = 11, .memberId = 0 }, *this };
     Application<OwningListener> app{ { .sourceId = 3, .clientId = 21, .memberId = 1 }, *this };
 };
+
+// Takes part in no round; the façades only ask it for its format when a round is under way.
+struct StubSnapshotListener : SnapshotListener
+{
+    std::uint32_t formatVersion() const override
+    {
+        return 1;
+    }
+
+    std::int32_t onSnapshot(std::span<std::uint8_t>, std::int32_t) override
+    {
+        return 0;
+    }
+
+    void onRestore(std::span<const std::uint8_t>, std::int32_t, std::uint32_t) override
+    {}
+};
+
+TEST(ApplicationFacade, ShutGateDeclinesEveryPublish)
+{
+    StubListener listener;
+    Application<StubListener> app{ { .sourceId = 3, .clientId = 21, .memberId = 1 }, listener };
+    const std::array<std::uint8_t, 16> payload{};
+
+    EXPECT_FALSE(app.isCaughtUp());
+    EXPECT_EQ(protocol::Publish::Declined, app.publish(5, payload.data(), payload.size()));
+    EXPECT_EQ(protocol::Publish::Declined, app.reply(2, 9, 1, 5, payload.data(), payload.size()));
+}
+
+TEST(ApplicationFacade, SnapshotListenerNeedsADirectory)
+{
+    StubListener listener;
+    StubSnapshotListener snapshots;
+
+    EXPECT_THROW((Application<StubListener>{ { .sourceId = 3, .snapshotListener = &snapshots }, listener }),
+                 std::invalid_argument);
+}
+
+TEST(GatewayFacade, TakesNoConnectionUntilServing)
+{
+    StubListener listener;
+    Gateway<StubListener> gateway{ { .gatewayName = "GW-T-A", .clientId = 11, .memberId = 0 }, listener };
+    const char data[8] = {};
+
+    EXPECT_FALSE(gateway.isCaughtUp());
+    EXPECT_EQ(Gateway<StubListener>::UNRESOLVED, gateway.gatewayId());
+    EXPECT_EQ(Gateway<StubListener>::NO_CONNECTION, gateway.openConnection(data, sizeof(data)));
+    gateway.closeConnection(0);
+    gateway.gateClosed();
+    EXPECT_FALSE(gateway.isServing());
+}
+
+TEST(GatewayFacade, SnapshotListenerNeedsASourceIdThenADirectory)
+{
+    StubListener listener;
+    StubSnapshotListener snapshots;
+
+    EXPECT_THROW(
+        (Gateway<StubListener>{
+            { .gatewayName = "GW-T-A", .snapshotListener = &snapshots, .snapshotDirectory = "unused" }, listener }),
+        std::invalid_argument);
+    EXPECT_THROW(
+        (Gateway<StubListener>{ { .gatewayName = "GW-T-A", .sourceId = 4, .snapshotListener = &snapshots }, listener }),
+        std::invalid_argument);
+}
 
 TEST(ApplicationFacade, ShutGateDeclinesAndLeadsNothing)
 {

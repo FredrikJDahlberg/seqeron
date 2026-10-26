@@ -37,6 +37,9 @@ final class ClusterProcesses implements AutoCloseable {
     static final long NO_VALUE = Long.MIN_VALUE;
 
     private static final String JAR = System.getProperty("seqeron.jar");
+    // Set when the build measures coverage; each child then writes an exec file named for its log.
+    private static final String JACOCO_AGENT = System.getProperty("seqeron.jacocoAgent");
+    private static final String JACOCO_CHILDREN = System.getProperty("seqeron.jacocoChildren");
     private static final String JAVA = Path.of(System.getProperty("java.home"), "bin", "java").toString();
     // seqeron-home.sh's SEQERON_JAVA_OPTS.
     static final List<String> JAVA_OPTS = List.of(
@@ -204,8 +207,14 @@ final class ClusterProcesses implements AutoCloseable {
 
     /** Dumps member {@code m}'s archive through {@code SbeLogPrinter}, to the process's log. */
     Child logPrinter(final String name, final int m) {
-        return launch(name, List.of("-cp", JAR, SbeLogPrinter.class.getName(),
-                                    baseDir.resolve("archive-" + m).toString()));
+        return logPrinter(name, baseDir.resolve("archive-" + m).toString());
+    }
+
+    /** Runs {@code SbeLogPrinter} with the given arguments. */
+    Child logPrinter(final String name, final String... arguments) {
+        final List<String> args = new ArrayList<>(List.of("-cp", JAR, SbeLogPrinter.class.getName()));
+        args.addAll(List.of(arguments));
+        return launch(name, args);
     }
 
     /** Copies a topology document without its {@code <snapshots>} element. */
@@ -366,6 +375,9 @@ final class ClusterProcesses implements AutoCloseable {
     private Child launch(final String name, final List<String> args, final Map<String, String> environment) {
         final List<String> command = new ArrayList<>(List.of(JAVA));
         command.addAll(JAVA_OPTS);
+        if (JACOCO_AGENT != null) {
+            command.add("-javaagent:" + JACOCO_AGENT + "=destfile=" + JACOCO_CHILDREN + "/" + name + ".exec");
+        }
         command.addAll(args);
         final Path log = logDir.resolve(name + ".log");
         try {
