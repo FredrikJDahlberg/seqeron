@@ -72,6 +72,11 @@ testing {
                     systemProperty 'seqeron.gatewayTopology',
                                    file('src/test/resources/topology-test-gateway.xml').absolutePath
                     doFirst {
+                        // The children are separate JVMs, so each gets the agent and its own exec file.
+                        def agent = (extensions.getByType(JacocoTaskExtension).asJvmArg =~ /-javaagent:([^=]+)=/)[0][1]
+                        systemProperty 'seqeron.jacocoAgent', agent
+                        systemProperty 'seqeron.jacocoChildren',
+                                       layout.buildDirectory.dir('jacoco/systemTest-children').get().asFile.absolutePath
                         systemProperty 'seqeron.jar', uberJar.get().asFile.absolutePath
                         systemProperty 'seqeron.testClasses', sourceSets.test.output.classesDirs.asPath
                     }
@@ -286,5 +291,26 @@ publishing {
             artifactId = 'seqeron-service'
             from components.java
         }
+    }
+}
+
+// Line coverage across the unit, integration and system suites, with the client module's classes. `test` alone
+// leaves the Aeron-dependent classes at zero, because it runs no Aeron runtime.
+tasks.register('jacocoMergedReport', JacocoReport) {
+    description = 'Coverage of test, integrationTest and systemTest, and of their member JVMs, in one report'
+    group = 'verification'
+    def suites = ['test', 'integrationTest', 'systemTest']
+    // Not dependsOn: a failing suite must not stop the report on the others.
+    mustRunAfter suites.collect { tasks.named(it) }
+    executionData.setFrom(suites.collect { layout.buildDirectory.file("jacoco/${it}.exec") },
+                          fileTree(layout.buildDirectory.dir('jacoco/systemTest-children')) { include '*.exec' })
+    def generated = 'org/limitless/seqeron/sbe/**'
+    classDirectories.setFrom(files([project, project(':seqeron-client')].collect { p ->
+        fileTree(dir: p.sourceSets.main.output.classesDirs.singleFile, exclude: generated)
+    }))
+    sourceDirectories.setFrom(files([project, project(':seqeron-client')].collect { it.sourceSets.main.allJava.srcDirs }))
+    reports {
+        xml.required  = true
+        html.required = true
     }
 }

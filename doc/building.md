@@ -99,7 +99,9 @@ The Java suite covers the deterministic decision-making — `Sequencer`, and `Re
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
 mocks. Everything that needs an Aeron runtime is covered by `core_tests`, the integration suite and the
 system tests below. Coverage is a JaCoCo report at `build/reports/jacoco/test/`, written by
-`./gradlew test`.
+`./gradlew test`, which leaves the Aeron-dependent classes at zero. `./gradlew :seqeron-service:jacocoMergedReport`
+merges the unit, integration and system suites, and the system suite's member JVMs, into
+`seqeron-service/build/reports/jacoco/jacocoMergedReport/`; run the suites first, in one Gradle invocation.
 
 ## Integration tests
 
