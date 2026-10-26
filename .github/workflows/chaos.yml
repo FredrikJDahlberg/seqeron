@@ -67,7 +67,7 @@ jobs:
       # liveness timeouts measure wall clock. The mark-file settle and driver-loss grace are NOT
       # raised — they are Aeron's own 10s timeout, which a slow host does not lengthen.
       - name: Chaos run
-        run: ./gradlew :seqeron-service:systemTest --tests '*ChaosTest'
+        run: ./gradlew :seqeron-service:systemTest -Pchaos
         env:
           SEED: ${{ github.event.inputs.seed }}
           ROUNDS: ${{ github.event.inputs.rounds || '20' }}

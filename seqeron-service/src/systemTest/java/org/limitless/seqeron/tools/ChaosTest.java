@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Timeout;
@@ -28,8 +29,10 @@ import org.junit.jupiter.api.io.TempDir;
  * heals it, and checks the steady-state invariants; at the end every member's queue recording must be gap-free,
  * monotone and the same length. {@code SEED=<n>} replays a fault sequence; {@code ROUNDS}, {@code ONLY_FAULT} (one of
  * {@link Fault}, case-insensitive) and {@code STEADY_STATE_SECS} tune the run, {@code TIMEOUT_SCALE} stretches the
- * deadlines. Every fault is a signal or trigger file, as the single-shot tests use.
+ * deadlines. Every fault is a signal or trigger file, as the single-shot tests use. Tagged {@code chaos}:
+ * {@code systemTest} leaves it out unless run with {@code -Pchaos}.
  */
+@Tag("chaos")
 class ChaosTest {
     private enum Fault { KILL_LEADER, KILL_FOLLOWER, SIGKILL_NODE, PAUSE_NODE, QUEUE_DROP, QUEUE_STALL }
 
