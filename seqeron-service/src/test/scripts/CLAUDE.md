@@ -9,7 +9,7 @@ deadlines; kills by the PID or container it started; and gives every boot a log 
 
 `seqeron-service/src/test/scripts` holds what is left: three bash harnesses for the other client tiers —
 `csharp-client-test.sh`, `csharp-windows-test.sh` (Git Bash on Windows, with its member in WSL1) and
-`cpp-client-test.sh` — plus `start-three-node-cluster.sh`, the operator-facing local cluster, and `replay-bench.sh`.
+`cpp-client-test.sh` — plus `start-three-node-cluster.sh`, the operator-facing local cluster.
 They still resolve paths relative to the repository root — they were written when this tree sat under `cluster/`, so
 check the depth of any `../..` you add.
 
