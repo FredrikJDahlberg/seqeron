@@ -30,6 +30,7 @@ testing {
             dependencies {
                 implementation project()
                 implementation "io.aeron:aeron-test-support:${rootProject.ext.aeronVersion}"
+                implementation "uk.co.real-logic:sbe-tool:${rootProject.ext.sbeVersion}"  // SbeLogPrinterTest loads IRs
             }
             targets.all {
                 testTask.configure {

@@ -207,8 +207,14 @@ final class ClusterProcesses implements AutoCloseable {
 
     /** Dumps member {@code m}'s archive through {@code SbeLogPrinter}, to the process's log. */
     Child logPrinter(final String name, final int m) {
-        return launch(name, List.of("-cp", JAR, SbeLogPrinter.class.getName(),
-                                    baseDir.resolve("archive-" + m).toString()));
+        return logPrinter(name, baseDir.resolve("archive-" + m).toString());
+    }
+
+    /** Runs {@code SbeLogPrinter} with the given arguments. */
+    Child logPrinter(final String name, final String... arguments) {
+        final List<String> args = new ArrayList<>(List.of("-cp", JAR, SbeLogPrinter.class.getName()));
+        args.addAll(List.of(arguments));
+        return launch(name, args);
     }
 
     /** Copies a topology document without its {@code <snapshots>} element. */

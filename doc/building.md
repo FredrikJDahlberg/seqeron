@@ -122,6 +122,9 @@ since a client's `ReplayerRecovery` would hide a repeated frame or replay over a
 onwards once each, in order, and the same frame wherever two hold the same groupSeqNo. `InProcessCluster` activates
 its one group before a test starts, since the cluster sequences nothing before it.
 
+`SbeLogPrinterTest` sequences five probe frames through three members, stops them, and dumps a member's archive: the
+recordings, the frames named and numbered, the stream filter and `--oneline`.
+
 `CommittedEntryLossTest` scripts a fault sequence under which Aeron Cluster 1.53.2 loses a committed entry: a
 follower restarts while the leader waits on a member that cannot copy the log, truncates the entries it
 acknowledged, and the leader is cut before they are copied back. Each step waits on the members' election state
@@ -165,6 +168,7 @@ children's classpath. A test with knobs reads them from the environment, named b
 | `GatewayHostTest` | A `confirm` producer on a gateway host (node 3) streams while the member its relay reads, the leader, is killed: every frame comes back exactly once, in order, and the relay moves to another member. The host is then restarted, and a fresh `ClusterProbe` follower there catches up from its new recording |
 | `SnapshotTest` | Application snapshots on a live three-member cluster: the `TestGateway` pair and a `TestApplication` replica per member take part in rounds every 2 s, and the test restarts the standby, fails over onto the restored instance, brings the other back as a hot standby that restores, starts a round with `clusterctl request-snapshot`, restarts a follower's replica, and kills the cluster leader. Every restore reaches the state the log implies and no instance diverges from a sequenced round |
 | `ReplayColdStartTest` | A cold `ClusterProbe follow` on member 1 replays `REPLAY_PRELOAD` (20,000) preloaded frames to caught up within 120 s, on a quiet cluster and while four times as many more are sequenced, and has delivered them all in order. It prints the archive size and rate and asserts neither; `REPLAY_PRELOAD=400000` is the case that used to hang |
+| `ClusterToolsTest` | `clusterctl`, `ClusterProbe` and `SbeLogPrinter` as an operator runs them, against one live cluster: usage and argument errors with their exit codes, `start`, `counters`, `list-members`, `trim-log` with no snapshots, the refusals of `request-snapshot` and `activate`, the probe's `ping`, `submit`, `confirm` and `follow`, `shutdown` on a follower and on the leader, and the printer's schemas, filters and argument errors on the stopped members' archives |
 | `ChaosTest` | Randomized fault injection against a live three-member cluster, with a consumer replica on every member and the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate. Each round draws one of kill-leader, kill-follower, `SIGKILL` of a follower, pause, queue-drop and queue-stall, heals it, and checks the invariants; at the end every member's queue recording is gap-free and the same length. It prints its `SEED`, and `SEED=<n>` replays the draws; `ROUNDS`, `ONLY_FAULT` and `STEADY_STATE_SECS` tune the run. Tagged `chaos`, so `systemTest` leaves it out; `./gradlew :seqeron-service:systemTest -Pchaos` runs it alone, as `chaos.yml` does |
 
 The tests tagged `docker` run the `docker/compose.yml` cluster, and `systemTest` leaves them out. They need Docker, and
