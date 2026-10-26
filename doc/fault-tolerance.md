@@ -47,7 +47,8 @@ The queue publications and their recordings are created once, when the first top
 groups (spec §7.4), and survive leadership changes, since `aeron:ipc` has no port to conflict on. A member's
 recording of a queue is therefore one continuous run across every leader tenure it has seen.
 
-So any member can serve full history, or a gap, to its own clients, and losing a member loses no history.
+So any member can serve its history, or a gap, to its own clients, and losing a member loses no history. Without
+a `<snapshots>` policy that history starts at `groupSeqNo` 1; with one it starts at the member's newest safe cut (§0).
 
 ### 1.2 Leader failover
 
@@ -122,7 +123,7 @@ is refused until their liveness timeout (about 10 s) has passed.
 
 The remaining members hold identical recordings and keep quorum, and an election moves leadership if the
 failed member led. In a three-member cluster a second failure loses quorum. A restarted member replays the
-full log and rebuilds its recording. Start-up has the same bound — the recording must be live within 5 s
+log, from the start or from its newest safe snapshot (§0), and rebuilds its recording. Start-up has the same bound — the recording must be live within 5 s
 (`QUEUE_RECORDING_START_TIMEOUT_MS`) — so a member that exits 70 again at once still has broken storage.
 
 ### 1.4 A node whose applied log is truncated takes itself down
@@ -252,9 +253,10 @@ The Replayer is not on the live path; clients use it only to catch up. Its job i
 correctly, to many clients at once, and to say so plainly when it cannot.
 
 - **One recording.** It serves only the member's active queue recording. Every start of the member replays the
-  log from `clusterSeqNo` 1 into a new recording, so the active one holds the whole log, and an older one is a
-  prefix of it that nothing reads.
-- **Integrity.** Each client checks that the first frame it dispatches is `clusterSeqNo` 1, and that a resumed
+  log into a new recording, from `clusterSeqNo` 1 or, under a `<snapshots>` policy, from the restored cut (§0),
+  so the active one holds all the log the member keeps, and an older one is a prefix of it that nothing reads.
+- **Integrity.** Each client checks that the first frame it dispatches is `groupSeqNo` 1 (or the frame at its
+  snapshot's cut, §3.4), and that a resumed
   replay opens on the frame it resumed from; either failing is fatal to the client. A member's recording that
   is missing or corrupt therefore stops the clients that read it rather than feeding them a short history.
 - **Archive errors.** A request whose archive call throws is answered `ReplayPending`, without touching live
@@ -300,8 +302,9 @@ which is unit-tested directly, case for case across the languages.
   a second gap. Past the bound, the client drops them and walks again.
 - **`isCaughtUp()` is not latched.** It can clear again on a later gap; the gateway fences (§2.1) and the
   leader gate (§4) depend on that.
-- **The first frame is 1.** The first frame a client ever delivers must have `groupSeqNo` 1, or recovery
-  stops and the receiver's next poll throws: the member's recording must reach the start of the queue.
+- **The first frame is 1.** Without a snapshot to restore, the first frame a client ever delivers must have
+  `groupSeqNo` 1, or recovery stops and the receiver's next poll throws: the member's recording must reach the
+  start of the queue, which under a `<snapshots>` policy it does not after a restart (§0).
 - **One replay subscription per replay.** The replay stream (201) is shared by every client on the member,
   and an Aeron publication runs at its slowest tethered subscriber. A client therefore subscribes to it only
   for the duration of its replay, filtered to that replay's session id. A subscription held open between
@@ -330,14 +333,15 @@ directly.
 - **Member lost.** Nothing received for 3 s (`SOURCE_TIMEOUT_MS`, three cluster heartbeats), an ended
   replay, or an archive request unanswered for 1 s moves the relay to the next member in
   `SEQERON_ARCHIVE_ENDPOINTS`. It resumes there at the recording position its last frame ended at, since
-  every member's active recording starts at `clusterSeqNo` 1 and its positions follow from the frames. If the
+  every member's active recording starts at `clusterSeqNo` 1 (without a `<snapshots>` policy) and its positions
+  follow from the frames. If the
   frame at that position is not the next one, it replays that member's recording from its start and skips
   what it already has; a member that has recorded less than the relay has published is passed over. After
   every member has failed in a row, it waits 500 ms before trying again.
 - **Restart.** A restarted relay starts a new local recording and relays the log from `clusterSeqNo` 1, as a
   member's full-log replay does, so the host's new recording starts at `clusterSeqNo` 1, as a client checks
-  (§3.1). The cost is the
-  whole history over the network per restart.
+  (§3.1). The cost is the whole history over the network per restart. Under a `<snapshots>` policy it starts
+  again from the cut it restored at instead ([`snapshot.md`](snapshot.md) §10).
 - **The local recording.** A local queue that refuses a frame is not spun on: the frame is offered again next
   cycle, and the member's replay waits under Aeron flow control. A local recording that stops, or makes no
   progress for `replayer.queueStallTimeoutMs` (default 5 s) while the queue is back-pressured, exits the process
