@@ -192,9 +192,9 @@ why a client records the fault and raises it from its own duty cycle instead.
 is `Unsequenced` (100) on ingress, republished as `Sequenced` (101) on the queue, carrying one opaque
 length-prefixed payload named by `header.payloadId`. The **system** family is seqeron's own vocabulary
 (spec §7), named by `header.systemEventType` at the same offset: `UnsequencedSystem` (102) →
-`SequencedSystem` (103) for the twelve events a producer submits, plus five templates of their own for
+`SequencedSystem` (103) for the thirteen events a producer submits, plus five templates of their own for
 the five the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105), `GatewayActive`
-(106), `SnapshotStarted` (107), `SessionClosed` (108). Sequencing is copy-18/append-16 for both, the payload is never re-encoded, and `sequenceMessage`
+(106), `SnapshotStarted` (107), `SessionClosed` (108). Sequencing is copy-20/append-24 for both, the payload is never re-encoded, and `sequenceMessage`
 validates every frame against `doc/seqeron-protocol-spec.md` §9.2.
 
 **The cluster tier decodes no `payloadId` at all** — every application payload is copied through
