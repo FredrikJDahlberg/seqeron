@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * paused-subscriber-test.sh: a queue subscriber that stops polling must not take its member down. A co-located follow
+ * A queue subscriber that stops polling must not take its member down. A co-located follow
  * on member 0 is SIGSTOPped and more than two queue windows of frames are flooded through member 1. Until the driver
  * evicts it, the stopped subscriber holds the queue's window, and a full window behind it back-pressures the
  * sequencer, which terminates after 5 s of back-pressure with no recording progress. seqeron's drivers evict well

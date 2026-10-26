@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * gap-recovery-test.sh: a consumer that is caught up, following live off its co-located member's queue, must heal a
+ * A consumer that is caught up, following live off its co-located member's queue, must heal a
  * dropped live queue frame: detect the clusterSeqNo gap, resume the member's recording at the hole, and keep
  * delivering. Members 1 and 2 start first so one of them leads, and member 0, the consumer's, is never killed. After a
  * leader failover the consumer is armed over SIGUSR1 to drop the next GAP_SIZE live frames, and a paced flood is

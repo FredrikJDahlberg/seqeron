@@ -35,14 +35,13 @@ import org.limitless.seqeron.util.Logger;
  * by the cluster tier and speaking no FIX.
  *
  * <p><b>Harness code, and it lives in the test source set</b> — nothing in a deployment runs it, so it is
- * in no jar. {@code chaos-runner.sh} launches it from {@code cluster/build/classes/java/test} beside the
- * uber jar, the way a test-tier tool is launched, and fails with a message
- * naming {@code ./gradlew :cluster:compileTestJava} if that has not been built. It sits in
+ * in no jar. {@code ClusterProcesses} launches it from {@code seqeron-service/build/classes/java/test} beside the
+ * uber jar, the way a test-tier tool is launched. It sits in
  * {@link ClusterProbe}'s package because it reuses that class's cluster-connect and offer plumbing, which
  * is package-private and stays that way.
  *
  * <p>{@link ClusterProbe} gave core's harnesses a load generator and a queue consumer, which is what four of
- * the five needed. {@code chaos-runner.sh} needed a fifth thing they cannot supply: a <b>gateway pair</b>
+ * the five needed. {@code ChaosTest} needed a fifth thing they cannot supply: a <b>gateway pair</b>
  * under the faults. Everything that machinery does is the cluster tier's own — {@code GatewayStarted}
  * binding a cluster session to a {@code gatewayId}, the sequencer synthesizing {@code GatewayActive} on all
  * four paths, a standby opening its gate on promotion, and the fences closing it — and none of it
@@ -222,7 +221,7 @@ public final class TestGateway {
     }
 
     /**
-     * The designation, logged on the edge where it changes. {@code chaos-runner.sh} reads this line to tell
+     * The designation, logged on the edge where it changes. {@code ChaosTest} reads this line to tell
      * which instance of the pair is live, so it tracks the activation rather than the gate, and a fenced instance
      * logs none.
      * @return units of work done

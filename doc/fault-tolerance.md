@@ -81,8 +81,8 @@ how the leader went:
   end first is a race.
 
 At 100 µs pacing a producer loses about 100 frames on the second path, and on the first the whole rest of the
-tests' 20,000-frame stream, 10,000 to 15,000. `failover-test.sh` and `FailoverProcessTest` `SIGKILL` the
-leader, and take the first every time; a leader stopped with `SIGTERM` leaves each path to about half the runs.
+tests' 20,000-frame stream, 10,000 to 15,000. `FailoverProcessTest` `SIGKILL`s the
+leader and takes the first every time; a leader stopped with `SIGTERM` leaves each path to about half the runs.
 The session survives either way, so neither side sees a fault.
 §5 describes how a producer detects and resends those frames.
 
@@ -155,7 +155,7 @@ procedures.
 A gateway is an active/standby pair (spec §5). The client tier's `Gateway` façade, in every language,
 implements everything seqeron defines for one instance: the list row, the designation, `GatewayStarted`,
 connection ids, the connection lifecycle frames, confirmed ingress and the fences. The application supplies
-its external connections. `TestGateway` is the reference consumer, and `chaos-runner.sh` runs a pair of them
+its external connections. `TestGateway` is the reference consumer, and `ChaosTest` runs a pair of them
 under fault injection (§6).
 
 ### 2.1 Fences
@@ -427,7 +427,7 @@ The result is every frame sequenced exactly once, in order.
 A producer that cannot see the leader is gone keeps placing frames until `PendingSends` is full, then places
 nothing until the new term; `ClusterProbe`'s holds 4,096, and after a leader's death resends all of them.
 
-`failover-test.sh` and `FailoverProcessTest` run two producers across a leader kill: the one using `PendingSends`
+`FailoverProcessTest` runs two producers across a leader kill: the one using `PendingSends`
 must see every frame on the queue exactly once and in order, and the other reports what it lost.
 `cpp-client-test.sh` and `csharp-client-test.sh` run the same check with the C++ and C# clients.
 
@@ -440,37 +440,38 @@ must see every frame on the queue exactly once and in order, and the other repor
   §1.3), `seqeron_sequencer_gateway_promotion_total` (§2.2), the `seqeron_replayer_*` family (§3.1), and
   Prometheus's per-member `up`.
 
-Each failure above has a harness that produces it against a live cluster, all under
-`seqeron-service/src/test/scripts`:
+Each failure above has a test that produces it against a live cluster, in `seqeron-service/src/systemTest` (the
+three client-tier harnesses are scripts under `seqeron-service/src/test/scripts`):
 
-| harness | what it does, and what must hold |
+| test | what it does, and what must hold |
 | --- | --- |
-| `chaos-runner.sh` | randomized faults against three members and a `TestGateway` pair, reproducible from its printed seed: kill and restart the leader or a follower, `SIGKILL` a follower, `SIGSTOP`/`SIGCONT` a member, drop one live queue frame (§3.2), stop a member's queue recording (§1.3, asserting the member exits). After each round there must be one leader, the pair must still serve, and consumers must still deliver in order. At the end every member's recording must be gap-free, strictly increasing in `clusterSeqNo`, and at the same high mark on all three (§1.1) |
-| `failover-test.sh` | a leader kill with a replay consumer, and the confirmed-ingress check of §5 |
-| `gap-recovery-test.sh` | a caught-up consumer drops one live frame after a leader failover, and must resume and keep delivering (§3.2) |
-| `paused-subscriber-test.sh` | a caught-up consumer is `SIGSTOP`ped while more than two queue windows go by; its member must stay up, with no queue-stall fatal (§1.3), and once resumed the consumer must heal the gap its eviction left (§3.2) |
-| `session-replace-test.sh` | a `TestApplication` on a follower is `SIGSTOP`ped past its session timeout, then the other two members are, so its member has no quorum; each time it must open a new session rather than fence (§2.1, §4), and the cluster heartbeat must keep reaching it while an attempt is pending. Then both `TestGateway` instances are paused past their session timeout: the standby, designated while its own session was lost, must replace it and serve rather than fence (§2.1) |
-| `replayer-restart-test.sh` | member 0's `SequencerServer` is killed under a caught-up client; the client must fail fast, and a fresh cold start must be served from the member's new recording alone (§3.1) |
-| `gateway-host-test.sh` | a gateway host whose relay reads the leader, which is then killed; a `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to another member. The host is then restarted, and a cold start there must catch up from its new recording (§3.3) |
-| `snapshot-test.sh` | the `TestGateway` pair on three members with snapshot rounds every 2 s. The standby restarts and restores, the active instance is killed and the restored one takes over, and the killed one returns as a hot standby, restoring from the file it confirmed while it served. Each restore must report the state the client traffic implies, and no instance may be fenced, so every round is also compared against the restored state (§3.4) |
+| `ChaosTest` | randomized faults against three members and a `TestGateway` pair, reproducible from its printed seed: kill and restart the leader or a follower, `SIGKILL` a follower, `SIGSTOP`/`SIGCONT` a member, drop one live queue frame (§3.2), stop a member's queue recording (§1.3, asserting the member exits). After each round there must be one leader, the pair must still serve, and consumers must still deliver in order. At the end every member's recording must be gap-free, strictly increasing in `clusterSeqNo`, and at the same high mark on all three (§1.1) |
+| `FailoverProcessTest` | a leader kill with a replay consumer, and the confirmed-ingress check of §5 |
+| `GapRecoveryTest` | a caught-up consumer drops one live frame after a leader failover, and must resume and keep delivering (§3.2) |
+| `PausedSubscriberTest` | a caught-up consumer is `SIGSTOP`ped while more than two queue windows go by; its member must stay up, with no queue-stall fatal (§1.3), and once resumed the consumer must heal the gap its eviction left (§3.2) |
+| `SessionReplaceTest` | a `TestApplication` on a follower is `SIGSTOP`ped past its session timeout, then the other two members are, so its member has no quorum; each time it must open a new session rather than fence (§2.1, §4), and the cluster heartbeat must keep reaching it while an attempt is pending. Then both `TestGateway` instances are paused past their session timeout: the standby, designated while its own session was lost, must replace it and serve rather than fence (§2.1) |
+| `ReplayerRestartTest` | member 0's `SequencerServer` is killed under a caught-up client; the client must fail fast, and a fresh cold start must be served from the member's new recording alone (§3.1) |
+| `GatewayHostTest` | a gateway host whose relay reads the leader, which is then killed; a `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to another member. The host is then restarted, and a cold start there must catch up from its new recording (§3.3) |
+| `SnapshotTest` | the `TestGateway` pair on three members with snapshot rounds every 2 s. The standby restarts and restores, the active instance is killed and the restored one takes over, and the killed one returns as a hot standby, restoring from the file it confirmed while it served. Each restore must report the state the client traffic implies, and no instance may be fenced, so every round is also compared against the restored state (§3.4) |
 | `csharp-client-test.sh` | the C# client against three members: confirmed ingress across a leader kill (§5), a cold start from `clusterSeqNo` 1 (§3.2), a C# gateway pair handed over when its active instance is killed (§2.2, §2.3), an application replica restored from a snapshot it confirmed (§3.4), and a cold start with no snapshot file on a member restarted at a cut, which must fail from its poll (§3.2) |
 | `cpp-client-test.sh` | the C++ client against three members: confirmed ingress across a leader kill (§5), a cold start from `clusterSeqNo` 1 (§3.2), the C++ gateway pair handed over when its active instance is killed (§2.2, §2.3), an application replica restored from a snapshot it confirmed (§3.4), and `ClusterStreamClient` replaying a member's recording that starts at a cut, where a cold start with no snapshot file must fail from its poll (§3.2) |
 | `csharp-windows-test.sh` | the C# client on Windows beside a gateway host, against one member in WSL1: confirmed ingress (§5), a cold start through the gateway host (§3.2, §3.3), and the C# gateway pair handed over (§2.2, §2.3). One member, because three cannot hold Raft's heartbeats under WSL1; the leader kill is `csharp-client-test.sh`'s |
-| `docker-failover-test.sh` | `ROUNDS` (default 15) leader kills against `docker/compose.yml` under continuous `ProbeMarker` load, restoring each killed member before the next. Every round must change leadership and the killed member must rejoin; an observer on each surviving member must deliver in `clusterSeqNo` order throughout; and a cold start at the end must replay the whole multi-tenure history from one recording and reach live. Needs Docker and `./gradlew operatorDist`; CI runs it as `failover.yml`, and `ROUNDS=3` is a quick local run |
+| `DockerFailoverSoakTest` | `ROUNDS` (default 15) leader kills against `docker/compose.yml` under continuous `ProbeMarker` load, restoring each killed member before the next. Every round must change leadership and the killed member must rejoin; an observer on each surviving member must deliver in `clusterSeqNo` order throughout; and a cold start at the end must replay the whole multi-tenure history from one recording and reach live. Needs Docker and `./gradlew operatorDist` (`networkFaultTest`); CI runs it as `failover.yml`, and `ROUNDS=3` is a quick local run |
 | `replay-bench.sh` | times a cold `ClusterProbe follow` from launch to caught up against a preloaded archive, optionally under load. `replay-bench.sh 400000` builds about 70 MB of history, which must converge in well under a second; `NEVER CAUGHT UP` indicates a replay stall (§3.2), not a slow machine |
 
 `failover.yml` also runs the faults no kill or pause produces, against the same `docker/compose.yml` cluster: a
 leader partitioned from its peers while its clients stay connected, one link cut and no other, a follower without
 NAKs or without retransmits, slow and duplicating leader links, a member whose ballots are dropped, a leader
 starved of CPU, and a gateway host whose relay's member link is unrepaired, jittery or slow to answer archive control
-(§3.3). The tests are under `seqeron-service/src/test/scripts/faulteron` and drive
+(§3.3). The tests are `PartitionLeaderTest`, `AsymmetricPartitionTest`, `UnrepairedFollowerTest`, `JitteryLeaderTest`,
+`MuteVoterTest`, `ThrottledLeaderTest`, `RelayLinkTest` and `SlowArchiveControlTest`, and drive
 [faulteron](https://github.com/FredrikJDahlberg/faulteron), an eBPF injector, at a pinned commit
 ([`building.md`](building.md)).
 
 ## 7. Not covered
 
 - **Killing a standalone media driver.** A member kill also kills the embedded driver its co-located clients
-  share, and `chaos-runner.sh` asserts that the consumer and gateway instance there exit; a standalone `aeronmd`
+  share, and `ChaosTest` asserts that the consumer and gateway instance there exit; a standalone `aeronmd`
   is never killed.
 - **Ingress lost outside one producer process.** `PendingSends` keeps its state in memory and counts losses
   against a leadership change or a session close. A frame lost with neither — an ingress image that drops and
@@ -479,6 +480,6 @@ starved of CPU, and a gateway host whose relay's member link is unrepaired, jitt
   per-producer sequence number that the sequencer de-duplicates on.
 - **Producer authentication.** The cluster checks well-formedness, not identity (spec §7). Authentication
   belongs at the system's external edges.
-- **Snapshots under cluster faults.** `snapshot-test.sh` kills the leader and restores its clients against
+- **Snapshots under cluster faults.** `SnapshotTest` kills the leader and restores its clients against
   the member's new recording, but the property test injects replay faults and no failover or publisher change
   mid-round. A round missed because its publisher died mid-round is covered by unit tests only.

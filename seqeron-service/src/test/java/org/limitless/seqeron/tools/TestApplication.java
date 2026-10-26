@@ -19,7 +19,7 @@ import org.limitless.seqeron.util.Logger;
 /**
  * One replica of a co-located application taking part in snapshot rounds: the reference consumer of {@link
  * Application} with a {@link SnapshotListener}, as {@link TestGateway} is of {@code Gateway}. Harness code in the
- * test source set, launched by {@code snapshot-test.sh} off the compiled test classes.
+ * test source set, launched by {@code SnapshotTest} off the compiled test classes.
  *
  * <p>While its gate is open it submits a {@code ProbeMarker} every {@code probe.intervalMs}; a declined one is not
  * retried. Its state is the count of markers sequenced under its {@code sourceId} and a digest of their {@code

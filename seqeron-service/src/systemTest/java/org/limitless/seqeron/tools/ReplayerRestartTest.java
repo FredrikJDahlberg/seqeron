@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * replayer-restart-test.sh: an app running through its own node's restart, and a cold start across a genuine
+ * An app running through its own node's restart, and a cold start across a genuine
  * recording rotation. Member 0, started last after members 1 and 2 elect between themselves, is never the leader. A
  * backlog is flooded and a follow on member 0 catches up; member 0 is then SIGTERMed. The follow shares its embedded
  * media driver and must fail fast, within the driver-loss grace window, rather than spin against a dead driver.

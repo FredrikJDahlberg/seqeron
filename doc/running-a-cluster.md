@@ -38,14 +38,14 @@ snapshots"). The two instances of a gateway never run on one host.
 The client tier runs in the application's own process: Java, the header-only C++ library, or the C#
 package ([`client-api.md`](client-api.md)). There is no C++ or C# server; the cluster is Java.
 
-Three more processes serve the end-to-end harnesses ([`building.md`](building.md)):
+Three more processes serve the system tests ([`building.md`](building.md)):
 
 - **`ClusterProbe`** (in the service jar) drives a cluster without an application: `submit` floods
   `ProbeMarker` payloads at ingress, `ping` round-trips one through consensus and back off the queue, and
   `follow` replays history then follows the queue live.
 - **`TestGateway`** and **`TestApplication`** (in `seqeron-service/src/test/java`, and so in no jar) are a
   gateway pair and a co-located application that speak no application protocol but hold the same fences
-  and snapshot logic as real ones, so the harnesses exercise them under faults.
+  and snapshot logic as real ones, so the system tests exercise them under faults.
 
 ## Single member
 

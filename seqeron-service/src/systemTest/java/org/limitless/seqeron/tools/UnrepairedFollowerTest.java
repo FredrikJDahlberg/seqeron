@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Timeout;
 import org.limitless.seqeron.protocol.PortLayout;
 
 /**
- * faulteron/unrepaired-follower-test.sh: LOSS_PCT% of the log DATA sent to one follower's log port is dropped, and so
+ * LOSS_PCT% of the log DATA sent to one follower's log port is dropped, and so
  * is one half of Aeron's repair, chosen by REPAIR: {@code nak} (every NAK from that port, on the follower) or
  * {@code retransmit} (every retransmission to that port, on the leader). The follower stops applying the log while
  * still hearing the leader, so no election is called. Its queue must fall behind under the fault, the producer on the

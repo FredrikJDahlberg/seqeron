@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * faulteron/throttled-leader-test.sh: the leader's container is capped at CPUS CPUs while the cluster streams
+ * The leader's container is capped at CPUS CPUs while the cluster streams
  * ({@code docker update --cpus}), a gray failure no kill or network fault produces. Either the cluster replaces the
  * starved leader or it keeps leading, and either is correct. The producer on a follower must see every frame once, in
  * order; with its CPU back the old leader must rejoin and its queue catch up; and a follow cold-started on it at the

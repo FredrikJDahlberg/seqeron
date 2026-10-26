@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * faulteron/slow-archive-control-test.sh: every archive control message (schema 101) between the gateway host and
+ * Every archive control message (schema 101) between the gateway host and
  * follower F2 is held DELAY_MS, in the direction DIRECTION names: {@code request} (delayed on the host) or
  * {@code response} (delayed on F2). The host is also cut from F1, so its relay connects to F2 under the delay. An
  * archive connect is two exchanges under one 1 s timeout: at DELAY_MS 500 or more the relay must give F2 up and

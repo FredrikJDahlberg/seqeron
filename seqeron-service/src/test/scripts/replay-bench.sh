@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # replay-bench.sh — how fast does a COLD replica replay recorded history to caught-up?
 #
-# This is the measurement behind the chaos-runner's kill-leader failures: a restarted replica has to
+# This is the measurement behind ChaosTest's kill-leader failures: a restarted replica has to
 # reach "Caught up — following live" before the harness's window expires, and with no snapshots
 # the history it must walk is the whole log. It was written to chase a cold start
 # that never converged at all past ~32 MiB of history — the shared-replay-stream flow-control wedge

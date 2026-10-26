@@ -19,7 +19,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
- * snapshot-test.sh: application snapshots end to end (doc/snapshot.md) on a three-node cluster, with the
+ * Application snapshots end to end (doc/snapshot.md) on a three-node cluster, with the
  * {@code TestGateway} pair taking part in rounds every 2 s (GW-T-A on member 0, GW-T-B on member 1, each restoring
  * from its own files) and a {@code TestApplication} replica on every member (source 16), the one on the leader
  * publishing its rounds. Every line a client sends is one marker and every client connection closes before the next

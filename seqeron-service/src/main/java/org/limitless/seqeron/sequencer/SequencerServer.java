@@ -132,7 +132,7 @@ public final class SequencerServer {
 
     /**
      * How long the graceful shutdown after a fatal may take before the process is halted: it closes the archive
-     * that may be what failed. A healthy one fits inside chaos-runner's 10s queue-stall deadline.
+     * that may be what failed. A healthy one fits inside ChaosTest's 10s queue-stall deadline.
      */
     private static final long FATAL_SHUTDOWN_BACKSTOP_MS = 15_000;
 

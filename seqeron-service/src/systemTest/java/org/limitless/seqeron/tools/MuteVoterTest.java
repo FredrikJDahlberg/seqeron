@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Timeout;
 import org.limitless.seqeron.protocol.PortLayout;
 
 /**
- * faulteron/mute-voter-test.sh: one follower's RequestVote and Vote frames to its peers are dropped, the leader is
+ * One follower's RequestVote and Vote frames to its peers are dropped, the leader is
  * killed, and the follower is healed after {@code HOLD_SECS} without a leader. The rest of the follower's consensus
  * traffic flows, so the fault is latent until an election: no election runs and every queue answers a ping before the
  * kill, and with the leader dead the two survivors cannot reach a quorum. Healed, they elect a leader, the killed

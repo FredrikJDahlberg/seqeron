@@ -28,9 +28,9 @@ frames, so faulteron's value here is partial loss, one half of repair, delay, ji
 
 | mode | fault | crosses | assert | test |
 | --- | --- | --- | --- | --- |
-| unrepaired relay | on the host, `--peer F1`: `rule --type data --loss 5`, `block --type nak` | `QueueRelay.SOURCE_TIMEOUT_MS`, 3 s: the image stops at the hole, and the 1 Hz heartbeat makes silence abnormal | the relay leaves F1 and follows F2; a host `confirm` is exact; a fresh host `follow` catches up | `relay-link-test.sh` |
-| slow archive control | `--schema 101 --delay`, on the host toward F2 for requests or on F2 toward the host for responses, then the host cut from F1 to force a connect | `ARCHIVE_MESSAGE_TIMEOUT_NS`, 1 s, over a connect's two exchanges | at 1500 ms the relay gives F2 up for the leader, at 200 ms it follows F2; no FATAL; a host `confirm` is exact | `slow-archive-control-test.sh` |
-| jittery relay link | on F1, `--peer node-3 --delay 20 --jitter 30 --duplicate 10` | Aeron's reordering and duplicate discard under the relay's "only the next frame" rule | the relay stays on F1; a host `confirm` is exact; a fresh host `follow` catches up | `relay-link-test.sh`, `FAULT=jitter` |
+| unrepaired relay | on the host, `--peer F1`: `rule --type data --loss 5`, `block --type nak` | `QueueRelay.SOURCE_TIMEOUT_MS`, 3 s: the image stops at the hole, and the 1 Hz heartbeat makes silence abnormal | the relay leaves F1 and follows F2; a host `confirm` is exact; a fresh host `follow` catches up | `RelayLinkTest` |
+| slow archive control | `--schema 101 --delay`, on the host toward F2 for requests or on F2 toward the host for responses, then the host cut from F1 to force a connect | `ARCHIVE_MESSAGE_TIMEOUT_NS`, 1 s, over a connect's two exchanges | at 1500 ms the relay gives F2 up for the leader, at 200 ms it follows F2; no FATAL; a host `confirm` is exact | `SlowArchiveControlTest` |
+| jittery relay link | on F1, `--peer node-3 --delay 20 --jitter 30 --duplicate 10` | Aeron's reordering and duplicate discard under the relay's "only the next frame" rule | the relay stays on F1; a host `confirm` is exact; a fresh host `follow` catches up | `RelayLinkTest`, `FAULT=jitter` |
 
 - faulteron delays only what leaves an interface, so the jitter rule runs on the member.
 - A following relay sends almost no control requests, so the slow-control test forces a connect.
@@ -83,7 +83,7 @@ frames, so faulteron's value here is partial loss, one half of repair, delay, ji
   answers not even `ReplayPending`, so the client sees silence, which its resend timer covers.
 
 **4. A CPU-throttled member under replay load. Done.**
-- `lib.sh`'s `throttle` slows the Replayer's duty cycle, the archive and a co-located client together.
+- `DockerCluster.throttle` slows the Replayer's duty cycle, the archive and a co-located client together.
 - A `follow` walks from the start and searches for no cut. Only a restore whose cut the Replayer has not kept
   searches, and on a running member the cut hand-over keeps every cut, so the search follows a member or host
   restart. [`replay-review.md`](replay-review.md) finding 2's race is the client's 500 ms resends queued behind one
@@ -93,7 +93,7 @@ frames, so faulteron's value here is partial loss, one half of repair, delay, ji
   Replayer answers it with the replay it already started, so resends queued behind a slow answer cost no replay. The
   control stream, untethered and carrying replies of a few dozen bytes, drops none.
 - Tests: `ReplayerServiceTest` queues four restores under new ids behind one search, which runs once, and the fourth
-  is answered `Replaying`; four resends of one request start one replay, and each is answered with it. `throttled-leader-test.sh` cold-starts a `follow` on the leader as its cap is applied: within 30 s of
+  is answered `Replaying`; four resends of one request start one replay, and each is answered with it. `ThrottledLeaderTest` cold-starts a `follow` on the leader as its cap is applied: within 30 s of
   the producer's end it is caught up and not since evicted from its queue, and
   `seqeron_replayer_control_replies_dropped_total` stays at zero. In a local run its Replayer started one replay for
   it under the cap.
@@ -106,7 +106,7 @@ frames, so faulteron's value here is partial loss, one half of repair, delay, ji
 - Both now read `Clocks.monotonicMs()`, as the client and `AeronQueueRelay` already did, through
   `Replayer.monotonicMs()`. A wall-clock step reaches nothing in the replayer, so no test applies one.
 
-**Replay load under the existing faulteron tests. Done.** `unrepaired-follower-test.sh` cold-starts a `follow` on the
+**Replay load under the existing faulteron tests. Done.** `UnrepairedFollowerTest` cold-starts a `follow` on the
 starved follower under the fault and another after the heal, each through its Replayer, and holds both to ending
 caught up rather than evicted from the queue, as mode 4 does through a CPU cap.
 

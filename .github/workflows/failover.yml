@@ -63,12 +63,6 @@ jobs:
       # media drivers plus their co-located replayers is an oversubscribed host, and Aeron's
       # liveness timeouts measure wall clock.
       - name: Failover soak
-        run: ./seqeron-service/src/test/scripts/docker-failover-test.sh
-        env:
-          COMPOSE_BUILD: '0'
-          TIMEOUT_SCALE: '3'
-
-      - name: Failover soak (JUnit)
         run: ./gradlew :seqeron-service:networkFaultTest --tests '*DockerFailoverSoakTest'
         env:
           COMPOSE_BUILD: '0'
@@ -79,14 +73,14 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: failover-logs
-          path: logs/docker-failover/
+          path: seqeron-service/build/system-test/
 
   # The faults no kill or pause produces, against the same docker/compose.yml cluster: a leader partitioned from its
   # peers while its clients stay connected, one link cut and no other, a follower whose loss repair is gone, a slow
   # and duplicating link, a member whose ballots are dropped, a leader starved of CPU, and a gateway host's relay
   # whose link to its member is unrepaired, jittery or slow to answer archive control. faulteron
   # (github.com/FredrikJDahlberg/faulteron) injects them with eBPF from privileged containers, which this VM's
-  # daemon runs as it is. The tests are this repo's, under seqeron-service/src/test/scripts/faulteron; faulteron is the
+  # daemon runs as it is. The tests are this repo's, in the systemTest source set; faulteron is the
   # tool they drive.
   network-faults:
     name: network faults (faulteron)
@@ -132,103 +126,37 @@ jobs:
       # Each test below runs whatever the one before it did, so one run reports them all.
       - name: Leader partitioned from its peers
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/partition-leader-test.sh
-
-      # The same test as JUnit, beside the script until it has run green here.
-      - name: Leader partitioned from its peers (JUnit)
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: ./gradlew :seqeron-service:networkFaultTest --tests '*PartitionLeaderTest'
 
       - name: Asymmetric partition
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/asymmetric-partition-test.sh
-
-      - name: Asymmetric partition (JUnit)
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: ./gradlew :seqeron-service:networkFaultTest --tests '*AsymmetricPartitionTest'
 
-      - name: Follower without NAKs
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/unrepaired-follower-test.sh
-        env:
-          REPAIR: nak
-
-      - name: Follower without retransmits
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/unrepaired-follower-test.sh
-        env:
-          REPAIR: retransmit
-
-      - name: Unrepaired follower (JUnit)
+      - name: Unrepaired follower
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: |
           ./gradlew :seqeron-service:networkFaultTest --tests '*UnrepairedFollowerTest'
           REPAIR=retransmit ./gradlew :seqeron-service:networkFaultTest --tests '*UnrepairedFollowerTest' --rerun
 
-      - name: Slow, duplicating leader links
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/jittery-leader-test.sh
-
-      - name: Jittery leader (JUnit)
+      - name: Jittery leader
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: ./gradlew :seqeron-service:networkFaultTest --tests '*JitteryLeaderTest'
 
       - name: Mute voter
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/mute-voter-test.sh
-
-      - name: Mute voter (JUnit)
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: ./gradlew :seqeron-service:networkFaultTest --tests '*MuteVoterTest'
 
       - name: Leader starved of CPU
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/throttled-leader-test.sh
-
-      - name: Leader starved of CPU (JUnit)
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: ./gradlew :seqeron-service:networkFaultTest --tests '*ThrottledLeaderTest'
 
-      - name: Gateway host's relay without NAKs
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/relay-link-test.sh
-        env:
-          FAULT: loss
-
-      - name: Slow, duplicating relay link
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/relay-link-test.sh
-        env:
-          FAULT: jitter
-
-      - name: Archive control requests past the relay's connect timeout
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/slow-archive-control-test.sh
-        env:
-          DIRECTION: request
-          DELAY_MS: '1500'
-
-      - name: Archive control responses past the relay's connect timeout
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/slow-archive-control-test.sh
-        env:
-          DIRECTION: response
-          DELAY_MS: '1500'
-
-      - name: Archive control requests under the relay's connect timeout
-        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
-        run: seqeron-service/src/test/scripts/faulteron/slow-archive-control-test.sh
-        env:
-          DIRECTION: request
-          DELAY_MS: '200'
-
-      - name: Gateway host relay link (JUnit)
+      - name: Gateway host relay link
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: |
           FAULT=loss ./gradlew :seqeron-service:networkFaultTest --tests '*RelayLinkTest'
           FAULT=jitter ./gradlew :seqeron-service:networkFaultTest --tests '*RelayLinkTest' --rerun
 
-      - name: Slow archive control (JUnit)
+      - name: Slow archive control
         if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
         run: |
           DIRECTION=request DELAY_MS=1500 ./gradlew :seqeron-service:networkFaultTest --tests '*SlowArchiveControlTest'
@@ -240,6 +168,4 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: network-fault-logs
-          path: |
-            logs/faulteron/
-            seqeron-service/build/system-test/
+          path: seqeron-service/build/system-test/

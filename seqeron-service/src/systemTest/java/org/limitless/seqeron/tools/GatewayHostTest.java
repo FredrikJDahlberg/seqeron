@@ -18,7 +18,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
- * gateway-host-test.sh: clients on a host that runs no cluster member, across the loss of the member they read
+ * Clients on a host that runs no cluster member, across the loss of the member they read
  * through. The gateway host (member id 3) is a {@code ReplayerServer} whose relay copies group 1's queue off the
  * leader's archive first. A confirm producer on it submits over UDP ingress and checks its frames on that queue; the
  * leader is killed mid-stream, which is a failover and the relay's source going away. The producer must see every

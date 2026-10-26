@@ -864,7 +864,7 @@ can take far longer than a gateway's activation deadline.
 | spec §10 | the three messages and streams 208 to 212 |
 | [`ops.md`](ops.md) | the port, the server's counters, its process in the runbooks |
 | scripts | `start-cluster.sh` and `start-three-node-cluster.sh` start a server per member after READY, `stop-cluster.sh` stops it, and `purgelog.sh` removes its archive with the log's, since a purged log's rounds start again at 1 |
-| tests | the agent's unit tests, in Java, replace `SnapshotStoreTest`; the restore cases of `ReplayerRecoveryTest` change in every language; `snapshot-test.sh` adds a server restart, a round with no server, and a fetch from a peer |
+| tests | the agent's unit tests, in Java, replace `SnapshotStoreTest`; the restore cases of `ReplayerRecoveryTest` change in every language; `SnapshotTest` adds a server restart, a round with no server, and a fetch from a peer |
 
 ## 12. Costs and limits
 
@@ -927,7 +927,7 @@ Unit tests, in every language that has the code:
 | restored state plus the tail equals a full replay, under random replay faults and a file of another log | `ReplayerRecoveryPropertyTest` |
 | a restore against a recording whose positions differ from the file writer's: the same state as at equal positions | `ReplayerRecoveryPropertyTest`, its model archive drawing a position offset |
 
-`snapshot-test.sh` runs the `TestGateway` pair and a `TestApplication` replica per member on a three-member
+`SnapshotTest` runs the `TestGateway` pair and a `TestApplication` replica per member on a three-member
 cluster, each instance with its own directory kept across its restarts. It drives the pair through
 restores, a failover onto a restored instance, and the killed instance's return, restoring from the file it
 confirmed while it served; then a round started by `clusterctl request-snapshot`, a follower's replica restarting, and

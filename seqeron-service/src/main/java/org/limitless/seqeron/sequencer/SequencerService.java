@@ -390,7 +390,7 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Test-only fault injection for chaos-runner.sh, inert unless {@link #FAULT_INJECTION_ENV} is set:
+     * Test-only fault injection for ChaosTest, inert unless {@link #FAULT_INJECTION_ENV} is set:
      * touching {@code <clusterDir>/queue-stall-fault} stops the recording of this node's lowest queue, the one
      * way to provoke {@link QueuePublisher#checkRecordingAlive} from outside the JVM. One-shot per process, and
      * waits for activation, before which there is no queue.

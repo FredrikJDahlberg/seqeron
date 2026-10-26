@@ -19,14 +19,14 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * failover-test.sh's confirm producer in one JVM: three members, a producer co-located with a follower sending
+ * FailoverProcessTest's confirm producer in one JVM: three members, a producer co-located with a follower sending
  * through {@code PendingSends}, and the leader stopped mid-stream. The producer's queue must show every frame
  * exactly once, in order, and once the old leader is back, every member's queue recordings must be one log.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class FailoverConfirmTest {
     private static final int COUNT = 5_000;
-    private static final long PACING_NS = TimeUnit.MICROSECONDS.toNanos(100); // failover-test.sh's
+    private static final long PACING_NS = TimeUnit.MICROSECONDS.toNanos(100); // FailoverProcessTest's
 
     @RegisterExtension
     final SystemTestWatcher watcher = new SystemTestWatcher();
@@ -64,7 +64,7 @@ class FailoverConfirmTest {
             }
             stopping.get(30, TimeUnit.SECONDS);
 
-            // Reported rather than asserted, as failover-test.sh does: a stop can land between two frames.
+            // Reported rather than asserted, as FailoverProcessTest does: a stop can land between two frames.
             System.out.printf("member %d stopped, member %d leads; resent %d frame(s)%n", leader, producer.lastLeader(),
                               producer.resent());
             assertTrue(producer.isDrained(),

@@ -517,7 +517,7 @@ public final class ClusterProbe {
                 }
             } catch (final RuntimeException ex) {
                 // The driver going away closes the Aeron client and every poll throws: a co-located
-                // process must die with its node (replayer-restart-test.sh phase 2).
+                // process must die with its node (ReplayerRestartTest).
                 Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ReplayDutyCycleFailure, MEMBER_ID,
                              "duty cycle failed — media driver gone? %s", ex);
                 fatal.set(true);

@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * faulteron/asymmetric-partition-test.sh: the link between the leader and one follower, and only that link, is cut
+ * The link between the leader and one follower, and only that link, is cut
  * while a confirm producer streams through the other follower. The cut-off follower hears no leader and stands for
  * election, and the only member it can ask still has a leader, so the leader must keep leading: no election completes
  * while the link is cut. The producer sending through {@code PendingSends} must see every frame once, in order, and
