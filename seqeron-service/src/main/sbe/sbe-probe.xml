@@ -48,7 +48,7 @@
                               what came back off the queue is what went in, and what a liveness check
                               matches its own submission on. filler sizes the frame, so a load run can
                               build an archive of a chosen byte size rather than of a chosen frame
-                              count — replay-bench.sh reports MB/s and would otherwise measure a
+                              count — ReplayColdStartTest reports MB/s and would otherwise measure a
                               different history than the order flood it replaced">
         <field name="seqNo"  id="1" type="uint64"
                description="Monotone per-submitter counter, from 1"/>
