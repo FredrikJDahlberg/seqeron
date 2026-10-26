@@ -75,6 +75,8 @@ testing {
                         systemProperty 'seqeron.jar', uberJar.get().asFile.absolutePath
                         systemProperty 'seqeron.testClasses', sourceSets.test.output.classesDirs.asPath
                     }
+                    // A failure's message is what says which invariant broke: print it whole.
+                    testLogging { exceptionFormat = 'full' }
                     // The docker cluster's tests need the faulteron image: networkFaultTest runs them. ChaosTest runs
                     // 20 rounds, so chaos.yml selects it alone with -Pchaos.
                     useJUnitPlatform {

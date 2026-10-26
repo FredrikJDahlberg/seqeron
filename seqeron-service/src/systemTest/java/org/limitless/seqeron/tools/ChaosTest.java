@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.file.Files;
@@ -88,6 +90,26 @@ class ChaosTest {
     @Test
     @Timeout(value = 60, unit = TimeUnit.MINUTES)
     void clusterSurvivesRandomFaults() throws Exception {
+        try {
+            run();
+        } catch (final Throwable ex) {
+            record(ex);
+            throw ex;
+        }
+    }
+
+    /** Leaves the seed, the faults drawn and what failed beside the process logs, which CI uploads. */
+    private void record(final Throwable ex) throws IOException {
+        final StringWriter report = new StringWriter();
+        report.write("SEED=" + SEED + " ROUNDS=" + ROUNDS + "\n");
+        history.forEach(h -> report.write(h + "\n"));
+        failures.forEach(f -> report.write("FAIL: " + f + "\n"));
+        ex.printStackTrace(new PrintWriter(report, true));
+        Files.createDirectories(logDir);
+        Files.writeString(logDir.resolve("result.txt"), report.toString());
+    }
+
+    private void run() throws Exception {
         final List<Fault> menu = menu();
         rng = new Random(SEED);
         System.out.printf("SEED=%d ROUNDS=%d faults=%s (replay with SEED=%d)%n", SEED, ROUNDS, menu, SEED);
