@@ -2,7 +2,7 @@
 
 **The integration suite** (`seqeron-service/src/integrationTest`) launches members in the test's own JVM through
 `SequencerServer.launch` and a gateway host through `ReplayerServer.launchGatewayHost`, on Aeron's
-`aeron-test-support`. `FailoverConfirmTest` is `failover-test.sh`'s confirm producer across a leader stop;
+`aeron-test-support`. `FailoverConfirmTest` is `FailoverProcessTest`'s confirm producer across a leader stop;
 `FailoverPropertyTest` runs a producer on the gateway host through seeded rounds of member stops and UDP cuts
 (`SequencerServer.launch`'s `udpFaults` overload, which picks frames by stream id and direction), and `-Pseed=<n>`
 replays a run's draws. Both then check every queue recording on every archive frame for frame (`QueueRecordings`),

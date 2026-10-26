@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * faulteron/relay-link-test.sh: the link between the gateway host (node-3) and the member its relay reads is impaired,
+ * The link between the gateway host (node-3) and the member its relay reads is impaired,
  * chosen by FAULT. {@code loss} (default): LOSS_PCT% of the DATA between them and every NAK are dropped on the host,
  * and the relay must leave the member and resume on the next. {@code jitter}: the member's packets to the host are held
  * 20 ms plus up to 30 ms and 10% sent twice, which Aeron's image repairs, so the relay must stay on the member. The

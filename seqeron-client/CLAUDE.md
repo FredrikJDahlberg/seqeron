@@ -26,7 +26,7 @@ failover silently loses whatever the old leader had not committed — the sessio
 full) and to the sender with `setIngressHold`, feeds it its own queue and each `LeadershipChanged`'s term, and
 resends what a term change or a closed session lost. Every language,
 case for case, with a property test asserting exactly-once, in-order delivery across random failovers;
-`failover-test.sh` proves the same across a real leader kill, `cpp-client-test.sh` for C++ and
+`FailoverProcessTest` proves the same across a real leader kill, `cpp-client-test.sh` for C++ and
 `csharp-client-test.sh` for C#.
 
 **The C++ half is a client library, not a program.** `seqeron_core` is a header-only INTERFACE

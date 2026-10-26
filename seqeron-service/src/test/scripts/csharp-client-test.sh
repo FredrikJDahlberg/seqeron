@@ -16,8 +16,8 @@
 #   H  a member restarted at a cut: a ReplayerStreamReceiver with no snapshot file walks it from its start
 #                                                                            follow FAILED
 #
-# and no member logs a rejected ingress frame. D SIGKILLs the leader, as failover-test.sh does, so the run costs
-# what a crash does (doc/fault-tolerance.md §1.2). Its control reports what the kill cost; like failover-test.sh's,
+# and no member logs a rejected ingress frame. D SIGKILLs the leader, as FailoverProcessTest does, so the run costs
+# what a crash does (doc/fault-tolerance.md §1.2). Its control reports what the kill cost; like FailoverProcessTest's,
 # it is not asserted, since a kill can land between two frames.
 #
 # Needs the uber jar and the .NET SDK (`dotnet`, or DOTNET naming one). Run it on every Aeron upgrade: the C#

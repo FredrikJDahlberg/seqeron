@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Timeout;
 import org.limitless.seqeron.protocol.PortLayout;
 
 /**
- * faulteron/jittery-leader-test.sh: everything to or from the leader's internal ports or its ingress port leaves
+ * Everything to or from the leader's internal ports or its ingress port leaves
  * DELAY_MS plus up to JITTER_MS late, which reorders it, and DUPLICATE_PCT% of it is delivered twice. The worst case
  * stays under the 200 ms leader heartbeat timeout, so a slow link is not a dead one: no election runs, every member's
  * queue stays current, and the producer sending through {@code PendingSends} on a follower sees every frame once, in

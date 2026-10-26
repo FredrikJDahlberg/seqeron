@@ -1,6 +1,6 @@
 // The C++ client tier against a live cluster: the twin of tools/ClusterProbe's confirm and follow modes, speaking the
 // same ProbeMarker (payloadId 5, sourceId 8) and printing the same verdict lines, so cpp-client-test.sh judges it as
-// failover-test.sh judges the Java one.
+// FailoverProcessTest judges the Java one.
 //
 //   confirm: catches up on the co-located queue, then streams --count markers through publishPayload — tracked by
 //            PendingSends unless --untracked — and exits 0 iff its own queue showed 1..count exactly once, in order.

@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * faulteron/partition-leader-test.sh: the leader of the docker cluster is cut off from its peers on every member
+ * The leader of the docker cluster is cut off from its peers on every member
  * port but ingress while two confirm producers stream through a follower, then healed. The fault must have dropped
  * packets, the majority must elect a new leader meanwhile, the old leader must rejoin as a follower of the new term,
  * and the producer sending through {@code PendingSends} must see every frame once, in order. The untracked control's

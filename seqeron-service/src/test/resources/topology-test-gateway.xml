@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The cluster tier's own topology document: the gateway pair chaos-runner.sh runs, so that the
+    The cluster tier's own topology document: the gateway pair ChaosTest runs, so that the
     harnesses exercise the election path and the bootstrap GatewayActive, taking part in snapshot rounds
     every 2 s so that rounds run under the faults too.
 

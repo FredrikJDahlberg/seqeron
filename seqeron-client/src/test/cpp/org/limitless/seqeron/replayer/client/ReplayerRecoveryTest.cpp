@@ -11,7 +11,7 @@
 // transport is recorded through ReplayerRecoveryActions and its clock is owned by the test. The
 // receiver's own Aeron side — subscription polling, image attach, and its guarantee to always drain AND
 // dispatch the queue regardless of state — has no seam here and is exercised by
-// seqeron-service/src/test/scripts/gap-recovery-test.sh.
+// GapRecoveryTest.
 
 #include <cstdint>
 #include <filesystem>
@@ -316,7 +316,7 @@ TEST(ReplayerRecoveryBaseline, FirstFrameNotAtClusterSeqNoOneIsAFault)
 // regression the 2026-08-05 seam fix first introduced: once the queue is dispatched mid-walk, a cold start
 // races a live queue already carrying mid-stream clusterSeqNos against a replay that has not delivered 1
 // yet. That queue frame is neither a valid baseline nor a fault — only the walk may establish the
-// baseline. (Caught by gap-recovery-test.sh, where every consumer aborted at startup with "first frame
+// baseline. (Caught by GapRecoveryTest, where every consumer aborted at startup with "first frame
 // observed has clusterSeqNo=15"; this locks it where it costs a millisecond instead of a cluster.)
 TEST(ReplayerRecoveryBaseline, LiveQueueMayNotEstablishTheBaselineWhileTheColdStartWalkIsInFlight)
 {
@@ -518,7 +518,7 @@ TEST(ReplayerRecoveryGapRecovery, AQueueFrameArrivingDuringAnAssignedReplaySessi
 // discard handler while recovering, consuming exactly these frames — so every walk ended one guaranteed
 // gap short of live and re-walked the whole recording, converging only if nothing was published during the
 // final round trip. NOTE: poll()'s handler *routing* needs a live queue subscription and is exercised only
-// by seqeron-service/src/test/scripts/gap-recovery-test.sh; what is locked here is the decision logic it feeds.
+// by GapRecoveryTest; what is locked here is the decision logic it feeds.
 TEST(ReplayerRecoveryGapRecovery, LiveQueueFrameAtTheSeamIsDispatchedWhileTheWalkIsStillInFlight)
 {
     int delivered = 0;

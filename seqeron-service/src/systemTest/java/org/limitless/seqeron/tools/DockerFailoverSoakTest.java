@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * docker-failover-test.sh: ROUNDS leader failovers of the docker cluster, each under continuous ProbeMarker load, the
+ * ROUNDS leader failovers of the docker cluster, each under continuous ProbeMarker load, the
  * killed member restored between them so every round starts from a full three. A single failover against a
  * heartbeat-only archive proves only that the replay path connects: the frames it replays are the sequencer's own
  * heartbeats. Asserted, in the order they matter: every round is a genuine leadership change; a long-lived observer on

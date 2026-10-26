@@ -16,7 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
- * failover-test.sh as child processes: a leader SIGKILLed while two confirm producers on a follower stream across
+ * A leader SIGKILLed while two confirm producers on a follower stream across
  * it, then a cold follower started on the new leader. The producer sending through {@code PendingSends} must see
  * every frame once, in order, and the cold follower must catch up through a replay of the new leader's one
  * continuous recording. The untracked control's loss is what the kill cost, reported rather than asserted. SIGKILL,

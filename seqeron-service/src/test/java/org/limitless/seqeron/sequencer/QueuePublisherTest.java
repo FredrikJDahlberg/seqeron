@@ -23,7 +23,7 @@ import org.limitless.seqeron.util.Logger;
  * test, which advances it only where the real one would: on an idle between attempts.
  *
  * <p>This is the {@code NodeDriver.EXIT_FATAL} contract, and the reason it is worth pinning here rather than only
- * in {@code chaos-runner.sh}: both halves fail silently. A node that terminates too eagerly costs the
+ * in {@code ChaosTest}: both halves fail silently. A node that terminates too eagerly costs the
  * cluster a member on transient back-pressure that would have cleared; one that never terminates keeps
  * sequencing history into an archive that is no longer recording it, and nothing says so until someone asks
  * that node for a replay.

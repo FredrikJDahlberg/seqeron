@@ -23,7 +23,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * chaos-runner.sh: a randomized fault loop against a live three-member cluster with a consumer replica on every
+ * A randomized fault loop against a live three-member cluster with a consumer replica on every
  * member, a gateway pair on members 0 and 1 and a low-rate load through the active gate. Each round draws one fault,
  * heals it, and checks the steady-state invariants; at the end every member's queue recording must be gap-free,
  * monotone and the same length. {@code SEED=<n>} replays a fault sequence; {@code ROUNDS}, {@code ONLY_FAULT} (one of

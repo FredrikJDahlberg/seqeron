@@ -119,7 +119,7 @@ and `seqeron-examples/src/csharp` its `checkFacadeOnly`, in `Directory.Build.tar
 ./gradlew uberJar     # build/libs/seqeron-<version>-uber.jar — every script's prerequisite
 ./gradlew test        # JUnit 5, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
-./gradlew :seqeron-service:compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
+./gradlew :seqeron-service:compileTestJava   # TestGateway and TestApplication, which systemTest needs and no jar carries
 ./gradlew :seqeron-client:jar :seqeron-service:jar  # the two published artifacts
 ```
 JDK 21. `SEQERON_JAR` overrides the jar path for every script that resolves it.
@@ -153,6 +153,7 @@ version, which agrees with Java's on everything a client touches. `csharp-client
 cmake --build cmake-build-debug --target run_tests   # GoogleTest
 ./gradlew test                                       # JUnit
 ./gradlew :seqeron-service:integrationTest           # JUnit 6, members in the test's JVM
+./gradlew :seqeron-service:systemTest                # JUnit 6, members as child JVMs; networkFaultTest adds Docker + faulteron
 ./gradlew :seqeron-service:systemTest                # JUnit 6, members as child JVMs; the harnesses' port
 dotnet test --project seqeron-client/src/test/csharp/Seqeron.Client.Tests.csproj   # xUnit
 ```
@@ -167,8 +168,8 @@ dispatch and the confirmed publish to zero bytes a frame.
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests`, by the integration suite and by the
-thirteen end-to-end scripts under `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
+mocks. Everything that needs an Aeron runtime is covered by `core_tests`, by the integration suite, by the
+system tests in `seqeron-service/src/systemTest` and by the three client-tier scripts under `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
 ## Architecture

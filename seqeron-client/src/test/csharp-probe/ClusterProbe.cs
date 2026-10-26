@@ -18,7 +18,7 @@ namespace Org.Limitless.Seqeron.Tools;
 /// <summary>
 /// The C# client tier against a live cluster: the twin of <c>tools/ClusterProbe</c>'s <c>confirm</c> and
 /// <c>follow</c> modes, speaking the same <c>ProbeMarker</c> (payloadId 5, sourceId 8) and printing the same
-/// verdict lines, so <c>csharp-client-test.sh</c> judges it as <c>failover-test.sh</c> judges the Java one.
+/// verdict lines, so <c>csharp-client-test.sh</c> judges it as <c>FailoverProcessTest</c> judges the Java one.
 /// <list type="bullet">
 /// <item><c>confirm</c>: catches up on the co-located queue, then streams <c>--count</c> markers through an
 /// <see cref="IngressPublisher"/> — tracked by <see cref="PendingSends"/> unless <c>--untracked</c> — and exits 0 iff

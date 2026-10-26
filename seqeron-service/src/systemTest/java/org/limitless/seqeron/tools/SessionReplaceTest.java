@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * session-replace-test.sh: a client whose cluster session is lost opens a new one rather than fencing, both when the
+ * A client whose cluster session is lost opens a new one rather than fencing, both when the
  * client went quiet and when the cluster went away, and its duty cycle keeps running while an attempt is pending; and
  * a gateway standby that loses its session in the same outage as the active instance takes the role over rather than
  * fencing too. The client is {@code TestApplication} on a follower. Its IPC ingress attempt never answers on a

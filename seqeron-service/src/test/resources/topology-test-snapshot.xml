@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
     The TestGateway pair of topology-test-gateway.xml and the TestApplication replicas, taking part in
-    snapshot rounds every 2 s: what snapshot-test.sh loads (doc/snapshot.md).
+    snapshot rounds every 2 s: what SnapshotTest loads (doc/snapshot.md).
 
       clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-snapshot.xml
 -->

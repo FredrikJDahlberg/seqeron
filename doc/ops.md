@@ -228,12 +228,12 @@ This repository's processes use the ids below. An application's should start at 
 
 | `clientId` | used by |
 |---|---|
-| 1 | `start-three-node-cluster.sh` per-member probe; `docker-failover-test.sh` observer |
+| 1 | `start-three-node-cluster.sh` per-member probe; `DockerFailoverSoakTest` observer |
 | 7 | `replay-bench.sh` probe; `seqeron-examples` (Java) |
 | 8 | `seqeron-examples` (C++) |
 | 9 | `ClusterProbe follow`/`confirm` default |
-| 10 | `TestGateway serve` default; `chaos-runner.sh` second consumer |
-| 11, 12 | `failover-test.sh` producers |
+| 10 | `TestGateway serve` default; `ChaosTest` second consumer |
+| 11, 12 | `FailoverProcessTest` producers |
 | 13, 14 | `seqeron-examples` `ColocatedApp`, Java, C++ |
 | 15, 16 | `seqeron-examples` `GatewayApp`, Java or C++, GW-EX-A, GW-EX-B |
 | 17, 18 | `seqeron-examples` `SnapshotApp`, Java, C++ |

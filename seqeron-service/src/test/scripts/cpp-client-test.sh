@@ -16,8 +16,8 @@
 #   H  a member restarted at a cut: ClusterStreamClient replays its recording from the cut   scan CAUGHT UP;
 #      a ReplayerStreamReceiver with no snapshot file walks it from its start                 follow FAILED
 #
-# and no member logs a rejected ingress frame. D SIGKILLs the leader, as failover-test.sh does, so the run costs
-# what a crash does (doc/fault-tolerance.md §1.2). Its control reports what the kill cost; like failover-test.sh's,
+# and no member logs a rejected ingress frame. D SIGKILLs the leader, as FailoverProcessTest does, so the run costs
+# what a crash does (doc/fault-tolerance.md §1.2). Its control reports what the kill cost; like FailoverProcessTest's,
 # it is not asserted, since a kill can land between two frames.
 #
 # Needs the uber jar and CMake. The probe and the examples build in one tree, SEQERON_EXAMPLES_BUILD (default
