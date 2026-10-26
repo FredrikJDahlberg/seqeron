@@ -301,8 +301,9 @@ tasks.register('jacocoMergedReport', JacocoReport) {
     group = 'verification'
     def suites = ['test', 'integrationTest', 'systemTest']
     // Not dependsOn: a failing suite must not stop the report on the others.
-    mustRunAfter suites.collect { tasks.named(it) }
+    mustRunAfter suites.collect { tasks.named(it) }, project(':seqeron-client').tasks.named('test')
     executionData.setFrom(suites.collect { layout.buildDirectory.file("jacoco/${it}.exec") },
+                          project(':seqeron-client').layout.buildDirectory.file('jacoco/test.exec'),
                           fileTree(layout.buildDirectory.dir('jacoco/systemTest-children')) { include '*.exec' })
     def generated = 'org/limitless/seqeron/sbe/**'
     classDirectories.setFrom(files([project, project(':seqeron-client')].collect { p ->
