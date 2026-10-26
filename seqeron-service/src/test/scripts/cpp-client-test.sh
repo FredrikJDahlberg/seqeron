@@ -62,12 +62,15 @@ probe() {
   "$PROBE" "$mode" --member "$member" --client-id "$client" --aeron-dir "$(aeron_dir "$member")" "$@" \
     > "$LOG_DIR/$log.log" 2>&1
 }
+# Every backgrounded probe and example, for cleanup: a function run with & is a subshell whose child is the binary.
+declare -a BG_PIDS=()
 # example <log> <binary> <member> [VAR=value...]: one C++ example co-located with <member>, in the background.
 example() {
   local log=$1 name=$2 member=$3
   shift 3
   env SEQERON_NODE_MEMBER_ID="$member" SEQERON_AERON_DIR="$(aeron_dir "$member")" "$@" "$EXAMPLES_BUILD/$name" \
     > "$LOG_DIR/$log.log" 2>&1 &
+  BG_PIDS+=($!)
 }
 # wait_for_count <log> <pattern> <count> <seconds>
 wait_for_count() {
@@ -80,9 +83,6 @@ wait_for_count() {
 }
 verdict() { grep -hE 'confirm: (EXACT|NOT EXACT)|follow: |failed' "$LOG_DIR/$1.log" | tail -1; }
 
-pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f "$PROBE" 2>/dev/null
-pkill -f "$EXAMPLES_BUILD" 2>/dev/null
-sleep 1
 rm -rf "$BASE_DIR" "$(aeron_dir 0)" "$(aeron_dir 1)" "$(aeron_dir 2)" 2>/dev/null
 
 declare -a SEQ_PIDS
@@ -92,7 +92,11 @@ for m in 0 1 2; do
   SEQ_PIDS[$m]=$!
 done
 cleanup() {
-  kill "${SEQ_PIDS[@]}" 2>/dev/null; pkill -f "$PROBE" 2>/dev/null; pkill -f "$EXAMPLES_BUILD" 2>/dev/null
+  local pid
+  for pid in "${SEQ_PIDS[@]}" ${BG_PIDS[@]+"${BG_PIDS[@]}"}; do
+    pkill -P "$pid" 2>/dev/null   # the binary under a backgrounded probe function
+    kill "$pid" 2>/dev/null
+  done
   wait 2>/dev/null
 }
 trap cleanup EXIT
@@ -136,6 +140,7 @@ CONFIRM_PID=$!
 probe control confirm "$P" 35 --count "$COUNT" --pacing-micros "$PACING" --untracked \
   --egress-port $((PROBE_EGRESS_PORT_BASE + 4)) &
 CONTROL_PID=$!
+BG_PIDS+=("$CONFIRM_PID" "$CONTROL_PID")
 for f in confirm control; do
   wait_for_log "$LOG_DIR/$f.log" "confirm: sending" 30 || echo "$f producer never started"
 done
