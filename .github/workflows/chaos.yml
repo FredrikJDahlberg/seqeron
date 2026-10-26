@@ -80,7 +80,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: chaos-logs-${{ matrix.leg }}
-          path: seqeron-service/build/system-test/ChaosTest/
+          path: |
+            seqeron-service/build/system-test/ChaosTest/
+            seqeron-service/build/test-results/systemTest/
 
   # The C# client tier against a live cluster: ingress over UDP and IPC, confirmed ingress across a leader
   # kill, a cold start, and the C# examples, built from the packed package, through a gateway handover. On
