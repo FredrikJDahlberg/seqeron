@@ -39,8 +39,8 @@ procedure: a failed component restarts and replays.
 
 `SequencerService` runs on every member, leader and follower alike, and republishes every sequenced frame on
 the member's queue of each group the frame reaches (`aeron:ipc`, stream 2000 + `groupId`), which the member's
-Aeron Archive records. Every member applies the same committed log in the same order, so each queue is
-byte-identical across members (spec **F-2**). There is no cross-member replication of recordings and no
+Aeron Archive records. Every member applies the same committed log in the same order, so each queue
+carries the same frames in the same order on every member (spec **F-2**); recording positions are each node's own. There is no cross-member replication of recordings and no
 leader-only archive.
 
 The queue publications and their recordings are created once, when the first topology load activates the

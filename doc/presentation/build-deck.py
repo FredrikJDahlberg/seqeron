@@ -690,12 +690,12 @@ s = content("A member and a client", None,
             "Each member is one JVM: consensus module, sequencer, embedded media driver, archive and Replayer. Live data "
             "reaches a client straight off the queue, untethered. History comes from the member's own recording through "
             "the Replayer on stream 201, with requests on 202 and control replies on 203. Ingress is IPC when this "
-            "member leads and UDP otherwise. Other members run the same pipeline and produce a byte-identical queue. The client tier is Java, C++ and C#, "
+            "member leads and UDP otherwise. Other members run the same pipeline and produce the same queue, frame for frame. The client tier is Java, C++ and C#, "
             "with C# deployed on Windows too; the member is Java only.")
 sc = 5.25 / 440
 f = Fig(s, (W - 960 * sc) / 2, 1.5, sc)
 f.host(10, 60, 170, 90, "Other members")
-f.label(10, 95, 170, 40, "same pipeline, byte-identical queue", size=11)
+f.label(10, 95, 170, 40, "same pipeline, same frames", size=11)
 f.arrow([(95, 60), (95, 22), (590, 22), (590, 80)], "d", both=True)
 f.label(240, 0, 200, 20, "Raft log replication")
 f.host(210, 40, 510, 380, "Cluster member · one JVM", align=PP_ALIGN.LEFT)
@@ -746,8 +746,8 @@ card(s, L, 5.35, CW, 1.25, [{"runs": [("A send that succeeds is not a message se
                                        "on its own queue.", {})], "size": 16}], margin=0.25, anchor=M)
 
 s = content("The queue", "Every cluster member publishes and records its own copy; none is replicated",
-            "All members apply the same committed log in the same order with the same state, so their queues are "
-            "byte-identical frame for frame. Each archive therefore holds complete history: no cross-node replication of "
+            "All members apply the same committed log in the same order with the same state, so their queues carry "
+            "the same frames in the same order. Each archive records its own copy: no cross-node replication of "
             "recordings and no leader-only archive. The queue is created once at start and never re-created on a "
             "leadership change, so a recording is one continuous run across every leader tenure. The offer is reliable "
             "because a dropped frame is a permanent hole, and bounded because only the archive, the one tethered "
@@ -763,7 +763,7 @@ for i in range(3):
     log_cells(s, x, 3.46, 0.22, 0.3, 0.25)
     arrow(s, [(x + 0.61, 3.76), (x + 0.61, 4.15)])
     box(s, x, 4.15, 1.75, 0.6, "Archive", style="box", tsize=13)
-text(s, L, 4.95, 5.65, 1.6, [{"text": "Same committed log → byte-identical queues → every archive holds full history.",
+text(s, L, 4.95, 5.65, 1.6, [{"text": "Same committed log → same frames in the same order → every archive records its own copy.",
                               "bold": True, "size": 15, "space": 6},
                              {"text": "The queue survives leadership changes: one continuous recording per member.", "size": 14, "color": A5}])
 text(s, 6.9, 1.85, 5.8, 0.35, "RELIABLE, AND BOUNDED", size=12, bold=True, color=A1)

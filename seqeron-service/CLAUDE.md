@@ -14,7 +14,7 @@ queue is sequenced: it carries `Sequenced` envelopes and nothing else, and the s
 
 **Every node publishes and records its own queues** — leader and follower alike. All nodes process the
 same committed log in the same order and keep identical sequencing state (so a new leader resumes
-exactly where the last one left off), which makes the queues byte-identical across nodes, frame for frame
+exactly where the last one left off), which gives every node the same frames in the same order on its queues
 (recording positions match only at equal IPC MTU and term length): each archive
 independently holds each queue, with no cross-node replication, from `groupSeqNo` 1 or from the cut a restarted
 member restored at (below). A queue publication is created

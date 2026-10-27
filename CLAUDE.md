@@ -154,7 +154,6 @@ cmake --build cmake-build-debug --target run_tests   # GoogleTest
 ./gradlew test                                       # JUnit
 ./gradlew :seqeron-service:integrationTest           # JUnit 6, members in the test's JVM
 ./gradlew :seqeron-service:systemTest                # JUnit 6, members as child JVMs; networkFaultTest adds Docker + faulteron
-./gradlew :seqeron-service:systemTest                # JUnit 6, members as child JVMs; the harnesses' port
 dotnet test --project seqeron-client/src/test/csharp/Seqeron.Client.Tests.csproj   # xUnit
 ```
 `run_tests` is `ctest --output-on-failure` with the build dependency wired, and also builds

@@ -58,8 +58,8 @@ they would see on a member.
 - **The queues** are node-local `aeron:ipc` publications, one per group (stream 2000 + `groupId`). A queue
   carries every system message and the application messages addressed to its group. Every member publishes
   its own, leader and follower alike, and since every member applies the same committed log in the same
-  order, each queue is byte-identical across members, message for message, from `groupSeqNo` 1 or from the cut a restarted
-  member restored at.
+  order, each queue carries the same frames in the same order on every member, from `groupSeqNo` 1 or from the cut a
+  restarted member restored at. Recording positions are each node's own.
 - **The archive** records the queues. Each member therefore holds a complete copy of each, written
   locally, with no cross-node replication and no leader-only recording. A queue is created once, when the
   first topology load activates the groups, and survives leadership changes, so a member's recording of it

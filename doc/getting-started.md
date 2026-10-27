@@ -8,7 +8,7 @@ the C#, and nothing from this repository's source. [`overview.md`](overview.md) 
 ## 1. Start a node
 
 ```bash
-V=0.16.0  # the latest release: https://github.com/FredrikJDahlberg/seqeron/releases
+V=0.17.0  # the latest release: https://github.com/FredrikJDahlberg/seqeron/releases
 curl -LO https://github.com/FredrikJDahlberg/seqeron/releases/download/v$V/seqeron-$V.zip
 unzip seqeron-$V.zip && cd seqeron-$V
 cat > hello.xml <<'EOF'
@@ -58,7 +58,7 @@ repositories {
 }
 
 dependencies {
-    implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:v0.16.0')
+    implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:v0.17.0')
     implementation 'com.github.FredrikJDahlberg.seqeron:seqeron'
 }
 
@@ -346,7 +346,7 @@ Java programs' 23 and 24, so both languages' counters are told apart on one memb
   include(FetchContent)
   FetchContent_Declare(seqeron
       GIT_REPOSITORY https://github.com/FredrikJDahlberg/seqeron.git
-      GIT_TAG        v0.16.0)
+      GIT_TAG        v0.17.0)
   FetchContent_MakeAvailable(seqeron)
   target_link_libraries(my_app PRIVATE seqeron::seqeron_core)
   ```
