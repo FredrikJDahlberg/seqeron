@@ -2,10 +2,13 @@ package org.limitless.seqeron.app;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -23,39 +26,77 @@ class ApplicationBuilderTest {
     }
 
     private static Application.Builder complete() {
-        return Application.builder().sourceId(SOURCE_ID).egressChannel(EGRESS).listener(listener());
+        return Application.builder().sourceId(SOURCE_ID).clientId(1).listener(listener());
     }
 
     @Test
-    @DisplayName("an egress channel and a listener are required")
-    void requiresEgressAndListener() {
-        assertEquals("egressChannel", assertThrows(NullPointerException.class,
+    @DisplayName("a client id and a listener are required; the egress channel is not")
+    void requiresClientIdAndListener() {
+        assertEquals("clientId", assertThrows(NullPointerException.class,
             () -> Application.builder().listener(listener()).build()).getMessage());
         assertEquals("listener", assertThrows(NullPointerException.class,
-            () -> Application.builder().egressChannel(EGRESS).build()).getMessage());
+            () -> Application.builder().clientId(1).build()).getMessage());
+        assertEquals("egressChannel", assertThrows(NullPointerException.class,
+            () -> complete().egressChannel(null).build()).getMessage());
         assertEquals("ingressEndpoints", assertThrows(NullPointerException.class,
             () -> complete().ingressEndpoints(null).build()).getMessage());
     }
 
     @Test
-    @DisplayName("a snapshot listener needs a directory to keep its files in")
-    void snapshotListenerNeedsDirectory() {
+    @DisplayName("snapshots need both a listener and a directory to keep its files in")
+    void snapshotsNeedListenerAndDirectory() {
         final SnapshotListener snapshotListener = (SnapshotListener) Proxy.newProxyInstance(
             SnapshotListener.class.getClassLoader(), new Class<?>[] {SnapshotListener.class},
             (proxy, method, args) -> null);
-        final IllegalStateException error = assertThrows(IllegalStateException.class,
-            () -> complete().snapshotListener(snapshotListener).build());
-        assertEquals("snapshotDirectory is required with a snapshotListener", error.getMessage());
-        assertEquals(SOURCE_ID, complete().snapshotDirectory(Path.of("unused")).build().sourceId());
+        assertEquals("snapshotDirectory", assertThrows(NullPointerException.class,
+            () -> complete().snapshots(snapshotListener, null)).getMessage());
+        assertEquals("snapshotListener", assertThrows(NullPointerException.class,
+            () -> complete().snapshots(null, Path.of("unused"))).getMessage());
+        assertEquals(SOURCE_ID, complete().snapshots(snapshotListener, Path.of("unused")).build().sourceId());
     }
 
     @Test
     @DisplayName("every option is accepted and the source id is the one given")
     void acceptsEveryOption() {
-        final Application application = complete().addressedGroups("A", "B").clientId(3).memberId(1).offCluster(true)
-            .egressChannel(EGRESS).ingressEndpoints("0=localhost:1").pendingCapacity(16).queueStallTimeoutMs(2000)
-            .recoveryStallTimeoutMs(3000).ipcConnectTimeoutMs(4000).build();
+        final Application application = complete().addressedGroups("A", "B").clientId(3).memberId(1)
+            .egressChannel(EGRESS).ingressEndpoints("0=localhost:1")
+            .tuning(Tuning.DEFAULT.withPendingCapacity(16).withQueueStallTimeoutMs(2000).withRecoveryStallTimeoutMs(3000))
+            .ipcConnectTimeoutMs(4000).outstandingWork(new OutstandingWork<Long, byte[]>())
+            .build();
         assertEquals(SOURCE_ID, application.sourceId());
+    }
+
+    @Test
+    @DisplayName("off the cluster there is no IPC ingress to time, so the two options are rejected together")
+    void offClusterRejectsAnIpcTimeout() {
+        assertEquals(SOURCE_ID, complete().offCluster(true).memberId(9).build().sourceId());
+        assertEquals("ipcConnectTimeoutMs has no meaning with offCluster", assertThrows(IllegalStateException.class,
+            () -> complete().offCluster(true).ipcConnectTimeoutMs(4000).build()).getMessage());
+        assertEquals(SOURCE_ID, complete().ipcConnectTimeoutMs(4000).build().sourceId());
+    }
+
+    @Test
+    @DisplayName("a closing gate clears the tracker's dispatches before the listener hears false; an opening one not")
+    void closingTheGateDischargesTheTrackerFirst() {
+        final OutstandingWork<Long, String> work = new OutstandingWork<>();
+        final List<String> seen = new ArrayList<>();
+        final Application.Listener recording = (Application.Listener) Proxy.newProxyInstance(
+            Application.Listener.class.getClassLoader(), new Class<?>[] {Application.Listener.class},
+            (proxy, method, args) -> {
+                if (method.getName().equals("onLeadershipChanged")) {
+                    seen.add(args[0] + ":" + work.isDispatched(1L));
+                }
+                return null;
+            });
+        final Application application = complete().listener(recording).outstandingWork(work).build();
+        work.onRequest(1L, "request");
+        assertEquals(1, work.dispatchUndispatched((key, request) -> true));
+
+        application.gateEdge(true);
+        assertTrue(work.isDispatched(1L));
+        application.gateEdge(false);
+        assertFalse(work.isDispatched(1L));
+        assertEquals(List.of("true:true", "false:false"), seen);
     }
 
     @Test
@@ -66,6 +107,6 @@ class ApplicationBuilderTest {
         assertFalse(application.isLeading());
         assertFalse(application.isCaughtUp());
         assertEquals(Publish.Declined, application.publish(1, 5, payload, 16));
-        assertEquals(Publish.Declined, application.reply(2, 9, 1, 5, payload, 16));
+        assertEquals(Publish.Declined, application.reply(new RequestRef(2, 9, 1), 5, payload, 16));
     }
 }

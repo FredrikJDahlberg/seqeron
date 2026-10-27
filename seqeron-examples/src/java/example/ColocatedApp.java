@@ -11,7 +11,6 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
-import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.protocol.Publish;
 
@@ -38,9 +37,6 @@ public final class ColocatedApp implements Application.Listener {
     private static final int SOURCE_ID = 11;
 
     private static final long PING_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1);
-
-    /** Ephemeral: one session, and no port of its own to allocate. */
-    private static final String EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:0";
 
     private final MutableDirectBuffer pingBody = new UnsafeBuffer(new byte[Long.BYTES]);
 
@@ -77,7 +73,7 @@ public final class ColocatedApp implements Application.Listener {
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
              Application app = Application.builder()
                  .sourceId(SOURCE_ID).clientId(clientId).memberId(memberId)
-                 .egressChannel(EGRESS_CHANNEL).listener(application)
+                 .listener(application)
                  .build()) {
 
             application.app = app;
@@ -148,15 +144,10 @@ public final class ColocatedApp implements Application.Listener {
             && payload.buffer().getLong(payload.payloadOffset(), ByteOrder.LITTLE_ENDIAN) == pingSentNs;
     }
 
-    @Override
-    public void onGroupsResolved(final GroupDirectory directory) {
-        // Publishes to its own group alone; one that addresses others takes their masks from here.
-    }
-
     /**
-     * The whole election, for the producer kind nothing elects. False is also where a replica keeping
-     * outstanding work calls {@code OutstandingWork.onNotLeader()} — every leadership change shuts an open
-     * gate, and a payload submitted during the election may have gone with it.
+     * The whole election, for the producer kind nothing elects. Every leadership change shuts an open
+     * gate, and a payload submitted during the election may have gone with it; a replica keeping outstanding work
+     * gives its {@code OutstandingWork} to the builder, which discharges it on false.
      */
     @Override
     public void onLeadershipChanged(final boolean leading) {
@@ -166,15 +157,6 @@ public final class ColocatedApp implements Application.Listener {
     @Override
     public void onCaughtUp(final long clusterSeqNo) {
         System.out.printf("# caught up at %d — following the queue live%n", clusterSeqNo);
-    }
-
-    /**
-     * The cluster clock, once a second: the one time source that keeps advancing while every producer is
-     * silent, and identical on every node. A deadline belongs on this rather than on a local clock.
-     */
-    @Override
-    public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
-        // Nothing to time here; a producer with a watchdog runs it off this.
     }
 
     /**

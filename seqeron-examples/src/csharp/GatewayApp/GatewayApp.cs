@@ -29,9 +29,6 @@ public sealed class GatewayApp : IGatewayListener
     // The examples' payloadId — eight raw bytes, no schema, which spec §13.2 admits.
     private const int PingPayloadId = 6;
 
-    // Ephemeral: one session, and no port of its own to allocate.
-    private const string EgressChannel = "aeron:udp?endpoint=localhost:0";
-
     // Agrona.NET's backoff parks for up to 16 ms by default; Java's for at most 1 ms, which this keeps.
     private const long MaxParkPeriodMs = 1;
 
@@ -67,7 +64,7 @@ public sealed class GatewayApp : IGatewayListener
         using Aeron aeron = Aeron.Connect(new Aeron.Context().AeronDirectoryName(aeronDir));
         using var gateway =
             new Gateway(new GatewayOptions { GatewayName = gatewayName, ClientId = clientId, MemberId = memberId,
-                                             EgressChannel = EgressChannel, Listener = edge });
+                                             Listener = edge });
         gateway.Start(aeron);
         Console.WriteLine($"# {gatewayName} on member {memberId} via {aeronDir}");
         edge.Run(gateway);
@@ -117,11 +114,6 @@ public sealed class GatewayApp : IGatewayListener
         _running = false;
     }
 
-    // Publishes to its own group alone; one that addresses others takes their masks from here.
-    public void OnGroupsResolved(GroupDirectory directory)
-    {
-    }
-
     // Designated: open the edge. A real gateway binds its listen socket here; false would be retried.
     public bool OnActivated(int firstConnectionId)
     {
@@ -168,11 +160,6 @@ public sealed class GatewayApp : IGatewayListener
     public void OnCaughtUp(long clusterSeqNo)
     {
         Console.WriteLine($"# caught up at {clusterSeqNo} — following the queue live");
-    }
-
-    public void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs)
-    {
-        // Nothing to time here; a gateway with a watchdog runs it off this.
     }
 
     // Latched, once: this instance may no longer act. Exiting releases its session, so the standby takes over.

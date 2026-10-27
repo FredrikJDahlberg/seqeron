@@ -102,13 +102,13 @@ public sealed class Gateway : IDisposable
         Application.Require(options.EgressChannel, nameof(options.EgressChannel));
         Application.Require(options.IngressEndpoints, nameof(options.IngressEndpoints));
         Application.Require(options.Listener, nameof(options.Listener));
-        if (options.SnapshotListener != null && options.SourceId == Unresolved)
+        if (options.Snapshots != null && options.SourceId == Unresolved)
         {
-            throw new ArgumentException("SourceId is required with a SnapshotListener", nameof(options));
+            throw new ArgumentException("SourceId is required with Snapshots", nameof(options));
         }
-        if (options.SnapshotListener != null && options.SnapshotDirectory == null)
+        if (options.Snapshots != null && options.Snapshots.Directory == null)
         {
-            throw new ArgumentException("SnapshotDirectory is required with a SnapshotListener", nameof(options));
+            throw new ArgumentException("Snapshots.Directory is required", nameof(options));
         }
         _listener = options.Listener;
         _sourceId = options.SourceId;
@@ -119,10 +119,10 @@ public sealed class Gateway : IDisposable
         _stagingBuffer = new UnsafeBuffer(_staging);
         SbeBuffers.Wrap(_bodyView, _body, 0, _body.Capacity);
         _lifecycle = new GatewayLifecycle(options.GatewayName, new LifecycleActions(this));
-        SnapshotStore store = options.SnapshotListener == null ? null : new SnapshotStore(options.SnapshotDirectory);
-        _snapshots = new SnapshotTaker(options.SnapshotListener, store, KeepAlive);
-        _session = new Session(options.ClientId, options.PendingCapacity, options.QueueStallTimeoutMs,
-                               options.RecoveryStallTimeoutMs, ReplayProtocol.NoSourceId, options.GatewayName,
+        SnapshotStore store = options.Snapshots == null ? null : new SnapshotStore(options.Snapshots.Directory);
+        _snapshots = new SnapshotTaker(options.Snapshots?.Listener, store, KeepAlive);
+        _session = new Session(options.ClientId, options.Tuning.PendingCapacity, options.Tuning.QueueStallTimeoutMs,
+                               options.Tuning.RecoveryStallTimeoutMs, ReplayProtocol.NoSourceId, options.GatewayName,
                                options.AddressedGroups, new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _lifecycle.GatewaySourceId);
         _snapshotSignals = new SnapshotSignals(this);

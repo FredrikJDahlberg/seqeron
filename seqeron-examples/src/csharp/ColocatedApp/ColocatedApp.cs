@@ -31,9 +31,6 @@ public sealed class ColocatedApp : IApplicationListener
     // This example's own sourceId (spec §5); Java's is 11 and C++'s 12.
     private const int SourceId = 17;
 
-    // Ephemeral: one session, and no port of its own to allocate.
-    private const string EgressChannel = "aeron:udp?endpoint=localhost:0";
-
     // Agrona.NET's backoff parks for up to 16 ms by default; Java's for at most 1 ms, which this keeps.
     private const long MaxParkPeriodMs = 1;
 
@@ -65,7 +62,7 @@ public sealed class ColocatedApp : IApplicationListener
         using Aeron aeron = Aeron.Connect(new Aeron.Context().AeronDirectoryName(aeronDir));
         using var app =
             new Application(new ApplicationOptions { SourceId = SourceId, ClientId = clientId, MemberId = memberId,
-                                                     EgressChannel = EgressChannel, Listener = application });
+                                                     Listener = application });
         application._app = app;
         app.Start(aeron);
         Console.WriteLine($"# member {memberId} via {aeronDir} — replica of application sourceId {SourceId}");
@@ -146,14 +143,9 @@ public sealed class ColocatedApp : IApplicationListener
                payload.Buffer.GetLong(payload.PayloadOffset, ByteOrder.LittleEndian) == _pingSentTicks;
     }
 
-    // Publishes to its own group alone; one that addresses others takes their masks from here.
-    public void OnGroupsResolved(GroupDirectory directory)
-    {
-    }
-
-    // The whole election, for the producer kind nothing elects. False is also where a replica keeping outstanding
-    // work calls OutstandingWork.OnNotLeader() — every leadership change shuts an open gate, and a payload submitted
-    // during the election may have gone with it.
+    // The whole election, for the producer kind nothing elects. Every leadership change shuts an open gate, and a
+    // payload submitted during the election may have gone with it; a replica keeping outstanding work sets
+    // ApplicationOptions.OnNotLeader to discharge it.
     public void OnLeadershipChanged(bool leading)
     {
         Console.WriteLine(leading ? "# leading — publishing" : "# not leading — silent");
@@ -162,13 +154,6 @@ public sealed class ColocatedApp : IApplicationListener
     public void OnCaughtUp(long clusterSeqNo)
     {
         Console.WriteLine($"# caught up at {clusterSeqNo} — following the queue live");
-    }
-
-    // The cluster clock, once a second: the one time source that keeps advancing while every producer is silent, and
-    // identical on every node. A deadline belongs on this rather than on a local clock.
-    public void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs)
-    {
-        // Nothing to time here; a producer with a watchdog runs it off this.
     }
 
     // Latched, once: this replica may no longer act, and exiting lets its restart re-walk the log. Recorded rather

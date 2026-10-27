@@ -75,13 +75,9 @@ bool isOwnPing(const app::Payload& payload)
 // What an application does that the façade cannot do for it — the whole of it, for this example.
 struct PingListener
 {
-    // Publishes to its own group alone; one that addresses others takes their masks from here.
-    void onGroupsResolved(const app::GroupDirectory&) const
-    {}
-
-    // The whole election, for the producer kind nothing elects. False is also where a replica keeping
-    // outstanding work calls OutstandingWork::onNotLeader(): every leadership change shuts an open gate, and
-    // a payload submitted during the election may have gone with it.
+    // The whole election, for the producer kind nothing elects. Every leadership change shuts an open
+    // gate, and a payload submitted during the election may have gone with it; a replica keeping outstanding
+    // work sets Config::onNotLeader to discharge it.
     void onLeadershipChanged(const bool leading) const
     {
         std::puts(leading ? "# leading — publishing" : "# not leading — silent");
@@ -109,11 +105,6 @@ struct PingListener
     {
         std::printf("# caught up at %lld — following the queue live\n", static_cast<long long>(clusterSeqNo));
     }
-
-    // The cluster clock, once a second: the one time source that keeps advancing while every producer is
-    // silent, and identical on every node. A deadline belongs on this rather than on a local clock.
-    void onClusterHeartbeat(std::int64_t, std::int64_t) const
-    {}
 
     // Latched, once: this replica may no longer act, and exiting lets its restart re-walk the log.
     void onFenced(const app::ClusterError fence, const std::string& detail) const

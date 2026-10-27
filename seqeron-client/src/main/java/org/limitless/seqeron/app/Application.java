@@ -26,8 +26,9 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * confirmed ingress across a failover, and the fences that say it may no longer act.
  *
  * <p><b>Off the cluster</b> ({@link Builder#offCluster}), on a gateway host, it is the one instance rather
- * than one of three: its gate opens once caught up, whoever leads, and it submits over UDP. Nothing stops a
- * second instance publishing too; an application that needs a standby off the cluster is a {@link Gateway}.
+ * than one of three: its gate opens once caught up, whoever leads, and it submits over UDP, never over a member's
+ * {@code aeron:ipc}. Nothing stops a second instance publishing too; an application that needs a standby off the
+ * cluster is a {@link Gateway}.
  *
  * <p><b>What is left to the consumer is its own work</b>: the payloads it reads, the state it keeps, the
  * payloads it submits. Every replica reads the same ordered stream and so holds the same state, which is
@@ -67,14 +68,16 @@ public final class Application implements AutoCloseable {
          * The log's group table, once, before the gate first opens: what {@link #publish(int, int, DirectBuffer,
          * int)} takes its masks from.
          */
-        void onGroupsResolved(GroupDirectory directory);
+        default void onGroupsResolved(final GroupDirectory directory) {
+        }
 
         /**
          * The leader gate crossed an edge: true when this replica may do leader-only work — caught up, and
          * its own node leads, or off the cluster caught up alone — false when it may not. <b>Every
          * leadership change closes an open gate</b>, so false is where {@link OutstandingWork#onNotLeader()}
-         * belongs: a reply this node submitted during the election may have gone with it, and the next
-         * opening dispatches it again. False also comes before {@link #onFenced} when this replica fences with
+         * belongs, which the façade calls itself for a tracker given to {@link Builder#outstandingWork}: a reply
+         * this node submitted during the election may have gone with it, and the next opening dispatches it
+         * again. False also comes before {@link #onFenced} when this replica fences with
          * its gate open.
          */
         void onLeadershipChanged(boolean leading);
@@ -83,14 +86,16 @@ public final class Application implements AutoCloseable {
         void onSequenced(Payload payload);
 
         /** Every transition to caught-up, the first included. */
-        void onCaughtUp(long clusterSeqNo);
+        default void onCaughtUp(final long clusterSeqNo) {
+        }
 
         /**
          * The cluster clock's tick (spec §7), once a second. It is the one time source that keeps advancing
          * while every producer is silent, which is exactly when a watchdog must still fire, and it is
          * identical on every node — so a timer driven by it decides the same thing everywhere.
          */
-        void onClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
+        default void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
+        }
 
         /** Once, latched: this replica may no longer act. Exiting is the usual way — its restart re-walks. */
         void onFenced(ClusterError fence, String detail);
@@ -119,6 +124,7 @@ public final class Application implements AutoCloseable {
     private final long ipcConnectTimeoutMs;
     private final String egressChannel;
     private final String ingressEndpoints;
+    private final OutstandingWork<?, ?> outstandingWork;
     private Counter snapshotRoundCounter;
 
     private Application(final Builder builder) {
@@ -127,24 +133,23 @@ public final class Application implements AutoCloseable {
         this.memberId = builder.memberId;
         this.clientId = builder.clientId;
         this.offCluster = builder.offCluster;
-        this.ipcConnectTimeoutMs = builder.ipcConnectTimeoutMs;
+        this.ipcConnectTimeoutMs = builder.ipcConnectTimeoutMs == null ? DEFAULT_IPC_CONNECT_TIMEOUT_MS
+                                                                       : builder.ipcConnectTimeoutMs;
         this.egressChannel = builder.egressChannel;
         this.ingressEndpoints = builder.ingressEndpoints;
+        this.outstandingWork = builder.outstandingWork;
         this.gate = new LeaderGate(builder.memberId, builder.offCluster);
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
         this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
-        this.session = new Session(builder.clientId, builder.pendingCapacity, builder.queueStallTimeoutMs,
-                                   builder.recoveryStallTimeoutMs, builder.sourceId, null, builder.addressedGroups,
+        this.session = new Session(builder.clientId, builder.tuning.pendingCapacity(),
+                                   builder.tuning.queueStallTimeoutMs(),
+                                   builder.tuning.recoveryStallTimeoutMs(), builder.sourceId, null, builder.addressedGroups,
                                    new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, () -> sourceId);
         if (store != null) {
             session.restoreFrom(store, snapshots);
         }
-    }
-
-    public static Builder builder() {
-        return new Builder();
     }
 
     /** Opens the cluster session on this node and starts following its queue; the gate stays shut until caught up. */
@@ -179,7 +184,7 @@ public final class Application implements AutoCloseable {
         final LeaderGate.Transition transition =
             gate.update(session.isCaughtUp() && session.hasSession(), session.currentLeaderMemberId());
         if (transition != LeaderGate.Transition.NONE) {
-            listener.onLeadershipChanged(transition == LeaderGate.Transition.OPENED);
+            gateEdge(transition == LeaderGate.Transition.OPENED);
             work++;
         }
         work += snapshots.signal(snapshotSignals);
@@ -223,13 +228,12 @@ public final class Application implements AutoCloseable {
     /**
      * The same on behalf of the producer that asked for it: a reply carries the <b>requester's</b>
      * {@code sourceId}, {@code connectionId} and {@code groupMask}, which is how the gateway that took the request
-     * routes the answer back out of it, and how every group that saw the request sees the answer. Keep those three
-     * off the request rather than the request itself — a {@link Payload} is valid only during its callback, and a
-     * reply is usually dispatched later.
+     * routes the answer back out of it, and how every group that saw the request sees the answer. Keep the {@link
+     * RequestRef} ({@link Payload#requestRef()}) rather than the request itself — a {@link Payload} is valid only
+     * during its callback, and a reply is usually dispatched later.
      */
-    public Publish reply(final int requesterSourceId, final int connectionId, final int groupMask, final int payloadId,
-                         final DirectBuffer payload, final int length) {
-        return submit(requesterSourceId, connectionId, groupMask, payloadId, payload, length);
+    public Publish reply(final RequestRef request, final int payloadId, final DirectBuffer payload, final int length) {
+        return submit(request.sourceId(), request.connectionId(), request.groupMask(), payloadId, payload, length);
     }
 
     /** This replica's own {@code sourceId}, the one its topology row gives it. */
@@ -252,6 +256,14 @@ public final class Application implements AutoCloseable {
         if (snapshotRoundCounter != null) {
             snapshotRoundCounter.close();
         }
+    }
+
+    /** A closing gate discharges the tracked work's dispatches before the listener hears of it. */
+    void gateEdge(final boolean leading) {
+        if (!leading && outstandingWork != null) {
+            outstandingWork.onNotLeader();
+        }
+        listener.onLeadershipChanged(leading);
     }
 
     /** The session's keep-alive, for a round serialized inside a dispatch. */
@@ -353,7 +365,7 @@ public final class Application implements AutoCloseable {
         @Override
         public void onFenced(final ClusterError fence, final String detail) {
             if (gate.onFenced()) {
-                listener.onLeadershipChanged(false);
+                gateEdge(false);
             }
             listener.onFenced(fence, detail);
         }
@@ -371,124 +383,136 @@ public final class Application implements AutoCloseable {
         }
     }
 
+    public static Builder builder() {
+        return new Builder();
+    }
+
     /** Everything one replica needs to join its deployment. */
     public static final class Builder {
         private int sourceId;
         private List<String> addressedGroups = List.of();
-        private int clientId;
+        private Integer clientId;
         private int memberId;
         private boolean offCluster;
-        private String egressChannel;
+        private Long ipcConnectTimeoutMs;
+        private String egressChannel = Session.DEFAULT_EGRESS_CHANNEL;
         private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
+        private OutstandingWork<?, ?> outstandingWork;
         private SnapshotListener snapshotListener;
         private Path snapshotDirectory;
-        private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
-        private long queueStallTimeoutMs = DEFAULT_QUEUE_STALL_TIMEOUT_MS;
-        private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-        private long ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
+        private Tuning tuning = Tuning.DEFAULT;
 
-        /**
-         * This application's {@code sourceId}, the one its {@code <applications>} row declares — required,
-         * because spec §5 is one id space, and never −1, which ingress refuses.
-         */
-        public Builder sourceId(final int sourceId) {
-            this.sourceId = sourceId;
-            return this;
-        }
+    /**
+     * This application's {@code sourceId}, the one its {@code <applications>} row declares — required,
+     * because spec §5 is one id space, and never −1, which ingress refuses.
+     */
+    public Builder sourceId(final int sourceId) {
+        this.sourceId = sourceId;
+        return this;
+    }
 
-        /**
-         * The names of the groups this application publishes to besides its own; one the log's group table lacks
-         * fences it with {@link ClusterError#GROUP_UNKNOWN}.
-         */
-        public Builder addressedGroups(final String... addressedGroups) {
-            this.addressedGroups = List.of(addressedGroups);
-            return this;
-        }
+    /**
+     * The names of the groups this application publishes to besides its own; one the log's group table lacks
+     * fences it with {@link ClusterError#GROUP_UNKNOWN}.
+     */
+    public Builder addressedGroups(final String... addressedGroups) {
+        this.addressedGroups = List.of(addressedGroups);
+        return this;
+    }
 
-        /** This replica's client id, its counters' label; unique among the co-located apps on its node. */
-        public Builder clientId(final int clientId) {
-            this.clientId = clientId;
-            return this;
-        }
+    /**
+     * This replica's client id, its counters' label — required, and unique among the clients on its node: two
+     * sharing one share their counters' series.
+     */
+    public Builder clientId(final int clientId) {
+        this.clientId = clientId;
+        return this;
+    }
 
-        /** The node this replica runs on: whose queue it follows, and whose leadership opens its gate. */
-        public Builder memberId(final int memberId) {
-            this.memberId = memberId;
-            return this;
-        }
+    /** The node this replica runs on: whose queue it follows, and whose leadership opens its gate. */
+    public Builder memberId(final int memberId) {
+        this.memberId = memberId;
+        return this;
+    }
+
+    /**
+     * This client's own egress endpoint; two media drivers on one host cannot both bind a port. An ephemeral port
+     * on localhost, {@code aeron:udp?endpoint=localhost:0}, by default.
+     */
+    public Builder egressChannel(final String egressChannel) {
+        this.egressChannel = egressChannel;
+        return this;
+    }
+
+    /** The members to reach when this node is not leading, {@code PortLayout.ingressEndpoints()} by default. */
+    public Builder ingressEndpoints(final String ingressEndpoints) {
+        this.ingressEndpoints = ingressEndpoints;
+        return this;
+    }
+
+    public Builder listener(final Listener listener) {
+        this.listener = listener;
+        return this;
+    }
+
+    /**
+     * The tracker of this application's leader-only work. The façade calls its {@link
+     * OutstandingWork#onNotLeader()} whenever the gate closes, before {@link Listener#onLeadershipChanged},
+     * so the listener need not. Optional: without one the listener does it.
+     */
+    public Builder outstandingWork(final OutstandingWork<?, ?> outstandingWork) {
+        this.outstandingWork = outstandingWork;
+        return this;
+    }
+
+    /**
+     * Takes this replica into snapshot rounds; without it it takes part in none, whatever its topology row
+     * says, and recovers from {@code clusterSeqNo} 1.
+     *
+     * @param snapshotListener  serializes this application's state for a round and restores it on start
+     * @param snapshotDirectory where this replica keeps its snapshots, one file per round. Its own: no other
+     *                          instance may write it. A restart restores from what it holds, so it must outlive
+     *                          the process.
+     */
+    public Builder snapshots(final SnapshotListener snapshotListener, final Path snapshotDirectory) {
+        this.snapshotListener = Objects.requireNonNull(snapshotListener, "snapshotListener");
+        this.snapshotDirectory = Objects.requireNonNull(snapshotDirectory, "snapshotDirectory");
+        return this;
+    }
+
+    /** The stall and capacity policy, {@link Tuning#DEFAULT} by default. */
+    public Builder tuning(final Tuning tuning) {
+        this.tuning = Objects.requireNonNull(tuning, "tuning");
+        return this;
+    }
 
         /**
          * Whether this node is a gateway host, running no member, rather than a member: the gate then opens
-         * whoever leads, and ingress is UDP alone. Run one instance, as nothing elects between two.
+         * whoever leads, and ingress is UDP alone. Run one instance, as nothing elects between two. Not with an
+         * {@link #ipcConnectTimeoutMs}, which has no IPC ingress to time.
          */
         public Builder offCluster(final boolean offCluster) {
             this.offCluster = offCluster;
             return this;
         }
 
-        /** This client's own egress endpoint; two media drivers on one host cannot both bind a port. */
-        public Builder egressChannel(final String egressChannel) {
-            this.egressChannel = egressChannel;
-            return this;
-        }
-
-        /** The members to reach when this node is not leading, {@code PortLayout.ingressEndpoints()} by default. */
-        public Builder ingressEndpoints(final String ingressEndpoints) {
-            this.ingressEndpoints = ingressEndpoints;
-            return this;
-        }
-
-        public Builder listener(final Listener listener) {
-            this.listener = listener;
-            return this;
-        }
-
         /**
-         * What serializes this application's state for snapshot rounds and restores it on start; without one it
-         * takes part in none, whatever its topology row says, and recovers from {@code clusterSeqNo} 1.
+         * How long to wait for IPC ingress to the local member while it leads before using UDP, {@value
+         * Application#DEFAULT_IPC_CONNECT_TIMEOUT_MS} ms by default. Not with {@link #offCluster}.
          */
-        public Builder snapshotListener(final SnapshotListener snapshotListener) {
-            this.snapshotListener = snapshotListener;
-            return this;
-        }
-
-        /**
-         * Where this replica keeps its snapshots, one file per round; required with a {@link #snapshotListener}.
-         * Its own: no other instance may write it. A restart restores from what it holds, so it must outlive the
-         * process.
-         */
-        public Builder snapshotDirectory(final Path snapshotDirectory) {
-            this.snapshotDirectory = snapshotDirectory;
-            return this;
-        }
-
-        public Builder pendingCapacity(final int pendingCapacity) {
-            this.pendingCapacity = pendingCapacity;
-            return this;
-        }
-
-        public Builder queueStallTimeoutMs(final long queueStallTimeoutMs) {
-            this.queueStallTimeoutMs = queueStallTimeoutMs;
-            return this;
-        }
-
-        public Builder recoveryStallTimeoutMs(final long recoveryStallTimeoutMs) {
-            this.recoveryStallTimeoutMs = recoveryStallTimeoutMs;
-            return this;
-        }
-
         public Builder ipcConnectTimeoutMs(final long ipcConnectTimeoutMs) {
             this.ipcConnectTimeoutMs = ipcConnectTimeoutMs;
             return this;
         }
 
         public Application build() {
+            Objects.requireNonNull(clientId, "clientId");
             Objects.requireNonNull(egressChannel, "egressChannel");
             Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
             Objects.requireNonNull(listener, "listener");
-            if (snapshotListener != null && snapshotDirectory == null) {
-                throw new IllegalStateException("snapshotDirectory is required with a snapshotListener");
+            if (offCluster && ipcConnectTimeoutMs != null) {
+                throw new IllegalStateException("ipcConnectTimeoutMs has no meaning with offCluster");
             }
             return new Application(this);
         }

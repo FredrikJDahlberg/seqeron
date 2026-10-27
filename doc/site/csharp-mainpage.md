@@ -10,7 +10,8 @@ PascalCase.
 |---|---|
 | Run one instance of an elected active/standby gateway pair | \ref Org.Limitless.Seqeron.App.Gateway "App.Gateway" |
 | Run a co-located application: one replica per node, publishing while its node leads | \ref Org.Limitless.Seqeron.App.Application "App.Application" |
-| Follow the ordered stream: history off the recording, then the live queue | \ref Org.Limitless.Seqeron.Replayer.Client.ReplayerStreamReceiver "Replayer.Client.ReplayerStreamReceiver" |
+| Follow the ordered stream, publishing nothing: history off the recording, then the live queue | \ref Org.Limitless.Seqeron.App.Consumer "App.Consumer" |
+| The same, one level down | \ref Org.Limitless.Seqeron.Replayer.Client.ReplayerStreamReceiver "Replayer.Client.ReplayerStreamReceiver" |
 
 A façade takes an options class (\ref Org.Limitless.Seqeron.App.GatewayOptions "GatewayOptions",
 \ref Org.Limitless.Seqeron.App.ApplicationOptions "ApplicationOptions") and assembles the whole duty cycle. Its

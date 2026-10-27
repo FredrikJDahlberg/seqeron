@@ -15,7 +15,6 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
-import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.app.SnapshotListener;
 
@@ -48,7 +47,6 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
     private static final int FORMAT_VERSION = 1;
 
     private static final long TRANSFER_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1);
-    private static final String EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:0";
 
     // The replicated state: derived from the log alone, so identical on every replica.
     private final long[] balances = new long[ACCOUNTS];
@@ -94,8 +92,8 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
              Application app = Application.builder()
                  .sourceId(SOURCE_ID).clientId(clientId).memberId(memberId)
-                 .egressChannel(EGRESS_CHANNEL).listener(application)
-                 .snapshotListener(application).snapshotDirectory(snapshotDir)
+                 .listener(application)
+                 .snapshots(application, snapshotDir)
                  .build()) {
 
             application.app = app;
@@ -201,10 +199,6 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
     }
 
     @Override
-    public void onGroupsResolved(final GroupDirectory directory) {
-    }
-
-    @Override
     public void onLeadershipChanged(final boolean leading) {
         System.out.println(leading ? "# leading — submitting transfers" : "# not leading — silent");
     }
@@ -214,10 +208,6 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
     public void onCaughtUp(final long clusterSeqNo) {
         System.out.printf("# caught up at %d — %d transfers, %d rejected, total %d%n", clusterSeqNo, applied,
                           rejected, Arrays.stream(balances).sum());
-    }
-
-    @Override
-    public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
     }
 
     /** SNAPSHOT_DIVERGED and SNAPSHOT_UNRESTORABLE arrive here like every other fence. */

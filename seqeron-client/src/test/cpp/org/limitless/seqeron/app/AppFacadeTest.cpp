@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include "org/limitless/seqeron/app/Application.hpp"
+#include "org/limitless/seqeron/app/Consumer.hpp"
 #include "org/limitless/seqeron/app/Gateway.hpp"
 
 namespace org::limitless::seqeron::app {
@@ -76,6 +77,103 @@ struct ColocatedOnlyListener
 static_assert(ApplicationListener<ColocatedOnlyListener>);
 static_assert(!GatewayListener<ColocatedOnlyListener>);
 
+// The least a listener provides: the optional callbacks are called only where they exist.
+struct MinimalApplicationListener
+{
+    void onLeadershipChanged(bool)
+    {}
+
+    void onSequenced(const Payload&)
+    {}
+
+    void onFenced(ClusterError, const std::string&)
+    {}
+};
+
+struct MinimalGatewayListener
+{
+    bool onActivated(std::int32_t)
+    {
+        return true;
+    }
+
+    void onStandby()
+    {}
+
+    void onSequenced(const Payload&)
+    {}
+
+    void onFenced(ClusterError, const std::string&)
+    {}
+};
+
+static_assert(ApplicationListener<MinimalApplicationListener> && GatewayListener<MinimalGatewayListener>);
+
+TEST(ApplicationFacade, ClosingTheGateRunsTheHookBeforeTheListenerHearsFalse)
+{
+    struct Recorder : MinimalApplicationListener
+    {
+        void onLeadershipChanged(bool leading)
+        {
+            seen.push_back(std::string(leading ? "true:" : "false:") + (*discharged ? "true" : "false"));
+        }
+
+        bool* discharged = nullptr;
+        std::vector<std::string> seen;
+    };
+
+    Recorder listener;
+    bool discharged = false;
+    listener.discharged = &discharged;
+    Application<Recorder> app{
+        { .sourceId = 3, .clientId = 21, .memberId = 1, .onNotLeader = [&] { discharged = true; } }, listener
+    };
+    app.gateEdge(true);
+    EXPECT_FALSE(discharged);
+    app.gateEdge(false);
+    EXPECT_EQ((std::vector<std::string>{ "true:false", "false:true" }), listener.seen);
+}
+
+TEST(ApplicationFacade, ClientIdIsRequiredAndEgressChannelIsNot)
+{
+    StubListener listener;
+    EXPECT_THROW((Application<StubListener>{ { .sourceId = 3 }, listener }), std::invalid_argument);
+    EXPECT_THROW((Gateway<StubListener>{ { .gatewayName = "GW-T-A" }, listener }), std::invalid_argument);
+
+    Application<StubListener> offCluster{ { .sourceId = 3, .clientId = 21, .memberId = 9, .offCluster = true },
+                                          listener };
+    EXPECT_FALSE(offCluster.isLeading());
+    EXPECT_EQ(3, offCluster.sourceId());
+    EXPECT_THROW((Application<StubListener>{
+                     { .sourceId = 3, .clientId = 21, .offCluster = true, .ipcConnectTimeoutMs = 4000 }, listener }),
+                 std::invalid_argument);
+}
+
+TEST(ConsumerFacade, NeedsAClientIdAndAGroupAndIsIdleBeforeStart)
+{
+    MinimalApplicationListener listener;
+    static_assert(ConsumerListener<MinimalApplicationListener>);
+    EXPECT_THROW((Consumer<MinimalApplicationListener>{ { .groupId = 1 }, listener }), std::invalid_argument);
+    EXPECT_THROW((Consumer<MinimalApplicationListener>{ { .clientId = 7 }, listener }), std::invalid_argument);
+
+    Consumer<MinimalApplicationListener> consumer{ { .clientId = 7, .memberId = 2, .groupId = 1 }, listener };
+    EXPECT_FALSE(consumer.isCaughtUp());
+    EXPECT_EQ(0, consumer.lastClusterSeqNo());
+}
+
+TEST(ApplicationFacade, ConstructsWithOnlyTheRequiredCallbacksAndANotLeaderHook)
+{
+    MinimalApplicationListener listener;
+    bool notLeader = false;
+    Application<MinimalApplicationListener> app{
+        { .sourceId = 3, .clientId = 21, .memberId = 1, .onNotLeader = [&] { notLeader = true; } }, listener
+    };
+    EXPECT_FALSE(notLeader);
+    MinimalGatewayListener gatewayListener;
+    Gateway<MinimalGatewayListener> gateway{ { .gatewayName = "GW-T-A", .clientId = 11, .memberId = 0 },
+                                             gatewayListener };
+}
+
 // A listener may own its façade as a member, where the listener is still incomplete.
 struct OwningListener : StubListener
 {
@@ -108,15 +206,16 @@ TEST(ApplicationFacade, ShutGateDeclinesEveryPublish)
 
     EXPECT_FALSE(app.isCaughtUp());
     EXPECT_EQ(protocol::Publish::Declined, app.publish(5, payload.data(), payload.size()));
-    EXPECT_EQ(protocol::Publish::Declined, app.reply(2, 9, 1, 5, payload.data(), payload.size()));
+    EXPECT_EQ(protocol::Publish::Declined, app.reply(RequestRef{ 2, 9, 1 }, 5, payload.data(), payload.size()));
 }
 
-TEST(ApplicationFacade, SnapshotListenerNeedsADirectory)
+TEST(ApplicationFacade, SnapshotsNeedADirectory)
 {
     StubListener listener;
     StubSnapshotListener snapshots;
 
-    EXPECT_THROW((Application<StubListener>{ { .sourceId = 3, .snapshotListener = &snapshots }, listener }),
+    EXPECT_THROW((Application<StubListener>{ { .sourceId = 3, .clientId = 21, .snapshots = Snapshots{ snapshots, {} } },
+                                             listener }),
                  std::invalid_argument);
 }
 
@@ -134,17 +233,19 @@ TEST(GatewayFacade, TakesNoConnectionUntilServing)
     EXPECT_FALSE(gateway.isServing());
 }
 
-TEST(GatewayFacade, SnapshotListenerNeedsASourceIdThenADirectory)
+TEST(GatewayFacade, SnapshotsNeedASourceIdThenADirectory)
 {
     StubListener listener;
     StubSnapshotListener snapshots;
 
     EXPECT_THROW(
         (Gateway<StubListener>{
-            { .gatewayName = "GW-T-A", .snapshotListener = &snapshots, .snapshotDirectory = "unused" }, listener }),
+            { .gatewayName = "GW-T-A", .clientId = 11, .snapshots = Snapshots{ snapshots, "unused" } }, listener }),
         std::invalid_argument);
     EXPECT_THROW(
-        (Gateway<StubListener>{ { .gatewayName = "GW-T-A", .sourceId = 4, .snapshotListener = &snapshots }, listener }),
+        (Gateway<StubListener>{
+            { .gatewayName = "GW-T-A", .clientId = 11, .sourceId = 4, .snapshots = Snapshots{ snapshots, {} } },
+            listener }),
         std::invalid_argument);
 }
 
