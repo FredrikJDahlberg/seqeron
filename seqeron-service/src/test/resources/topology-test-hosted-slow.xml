@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The hosted-façade prototype's topology for a cut that outlasts the session timeout (doc/hosted-facade-draft.md):
+    rounds every 15 s, longer than the 8 s cut and the 5 s session timeout together would let one supersede another.
+    HostedSnapshotTest loads it.
+-->
+<topology xmlns="http://limitless.org/seqeron/topology/1">
+    <groups>
+        <group name="test" id="1"/>
+    </groups>
+
+    <applications>
+        <application name="TestApplication" sourceId="16" group="test" snapshot="true"
+                     description="TestApplication replicas, one of them hosted"/>
+    </applications>
+
+    <snapshots interval="15"/>
+</topology>

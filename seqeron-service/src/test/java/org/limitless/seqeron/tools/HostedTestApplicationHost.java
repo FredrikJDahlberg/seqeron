@@ -1,0 +1,375 @@
+package org.limitless.seqeron.tools;
+
+import io.aeron.Aeron;
+import io.aeron.Publication;
+import io.aeron.Subscription;
+import io.aeron.logbuffer.FragmentHandler;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import org.agrona.DirectBuffer;
+import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.seqeron.app.Application;
+import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.GroupDirectory;
+import org.limitless.seqeron.app.Payload;
+import org.limitless.seqeron.app.SnapshotListener;
+import org.limitless.seqeron.protocol.Publish;
+
+/**
+ * The host of the hosted-façade prototype (doc/hosted-facade-draft.md): the real {@link Application}, started when a
+ * client sends {@code Attach} and closed when it is lost, its callbacks relayed over {@link HostedWire}'s streams.
+ * Harness code in the test source set, launched by {@code HostedSnapshotTest} beside a member.
+ *
+ * <p>Properties on top of {@link ClusterProbe}'s {@code probe.memberId} / {@code probe.aeronDir}:
+ * {@code probe.sourceId} (16), {@code probe.clientId} (11), {@code probe.snapshotDir}, {@code host.clientTimeoutMs}
+ * (2000).
+ */
+public final class HostedTestApplicationHost implements Application.Listener, SnapshotListener {
+    private static final int EXIT_FENCED = 70;
+    private static final long HEARTBEAT_NS = TimeUnit.MILLISECONDS.toNanos(100);
+    private static final long BACK_PRESSURE_NS = TimeUnit.SECONDS.toNanos(1);
+
+    private final int sourceId = Integer.getInteger("probe.sourceId", 16);
+    private final int clientId = Integer.getInteger("probe.clientId", 11);
+    private final long clientTimeoutNs = TimeUnit.MILLISECONDS.toNanos(Long.getLong("host.clientTimeoutMs", 2000));
+    private final UnsafeBuffer out = new UnsafeBuffer(new byte[128 * 1024]);
+    private final UnsafeBuffer scratch = new UnsafeBuffer(new byte[16 * 1024]);
+    private final List<byte[]> cutRecords = new ArrayList<>();
+    private final FragmentHandler onCommand = this::onCommand;
+
+    private Aeron aeron;
+    private Publication events;
+    private Subscription commands;
+    private Path snapshotDir;
+    private Application app;
+    private long attachId;
+    private long liveNonce;
+    private long epoch;
+    private long cutNo;
+    private long lastClientNs;
+    private long lastHeartbeatNs;
+    private boolean leading;
+    private boolean lastCanPublish;
+    private boolean collecting;
+    private boolean endSeen;
+    private boolean cutLost;
+    private boolean stalled;
+    private volatile boolean running = true;
+    private volatile boolean fenced;
+
+    public static void main(final String[] args) {
+        System.exit(new HostedTestApplicationHost().run());
+    }
+
+    private int run() {
+        snapshotDir = Path.of(System.getProperty("probe.snapshotDir"));
+        final Thread main = Thread.currentThread();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            running = false;
+            try {
+                main.join(TimeUnit.SECONDS.toMillis(5));
+            } catch (final InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(ClusterProbe.aeronDir()));
+        events = aeron.addExclusivePublication(HostedWire.IPC, HostedWire.EVENTS_STREAM);
+        commands = aeron.addSubscription(HostedWire.IPC, HostedWire.COMMANDS_STREAM);
+        log("host ready: member %d, sourceId %d, clientId %d", ClusterProbe.memberId(), sourceId, clientId);
+        final IdleStrategy idle = new BackoffIdleStrategy();
+        while (running && !fenced) {
+            int work = commands.poll(onCommand, 16);
+            if (app != null) {
+                work += app.doWork();
+                if (!fenced) {
+                    afterDoWork();
+                }
+            }
+            idle.idle(work);
+        }
+        if (app != null) {
+            app.close();
+        }
+        aeron.close();
+        return fenced ? EXIT_FENCED : 0;
+    }
+
+    private void afterDoWork() {
+        final long now = System.nanoTime();
+        final boolean canPublish = app.canPublish();
+        if (canPublish != lastCanPublish) {
+            lastCanPublish = canPublish;
+            sendGate();
+        }
+        if (now - lastHeartbeatNs >= HEARTBEAT_NS) {
+            sendHeartbeat(now);
+        }
+        if (stalled) {
+            closeApp("CLIENT_STALLED: events stream back-pressured for " + BACK_PRESSURE_NS / 1_000_000 + "ms");
+        } else if (now - lastClientNs > clientTimeoutNs) {
+            closeApp("CLIENT_LOST: silent for " + (now - lastClientNs) / 1_000_000 + "ms");
+        }
+    }
+
+    // ── Commands ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    private void onCommand(final DirectBuffer buffer, final int offset, final int length,
+                           final io.aeron.logbuffer.Header header) {
+        final byte type = buffer.getByte(offset);
+        final long id = buffer.getLong(offset + 8);
+        if (type == HostedWire.ATTACH) {
+            onAttach(buffer, offset);
+            return;
+        }
+        if (app == null || id != attachId) {
+            log("dropped stale command type=%d attachId=%x (current %x)", type, id, attachId);
+            return;
+        }
+        lastClientNs = System.nanoTime();
+        switch (type) {
+        case HostedWire.PUBLISH -> onPublish(buffer, offset);
+        case HostedWire.SNAPSHOT_RECORD -> {
+            if (collecting && buffer.getLong(offset + 16) == cutNo) {
+                final int recordLength = buffer.getInt(offset + 28);
+                final byte[] record = new byte[recordLength];
+                buffer.getBytes(offset + 32, record);
+                cutRecords.add(record);
+            }
+        }
+        case HostedWire.SNAPSHOT_END -> {
+            if (collecting && buffer.getLong(offset + 16) == cutNo) {
+                endSeen = true;
+            }
+        }
+        case HostedWire.DETACH -> {
+            if (collecting) {
+                cutLost = true;
+                endSeen = true;
+            } else {
+                closeApp("DETACHED");
+            }
+        }
+        default -> {
+            // A heartbeat: lastClientNs is all it is for.
+        }
+        }
+    }
+
+    private void onAttach(final DirectBuffer buffer, final int offset) {
+        final long nonce = buffer.getLong(offset + 16);
+        if (app != null) {
+            if (nonce != liveNonce) {
+                log("refused Attach from another client: attachment %x is live", attachId);
+            }
+            return;
+        }
+        liveNonce = nonce;
+        attachId = ThreadLocalRandom.current().nextLong() | 1;
+        epoch = 0;
+        cutNo = 0;
+        leading = false;
+        lastCanPublish = false;
+        cutLost = false;
+        stalled = false;
+        app = Application.builder()
+                  .sourceId(sourceId)
+                  .clientId(clientId)
+                  .memberId(ClusterProbe.memberId())
+                  .egressChannel(ClusterProbe.egressChannel())
+                  .ingressEndpoints(ClusterProbe.ingressEndpoints())
+                  .listener(this)
+                  .snapshots(this, snapshotDir)
+                  .build();
+        app.start(aeron);
+        lastClientNs = System.nanoTime();
+        HostedWire.header(out, HostedWire.ATTACHED, attachId);
+        out.putLong(16, nonce);
+        send(24);
+        log("ATTACHED attachId=%x", attachId);
+    }
+
+    private void onPublish(final DirectBuffer buffer, final int offset) {
+        final long correlationId = buffer.getLong(offset + 16);
+        final long gateEpoch = buffer.getLong(offset + 24);
+        if (gateEpoch != epoch) {
+            sendVerdict(correlationId, HostedWire.VERDICT_EPOCH);
+            return;
+        }
+        final int payloadId = buffer.getInt(offset + 32);
+        final int length = buffer.getInt(offset + 36);
+        buffer.getBytes(offset + 40, scratch, 0, length);
+        if (app.publish(payloadId, scratch, length) != Publish.Published) {
+            sendVerdict(correlationId, HostedWire.VERDICT_DECLINED);
+        }
+    }
+
+    private void closeApp(final String reason) {
+        log("%s", reason);
+        app.close();
+        app = null;
+        attachId = 0;
+        collecting = false;
+    }
+
+    // ── Application.Listener ─────────────────────────────────────────────────────────────────────────────────
+
+    @Override
+    public void onGroupsResolved(final GroupDirectory directory) {
+    }
+
+    @Override
+    public void onLeadershipChanged(final boolean nowLeading) {
+        leading = nowLeading;
+        epoch++;
+        log(nowLeading ? "now leading — gate epoch %d" : "not leading — gate epoch %d", epoch);
+        sendGate();
+    }
+
+    @Override
+    public void onSequenced(final Payload payload) {
+        HostedWire.header(out, HostedWire.PAYLOAD, attachId);
+        out.putLong(16, payload.clusterSeqNo());
+        out.putInt(24, payload.sourceId());
+        out.putInt(28, payload.payloadId());
+        out.putInt(32, payload.templateId());
+        out.putInt(36, payload.bodyLength());
+        payload.buffer().getBytes(payload.bodyOffset(), out, 40, payload.bodyLength());
+        send(40 + payload.bodyLength());
+    }
+
+    @Override
+    public void onCaughtUp(final long clusterSeqNo) {
+        HostedWire.header(out, HostedWire.CAUGHT_UP, attachId);
+        out.putLong(16, clusterSeqNo);
+        send(24);
+        log("host caught up at clusterSeqNo %d", clusterSeqNo);
+    }
+
+    @Override
+    public void onFenced(final ClusterError fence, final String detail) {
+        log("FENCED: %s — %s", fence, detail);
+        final byte[] text = (fence + ": " + detail).getBytes(StandardCharsets.UTF_8);
+        HostedWire.header(out, HostedWire.FENCED, attachId);
+        out.putInt(16, text.length);
+        out.putBytes(20, text);
+        send(20 + text.length);
+        fenced = true;
+    }
+
+    // ── SnapshotListener ─────────────────────────────────────────────────────────────────────────────────────
+
+    @Override
+    public int formatVersion() {
+        return 1;
+    }
+
+    /**
+     * The first call of a round sends the cut and waits for the client's records and end, then each call serves one.
+     * Waiting, the host polls the command stream and keeps the cluster session alive; a client silent for
+     * {@code host.clientTimeoutMs} abandons the round.
+     */
+    @Override
+    public int onSnapshot(final MutableDirectBuffer buffer, final int recordIndex) {
+        if (recordIndex == 0) {
+            cutNo++;
+            cutRecords.clear();
+            endSeen = false;
+            cutLost = false;
+            collecting = true;
+            lastClientNs = System.nanoTime();
+            HostedWire.header(out, HostedWire.SNAPSHOT_CUT, attachId);
+            out.putLong(16, cutNo);
+            send(24);
+            while (!endSeen) {
+                commands.poll(onCommand, 16);
+                app.keepAlive();
+                final long now = System.nanoTime();
+                if (now - lastHeartbeatNs >= HEARTBEAT_NS) {
+                    sendHeartbeat(now);
+                }
+                if (now - lastClientNs > clientTimeoutNs) {
+                    cutLost = true;
+                    break;
+                }
+                Thread.onSpinWait();
+            }
+            collecting = false;
+            if (cutLost) {
+                log("ABANDON round: client lost in cut %d after %d record(s)", cutNo, cutRecords.size());
+                return -1;
+            }
+        }
+        if (cutLost) {
+            return -1;
+        }
+        if (recordIndex < cutRecords.size()) {
+            final byte[] record = cutRecords.get(recordIndex);
+            buffer.putBytes(0, record);
+            return record.length;
+        }
+        return 0;
+    }
+
+    @Override
+    public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex, final int formatVersion) {
+        HostedWire.header(out, HostedWire.RESTORE_RECORD, attachId);
+        out.putInt(16, recordIndex);
+        out.putInt(20, formatVersion);
+        out.putInt(24, length);
+        out.putBytes(28, buffer, 0, length);
+        send(28 + length);
+    }
+
+    // ── Sends ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    private void sendGate() {
+        HostedWire.header(out, HostedWire.GATE, attachId);
+        out.putLong(16, epoch);
+        out.putByte(24, (byte)(leading ? 1 : 0));
+        out.putByte(25, (byte)(app != null && app.canPublish() ? 1 : 0));
+        send(26);
+    }
+
+    private void sendVerdict(final long correlationId, final int result) {
+        HostedWire.header(out, HostedWire.VERDICT, attachId);
+        out.putLong(16, correlationId);
+        out.putLong(24, epoch);
+        out.putInt(32, result);
+        send(36);
+    }
+
+    private void sendHeartbeat(final long now) {
+        lastHeartbeatNs = now;
+        HostedWire.header(out, HostedWire.HEARTBEAT, attachId);
+        out.putLong(16, now);
+        send(24);
+    }
+
+    /** Offers {@code out}; no subscriber means no client, which is not worth spinning on. */
+    private void send(final int length) {
+        final long deadline = System.nanoTime() + BACK_PRESSURE_NS;
+        while (true) {
+            final long result = events.offer(out, 0, length);
+            if (result >= 0 || result == Publication.NOT_CONNECTED || result == Publication.CLOSED) {
+                return;
+            }
+            if (System.nanoTime() > deadline) {
+                stalled = true;
+                return;
+            }
+            Thread.onSpinWait();
+        }
+    }
+
+    private static void log(final String format, final Object... args) {
+        System.out.printf("[host %tT.%<tL] %s%n", System.currentTimeMillis(), String.format(format, args));
+        System.out.flush();
+    }
+}
