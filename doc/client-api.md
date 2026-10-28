@@ -308,6 +308,7 @@ otherwise.
 | `publish(payloadId, payload, length)`, `publish(groupMask, payloadId, payload, length)` | submit under the application's `sourceId`, no connection, to its own group or to those `groupMask` names. C++ also `publish<Encoder>([groupMask,] payloadId, fill)` |
 | `reply(request, payloadId, payload, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `RequestRef`, from `Payload.requestRef()`, which unlike the `Payload` outlives the callback. C++ also `reply<Encoder>(request, payloadId, fill)` |
 | `sourceId()`, `isCaughtUp()`, `lastClusterSeqNo()` | replica state |
+| `keepAlive()` | session keep-alive for a callback that spins, or waits on a snapshot record; `doWork()` already sends one per cycle |
 
 **Leader gate.** `onLeadershipChanged(boolean leading)` replaces `onActivated`/`onStandby`; `onGroupsResolved`,
 `onSequenced`, `onCaughtUp`, `onClusterHeartbeat` and `onFenced` are as for `Gateway`, and there is no connection

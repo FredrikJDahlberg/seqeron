@@ -232,6 +232,15 @@ class Application
         return m_gate.isOpen();
     }
 
+    // Tells the cluster this instance is alive. doWork() already does it once a cycle, and a snapshot round once
+    // per record; call this as well from inside a listener callback that spins, since doWork() cannot run again
+    // until that callback returns and the cluster drops a session that goes quiet for sessionTimeoutMs.
+    // Self-throttling.
+    void keepAlive()
+    {
+        m_session.keepAlive();
+    }
+
     /**
      * Encodes and submits one payload of this application's own to its own group, stamped with its sourceId and
      * belonging to no connection.

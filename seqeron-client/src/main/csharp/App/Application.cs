@@ -266,8 +266,13 @@ public sealed class Application : IDisposable
         _listener.OnLeadershipChanged(leading);
     }
 
-    // The session's keep-alive, for a round serialized inside a dispatch.
-    private void KeepAlive()
+    /// <summary>
+    /// Tells the cluster this instance is alive. <see cref="DoWork"/> already does it once a cycle, and a snapshot
+    /// round once per record; call this as well from inside an <see cref="IApplicationListener"/> callback that
+    /// spins, since <c>DoWork</c> cannot run again until that callback returns, and the cluster drops a session that
+    /// goes quiet for <c>sequencer.sessionTimeoutMs</c>. Self-throttling, so a call per spin costs nothing.
+    /// </summary>
+    public void KeepAlive()
     {
         _session.KeepAlive();
     }

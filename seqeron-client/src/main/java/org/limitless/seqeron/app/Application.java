@@ -266,8 +266,14 @@ public final class Application implements AutoCloseable {
         listener.onLeadershipChanged(leading);
     }
 
-    /** The session's keep-alive, for a round serialized inside a dispatch. */
-    private void keepAlive() {
+    /**
+     * Tells the cluster this instance is alive. {@link #doWork()} already does it once a cycle, and a snapshot
+     * round once per record; call this as well from inside a {@link Listener} callback that spins — waiting for
+     * a record to be serialized, say — since {@code doWork()} cannot run again until that callback returns, and
+     * the cluster drops a session that goes quiet for {@code sequencer.sessionTimeoutMs}. Self-throttling, so a
+     * call per spin costs nothing.
+     */
+    public void keepAlive() {
         session.keepAlive();
     }
 
