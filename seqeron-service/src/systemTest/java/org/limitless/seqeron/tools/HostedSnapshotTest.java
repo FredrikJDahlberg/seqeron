@@ -32,6 +32,8 @@ class HostedSnapshotTest {
     private static final int SOURCE_ID = 16;
     private static final int CLIENT_TIMEOUT_MS = 2000;
     private static final int SLOW_CUT_MS = 8000;
+    private static final int MAX_ELECTIONS = 8;
+    private static final int LEADER_PAUSE_MS = 4500;
     private static final Duration CATCHUP = Duration.ofSeconds(40);
     private static final int TIMEOUT_SECS = 40;
     private static final Pattern RESTORING = Pattern.compile("restoring round (\\d+)");
@@ -167,6 +169,71 @@ class HostedSnapshotTest {
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
+    /**
+     * The hosted pair is a follower. The leader is paused until the other two members elect, and again, until the
+     * hosted member wins (no member is killed or restarted); then its own member is paused to depose it. At each
+     * change the gate epoch must rise, a command under the previous epoch must be declined and never sequenced,
+     * and everything the client published must be sequenced exactly once or declined.
+     */
+    @Test
+    @Timeout(value = 400, unit = TimeUnit.SECONDS)
+    void aHostedReplicaGainsAndLosesLeadershipUnderGateEpochs() {
+        final int other = bootstrap(false);
+        startHost();
+        startClientNoWait("client.staleEpoch=true");
+        check("the hosted pair is caught up", poll(() -> client.lastLine("Caught up") != null));
+        check("as a follower it follows and publishes nothing",
+              poll(() -> stateMarkers(client) >= 10) && lastNumber(client, "state: ", PUBLISHED) == 0);
+        check("its rounds complete", waitRounds(hostedMember, hostClientId, 1));
+        final long followerEpoch = lastNumber(host, "gate epoch", GATE_EPOCH);
+
+        // 1. Leadership moves to the hosted member.
+        int attempts = 0;
+        while (cluster.awaitLeader() != hostedMember && attempts++ < MAX_ELECTIONS) {
+            pauseLeaderUntilDeposed();
+        }
+        check("the hosted member was elected (after " + attempts + " pause(s) of the leader)",
+              cluster.awaitLeader() == hostedMember);
+        check("the gate opened", poll(() -> client.lastLine("now leading") != null));
+        check("the client applied the host's gate epoch", poll(this::epochsAgree));
+        final long leadingEpoch = lastNumber(host, "gate epoch", GATE_EPOCH);
+        check("the host's gate epoch rose (" + followerEpoch + " to " + leadingEpoch + ")", leadingEpoch > followerEpoch);
+        check("the host declined the marker sent under the previous epoch",
+              poll(() -> !client.lines("declined: result 1 at").isEmpty()));
+        check("the client's markers were sequenced", poll(() -> lastNumber(client, "state: ", PUBLISHED) >= 20));
+        check("the stale marker was never sequenced", client.lines("STALE MARKER SEQUENCED").isEmpty());
+        check("the hosted replica's rounds complete as leader", waitRounds(hostedMember, hostClientId, 2));
+        check("a direct replica's rounds complete", waitRounds(other, 11, 2));
+        check("no instance fenced", noFence());
+
+        // 2. Leadership leaves it, the pair alive throughout.
+        final long markersBefore = stateMarkers(client);
+        pauseLeaderUntilDeposed();
+        check("the gate closed", poll(() -> client.lastLine("not leading") != null));
+        check("the client applied the host's gate epoch", poll(this::epochsAgree));
+        final long followingEpoch = lastNumber(host, "gate epoch", GATE_EPOCH);
+        check("the host's gate epoch rose again (" + leadingEpoch + " to " + followingEpoch + ")",
+              followingEpoch > leadingEpoch);
+        check("another member leads", poll(() -> cluster.awaitLeader() != hostedMember));
+        sleep(2500);
+        final long published = lastNumber(client, "state: ", PUBLISHED);
+        sleep(4500);
+        check("the client publishes nothing as a follower", lastNumber(client, "state: ", PUBLISHED) == published);
+        check("it follows the new leader's markers", poll(() -> stateMarkers(client) >= markersBefore + 20));
+        check("the stale marker was still never sequenced", client.lines("STALE MARKER SEQUENCED").isEmpty());
+        check("every marker the client published was sequenced exactly once, or declined: published - declined " +
+              "(the stale one apart) = sequenced", poll(() -> {
+                  return lastNumber(client, "state: ", PUBLISHED) - (lastNumber(client, "state: ", DECLINED) - 1) ==
+                         lastNumber(client, "state: ", OWN);
+              }));
+        System.out.println(client.lastLine("state: "));
+        check("none was sequenced out of order or twice", client.lines("OWN MARKER OUT OF ORDER").isEmpty());
+        check("the hosted replica's rounds complete as a follower", waitRounds(hostedMember, hostClientId, 2));
+        check("no instance fenced", noFence());
+        check("the host and client are still attached", host.isAlive() && client.isAlive());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void aCorruptedRecordIsFencedByTheHost() {
@@ -198,6 +265,45 @@ class HostedSnapshotTest {
         check("no instance fenced", noFence());
         System.out.printf("declined verdicts: %d%n", client.lines("declined:").size());
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    private static final Pattern PUBLISHED = Pattern.compile("published (\\d+)");
+    private static final Pattern DECLINED = Pattern.compile("declined (\\d+)");
+    private static final Pattern OWN = Pattern.compile("own (\\d+)");
+    private static final Pattern GATE_EPOCH = Pattern.compile("gate epoch (\\d+)");
+
+    /** The client's last applied gate epoch is the host's current one. */
+    private boolean epochsAgree() {
+        return lastNumber(client, "canPublish", GATE_EPOCH) == lastNumber(host, "gate epoch", GATE_EPOCH);
+    }
+
+    /** SIGSTOPs the leader for longer than the heartbeat timeout, so the others elect, then waits for one leader. */
+    private void pauseLeaderUntilDeposed() {
+        final ClusterProcesses.Child leader = cluster.memberLog(cluster.awaitLeader());
+        try {
+            leader.pause();
+            sleep(LEADER_PAUSE_MS);
+        } finally {
+            leader.resume();
+        }
+        cluster.awaitLeader();
+    }
+
+    private static long lastNumber(final ClusterProcesses.Child child, final String contains, final Pattern pattern) {
+        final String line = child.lastLine(contains);
+        if (line == null) {
+            return 0;
+        }
+        final Matcher matcher = pattern.matcher(line);
+        return matcher.find() ? Long.parseLong(matcher.group(1)) : 0;
+    }
+
+    private static void sleep(final long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (final InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static long stateMarkers(final ClusterProcesses.Child child) {

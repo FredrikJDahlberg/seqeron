@@ -370,7 +370,8 @@ re-offer each message on a second stream. Receive path only.
 ### 17.9.4 Not measured
 
 - The C# client, and a hosted C++ or C# stub.
-- The blocking verdict path (the prototype's `Publish` is asynchronous and was never declined), schema 218 and a hosted `Consumer`.
+- The blocking verdict path (the prototype's `Publish` is asynchronous and declines only on the epoch), schema 218
+  and a hosted `Consumer`.
   Restore, the snapshot cut and SIGKILL are exercised in §17.10, not timed.
 - Latency with host and client in separate processes (§17.9.2 separates only the cluster), and a pinned Linux
   machine.
@@ -381,8 +382,11 @@ A Java host runs the real `Application` with snapshots; a Java client holds `Tes
 and a digest) and writes its one 16-byte record byte for byte. Host and client are child processes beside member
 processes, as `HostedSnapshotTest` starts them, with the bench's own wire and not schema 218. The hosted replica is
 a fourth replica of one source beside two direct `TestApplication` replicas, so each side compares the other's rounds
-with the sequenced `SnapshotEnd` and fences on a difference (**A-7**). Snapshot rounds run every 2 s,
-`clientTimeoutMs` is 2 s, and the client's host timeout is 3 s. Two complete runs of the class passed.
+with the sequenced `SnapshotEnd` and fences on a difference (**A-7**). Snapshot rounds run every 2 s (every 15 s in
+the long-cut scenario), `clientTimeoutMs` is 2 s, and the client's host timeout is 3 s. The prototype's `Publish` is
+asynchronous and answers only a decline, not the blocking `Verdict` of **H-4**, and its `Payload` carries the
+`templateId` and the body, not the bytes with their `MessageHeader` that schema 218 does, so it has no `blockLength`
+or `version` to decode a later schema version with.
 
 | scenario | observed |
 | --- | --- |
@@ -392,10 +396,22 @@ with the sequenced `SnapshotEnd` and fences on a difference (**A-7**). Snapshot 
 | host `kill -9` | the client exited 70 on `HOST_LOST`; the restarted pair restored and rounds resumed |
 | client `kill -9` mid-cut (the second cut after attach) | the host abandoned the round after `clientTimeoutMs` and did not hang; the direct replicas kept completing rounds; the next attach restored from round 12, the last confirmed, not the abandoned one |
 | a command under another `attachId` | dropped and logged by the host; no effect |
+| a cut of 8 s, longer than the 5 s session timeout (rounds every 15 s) | the host kept the session by calling `keepAlive()` while it waited, the client heartbeating; a round was confirmed, with no `CLIENT_LOST` and no abandoned round. Control: without the host's `keepAlive()` no round is confirmed in 80 s |
+| leadership moves to the hosted member (the leader paused until the others elect, repeated until the hosted member wins; no member killed) | the gate epoch rose 0 to 1; the client applied it; a marker sent under the previous epoch was declined by the host and never sequenced; the client's markers were sequenced and its rounds agreed with the direct replicas |
+| leadership leaves it (its member paused until the others elect), pair alive | the gate epoch rose again and the client stopped publishing at once; it kept following the new leader's markers; the rounds went on and no instance fenced |
+| the client's own markers across both changes | every marker it published was sequenced exactly once and in order, or declined: 566 published, 1 declined (the stale probe), 566 sequenced |
+| a new term with the same leader | the host saw `not leading` and `leading` in the same millisecond, the epoch rose by two, and the eight commands in flight were declined and not placed: the close and reopen of **H-3** |
+| control: the host does not check the epoch | the stale marker was placed and sequenced, and the test failed on the decline, on both stale-marker checks and on the exactly-once count |
 | control: the client writes a digest one off | the host fenced `SNAPSHOT_DIVERGED`, sent `Fenced`, the client exited 70, and no direct replica fenced |
 
-Three findings from it are in the rules above: the host could not hold the session while it waited in a cut, which `Application.keepAlive()` now allows (**H-6**), the
-façade offers no restore begin, end or count (**H-7**), and `Attach` needs a nonce (**H-8**, **H-13**).
+Four findings from it are in the rules above: the host could not hold the session while it waited in a cut, which `Application.keepAlive()` now allows (**H-6**), the
+façade offers no restore begin, end or count (**H-7**), `Attach` needs a nonce (**H-8**, **H-13**), and a new term
+with the same leader closes and reopens the gate, so the epoch rises without `leading` changing (**H-3**).
 
-Not covered: leader failover and the gate epoch, the blocking `Verdict` path (no command was declined), a host killed in
-a cut, state of more than one record or a record near the 65,535-byte limit, and a C++ or C# stub.
+Leadership was moved by pausing members (`SIGSTOP`), not by killing the leader, since a kill and restart of a member
+is the pattern behind the known Aeron 1.53.2 committed-entry loss. Pausing the other follower first did not make the
+hosted member win (the other follower was elected in one run), so the test pauses the leader and repeats until the
+hosted member is elected, which took one or two pauses in the runs made.
+
+Not covered: the blocking `Verdict` path (**H-4**), a hosted `Gateway` and its edge (open question 3), the host
+servicing stream 302 while it spins on stream 301 (**H-5**), a host killed in a cut, a leader killed and not paused, state of more than one record or a record near the 65,535-byte limit, and a C++ or C# stub.
