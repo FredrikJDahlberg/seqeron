@@ -90,8 +90,8 @@ class Attachment
     {
         m_aeron = std::move(aeron);
         m_clientId = m_aeron->nextCorrelationId();
-        m_heartbeat = counter(protocol::PROXY_CLIENT_HEARTBEAT_TYPE_ID, "seqeron.client.heartbeat hosted");
-        m_applied = counter(protocol::PROXY_CLIENT_APPLIED_TYPE_ID, "seqeron.client.applied hosted");
+        m_heartbeat = counter(protocol::PROXY_CLIENT_HEARTBEAT_TYPE_ID, "seqeron.client.heartbeat " + m_hostName);
+        m_applied = counter(protocol::PROXY_CLIENT_APPLIED_TYPE_ID, "seqeron.client.applied " + m_hostName);
         const std::int64_t commandsId =
             m_hasCommands ? m_aeron->addExclusivePublication(COMMANDS_CHANNEL, protocol::PROXY_COMMANDS_STREAM) : -1;
         const std::int64_t requestsId =
@@ -181,13 +181,14 @@ class Attachment
   protected:
     Attachment(Listener& listener, const wire::Kind::Value kind, const std::int32_t sourceId,
                app::SnapshotListener* snapshots, const std::int64_t hostTimeoutMs, const std::int64_t attachTimeoutMs,
-               const bool hasCommands = true) :
+               std::string hostName, const bool hasCommands = true) :
       m_listener{ listener },
       m_snapshots{ snapshots },
       m_kind{ kind },
       m_sourceId{ sourceId },
       m_hostTimeoutMs{ hostTimeoutMs },
       m_attachTimeoutMs{ attachTimeoutMs },
+      m_hostName{ std::move(hostName) },
       m_hasCommands{ hasCommands }
     {
         m_out.resize(128 * 1024);
@@ -355,8 +356,7 @@ class Attachment
             .supportedFormatsCount(1)
             .next()
             .formatVersion(static_cast<std::int32_t>(format));
-        attach.putHostName(std::string{ protocol::PROXY_HOST_NAME })
-            .putAeronVersion(std::string{ aeron_version_text() });
+        attach.putHostName(m_hostName).putAeronVersion(std::string{ aeron_version_text() });
         m_requests->offer(buffer(), 0, static_cast<aeron::util::index_t>(HEADER + attach.encodedLength()));
     }
 
@@ -568,6 +568,7 @@ class Attachment
     std::int32_t m_sourceId;
     std::int64_t m_hostTimeoutMs;
     std::int64_t m_attachTimeoutMs;
+    std::string m_hostName;
     bool m_hasCommands;
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::shared_ptr<aeron::Counter> m_heartbeat;

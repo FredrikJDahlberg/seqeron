@@ -205,7 +205,7 @@ public final class HostedTestApplicationClient {
                     .supportedFormatsCount(1)
                     .next()
                     .formatVersion(1);
-                final byte[] hostName = ProxyProtocol.HOST_NAME.getBytes(StandardCharsets.UTF_8);
+                final byte[] hostName = System.getProperty("client.hostName", ProxyProtocol.DEFAULT_HOST_NAME).getBytes(StandardCharsets.UTF_8);
                 final byte[] aeronVersion = AeronVersion.VERSION.getBytes(StandardCharsets.UTF_8);
                 attachOut.putHostName(hostName, 0, hostName.length).putAeronVersion(aeronVersion, 0, aeronVersion.length);
                 send(requests, ProxyProtocol.HEADER + attachOut.encodedLength());

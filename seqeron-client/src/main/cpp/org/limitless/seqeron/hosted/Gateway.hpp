@@ -48,11 +48,14 @@ class Gateway : public detail::Attachment<Gateway<Listener>, Listener>
         // The host's heartbeat counter may be silent this long before the stub gives it up (H-9, section 17.6).
         std::int64_t hostTimeoutMs = 3000;
         std::int64_t attachTimeoutMs = 90'000;
+        // Names the host this attaches to, the one its proxy.hostName gives; the attach is refused otherwise.
+        std::string hostName = protocol::PROXY_DEFAULT_HOST_NAME;
     };
 
     Gateway(Config config, Listener& listener) :
       Base{ listener,         wire::Kind::GATEWAY,  config.sourceId,
-            config.snapshots, config.hostTimeoutMs, config.attachTimeoutMs },
+            config.snapshots, config.hostTimeoutMs, config.attachTimeoutMs,
+            config.hostName },
       m_config{ config }
     {
         static_assert(app::GatewayListener<Listener>);

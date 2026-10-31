@@ -69,6 +69,7 @@ import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
  * schema 218 over {@link ProxyProtocol}'s streams. Launched beside a member.
  *
  * <p>Properties, each defaulting as {@code ClusterProbe} did: {@code proxy.memberId} (0), {@code proxy.aeronDir},
+ * {@code proxy.hostName} ("hosted": the name an {@code Attach} must carry, unique on its driver),
  * {@code proxy.ingressEndpoints} and {@code proxy.egressHost} (from {@code PortLayout}, so {@code SEQERON_HOSTS} and
  * {@code SEQERON_PORT_BASE} apply), {@code proxy.sourceId} (16), {@code proxy.clientId} (11), {@code proxy.snapshotDir}
  * (required), {@code proxy.gatewayName} (set: the proxy serves a Gateway), {@code proxy.consumerGroup} (0: none),
@@ -110,9 +111,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private final ActivatedDecoder activatedIn = new ActivatedDecoder();
     private final ConnectionEncoder connectionOut = new ConnectionEncoder();
     private final RoleEncoder roleOut = new RoleEncoder();
+    private final String hostName = System.getProperty("proxy.hostName", ProxyProtocol.DEFAULT_HOST_NAME);
     private final String gatewayName = System.getProperty("proxy.gatewayName");
     private final int consumerGroup = intProp("proxy.consumerGroup", 0);
-    private final AttachRules attachRules = AttachRules.of(AeronVersion.VERSION, gatewayName != null, consumerGroup != 0);
+    private final AttachRules attachRules = new AttachRules(hostName, AeronVersion.VERSION, gatewayName != null, consumerGroup != 0);
     private final SnapshotRecordDecoder recordIn = new SnapshotRecordDecoder();
     private final SnapshotEndDecoder endIn = new SnapshotEndDecoder();
     private final AttachedEncoder attachedOut = new AttachedEncoder();
@@ -195,6 +197,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     }
 
     private void validate() {
+        require(!hostName.isBlank(), "proxy.hostName must not be blank");
         require(sourceId > 0, "proxy.sourceId must be positive");
         require(clientId > 0, "proxy.clientId must be positive");
         require(clientTimeoutNs > 0, "proxy.clientTimeoutMs must be positive");
@@ -244,8 +247,8 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         attachRequests = aeron.addSubscription(ProxyProtocol.ATTACH_REQUEST_CHANNEL + "|tether=false",
                                                ProxyProtocol.ATTACH_REQUEST_STREAM);
         attachReplies = aeron.addPublication(ProxyProtocol.ATTACH_REPLY_CHANNEL, ProxyProtocol.ATTACH_REPLY_STREAM);
-        hostHeartbeat = aeron.addCounter(SeqeronCounters.PROXY_HEARTBEAT_TYPE_ID, "seqeron.host.heartbeat " + sourceId);
-        retiredCounter = aeron.addCounter(SeqeronCounters.PROXY_RETIRED_TYPE_ID, "seqeron.host.retired " + sourceId);
+        hostHeartbeat = aeron.addCounter(SeqeronCounters.PROXY_HEARTBEAT_TYPE_ID, "seqeron.host.heartbeat " + hostName);
+        retiredCounter = aeron.addCounter(SeqeronCounters.PROXY_RETIRED_TYPE_ID, "seqeron.host.retired " + hostName);
         clientLiveness = new Liveness(aeron.countersReader(), clientTimeoutNs);
         log("host ready: member %d, sourceId %d, clientId %d", memberId, sourceId, clientId);
         final IdleStrategy idle = Boolean.getBoolean("proxy.spin") ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();

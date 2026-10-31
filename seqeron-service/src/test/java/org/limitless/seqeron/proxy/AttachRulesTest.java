@@ -13,7 +13,7 @@ class AttachRulesTest {
     private final AttachRules rules = AttachRules.of(AERON, true, false);
 
     private Decision decide(final boolean live, final long clientId, final long requestId, final Kind kind) {
-        return rules.decide(live, 7, 70, ProxyProtocol.HOST_NAME, clientId, requestId, kind,
+        return rules.decide(live, 7, 70, ProxyProtocol.DEFAULT_HOST_NAME, clientId, requestId, kind,
                             ProxyProtocol.PROTOCOL_VERSION, AERON);
     }
 
@@ -43,9 +43,9 @@ class AttachRulesTest {
 
     @Test
     void aDifferentProtocolOrAeronVersionIsRefusedAsVersion() {
-        assertEquals(Decision.VERSION, rules.decide(false, 0, 0, ProxyProtocol.HOST_NAME, 1, 1, Kind.APPLICATION,
+        assertEquals(Decision.VERSION, rules.decide(false, 0, 0, ProxyProtocol.DEFAULT_HOST_NAME, 1, 1, Kind.APPLICATION,
                                                     ProxyProtocol.PROTOCOL_VERSION + 1, AERON));
-        assertEquals(Decision.VERSION, rules.decide(false, 0, 0, ProxyProtocol.HOST_NAME, 1, 1, Kind.APPLICATION,
+        assertEquals(Decision.VERSION, rules.decide(false, 0, 0, ProxyProtocol.DEFAULT_HOST_NAME, 1, 1, Kind.APPLICATION,
                                                     ProxyProtocol.PROTOCOL_VERSION, "1.53.1"));
     }
 
@@ -53,12 +53,12 @@ class AttachRulesTest {
     void aKindThisProxyIsNotConfiguredForIsRefusedAsKind() {
         assertEquals(Decision.ACCEPT, decide(false, 1, 1, Kind.GATEWAY));
         assertEquals(Decision.KIND, decide(false, 1, 1, Kind.CONSUMER));
-        assertEquals(Decision.KIND, AttachRules.of(AERON, false, true).decide(false, 0, 0, ProxyProtocol.HOST_NAME, 1, 1,
+        assertEquals(Decision.KIND, AttachRules.of(AERON, false, true).decide(false, 0, 0, ProxyProtocol.DEFAULT_HOST_NAME, 1, 1,
                                                                              Kind.GATEWAY, ProxyProtocol.PROTOCOL_VERSION, AERON));
     }
 
     @Test
     void aBusyProxyAnswersBusyBeforeItChecksTheVersion() {
-        assertEquals(Decision.BUSY, rules.decide(true, 7, 70, ProxyProtocol.HOST_NAME, 8, 1, Kind.CONSUMER, 99, "x"));
+        assertEquals(Decision.BUSY, rules.decide(true, 7, 70, ProxyProtocol.DEFAULT_HOST_NAME, 8, 1, Kind.CONSUMER, 99, "x"));
     }
 }

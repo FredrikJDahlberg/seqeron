@@ -29,10 +29,13 @@ class Consumer : public detail::Attachment<Consumer<Listener>, Listener>
         // The host's heartbeat counter may be silent this long before the stub gives it up (H-9, section 17.6).
         std::int64_t hostTimeoutMs = 3000;
         std::int64_t attachTimeoutMs = 90'000;
+        // Names the host this attaches to, the one its proxy.hostName gives; the attach is refused otherwise.
+        std::string hostName = protocol::PROXY_DEFAULT_HOST_NAME;
     };
 
     Consumer(Config config, Listener& listener) :
-      Base{ listener, wire::Kind::CONSUMER, -1, nullptr, config.hostTimeoutMs, config.attachTimeoutMs, false }
+      Base{ listener, wire::Kind::CONSUMER, -1, nullptr, config.hostTimeoutMs, config.attachTimeoutMs, config.hostName,
+            false }
     {
         static_assert(app::ConsumerListener<Listener>);
     }

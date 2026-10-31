@@ -46,7 +46,7 @@ public final class AttachRules {
 
     /** The rules of a proxy that serves the default host name. */
     public static AttachRules of(final String aeronVersion, final boolean servesGateway, final boolean servesConsumer) {
-        return new AttachRules(ProxyProtocol.HOST_NAME, aeronVersion, servesGateway, servesConsumer);
+        return new AttachRules(ProxyProtocol.DEFAULT_HOST_NAME, aeronVersion, servesGateway, servesConsumer);
     }
 
     /**

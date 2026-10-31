@@ -9,8 +9,8 @@ import org.limitless.seqeron.sbe.hosted.MessageHeaderDecoder;
  * twin is {@code protocol/ProxyProtocol.hpp}, which leaves the channels to each end.
  */
 public final class ProxyProtocol {
-    /** The {@code hostName} a client names in its {@code Attach}. */
-    public static final String HOST_NAME = "hosted";
+    /** The {@code hostName} a client names in its {@code Attach} unless it is configured with another. */
+    public static final String DEFAULT_HOST_NAME = "hosted";
 
     /** {@code Attach.protocolVersion}. */
     public static final int PROTOCOL_VERSION = 1;
