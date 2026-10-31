@@ -568,8 +568,9 @@ window. The loop thread runs the real `Application`, the relay and the command q
 façade's receive and publish paths and the placement of each command.
 
 - **Result:** 0 bytes over 50,000 frames in four of five runs with the queue, and 120 bytes in the fifth; 0 in both
-  runs made before the queue. 120 bytes is one small object in a window of about a minute, not a per-frame cost, but
-  its source is not found, so the host is not shown to allocate nothing. A control with a warm-up of 20 frames
+  runs made before the queue. A rerun of twelve, with the host logging when its window opens, gave 0 bytes in all
+  twelve. The 120 bytes is one small object in a window of about a minute, not a per-frame cost, and was not
+  reproduced or sourced, so the host is shown to allocate nothing in 16 of 17 runs and not in the other. A control with a warm-up of 20 frames
   allocates 195,856 bytes over the same window, so the count is not blind.
 - **Not in the window:** a snapshot cut, attach and restore (the topology has no snapshot policy), a leadership
   change, a declining façade, counters other than the retired one and a `Gateway`. The payload is 18 bytes and the
@@ -602,10 +603,35 @@ the host to two and the client to two. Arms alternate within a rate. Whole loop,
   lower than the other's across runs.
 - **With the command queue** (§17.11) the busy-spin runs were repeated, three a rate: at 5k msg/s direct p50 is
   319–323 µs and hosted 317–323 µs; at 20k msg/s direct 338–389 µs and hosted 304–367 µs. The queue costs nothing
-  resolvable. The bench client does not keep the window, which the 64 KiB default (about 1,100 `Publish` messages)
-  never reached in these runs.
+  resolvable. These runs did not keep the window; §17.10.7 does.
 - **Not shown:** a hosted stub's schema 218 decode and local checks, a host with a command queue, counters or a
   `Gateway`, and a tuned cluster, whose faster commit would expose the hop more (§17.9, question 2).
+
+### 17.10.7 Higher rates, with the window, and the host's pauses
+
+The same set-up and busy-spin host, with the bench's hosted arm now keeping H-5's window from the counter
+`Attached` names (64 KiB, about 1,100 `Publish` messages). Each run lasts about 10 s, two runs a rate, arms
+alternating, the first 20% dropped; p50 / p99.9 in µs, run 1 then run 2:
+
+| rate | C++ direct | C++ hosted |
+| --- | --- | --- |
+| 50k msg/s | 348, 409 / 9,499, 7,380 | 387, 323 / 4,837, 5,328 |
+| 100k msg/s | 318, 280 / 8,659, 4,475 | 379, 355 / 7,260, 5,416 |
+| 200k msg/s | 419, 352 / 36,148, 1,417 | 381, 327 / 14,112, 3,462 |
+
+- **No knee up to 200k msg/s.** The p50 stays at 280–420 µs in both arms and neither arm's differs from the other's
+  by more than its own spread. No run closed the attachment (`CLIENT_WINDOW`) and none fenced. The limit lies above
+  200k msg/s, or is the cluster's, which three JVMs on two vCPUs make likely and which would be the same for both
+  arms; the sweep does not separate the two. The window declines of the hosted arm were not logged.
+- **The first run of each rate is the worse one** in both arms, direct's ingress back-pressured (163, 3,848 and
+  25,476 retried offers) where the hosted arm's did not, a JIT and warm-up effect on a cluster just started. Run
+  for run, the tails do not rank the arms.
+- **The host's pauses do not explain the tail.** Over a host JVM's life (four arms) its log shows one GC pause of
+  2.4–3.8 ms and no other safepoint above 0.2 ms; each member shows two or three pauses of 3–9 ms. The direct arm,
+  which has no host, has the same p99.9, so the tail is the members' and the VM's. A pause in the host's loop would
+  still sit in the hosted client's path, and one of 3.8 ms is within the p99.9 seen.
+- **Not shown:** the multi-message `Payload`, whose saving needs a rate above the one the offer limits, and a tuned
+  cluster.
 
 ## 17.11 Prototype: restore, cut and SIGKILL
 

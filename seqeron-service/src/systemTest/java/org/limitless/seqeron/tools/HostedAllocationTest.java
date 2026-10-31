@@ -74,6 +74,10 @@ class HostedAllocationTest {
         System.out.println(host.lastLine("alloc window"));
         assertEquals(matcher.group(3), matcher.group(4), "the gate epoch moved inside the window");
         final long bytes = Long.parseLong(matcher.group(1));
+        if (bytes < 0 || bytes > MAX_BYTES) {
+            System.out.println("host lines from the window:");
+            host.lines("[host").forEach(System.out::println);
+        }
         assertTrue(bytes >= 0 && bytes <= MAX_BYTES, "bytes the host allocated over " + matcher.group(2) + " frames: " + bytes);
     }
 }

@@ -153,6 +153,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
         }
         final long id = Thread.currentThread().threadId();
         if (!windowOpen && frames >= allocWarmupFrames) {
+            log("measuring from here");
             final long first = threads.getThreadAllocatedBytes(id);
             windowBytes = threads.getThreadAllocatedBytes(id);
             windowReadCost = windowBytes - first;

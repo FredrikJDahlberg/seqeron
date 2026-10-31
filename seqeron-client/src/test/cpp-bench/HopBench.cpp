@@ -292,6 +292,7 @@ class HostedClient
   public:
     HostedClient(const std::shared_ptr<aeron::Aeron>& aeron, const std::int32_t clientId, Run& run) :
       m_run{ run },
+      m_aeron{ aeron },
       m_clientId{ clientId }
     {
         const std::int64_t subId = aeron->addSubscription("aeron:ipc", EVENTS_STREAM);
@@ -352,13 +353,30 @@ class HostedClient
     // False while the stream is back-pressured; the caller retries.
     bool publish(const std::uint8_t* payload)
     {
+        constexpr std::int64_t length = 40 + MARKER_LENGTH;
+        if (m_window > 0 &&
+            m_offeredBytes + length - m_aeron->countersReader().getCounterValue(m_retiredCounterId) > m_window)
+        {
+            m_windowDeclines++;
+            return false;
+        }
         header(PUBLISH, m_attachId);
         put<std::int64_t>(16, ++m_correlationId);
         put<std::int64_t>(24, m_epoch);
         put<std::int32_t>(32, PROBE_PAYLOAD_ID);
         put<std::int32_t>(36, MARKER_LENGTH);
         std::memcpy(m_out.data() + 40, payload, MARKER_LENGTH);
-        return send(40 + MARKER_LENGTH);
+        if (!send(length))
+        {
+            return false;
+        }
+        m_offeredBytes += length;
+        return true;
+    }
+
+    [[nodiscard]] std::int64_t windowDeclines() const
+    {
+        return m_windowDeclines;
     }
 
     void detach()
@@ -408,6 +426,8 @@ class HostedClient
             if (!m_attached && get<std::int64_t>(base, 16) == m_nonce)
             {
                 m_attachId = get<std::int64_t>(base, 8);
+                m_retiredCounterId = get<std::int32_t>(base, 24);
+                m_window = get<std::int64_t>(base, 28);
                 m_attached = true;
             }
             return;
@@ -443,6 +463,7 @@ class HostedClient
     }
 
     Run& m_run;
+    std::shared_ptr<aeron::Aeron> m_aeron;
     std::int32_t m_clientId;
     std::shared_ptr<aeron::Subscription> m_events;
     std::shared_ptr<aeron::ExclusivePublication> m_commands;
@@ -455,6 +476,10 @@ class HostedClient
     std::int64_t m_epoch = 0;
     std::int64_t m_correlationId = 0;
     std::int64_t m_lastApplied = 0;
+    std::int32_t m_retiredCounterId = 0;
+    std::int64_t m_window = 0;
+    std::int64_t m_offeredBytes = 0;
+    std::int64_t m_windowDeclines = 0;
     std::int64_t m_nextHeartbeatNs = 0;
     bool m_attached = false;
     bool m_canPublish = false;
@@ -502,6 +527,7 @@ int hosted(const Options& options, const std::int64_t rate, const std::int64_t c
         return 1;
     }
     report("hosted", run, rate);
+    std::printf("window declines=%lld\n", static_cast<long long>(client.windowDeclines()));
     return 0;
 }
 
