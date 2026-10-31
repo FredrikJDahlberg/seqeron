@@ -3,7 +3,9 @@
 // and with --rounds 2 closes the edge itself and does it again once the host reactivates it.
 //
 //   hosted_gateway_probe --aeron-dir D [--source-id 9] [--connections 3] [--per-connection 20] [--rounds 1]
-//                        [--host-timeout-ms 3000]
+//                        [--hold 0] [--host-timeout-ms 3000]
+//
+// With --hold 1 the connections stay open after the first round and a marker follows every 20 ms until it is stopped.
 //
 // Exits 70 when fenced or the host is lost, 78 when the attach is refused and 3 when it times out.
 
@@ -17,6 +19,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <unistd.h>
 
 #include "Aeron.h"
 
@@ -35,7 +39,8 @@ constexpr std::uint16_t PROBE_MARKER_TEMPLATE_ID = 1;
 constexpr std::uint16_t PROBE_SCHEMA_ID = 214;
 constexpr std::size_t HEADER = 8;
 constexpr std::size_t MARKER_LENGTH = HEADER + 8 + sizeof(std::uint16_t);
-// Set in the seqNo of this client's markers; bits 24-39 salt it per run, since the host replays the queue's history.
+// Set in the seqNo of this client's markers; bits 24-39 salt it per process, since the host replays the queue's history
+// and a standby's stub reads its sibling's markers.
 constexpr std::int64_t OWN_TAG = 1LL << 40;
 constexpr int SALT_SHIFT = 24;
 constexpr std::int64_t INDEX_MASK = (1LL << SALT_SHIFT) - 1;
@@ -62,7 +67,7 @@ class Probe
   public:
     explicit Probe(const std::int32_t sourceId) : m_sourceId{ sourceId }
     {
-        m_salt = ((nowNs() / 1'000'000'000LL) & 0xFFFF) << SALT_SHIFT;
+        m_salt = (((nowNs() / 1'000'000'000LL) ^ (static_cast<std::int64_t>(::getpid()) << 4)) & 0xFFFF) << SALT_SHIFT;
         const std::array<std::uint16_t, 4> header{ 8, PROBE_MARKER_TEMPLATE_ID, PROBE_SCHEMA_ID, 0 };
         std::memcpy(m_marker.data(), header.data(), sizeof header);
     }
@@ -147,6 +152,11 @@ class Probe
         return m_sequenced;
     }
 
+    std::int64_t publishedCount() const
+    {
+        return m_published;
+    }
+
     bool drained() const
     {
         return m_expected.empty();
@@ -225,6 +235,7 @@ enum class Phase : std::uint8_t
     Publish,
     Drain,
     Close,
+    Hold,
     Closed,
     Reactivate,
     Done,
@@ -239,6 +250,7 @@ int main(const int argc, char** argv)
     const auto connections = static_cast<std::int32_t>(options.integer("connections", 3));
     const auto perConnection = static_cast<std::int32_t>(options.integer("per-connection", 20));
     const auto rounds = static_cast<std::int32_t>(options.integer("rounds", 1));
+    const bool hold = options.integer("hold", 0) != 0;
 
     aeron::Context context;
     context.aeronDir(options.string("aeron-dir", ""));
@@ -255,6 +267,7 @@ int main(const int argc, char** argv)
     std::int64_t toPublish = 0;
     std::int64_t previousHighest = -1;
     std::int64_t nextStateNs = 0;
+    std::int64_t nextHoldNs = 0;
     Phase phase = Phase::Open;
     while (gateway.failure() == hosted::Failure::None && !gateway.fenced())
     {
@@ -306,7 +319,20 @@ int main(const int argc, char** argv)
                 {
                     log("round %d sequenced %lld under their connections", round,
                         static_cast<long long>(probe.sequenced()));
-                    phase = Phase::Close;
+                    phase = hold ? Phase::Hold : Phase::Close;
+                }
+                break;
+            case Phase::Hold:
+                if (nowNs() >= nextHoldNs)
+                {
+                    const std::int32_t id = ids[static_cast<std::size_t>(probe.publishedCount()) % ids.size()];
+                    if (gateway.publish(id, PROBE_PAYLOAD_ID, probe.nextMarker(id), MARKER_LENGTH) ==
+                        protocol::Publish::Published)
+                    {
+                        probe.published();
+                        nextHoldNs = nowNs() + 20'000'000LL;
+                        work++;
+                    }
                 }
                 break;
             case Phase::Close:

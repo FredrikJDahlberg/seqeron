@@ -719,7 +719,7 @@ The command queue and window have their own scenarios (`HostedCommandQueueTest`)
 and a window of 1,024 bytes, a stub that ignores the window, and a gate edge across a paused leader (17 queued
 commands dropped, 4,197 offered, 4,180 sequenced, none out of order).
 
-Not covered: a held ingress of seconds, a hosted `Gateway`'s pair, standby and failover (§17.5), its snapshots, a
+Not covered: a held ingress of seconds, a hosted `Gateway` pair's snapshots, a
 host killed in a cut, a leader killed and not paused, state of more than one record or a record near the 65,535-byte
 limit, and a C# stub. Liveness by counter, the attach of **H-8**, the stub's other local checks and a C++ stub of an
 `Application` are covered by §17.11.1.
@@ -740,7 +740,7 @@ only `Attach` and `Detach`, takes no stream 304, and delivers `Payload` and `Cau
 back-pressured stream, and `closeConnection` and `gateClosed` retry within the call. `hosted_probe`
 (`seqeron-client/src/test/cpp-probe`) holds the probe's state in it, as `HostedTestApplicationClient` does.
 
-Four system tests drive the stubs against the Java host, with `HOSTED_PROBE` naming the binary:
+Five system tests drive the stubs against the Java host, with `HOSTED_PROBE` naming the binary:
 
 - `HostedCppStubTest`: it attaches, the gate opens, 2,000 markers are sequenced once and in order, and the two local
   refusals fire. With the host's tracker at 4 and a 1 KiB window, 20,000 markers offered flat out are all placed and
@@ -761,6 +761,12 @@ Four system tests drive the stubs against the Java host, with `HOSTED_PROBE` nam
   (`headDeclines` 1), and nothing fenced. In a second scenario the stub then calls `gateClosed()`: the host takes the
   edge down and asks again with a second `Role` whose `firstConnectionId` is 3, past the highest id issued, and three
   more connections run the same way.
+- `HostedGatewayFailoverTest` (a pair, `GW-H-A` and `GW-H-B`, each a host and a stub on its own member, no snapshot
+  policy): the active holds three connections and publishes steadily. With its stub killed, its host logs `CLIENT_LOST`
+  and the standby's `Role` carries `firstConnectionId` 3, past the active's ids; its three connections and 60 markers
+  run under their own ids, and nothing fenced. With the active's host paused (`SIGSTOP`) the stub exits `HOST_LOST` and
+  the standby takes over the same way. A paused host resumed with its stub still attached gets `Role(false)`, opens no
+  further connection and never asks again. The leader is never paused or killed.
 - `HostedConsumerStubTest` (`hosted_consumer_probe`; a consumer host on a follower, an `Application` stub publishing 500
   markers on the leader): a consumer attached while the markers are published, and one attached after they are in the
   log, each caught up and saw all 500 once and in order; a consumer killed with `SIGKILL` was judged lost by the host
