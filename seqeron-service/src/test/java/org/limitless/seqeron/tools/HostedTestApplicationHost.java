@@ -26,6 +26,7 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.Consumer;
 import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
@@ -71,7 +72,7 @@ import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
  * default), {@code host.spin} (busy-spin the loop rather than back off), {@code host.allocWarmupFrames} (0: off) and {@code host.allocWindowFrames} (20000): once that many frames
  * have crossed the loop, logs the bytes it allocated over the next window, for {@code HostedAllocationTest}.
  */
-public final class HostedTestApplicationHost implements Application.Listener, Gateway.Listener, SnapshotListener {
+public final class HostedTestApplicationHost implements Application.Listener, Gateway.Listener, Consumer.Listener, SnapshotListener {
     private static final int EXIT_FENCED = 70;
     private static final long BACK_PRESSURE_NS = TimeUnit.SECONDS.toNanos(1);
 
@@ -97,6 +98,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     private final ConnectionEncoder connectionOut = new ConnectionEncoder();
     private final RoleEncoder roleOut = new RoleEncoder();
     private final String gatewayName = System.getProperty("probe.gatewayName");
+    private final int consumerGroup = Integer.getInteger("host.consumerGroup", 0);
     private final SnapshotRecordDecoder recordIn = new SnapshotRecordDecoder();
     private final SnapshotEndDecoder endIn = new SnapshotEndDecoder();
     private final AttachedEncoder attachedOut = new AttachedEncoder();
@@ -129,6 +131,10 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     private Path snapshotDir;
     private Application app;
     private Gateway gateway;
+    private Consumer consumer;
+    private boolean consumerKind;
+    private boolean live;
+    private int attachedSourceId = sourceId;
     private boolean gatewayKind;
     private boolean activating;
     private String breach;
@@ -196,14 +202,14 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         while (running && !fenced) {
             HostedWire.beat(hostHeartbeat);
             int work = attachRequests.poll(onAttachRequest, 16);
-            if (commands != null) {
-                work += commands.poll(onCommand, 16);
+            if (live) {
+                work += commands != null ? commands.poll(onCommand, 16) : 0;
                 if (!attached) {
                     connect();
                 }
             }
             if (facade()) {
-                work += app != null ? app.doWork() : gateway.doWork();
+                work += app != null ? app.doWork() : gateway != null ? gateway.doWork() : consumer.doWork();
                 if (!fenced && facade()) {
                     placeCommands();
                     afterDoWork();
@@ -241,7 +247,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
 
     private void afterDoWork() {
         final long now = System.nanoTime();
-        final boolean canPublish = app != null ? app.canPublish() : gateway.canAccept();
+        final boolean canPublish = app != null ? app.canPublish() : gateway != null && gateway.canAccept();
         if (canPublish != lastCanPublish) {
             lastCanPublish = canPublish;
             sendGate();
@@ -258,7 +264,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             closeApp("CLIENT_STALLED: events stream back-pressured for " + BACK_PRESSURE_NS / 1_000_000 + "ms");
         } else if (clientLiveness.stale(now)) {
             closeApp("CLIENT_LOST: heartbeat counter silent for " + clientLiveness.silentMs(now) + "ms");
-        } else if (commandsSeen && !commands.isConnected()) {
+        } else if (commandsSeen && commands != null && !commands.isConnected()) {
             closeApp("CLIENT_LOST: command stream gone");
         }
     }
@@ -325,12 +331,16 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             sendAttached(clientId, requestId, Refusal.VERSION);
             return;
         }
-        if (kind != Kind.APPLICATION && !(kind == Kind.GATEWAY && gatewayName != null)) {
+        if (kind != Kind.APPLICATION && !(kind == Kind.GATEWAY && gatewayName != null) &&
+            !(kind == Kind.CONSUMER && consumerGroup != 0)) {
             sendAttached(clientId, requestId, Refusal.KIND);
             return;
         }
         liveClientId = clientId;
         gatewayKind = kind == Kind.GATEWAY;
+        consumerKind = kind == Kind.CONSUMER;
+        attachedSourceId = consumerKind ? -1 : sourceId;
+        live = true;
         liveRequestId = requestId;
         retired = 0;
         queuedBytes = 0;
@@ -344,7 +354,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         stalled = false;
         commandsSeen = false;
         events = aeron.addExclusivePublication(HostedWire.EVENTS_CHANNEL, HostedWire.EVENTS_STREAM);
-        commands = aeron.addSubscription(HostedWire.sessionChannel(commandSessionId), HostedWire.COMMANDS_STREAM);
+        commands = consumerKind
+                       ? null
+                       : aeron.addSubscription(HostedWire.sessionChannel(commandSessionId), HostedWire.COMMANDS_STREAM);
         final long now = System.nanoTime();
         clientLiveness.watch(heartbeatCounterId, heartbeatRegistrationId, now);
         connectDeadlineNs = now + clientTimeoutNs;
@@ -353,7 +365,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
 
     /** True from the Attached that accepted a client until its attachment ends. */
     private boolean connectionOrLive() {
-        return commands != null;
+        return live;
     }
 
     /**
@@ -370,7 +382,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     }
 
     private boolean facade() {
-        return app != null || gateway != null;
+        return app != null || gateway != null || consumer != null;
     }
 
     private void keepFacadeAlive() {
@@ -390,9 +402,25 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             gateway.close();
             gateway = null;
         }
+        if (consumer != null) {
+            consumer.close();
+            consumer = null;
+        }
     }
 
     private void startApp() {
+        if (consumerKind) {
+            consumer = Consumer.builder()
+                           .clientId(clientId)
+                           .memberId(ClusterProbe.memberId())
+                           .groupId(consumerGroup)
+                           .listener(this)
+                           .build();
+            attached = true;
+            consumer.start(aeron);
+            log("ATTACHED clientId=%d (consumer of group %d)", liveClientId, consumerGroup);
+            return;
+        }
         if (gatewayKind) {
             gateway = Gateway.builder()
                           .gatewayName(gatewayName)
@@ -436,7 +464,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             .retiredCounterId(retiredCounter.id())
             .retiredRegistrationId(retiredCounter.registrationId())
             .commandWindow(commandWindow)
-            .sourceId(sourceId);
+            .sourceId(attachedSourceId);
         final int length = HostedWire.HEADER + attachedOut.encodedLength();
         final long deadline = System.nanoTime() + BACK_PRESSURE_NS;
         while (attachReplies.offer(out, 0, length) < 0 && System.nanoTime() < deadline) {
@@ -619,6 +647,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         logQueue();
         closeFacade();
         attached = false;
+        live = false;
         CloseHelper.quietClose(commands);
         CloseHelper.quietClose(events);
         commands = null;

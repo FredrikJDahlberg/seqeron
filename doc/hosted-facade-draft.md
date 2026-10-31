@@ -430,12 +430,12 @@ client's driver connection.
   supervise per instance (§17.6), and a JVM and a core per client (§17.10.1). The parity the C++ client carried
   does not go with it: `ReplayerRecovery`, `PendingSends` and the façades stay case for case in Java and C#, two
   languages rather than three. **The added lines are only partly counted, and the first stage is not decided until
-  they are.** What exists: the C++ stubs of `Application` and `Gateway` share a core,
-  `hosted/detail/Attachment.hpp`, of 608 lines with its comments, and are 140 and 252 lines on top of it (a build of
+  they are.** What exists: the C++ stubs of `Application`, `Gateway` and `Consumer` share a core,
+  `hosted/detail/Attachment.hpp`, of 612 lines with its comments, and are 140, 252 and 49 lines on top of it (a build of
   the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217 lines of XML and its
-  generated C++ codecs 16,800 more, and the prototype host, which runs either façade, is 846 lines of Java (test scope,
-  with the harness's own options and the allocation window). There is no `Consumer` stub, so it is a floor, not the
-  answer.
+  generated C++ codecs 16,800 more, and the prototype host, which runs any of the three façades, is 875 lines of Java (test scope,
+  with the harness's own options and the allocation window). A C# stub and the golden-trace harness are not counted,
+  so it is a floor, not the answer.
 - Conformance is by golden trace, so that the stubs' tests are not three ports of one suite. A trace is streams
   303 and 304 and the counters recorded from the Java host through a scripted scenario: attach, restore, steady
   state, a leader change, a hold, a cut, a lost client, a detach. Each stub is tested by replaying the host half
@@ -675,6 +675,9 @@ per-attachment images of **H-15**, and the counters of §17.2.1. It differs from
   `GateClosed` takes the edge down, epoch up, as the façade's `gateClosed()` does. A `Publish` on a connection whose
   `ConnectionOpened` is not yet placed stays at the head of the queue, un-retired, until the façade accepts it. An
   `OpenConnection` under an id the façade did not allocate closes the attachment (`CLIENT_PROTOCOL`).
+- **Consumer.** For `Kind.CONSUMER`, when `host.consumerGroup` names a group, the host builds a `Consumer` for it. It
+  subscribes to no stream 304, so the attachment is judged lost by the client's heartbeat counter alone (**H-9**), and
+  `Attached` carries no `sourceId` (-1).
 - **Not sent.** `ClusterTime`. `AttachPending`
   is never needed, since the host closes a façade synchronously. The snapshot round id is the host's own cut count.
 - **`kill -9` of the host or a client** is the same as before. The ghost scenario changed: with per-attachment images a
@@ -729,14 +732,15 @@ limit, and a C# stub. Liveness by counter, the attach of **H-8**, the stub's oth
 `payloadId`, a payload above `MAX_PAYLOAD_LENGTH`), the mirrored gate (**H-16**) and the window (**H-5**). It answers
 the host's `SnapshotCut` from a `SnapshotListener`, restores from `RestoreRecord` and keeps the heartbeat counter. `reply` takes the
 `RequestRef` of the request, and `GroupsResolved` hands the listener a `GroupDirectory` and gives `publish` the direct
-call's group-mask check (`Refused` for a group the table lacks). Not built: a `Consumer`. `hosted::Gateway`
+call's group-mask check (`Refused` for a group the table lacks). `hosted::Consumer` (`.../hosted/Consumer.hpp`, 49 lines) is the stub of a `Consumer`: it sends
+only `Attach` and `Detach`, takes no stream 304, and delivers `Payload` and `CaughtUp` to the direct `Consumer`'s listener. `hosted::Gateway`
 (`.../hosted/Gateway.hpp`) is the stub of a `Gateway` on the same core (`hosted/detail/Attachment.hpp`): its listener is the direct
 `Gateway`'s, `onActivated` is answered with `Activated` and the stub then serves under the epoch one above the last `Gate`'s
 (§17.5), `openConnection` allocates its ids from the last `Role` and returns `NO_CONNECTION` for a full window or a
 back-pressured stream, and `closeConnection` and `gateClosed` retry within the call. `hosted_probe`
 (`seqeron-client/src/test/cpp-probe`) holds the probe's state in it, as `HostedTestApplicationClient` does.
 
-Three system tests drive the stubs against the Java host, with `HOSTED_PROBE` naming the binary:
+Four system tests drive the stubs against the Java host, with `HOSTED_PROBE` naming the binary:
 
 - `HostedCppStubTest`: it attaches, the gate opens, 2,000 markers are sequenced once and in order, and the two local
   refusals fire. With the host's tracker at 4 and a 1 KiB window, 20,000 markers offered flat out are all placed and
@@ -757,3 +761,7 @@ Three system tests drive the stubs against the Java host, with `HOSTED_PROBE` na
   (`headDeclines` 1), and nothing fenced. In a second scenario the stub then calls `gateClosed()`: the host takes the
   edge down and asks again with a second `Role` whose `firstConnectionId` is 3, past the highest id issued, and three
   more connections run the same way.
+- `HostedConsumerStubTest` (`hosted_consumer_probe`; a consumer host on a follower, an `Application` stub publishing 500
+  markers on the leader): a consumer attached while the markers are published, and one attached after they are in the
+  log, each caught up and saw all 500 once and in order; a consumer killed with `SIGKILL` was judged lost by the host
+  from its counter, and its successor attached.

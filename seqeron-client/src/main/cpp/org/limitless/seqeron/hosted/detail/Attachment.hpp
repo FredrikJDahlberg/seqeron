@@ -99,10 +99,11 @@ class Attachment
         m_clientId = m_aeron->nextCorrelationId();
         m_heartbeat = counter(CLIENT_HEARTBEAT_TYPE_ID, "seqeron.client.heartbeat hosted");
         m_applied = counter(CLIENT_APPLIED_TYPE_ID, "seqeron.client.applied hosted");
-        const std::int64_t commandsId = m_aeron->addExclusivePublication(COMMANDS_CHANNEL, COMMANDS_STREAM);
+        const std::int64_t commandsId =
+            m_hasCommands ? m_aeron->addExclusivePublication(COMMANDS_CHANNEL, COMMANDS_STREAM) : -1;
         const std::int64_t requestsId = m_aeron->addPublication(ATTACH_REQUEST_CHANNEL, ATTACH_REQUEST_STREAM);
         const std::int64_t repliesId = m_aeron->addSubscription(ATTACH_REPLY_CHANNEL, ATTACH_REPLY_STREAM);
-        while (!(m_commands = m_aeron->findExclusivePublication(commandsId)))
+        while (m_hasCommands && !(m_commands = m_aeron->findExclusivePublication(commandsId)))
         {
             std::this_thread::yield();
         }
@@ -184,13 +185,15 @@ class Attachment
 
   protected:
     Attachment(Listener& listener, const wire::Kind::Value kind, const std::int32_t sourceId,
-               app::SnapshotListener* snapshots, const std::int64_t hostTimeoutMs, const std::int64_t attachTimeoutMs) :
+               app::SnapshotListener* snapshots, const std::int64_t hostTimeoutMs, const std::int64_t attachTimeoutMs,
+               const bool hasCommands = true) :
       m_listener{ listener },
       m_snapshots{ snapshots },
       m_kind{ kind },
       m_sourceId{ sourceId },
       m_hostTimeoutMs{ hostTimeoutMs },
-      m_attachTimeoutMs{ attachTimeoutMs }
+      m_attachTimeoutMs{ attachTimeoutMs },
+      m_hasCommands{ hasCommands }
     {
         m_out.resize(128 * 1024);
     }
@@ -348,7 +351,7 @@ class Attachment
             .requestId(m_requestId)
             .kind(m_kind)
             .protocolVersion(PROTOCOL_VERSION)
-            .commandSessionId(m_commands->sessionId())
+            .commandSessionId(m_hasCommands ? m_commands->sessionId() : -1)
             .heartbeatCounterId(m_heartbeat->id())
             .heartbeatRegistrationId(m_heartbeat->registrationId())
             .appliedCounterId(m_applied->id())
@@ -569,6 +572,7 @@ class Attachment
     std::int32_t m_sourceId;
     std::int64_t m_hostTimeoutMs;
     std::int64_t m_attachTimeoutMs;
+    bool m_hasCommands;
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::shared_ptr<aeron::Counter> m_heartbeat;
     std::shared_ptr<aeron::Counter> m_applied;
