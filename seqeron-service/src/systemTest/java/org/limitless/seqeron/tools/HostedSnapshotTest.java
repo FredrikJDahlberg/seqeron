@@ -1,6 +1,7 @@
 package org.limitless.seqeron.tools;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -27,7 +28,9 @@ import org.limitless.seqeron.protocol.SeqeronCounters;
  */
 class HostedSnapshotTest {
     private static final String TEST_APPLICATION = "org.limitless.seqeron.tools.TestApplication";
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
+    /** HOSTED_CLIENT=cpp in the Gradle run: the clients are hosted_probe (HOSTED_PROBE), the C++ stub. */
+    private static final boolean CPP = "cpp".equals(System.getProperty("seqeron.hostedClient"));
     private static final String CLIENT = "org.limitless.seqeron.tools.HostedTestApplicationClient";
     private static final int SOURCE_ID = 16;
     private static final int CLIENT_TIMEOUT_MS = 2000;
@@ -130,8 +133,11 @@ class HostedSnapshotTest {
         check("rounds resume", waitRounds(hostedMember, hostClientId, 2));
         System.out.printf("cut-to-kill %d ms%n", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - cutAt));
 
-        // 5. A command under another attachment's id is dropped.
-        check("the host dropped the ghost command", !host.lines("dropped stale command").isEmpty());
+        // 5. A command from a publication that is not the attachment's is never read (H-15).
+        if (!CPP) {
+            check("the client sent a command from a second publication", !client.lines("sent one command").isEmpty());
+            check("the host never read it: no ghost marker was sequenced", client.lines("GHOST MARKER SEQUENCED").isEmpty());
+        }
         check("no instance fenced", noFence());
 
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
@@ -178,6 +184,7 @@ class HostedSnapshotTest {
     @Test
     @Timeout(value = 400, unit = TimeUnit.SECONDS)
     void aHostedReplicaGainsAndLosesLeadershipUnderGateEpochs() {
+        assumeFalse(CPP, "the stub's own checks send no stale epoch");
         final int other = bootstrap(false);
         startHost();
         startClientNoWait("client.staleEpoch=true");
@@ -327,9 +334,9 @@ class HostedSnapshotTest {
     private void startHost() {
         hostRuns++;
         hostClientId = 30 + hostRuns;
-        host = cluster.harness("host-" + hostRuns, hostedMember, HOST, null, "probe.sourceId=" + SOURCE_ID,
-                               "probe.clientId=" + hostClientId, "host.clientTimeoutMs=" + CLIENT_TIMEOUT_MS,
-                               "probe.snapshotDir=" + baseDir.resolve("snap").resolve("host"));
+        host = cluster.proxy("host-" + hostRuns, hostedMember, "proxy.sourceId=" + SOURCE_ID,
+                               "proxy.clientId=" + hostClientId, "proxy.clientTimeoutMs=" + CLIENT_TIMEOUT_MS,
+                               "proxy.snapshotDir=" + baseDir.resolve("snap").resolve("host"));
         instances.add(host);
         host.awaitLine("host ready", Duration.ofSeconds(30));
     }
@@ -340,9 +347,33 @@ class HostedSnapshotTest {
     }
 
     private void startClientNoWait(final String... properties) {
+        if (CPP) {
+            startCppClient(properties);
+            return;
+        }
         final List<String> all = new ArrayList<>(List.of("probe.sourceId=" + SOURCE_ID));
         all.addAll(List.of(properties));
         client = cluster.harness("client-" + ++clientRuns, hostedMember, CLIENT, null, all.toArray(new String[0]));
+        instances.add(client);
+    }
+
+    /** The same client as the C++ stub's probe, for the properties it has an option for. */
+    private void startCppClient(final String... properties) {
+        final List<String> command = new ArrayList<>(List.of(System.getProperty("seqeron.hostedProbe"), "--aeron-dir",
+                                                             cluster.aeronDir(hostedMember), "--source-id",
+                                                             "" + SOURCE_ID));
+        for (final String property : properties) {
+            final String[] keyValue = property.split("=", 2);
+            switch (keyValue[0]) {
+            case "client.stallCutNo" -> command.addAll(List.of("--stall-cut-no", keyValue[1]));
+            case "client.slowCutMs" -> command.addAll(List.of("--slow-cut-ms", keyValue[1]));
+            case "client.corruptRecord" -> command.addAll(List.of("--corrupt-record", "1"));
+            default -> {
+                // client.ghost and client.staleEpoch publish from outside the stub's checks, which it has no option for.
+            }
+            }
+        }
+        client = cluster.nativeProcess("client-" + ++clientRuns, command.toArray(new String[0]));
         instances.add(client);
     }
 

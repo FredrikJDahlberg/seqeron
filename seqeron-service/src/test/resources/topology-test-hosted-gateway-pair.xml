@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The hosted-façade prototype's gateway pair (doc/hosted-facade-draft.md §17.5): rank 0 is designated and rank 1
+    takes over when its session goes. No snapshot policy. HostedGatewayFailoverTest loads it and runs both rows.
+-->
+<topology xmlns="http://limitless.org/seqeron/topology/1">
+    <groups>
+        <group name="test" id="1"/>
+    </groups>
+
+    <gateways>
+        <gateway name="GW-H-A" id="10" sourceId="9" rank="0" group="test"
+                 description="A hosted gateway, designated first"/>
+        <gateway name="GW-H-B" id="11" sourceId="9" rank="1" group="test"
+                 description="Its standby"/>
+    </gateways>
+</topology>

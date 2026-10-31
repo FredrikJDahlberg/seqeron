@@ -23,7 +23,7 @@ import org.junit.jupiter.api.io.TempDir;
  * the façade declines at the head of the queue, and its window holds about seventeen, so the stub declines too.
  */
 class HostedCommandQueueTest {
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
     private static final String CLIENT = "org.limitless.seqeron.tools.HostedTestApplicationClient";
     private static final int SOURCE_ID = 16;
     private static final int WINDOW = 1024;
@@ -137,9 +137,9 @@ class HostedCommandQueueTest {
     }
 
     private void startHost() {
-        host = cluster.harness("host", leader, HOST, null, "probe.sourceId=" + SOURCE_ID, "probe.clientId=31",
-                               "probe.snapshotDir=" + baseDir.resolve("snap"), "host.commandWindow=" + WINDOW,
-                               "host.pendingCapacity=4", "host.placePerCycle=2", "host.spin=true");
+        host = cluster.proxy("host", leader, "proxy.sourceId=" + SOURCE_ID, "proxy.clientId=31",
+                               "proxy.snapshotDir=" + baseDir.resolve("snap"), "proxy.commandWindow=" + WINDOW,
+                               "proxy.pendingCapacity=4", "proxy.placePerCycle=2", "proxy.spin=true");
         host.awaitLine("host ready", Duration.ofSeconds(30));
     }
 

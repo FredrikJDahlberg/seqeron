@@ -389,14 +389,15 @@ client's driver connection.
 
 ## 17.8 Consequences for the tree
 
-- Java host: a `seqeron-service` class composing `Application`, `Gateway` or `Consumer` with a remote listener and
+- Java host: `org.limitless.seqeron.proxy.ClientProxy`, a `seqeron-service` class composing `Application`, `Gateway` or `Consumer` with a remote listener and
   the command queue. `seqeron-client` stays free of it, so the direction rule holds.
 - Java client tier: the `Application` and `Gateway` builders take the `IdleStrategy` that `ClusterStreamSender.send`
   spins on, `YieldingIdleStrategy` by default as now (**H-10**). It is a change to the client tier's surface, so the
   C# façades' options and `client-api.md` follow it, and the direct C++ façades until they are retired.
-- Where the ids live. Streams 301–304, their channels, `NO_ATTACH` and the protocol version (§17.7) are a
-  `HostedProtocol` class in `protocol`,
-  beside `ReplayProtocol`, with a C++ twin, since the host and the stub share them. The four counters take a new
+- Where the ids live. Streams 301–304, `NO_ATTACH`, the schema id and the protocol version (§17.7) are a
+  `ProxyProtocol` class in `protocol`,
+  beside `ReplayProtocol`, with a C++ twin, since the proxy and the stub share them; the channels are in the Java
+  class only, since the two ends build theirs differently. The four counters take a new
   range of `SeqeronCounters`, 5300–5399, after the sequencer's, the replayer's and the façades', and `MAX_TYPE_ID`
   widens to it, so `clusterctl` lists them; the three copies of `SeqeronCounters` stay in step. The C++ stub
   connects only to its own driver and needs no port, so C++ `PortLayout` retires with the direct façades, and
@@ -429,9 +430,13 @@ client's driver connection.
   Added complexity that is not lines: a second protocol (§17.7), two-process failure modes and a second unit to
   supervise per instance (§17.6), and a JVM and a core per client (§17.10.1). The parity the C++ client carried
   does not go with it: `ReplayerRecovery`, `PendingSends` and the façades stay case for case in Java and C#, two
-  languages rather than three. **The added lines are not yet counted, and the first stage is not decided until
-  they are.** The prototype's host, wire and client are about 700 lines, bench-only and without the command queue,
-  the window, the counters, the attach of **H-8** or a `Gateway`, so they are no estimate.
+  languages rather than three. **The added lines are only partly counted, and the first stage is not decided until
+  they are.** What exists: the C++ stubs of `Application`, `Gateway` and `Consumer` share a core,
+  `hosted/detail/Attachment.hpp`, of 612 lines with its comments, and are 140, 252 and 49 lines on top of it (a build of
+  the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217 lines of XML and its
+  generated C++ codecs 16,800 more, and the host, `ClientProxy`, which runs any of the three façades, is about 910 lines of Java with its
+  configuration checks and the allocation window, plus `Liveness`, `CommandLedger` and `AttachRules`, its Aeron-free seams. A C# stub and the golden-trace harness are not counted,
+  so it is a floor, not the answer.
 - Conformance is by golden trace, so that the stubs' tests are not three ports of one suite. A trace is streams
   303 and 304 and the counters recorded from the Java host through a scripted scenario: attach, restore, steady
   state, a leader change, a hold, a cut, a lost client, a detach. Each stub is tested by replaying the host half
@@ -569,8 +574,10 @@ façade's receive and publish paths and the placement of each command.
 
 - **Result:** 0 bytes over 50,000 frames in four of five runs with the queue, and 120 bytes in the fifth; 0 in both
   runs made before the queue. A rerun of twelve, with the host logging when its window opens, gave 0 bytes in all
-  twelve. The 120 bytes is one small object in a window of about a minute, not a per-frame cost, and was not
-  reproduced or sourced, so the host is shown to allocate nothing in 16 of 17 runs and not in the other. A control with a warm-up of 20 frames
+  twelve, and three runs on the schema 218 wire gave 0 in all three. The 120 bytes is one small object in a window of
+  about a minute, not a per-frame cost, and was not reproduced or sourced, so the host is shown to allocate nothing in
+  19 of 20 runs and not in the other. On schema 218 the window's frames are payloads and placed commands only, since
+  the heartbeats are counters. A control with a warm-up of 20 frames
   allocates 195,856 bytes over the same window, so the count is not blind.
 - **Not in the window:** a snapshot cut, attach and restore (the topology has no snapshot policy), a leadership
   change, a declining façade, counters other than the retired one and a `Gateway`. The payload is 18 bytes and the
@@ -579,7 +586,7 @@ façade's receive and publish paths and the placement of each command.
 ### 17.10.6 A C++ client beside a separate host JVM, on Linux
 
 `hop_bench` (`seqeron-client/src/test/cpp-bench`, bench only) is a C++ client with two arms: `direct`, the C++
-`Application`, and `hosted`, the prototype wire of `HostedWire.java` to the Java host, byte for byte. Both publish an
+`Application`, and `hosted`, the prototype wire of `ProxyProtocol.java` to the Java host, byte for byte. Both publish an
 18-byte `ProbeMarker` open loop at 5k and 20k msg/s and time each from its intended send until the process sees its
 own frame sequenced. The first 20% of each run is dropped. Three member JVMs, the host JVM and the client are
 separate processes in one aarch64 Ubuntu 24.04 container, in Docker Desktop's VM on an Apple-silicon laptop with 6
@@ -595,7 +602,7 @@ the host to two and the client to two. Arms alternate within a rate. Whole loop,
 - **The host's idle strategy decides it.** A host that backs off between messages added 66–107 µs at p50, in every
   pinning tried (none; members on three, two and four vCPUs; one vCPU for the whole host JVM). A parked thread wakes
   late on Linux, once for the command and once for the sequenced frame. The prototype host's default was the backing
-  off one; `host.spin` busy-spins it, and the difference is gone. A host must therefore spin, which takes a core
+  off one; `proxy.spin` busy-spins it, and the difference is gone. A host must therefore spin, which takes a core
   (§17.9, question 2), and the figures of §17.10.1 and §17.10.2, which spun, hold.
 - **With a spinning host no arm is resolved from another.** At 5k msg/s the p50s agree within 4 µs. At 20k msg/s the
   direct arm's own p50 spans 245–312 µs, wider than its difference from the hosted arm. The tails are the VM's: p99
@@ -632,8 +639,16 @@ alternating, the first 20% dropped; p50 / p99.9 in µs, run 1 then run 2:
   still sit in the hosted client's path, and one of 3.8 ms is within the p99.9 seen.
 - **Not shown:** the multi-message `Payload`, whose saving needs a rate above the one the offer limits, and a tuned
   cluster.
+- **On schema 218** (C++ bench against the host on the new wire, counters and window, busy-spin host, 60,000 markers,
+  two runs a rate): at 5k msg/s direct p50 was 322 and 319 µs and hosted 318 and 318; at 20k msg/s direct 262 and 289
+  µs and hosted 337 and 288. The peak queue was 784 bytes of the 64 KiB window and no attachment was closed. The
+  hosted arm's p50 at 20k msg/s spans the direct arm's, as before.
 
-## 17.11 Prototype: restore, cut and SIGKILL
+## 17.11 The host: restore, cut and SIGKILL
+
+The host is `ClientProxy` in `seqeron-service`, configured by `proxy.*` properties (`running-a-cluster.md`). Its decisions
+are `Liveness`, `CommandLedger` and `AttachRules`, unit-tested without Aeron; the system tests below launch it from the
+uber jar.
 
 A Java host runs the real `Application` with snapshots; a Java client holds `TestApplication`'s state (a marker count
 and a digest) and writes its one 16-byte record byte for byte. Host and client are child processes beside member
@@ -642,17 +657,41 @@ one of a source's three, beside two direct `TestApplication` replicas, so each s
 with the sequenced `SnapshotEnd` and fences on a difference (**A-7**). Snapshot rounds run every 2 s (every 15 s in
 the long-cut scenario), `clientTimeoutMs` is 2 s, and the client's host timeout is 3 s.
 
-The prototype's wire differs from §17.3 in five ways. Its `Publish` carries the gate epoch and its host drops a
-stale one, as **H-3**'s, and answers nothing for a command it drops or declines (**H-4**). Its queue and window are
-**H-5**'s with two differences: the windowed length is the encoded `Publish` message, header and fields included,
-not an SBE message length, and the host closes the attachment (`CLIENT_WINDOW`) rather than fencing. The stub reads
-the retired total from an Aeron counter of the proposed type id 5303, whose id and the window `Attached` carries after
-the nonce. There is no `Reply` or `OpenConnection`. Liveness is a `Heartbeat` message on each stream rather than counters (§17.2.1). It attaches with a nonce
-and tags every message with an `attachId`, on two fixed streams, rather than with `requestId` and per-attachment
-images (**H-8**, **H-15**). Its `Payload` carries the `templateId` and the body, not the bytes with their
-`MessageHeader`, so it has no `blockLength` or `version` to decode a later schema version with. The epoch and
-exactly-once rows below are therefore **H-3** and **H-4** as specified: the client learns of no drop and counts what
-the host did.
+The prototype speaks schema 218 (`sbe-hosted.xml`) on the four streams of §17.2, with the attach of **H-8** and the
+per-attachment images of **H-15**, and the counters of §17.2.1. It differs from §17.3 and the rules in these ways:
+
+- **`Publish` and the window.** `Publish` carries the gate epoch and the host drops a stale one (**H-3**), answering
+  nothing for a command it drops or declines (**H-4**). The queue and window are **H-5**'s with one difference: the
+  host closes the attachment (`CLIENT_WINDOW`) rather than fencing. The windowed length is the encoded message, header
+  included, which the stub counts and the host retires. `Publish` carries the `groupMask` and the host places it with that mask; `Reply` is queued through the same window
+  and placed with the `RequestRef` it names (**H-11**). The prototype allocates one `RequestRef` per reply.
+- **Counters.** The client heartbeat, the host heartbeat and the host retired counters are as §17.2.1; the client
+  applied counter is written (the position of the last `Payload`) and not read, so **H-14**'s lag is not exported. A
+  heartbeat is written on every duty cycle, in a long cut and in a send's spin, and not in a stalled client.
+- **Attach.** By `clientId` and `requestId`, with `hostName`, `protocolVersion` and `aeronVersion` checked. A resend
+  of the live request is answered again, any other client with `BUSY`. The façade is built once the events publication
+  is connected, so the restore has a reader.
+- **`GroupsResolved`** is sent once, from `onGroupsResolved`, before the first `Gate`.
+- **Gateway.** For `Kind.GATEWAY`, when `probe.gatewayName` names the row, the host builds a `Gateway`. Its
+  `onActivated` sends `Role` and spins, keeping the cluster session alive, until the client's `Activated`; on `true`
+  the host takes the open edge at once (epoch up, `Gate`), so the first `OpenConnection` is stamped with the epoch it
+  is placed under. `onStandby` sends `Role(false)` and then the `Gate`. `OpenConnection` is windowed; `CloseConnection`
+  and `GateClosed` are queued behind it in order but are outside the window and the retired counter (**H-5**), and
+  `GateClosed` takes the edge down, epoch up, as the façade's `gateClosed()` does. A `Publish` on a connection whose
+  `ConnectionOpened` is not yet placed stays at the head of the queue, un-retired, until the façade accepts it. An
+  `OpenConnection` under an id the façade did not allocate closes the attachment (`CLIENT_PROTOCOL`).
+- **Consumer.** For `Kind.CONSUMER`, when `proxy.consumerGroup` names a group, the host builds a `Consumer` for it. It
+  subscribes to no stream 304, so the attachment is judged lost by the client's heartbeat counter alone (**H-9**), and
+  `Attached` carries no `sourceId` (-1).
+- **Not sent.** `ClusterTime`. `AttachPending`
+  is never needed, since the host closes a façade synchronously. The snapshot round id is the host's own cut count.
+- **`kill -9` of the host or a client** is the same as before. The ghost scenario changed: with per-attachment images a
+  command under another attachment's id cannot be sent, so the client publishes from a second publication on stream
+  304, which the host does not read, and the test asserts nothing of it is sequenced.
+
+The measurements of §17.10.1 to §17.10.7 were taken on the earlier bench-only wire (a 16-byte header, a nonce attach
+and heartbeat messages) except the last run of §17.10.7, which is on schema 218. The epoch and exactly-once rows below
+are **H-3** and **H-4** as specified: the client learns of no drop and counts what the host did.
 
 | scenario | observed |
 | --- | --- |
@@ -661,7 +700,7 @@ the host did.
 | client `kill -9`, successor attaches at once | the host refused it as another client until `CLIENT_LOST`, 2.06 s after the kill; the successor attached, the host restored a snapshot and the client held 142–231 markers; rounds resumed |
 | host `kill -9` | the client exited 70 on `HOST_LOST`; the restarted pair restored and rounds resumed |
 | client `kill -9` mid-cut (the second cut after attach) | the host abandoned the round after `clientTimeoutMs` and did not hang; the direct replicas kept completing rounds; the next attach restored from round 12, the last confirmed, not the abandoned one |
-| a command under another `attachId` | dropped and logged by the host; no effect |
+| a command from a publication that is not the attachment's (**H-15**) | never read by the host; no marker sequenced |
 | a cut of 8 s, longer than the 5 s session timeout (rounds every 15 s) | the host kept the session by calling `keepAlive()` while it waited, the client heartbeating; a round was confirmed, with no `CLIENT_LOST` and no abandoned round. Control: without the host's `keepAlive()` no round is confirmed in 80 s |
 | leadership moves to the hosted member (the leader paused until the others elect, repeated until the hosted member wins; no member killed) | the gate epoch rose 0 to 1; the client applied it; a marker sent under the previous epoch was dropped by the host, counted, and never sequenced; the client's markers were sequenced and its rounds agreed with the direct replicas |
 | leadership leaves it (its member paused until the others elect), pair alive | the gate epoch rose again and the client stopped publishing at once; it kept following the new leader's markers; the rounds went on and no instance fenced |
@@ -685,7 +724,55 @@ The command queue and window have their own scenarios (`HostedCommandQueueTest`)
 and a window of 1,024 bytes, a stub that ignores the window, and a gate edge across a paused leader (17 queued
 commands dropped, 4,197 offered, 4,180 sequenced, none out of order).
 
-Not covered: liveness by counter and the attach of **H-8**, the stub's local checks and connection ids (**H-4**),
-a held ingress of seconds, a hosted `Gateway` and its edge (§17.5), a host killed in a cut,
-a leader killed and not paused, state of more than one record or a record near the 65,535-byte limit, and a C++ or
-C# stub.
+Not covered: a held ingress of seconds, a hosted `Gateway` pair's snapshots, a
+host killed in a cut, a leader killed and not paused, state of more than one record or a record near the 65,535-byte
+limit, and a C# stub. Liveness by counter, the attach of **H-8**, the stub's other local checks and a C++ stub of an
+`Application` are covered by §17.11.1.
+
+### 17.11.1 The C++ stub against the host
+
+`hosted::Application` (`seqeron-client/src/main/cpp/org/limitless/seqeron/hosted/Application.hpp`) is the C++ stub of an
+`Application`: its listener is the direct `Application`'s, a `Payload` reaches it as `app::Payload` over the received
+`Payload` message, and `publish` returns `protocol::Publish` after the local checks of a direct call (a retired
+`payloadId`, a payload above `MAX_PAYLOAD_LENGTH`), the mirrored gate (**H-16**) and the window (**H-5**). It answers
+the host's `SnapshotCut` from a `SnapshotListener`, restores from `RestoreRecord` and keeps the heartbeat counter. `reply` takes the
+`RequestRef` of the request, and `GroupsResolved` hands the listener a `GroupDirectory` and gives `publish` the direct
+call's group-mask check (`Refused` for a group the table lacks). `hosted::Consumer` (`.../hosted/Consumer.hpp`, 49 lines) is the stub of a `Consumer`: it sends
+only `Attach` and `Detach`, takes no stream 304, and delivers `Payload` and `CaughtUp` to the direct `Consumer`'s listener. `hosted::Gateway`
+(`.../hosted/Gateway.hpp`) is the stub of a `Gateway` on the same core (`hosted/detail/Attachment.hpp`): its listener is the direct
+`Gateway`'s, `onActivated` is answered with `Activated` and the stub then serves under the epoch one above the last `Gate`'s
+(§17.5), `openConnection` allocates its ids from the last `Role` and returns `NO_CONNECTION` for a full window or a
+back-pressured stream, and `closeConnection` and `gateClosed` retry within the call. `hosted_probe`
+(`seqeron-client/src/test/cpp-probe`) holds the probe's state in it, as `HostedTestApplicationClient` does.
+
+Five system tests drive the stubs against the Java host, with `HOSTED_PROBE` naming the binary:
+
+- `HostedCppStubTest`: it attaches, the gate opens, 2,000 markers are sequenced once and in order, and the two local
+  refusals fire. With the host's tracker at 4 and a 1 KiB window, 20,000 markers offered flat out are all placed and
+  sequenced once, the stub having declined 223,070 times at the window, with a peak queue of 1,008 of 1,024 bytes. At
+  a gate edge (the leader paused 4.5 s) the stub stopped at the `Gate` and offered 3,582, the host dropped 18 by their
+  epoch and 3,564 were sequenced. In a fourth scenario the stub is handed the directory, a mask naming an absent group
+  is refused and one naming the own group is published, and of 2,000 markers every tenth is answered: the 200 replies
+  are each sequenced once under the sourceId, connectionId and groupMask of their request.
+- `HostedSnapshotTest` with `HOSTED_CLIENT=cpp` runs its clients as the probe: restore, cuts, a client `kill -9`
+  with an immediate successor, a host `kill -9`, an abandoned cut, the 8 s cut, the leading hosted replica, and the
+  corrupt record fenced with `SNAPSHOT_DIVERGED`, each check as with the Java client and the direct replicas
+  comparing the stub's rounds (**A-7**). Not run with it: the stale-epoch scenario and the ghost command, which need
+  a client that sends what the stub never would.
+- `HostedGatewayStubTest` (`hosted_gateway_probe`, beside `hosted_probe`; one gateway row, no standby, no snapshot
+  policy): the stub opens three connections under the ids the first `Role` named (0, 1, 2), publishes 20 markers on each,
+  and every one is sequenced under its own `connectionId`; the three `ConnectionOpened` and three `ConnectionClosed`
+  reach the listener. A `Publish` that reached the host before its `ConnectionOpened` was placed stayed at the head
+  (`headDeclines` 1), and nothing fenced. In a second scenario the stub then calls `gateClosed()`: the host takes the
+  edge down and asks again with a second `Role` whose `firstConnectionId` is 3, past the highest id issued, and three
+  more connections run the same way.
+- `HostedGatewayFailoverTest` (a pair, `GW-H-A` and `GW-H-B`, each a host and a stub on its own member, no snapshot
+  policy): the active holds three connections and publishes steadily. With its stub killed, its host logs `CLIENT_LOST`
+  and the standby's `Role` carries `firstConnectionId` 3, past the active's ids; its three connections and 60 markers
+  run under their own ids, and nothing fenced. With the active's host paused (`SIGSTOP`) the stub exits `HOST_LOST` and
+  the standby takes over the same way. A paused host resumed with its stub still attached gets `Role(false)`, opens no
+  further connection and never asks again. The leader is never paused or killed.
+- `HostedConsumerStubTest` (`hosted_consumer_probe`; a consumer host on a follower, an `Application` stub publishing 500
+  markers on the leader): a consumer attached while the markers are published, and one attached after they are in the
+  log, each caught up and saw all 500 once and in order; a consumer killed with `SIGKILL` was judged lost by the host
+  from its counter, and its successor attached.

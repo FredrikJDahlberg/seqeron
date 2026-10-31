@@ -3,12 +3,12 @@
 // its own frame sequenced, through either
 //
 //   direct: app::Application against the member's driver, as a C++ application runs today; or
-//   hosted: the prototype Java host (HostedTestApplicationHost) over HostedWire's two aeron:ipc streams, byte for
-//           byte, as a stub would. HostedWire.java is the layout; this is its only other reader.
+//   hosted: the Java proxy (ClientProxy) in schema 218 over ProxyProtocol's four aeron:ipc
+//           streams and its counters, as a stub would. ProxyProtocol.java is the transport; this is its only other reader.
 //
 //   hop_bench <direct|hosted> --member M --rate R/s --count N [--client-id C] [--egress-port P] [--aeron-dir D]
 //
-// The first 20% of the markers are warm-up and are not reported. Wire constants below are copied from HostedWire.java.
+// The first 20% of the markers are warm-up and are not reported. Transport constants below are ProxyProtocol.java's.
 
 #include <algorithm>
 #include <array>
@@ -26,6 +26,15 @@
 
 #include "Aeron.h"
 
+#include "org_limitless_seqeron_sbe_hosted/Attach.h"
+#include "org_limitless_seqeron_sbe_hosted/Attached.h"
+#include "org_limitless_seqeron_sbe_hosted/Detach.h"
+#include "org_limitless_seqeron_sbe_hosted/Fenced.h"
+#include "org_limitless_seqeron_sbe_hosted/Gate.h"
+#include "org_limitless_seqeron_sbe_hosted/MessageHeader.h"
+#include "org_limitless_seqeron_sbe_hosted/Payload.h"
+#include "org_limitless_seqeron_sbe_hosted/Publish.h"
+
 #include "org/limitless/seqeron/app/Application.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/util/Env.hpp"
@@ -36,6 +45,7 @@ namespace {
 namespace app = org::limitless::seqeron::app;
 namespace protocol = org::limitless::seqeron::protocol;
 namespace util = org::limitless::seqeron::util;
+namespace wire = org::limitless::seqeron::sbe::hosted;
 
 constexpr std::int32_t SOURCE_ID = 16;
 constexpr std::uint16_t PROBE_PAYLOAD_ID = 5;
@@ -51,20 +61,23 @@ constexpr int SALT_SHIFT = 24;
 constexpr std::int64_t INDEX_MASK = (1LL << SALT_SHIFT) - 1;
 constexpr std::int64_t TIMEOUT_NS = 90'000'000'000LL;
 constexpr std::int64_t START_DELAY_NS = 200'000'000LL;
-constexpr std::int64_t HEARTBEAT_NS = 100'000'000LL;
 constexpr std::int64_t ATTACH_RETRY_NS = 500'000'000LL;
 
-// HostedWire.java.
-constexpr std::int32_t EVENTS_STREAM = 301;
-constexpr std::int32_t COMMANDS_STREAM = 302;
-constexpr std::uint8_t ATTACHED = 1;
-constexpr std::uint8_t PAYLOAD = 2;
-constexpr std::uint8_t GATE = 3;
-constexpr std::uint8_t FENCED = 8;
-constexpr std::uint8_t ATTACH = 21;
-constexpr std::uint8_t PUBLISH = 22;
-constexpr std::uint8_t CLIENT_HEARTBEAT = 25;
-constexpr std::uint8_t DETACH = 26;
+// ProxyProtocol.java.
+constexpr const char* HOST_NAME = "hosted";
+constexpr std::uint16_t PROTOCOL_VERSION = 1;
+constexpr std::uint16_t HOSTED_SCHEMA_ID = 218;
+constexpr const char* ATTACH_REQUEST_CHANNEL = "aeron:ipc?term-length=64k";
+constexpr const char* ATTACH_REPLY_CHANNEL = "aeron:ipc?tether=false";
+constexpr const char* EVENTS_CHANNEL = "aeron:ipc?session-id=";
+constexpr const char* COMMANDS_CHANNEL = "aeron:ipc?term-length=1m";
+constexpr std::int32_t ATTACH_REQUEST_STREAM = 301;
+constexpr std::int32_t ATTACH_REPLY_STREAM = 302;
+constexpr std::int32_t EVENTS_STREAM = 303;
+constexpr std::int32_t COMMANDS_STREAM = 304;
+constexpr std::int32_t CLIENT_HEARTBEAT_TYPE_ID = 5300;
+constexpr std::int32_t CLIENT_APPLIED_TYPE_ID = 5301;
+constexpr std::int64_t HOST_TIMEOUT_NS = 3'000'000'000LL;
 
 std::int64_t nowNs()
 {
@@ -290,59 +303,64 @@ int direct(const Options& options, const std::int64_t rate, const std::int64_t c
 class HostedClient
 {
   public:
-    HostedClient(const std::shared_ptr<aeron::Aeron>& aeron, const std::int32_t clientId, Run& run) :
-      m_run{ run },
+    HostedClient(const std::shared_ptr<aeron::Aeron>& aeron, Run& run) :
       m_aeron{ aeron },
-      m_clientId{ clientId }
+      m_run{ run },
+      m_clientId{ aeron->nextCorrelationId() }
     {
-        const std::int64_t subId = aeron->addSubscription("aeron:ipc", EVENTS_STREAM);
-        const std::int64_t pubId = aeron->addExclusivePublication("aeron:ipc", COMMANDS_STREAM);
-        while (!(m_events = aeron->findSubscription(subId)))
+        m_heartbeat = counter(CLIENT_HEARTBEAT_TYPE_ID, "seqeron.client.heartbeat hop_bench");
+        m_applied = counter(CLIENT_APPLIED_TYPE_ID, "seqeron.client.applied hop_bench");
+        const std::int64_t commandsId = aeron->addExclusivePublication(COMMANDS_CHANNEL, COMMANDS_STREAM);
+        const std::int64_t requestsId = aeron->addPublication(ATTACH_REQUEST_CHANNEL, ATTACH_REQUEST_STREAM);
+        const std::int64_t repliesId = aeron->addSubscription(ATTACH_REPLY_CHANNEL, ATTACH_REPLY_STREAM);
+        while (!(m_commands = aeron->findExclusivePublication(commandsId)))
         {
             std::this_thread::yield();
         }
-        while (!(m_commands = aeron->findExclusivePublication(pubId)))
+        while (!(m_requests = aeron->findPublication(requestsId)))
         {
             std::this_thread::yield();
         }
-        std::random_device device;
-        m_nonce = (static_cast<std::int64_t>(device()) << 32) | device();
+        while (!(m_replies = aeron->findSubscription(repliesId)))
+        {
+            std::this_thread::yield();
+        }
     }
 
+    // H-8: resend the request until the host answers it; a reply for another client or request is ignored (H-15).
     bool attach()
     {
         const std::int64_t deadline = nowNs() + TIMEOUT_NS;
         std::int64_t nextNs = 0;
-        while (!m_attached && nowNs() < deadline)
+        while (m_eventSessionId < 0 && !m_refused && nowNs() < deadline)
         {
-            m_events->poll(m_onEvent, 16);
+            beat();
+            m_replies->poll(m_onReply, 16);
             const std::int64_t now = nowNs();
             if (now >= nextNs)
             {
-                header(ATTACH, 0);
-                put<std::int64_t>(16, m_nonce);
-                put<std::int32_t>(24, m_clientId);
-                put<std::int32_t>(28, 1);
-                send(32);
+                sendAttach();
                 nextNs = now + ATTACH_RETRY_NS;
             }
         }
-        return m_attached;
+        if (m_eventSessionId < 0)
+        {
+            return false;
+        }
+        const std::int64_t eventsId =
+            m_aeron->addSubscription(EVENTS_CHANNEL + std::to_string(m_eventSessionId), EVENTS_STREAM);
+        while (!(m_events = m_aeron->findSubscription(eventsId)))
+        {
+            std::this_thread::yield();
+        }
+        m_replies.reset();
+        return true;
     }
 
     int work()
     {
-        const int polled = m_events->poll(m_onEvent, 16);
-        const std::int64_t now = nowNs();
-        if (now >= m_nextHeartbeatNs)
-        {
-            header(CLIENT_HEARTBEAT, m_attachId);
-            put<std::int64_t>(16, now);
-            put<std::int64_t>(24, m_lastApplied);
-            send(32);
-            m_nextHeartbeatNs = now + HEARTBEAT_NS;
-        }
-        return polled;
+        beat();
+        return m_events->poll(m_onEvent, 16);
     }
 
     [[nodiscard]] bool canPublish() const
@@ -350,23 +368,27 @@ class HostedClient
         return m_canPublish;
     }
 
-    // False while the stream is back-pressured; the caller retries.
+    // False while the window is full or the stream is back-pressured; the caller retries. The windowed length is the
+    // encoded message, header included, which is what the host retires.
     bool publish(const std::uint8_t* payload)
     {
-        constexpr std::int64_t length = 40 + MARKER_LENGTH;
+        constexpr std::int64_t length =
+            MESSAGE_HEADER_LENGTH + wire::Publish::sbeBlockLength() + sizeof(std::uint32_t) + MARKER_LENGTH;
         if (m_window > 0 &&
             m_offeredBytes + length - m_aeron->countersReader().getCounterValue(m_retiredCounterId) > m_window)
         {
             m_windowDeclines++;
             return false;
         }
-        header(PUBLISH, m_attachId);
-        put<std::int64_t>(16, ++m_correlationId);
-        put<std::int64_t>(24, m_epoch);
-        put<std::int32_t>(32, PROBE_PAYLOAD_ID);
-        put<std::int32_t>(36, MARKER_LENGTH);
-        std::memcpy(m_out.data() + 40, payload, MARKER_LENGTH);
-        if (!send(length))
+        wire::Publish publish;
+        publish.wrapAndApplyHeader(out(), 0, m_out.size())
+            .epoch(m_epoch)
+            .connectionId(0)
+            .groupMask(0)
+            .payloadId(PROBE_PAYLOAD_ID)
+            .putBody(reinterpret_cast<const char*>(payload), MARKER_LENGTH);
+        if (m_commands->offer(buffer(), 0,
+                              static_cast<aeron::util::index_t>(MESSAGE_HEADER_LENGTH + publish.encodedLength())) < 0)
         {
             return false;
         }
@@ -374,15 +396,12 @@ class HostedClient
         return true;
     }
 
-    [[nodiscard]] std::int64_t windowDeclines() const
-    {
-        return m_windowDeclines;
-    }
-
     void detach()
     {
-        header(DETACH, m_attachId);
-        send(16);
+        wire::Detach detach;
+        detach.wrapAndApplyHeader(out(), 0, m_out.size()).clientId(m_clientId);
+        m_requests->offer(buffer(), 0,
+                          static_cast<aeron::util::index_t>(MESSAGE_HEADER_LENGTH + detach.encodedLength()));
     }
 
     [[nodiscard]] bool fenced() const
@@ -390,71 +409,151 @@ class HostedClient
         return m_fenced;
     }
 
+    [[nodiscard]] bool hostLost()
+    {
+        const std::int64_t now = nowNs();
+        const auto& reader = m_aeron->countersReader();
+        if (reader.getCounterState(m_hostHeartbeatId) != aeron::concurrent::CountersReader::RECORD_ALLOCATED ||
+            reader.getCounterRegistrationId(m_hostHeartbeatId) != m_hostHeartbeatRegistrationId)
+        {
+            return true;
+        }
+        const std::int64_t value = reader.getCounterValue(m_hostHeartbeatId);
+        if (value != m_hostHeartbeatValue)
+        {
+            m_hostHeartbeatValue = value;
+            m_hostChangeNs = now;
+        }
+        return now - m_hostChangeNs > HOST_TIMEOUT_NS;
+    }
+
+    [[nodiscard]] bool refused() const
+    {
+        return m_refused;
+    }
+
+    [[nodiscard]] std::int64_t windowDeclines() const
+    {
+        return m_windowDeclines;
+    }
+
   private:
-    template<typename T>
-    void put(const std::size_t offset, const T value)
+    std::shared_ptr<aeron::Counter> counter(const std::int32_t typeId, const std::string& label)
     {
-        std::memcpy(m_out.data() + offset, &value, sizeof value);
-    }
-
-    template<typename T>
-    static T get(const std::uint8_t* base, const std::size_t offset)
-    {
-        T value;
-        std::memcpy(&value, base + offset, sizeof value);
-        return value;
-    }
-
-    void header(const std::uint8_t type, const std::int64_t attachId)
-    {
-        m_out[0] = type;
-        put<std::int64_t>(8, attachId);
-    }
-
-    bool send(const std::size_t length)
-    {
-        aeron::concurrent::AtomicBuffer buffer(m_out.data(), m_out.size());
-        return m_commands->offer(buffer, 0, static_cast<aeron::util::index_t>(length)) >= 0;
-    }
-
-    void onEvent(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset)
-    {
-        const std::uint8_t* base = buffer.buffer() + offset;
-        const std::uint8_t type = base[0];
-        if (type == ATTACHED)
+        const std::int64_t id = m_aeron->addCounter(typeId, nullptr, 0, label);
+        std::shared_ptr<aeron::Counter> found;
+        while (!(found = m_aeron->findCounter(id)))
         {
-            if (!m_attached && get<std::int64_t>(base, 16) == m_nonce)
-            {
-                m_attachId = get<std::int64_t>(base, 8);
-                m_retiredCounterId = get<std::int32_t>(base, 24);
-                m_window = get<std::int64_t>(base, 28);
-                m_attached = true;
-            }
+            std::this_thread::yield();
+        }
+        return found;
+    }
+
+    void beat()
+    {
+        m_heartbeat->setOrdered(nowNs() / 1'000'000);
+    }
+
+    char* out()
+    {
+        return reinterpret_cast<char*>(m_out.data());
+    }
+
+    aeron::concurrent::AtomicBuffer buffer()
+    {
+        return aeron::concurrent::AtomicBuffer(m_out.data(), m_out.size());
+    }
+
+    void sendAttach()
+    {
+        wire::Attach attach;
+        attach.wrapAndApplyHeader(out(), 0, m_out.size())
+            .clientId(m_clientId)
+            .requestId(m_requestId)
+            .kind(wire::Kind::APPLICATION)
+            .protocolVersion(PROTOCOL_VERSION)
+            .commandSessionId(m_commands->sessionId())
+            .heartbeatCounterId(m_heartbeat->id())
+            .heartbeatRegistrationId(m_heartbeat->registrationId())
+            .appliedCounterId(m_applied->id())
+            .appliedRegistrationId(m_applied->registrationId())
+            .formatVersion(1)
+            .supportedFormatsCount(1)
+            .next()
+            .formatVersion(1);
+        attach.putHostName(std::string{ HOST_NAME }).putAeronVersion(std::string{ aeron_version_text() });
+        m_requests->offer(buffer(), 0,
+                          static_cast<aeron::util::index_t>(MESSAGE_HEADER_LENGTH + attach.encodedLength()));
+    }
+
+    void onReply(const aeron::concurrent::AtomicBuffer& buf, const aeron::util::index_t offset,
+                 const aeron::util::index_t length)
+    {
+        char* base = reinterpret_cast<char*>(buf.buffer()) + offset;
+        wire::MessageHeader header(base, static_cast<std::uint64_t>(length));
+        if (header.schemaId() != HOSTED_SCHEMA_ID || header.templateId() != wire::Attached::sbeTemplateId())
+        {
             return;
         }
-        if (!m_attached || get<std::int64_t>(base, 8) != m_attachId)
+        wire::Attached attached(base, MESSAGE_HEADER_LENGTH, length, header.blockLength(), header.version());
+        if (attached.clientId() != m_clientId || attached.requestId() != m_requestId)
         {
             return;
         }
-        switch (type)
+        const wire::Refusal::Value refusal = attached.refusal();
+        if (refusal == wire::Refusal::BUSY)
         {
-            case PAYLOAD:
-                m_lastApplied = get<std::int64_t>(base, 16);
-                if (get<std::int32_t>(base, 24) == SOURCE_ID && get<std::int32_t>(base, 28) == PROBE_PAYLOAD_ID &&
-                    get<std::int32_t>(base, 32) == PROBE_MARKER_TEMPLATE_ID)
+            return;
+        }
+        if (refusal != wire::Refusal::NONE)
+        {
+            m_refused = true;
+            return;
+        }
+        m_retiredCounterId = attached.retiredCounterId();
+        m_window = attached.commandWindow();
+        m_hostHeartbeatId = attached.heartbeatCounterId();
+        m_hostHeartbeatRegistrationId = attached.heartbeatRegistrationId();
+        m_hostHeartbeatValue = m_aeron->countersReader().getCounterValue(m_hostHeartbeatId);
+        m_hostChangeNs = nowNs();
+        m_eventSessionId = attached.eventSessionId();
+    }
+
+    void onEvent(const aeron::concurrent::AtomicBuffer& buf, const aeron::util::index_t offset,
+                 const aeron::util::index_t length)
+    {
+        char* base = reinterpret_cast<char*>(buf.buffer()) + offset;
+        wire::MessageHeader header(base, static_cast<std::uint64_t>(length));
+        switch (header.templateId())
+        {
+            case wire::Payload::sbeTemplateId(): {
+                wire::Payload payload(base, MESSAGE_HEADER_LENGTH, length, header.blockLength(), header.version());
+                m_applied->setOrdered(payload.position());
+                if (payload.sourceId() == SOURCE_ID && payload.payloadId() == PROBE_PAYLOAD_ID)
                 {
-                    const auto seqNo = get<std::int64_t>(base, 40);
-                    if ((seqNo & OWN_TAG) != 0)
+                    // The body carries its own MessageHeader: templateId at 2, then the marker's seqNo.
+                    const std::string_view body = payload.getBodyAsStringView();
+                    if (body.size() >= MARKER_LENGTH)
                     {
-                        m_run.received(seqNo, nowNs());
+                        std::uint16_t templateId;
+                        std::int64_t seqNo;
+                        std::memcpy(&templateId, body.data() + 2, sizeof templateId);
+                        std::memcpy(&seqNo, body.data() + MESSAGE_HEADER_LENGTH, sizeof seqNo);
+                        if (templateId == PROBE_MARKER_TEMPLATE_ID && (seqNo & OWN_TAG) != 0)
+                        {
+                            m_run.received(seqNo, nowNs());
+                        }
                     }
                 }
                 break;
-            case GATE:
-                m_epoch = get<std::int64_t>(base, 16);
-                m_canPublish = base[25] != 0;
+            }
+            case wire::Gate::sbeTemplateId(): {
+                wire::Gate gate(base, MESSAGE_HEADER_LENGTH, length, header.blockLength(), header.version());
+                m_epoch = gate.epoch();
+                m_canPublish = gate.canPublish() != 0;
                 break;
-            case FENCED:
+            }
+            case wire::Fenced::sbeTemplateId():
                 m_fenced = true;
                 break;
             default:
@@ -462,28 +561,36 @@ class HostedClient
         }
     }
 
-    Run& m_run;
     std::shared_ptr<aeron::Aeron> m_aeron;
-    std::int32_t m_clientId;
+    Run& m_run;
+    std::int64_t m_clientId;
+    std::int64_t m_requestId = 1;
+    std::shared_ptr<aeron::Counter> m_heartbeat;
+    std::shared_ptr<aeron::Counter> m_applied;
+    std::shared_ptr<aeron::Subscription> m_replies;
     std::shared_ptr<aeron::Subscription> m_events;
+    std::shared_ptr<aeron::Publication> m_requests;
     std::shared_ptr<aeron::ExclusivePublication> m_commands;
     alignas(16) std::array<std::uint8_t, 256> m_out{};
-    const aeron::fragment_handler_t m_onEvent = [this](const aeron::concurrent::AtomicBuffer& buffer,
-                                                       const aeron::util::index_t offset, const aeron::util::index_t,
-                                                       const aeron::Header&) { onEvent(buffer, offset); };
-    std::int64_t m_nonce = 0;
-    std::int64_t m_attachId = 0;
-    std::int64_t m_epoch = 0;
-    std::int64_t m_correlationId = 0;
-    std::int64_t m_lastApplied = 0;
+    const aeron::fragment_handler_t m_onReply =
+        [this](const aeron::concurrent::AtomicBuffer& buf, const aeron::util::index_t offset,
+               const aeron::util::index_t length, const aeron::Header&) { onReply(buf, offset, length); };
+    const aeron::fragment_handler_t m_onEvent =
+        [this](const aeron::concurrent::AtomicBuffer& buf, const aeron::util::index_t offset,
+               const aeron::util::index_t length, const aeron::Header&) { onEvent(buf, offset, length); };
+    std::int32_t m_eventSessionId = -1;
     std::int32_t m_retiredCounterId = 0;
+    std::int32_t m_hostHeartbeatId = 0;
+    std::int64_t m_hostHeartbeatRegistrationId = 0;
+    std::int64_t m_hostHeartbeatValue = 0;
+    std::int64_t m_hostChangeNs = 0;
     std::int64_t m_window = 0;
     std::int64_t m_offeredBytes = 0;
     std::int64_t m_windowDeclines = 0;
-    std::int64_t m_nextHeartbeatNs = 0;
-    bool m_attached = false;
+    std::int64_t m_epoch = 0;
     bool m_canPublish = false;
     bool m_fenced = false;
+    bool m_refused = false;
 };
 
 int hosted(const Options& options, const std::int64_t rate, const std::int64_t count)
@@ -491,15 +598,16 @@ int hosted(const Options& options, const std::int64_t rate, const std::int64_t c
     const auto member = static_cast<std::int32_t>(options.integer("member", 0));
     const std::shared_ptr<aeron::Aeron> aeron = connect(options, member);
     Run run{ rate, count };
-    HostedClient client{ aeron, static_cast<std::int32_t>(options.integer("client-id", 11)), run };
+    HostedClient client{ aeron, run };
     if (!client.attach())
     {
-        std::printf("no ATTACHED within %lld s\n", static_cast<long long>(TIMEOUT_NS / 1'000'000'000LL));
+        std::printf(client.refused() ? "attach refused\n" : "no ATTACHED within %lld s\n",
+                    static_cast<long long>(TIMEOUT_NS / 1'000'000'000LL));
         return 3;
     }
     Marker marker;
     auto idle = util::resolveIdleStrategy();
-    while (!run.done(nowNs()) && !client.fenced())
+    while (!run.done(nowNs()) && !client.fenced() && !client.hostLost())
     {
         int work = client.work();
         const std::int64_t now = nowNs();
@@ -521,9 +629,9 @@ int hosted(const Options& options, const std::int64_t rate, const std::int64_t c
         idle.idle(work);
     }
     client.detach();
-    if (client.fenced())
+    if (client.fenced() || client.hostLost())
     {
-        std::printf("FENCED\n");
+        std::printf(client.fenced() ? "FENCED\n" : "HOST_LOST\n");
         return 1;
     }
     report("hosted", run, rate);
