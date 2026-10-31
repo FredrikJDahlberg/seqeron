@@ -77,7 +77,7 @@ class HostedCppStubTest {
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void aCppStubAttachesAndItsMarkersAreSequencedInOrder() {
-        startHost("host.spin=true");
+        startHost("proxy.spin=true");
         startClient("--interval-ms", "1", "--max-markers", "2000", "--check-refusals", "1");
         check("the stub caught up", poll(() -> client.lastLine("Caught up") != null));
         check("the gate opened", poll(() -> client.lastLine("now leading") != null));
@@ -95,7 +95,7 @@ class HostedCppStubTest {
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void aCppStubKeepsTheCommandWindow() {
-        startHost("host.spin=true", "host.commandWindow=" + WINDOW, "host.pendingCapacity=4", "host.placePerCycle=2");
+        startHost("proxy.spin=true", "proxy.commandWindow=" + WINDOW, "proxy.pendingCapacity=4", "proxy.placePerCycle=2");
         startClient("--flood", "1", "--max-markers", "" + MARKERS);
         check("the gate opened", poll(() -> client.lastLine("now leading") != null));
         check("the stub declined at the window", poll(() -> number(client, "state: ", DECLINED) > 0));
@@ -119,7 +119,7 @@ class HostedCppStubTest {
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void aCppStubStopsAtAGateEdgeAndTheHostDropsWhatItHeld() {
-        startHost("host.spin=true", "host.commandWindow=" + WINDOW, "host.pendingCapacity=4", "host.placePerCycle=2");
+        startHost("proxy.spin=true", "proxy.commandWindow=" + WINDOW, "proxy.pendingCapacity=4", "proxy.placePerCycle=2");
         startClient("--flood", "1");
         check("the gate opened", poll(() -> client.lastLine("now leading") != null));
         check("the stub offered markers", poll(() -> number(client, "state: ", PUBLISHED) >= 2000));
@@ -150,7 +150,7 @@ class HostedCppStubTest {
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void aCppStubResolvesGroupsAndRepliesUnderTheRequestsRef() {
-        startHost("host.spin=true", "host.commandWindow=" + WINDOW, "host.pendingCapacity=4", "host.placePerCycle=2");
+        startHost("proxy.spin=true", "proxy.commandWindow=" + WINDOW, "proxy.pendingCapacity=4", "proxy.placePerCycle=2");
         startClient("--interval-ms", "1", "--max-markers", "2000", "--check-groups", "1", "--reply-every", "10");
         check("the stub was handed the group directory", poll(() -> client.lastLine("group 1 test mask 1") != null));
         check("the gate opened", poll(() -> client.lastLine("now leading") != null));
@@ -177,10 +177,10 @@ class HostedCppStubTest {
     }
 
     private void startHost(final String... properties) {
-        final List<String> all = new ArrayList<>(List.of("probe.sourceId=" + SOURCE_ID, "probe.clientId=31",
-                                                         "probe.snapshotDir=" + baseDir.resolve("snap")));
+        final List<String> all = new ArrayList<>(List.of("proxy.sourceId=" + SOURCE_ID, "proxy.clientId=31",
+                                                         "proxy.snapshotDir=" + baseDir.resolve("snap")));
         all.addAll(List.of(properties));
-        host = cluster.harness("host", leader, HOST, null, all.toArray(new String[0]));
+        host = cluster.proxy("host", leader, all.toArray(new String[0]));
         host.awaitLine("host ready", Duration.ofSeconds(30));
     }
 

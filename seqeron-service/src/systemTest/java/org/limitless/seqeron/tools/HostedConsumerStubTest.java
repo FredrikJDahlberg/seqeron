@@ -136,8 +136,8 @@ class HostedConsumerStubTest {
     }
 
     private void startApp() {
-        appHost = cluster.harness("appHost", leader, HOST, null, "probe.sourceId=" + SOURCE_ID, "probe.clientId=31",
-                                  "probe.snapshotDir=" + baseDir.resolve("snapApp"), "host.spin=true");
+        appHost = cluster.proxy("appHost", leader, "proxy.sourceId=" + SOURCE_ID, "proxy.clientId=31",
+                                  "proxy.snapshotDir=" + baseDir.resolve("snapApp"), "proxy.spin=true");
         appHost.awaitLine("host ready", Duration.ofSeconds(30));
         app = cluster.nativeProcess("app", System.getProperty("seqeron.hostedProbe"), "--aeron-dir",
                                     cluster.aeronDir(leader), "--source-id", "" + SOURCE_ID, "--interval-ms", "1",
@@ -145,9 +145,9 @@ class HostedConsumerStubTest {
     }
 
     private void startConsumerHost() {
-        consumerHost = cluster.harness("consumerHost", follower, HOST, null, "probe.sourceId=" + SOURCE_ID,
-                                       "probe.clientId=32", "host.consumerGroup=1",
-                                       "probe.snapshotDir=" + baseDir.resolve("snapConsumer"), "host.spin=true");
+        consumerHost = cluster.proxy("consumerHost", follower, "proxy.sourceId=" + SOURCE_ID,
+                                       "proxy.clientId=32", "proxy.consumerGroup=1",
+                                       "proxy.snapshotDir=" + baseDir.resolve("snapConsumer"), "proxy.spin=true");
         consumerHost.awaitLine("host ready", Duration.ofSeconds(30));
     }
 

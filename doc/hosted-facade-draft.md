@@ -602,7 +602,7 @@ the host to two and the client to two. Arms alternate within a rate. Whole loop,
 - **The host's idle strategy decides it.** A host that backs off between messages added 66–107 µs at p50, in every
   pinning tried (none; members on three, two and four vCPUs; one vCPU for the whole host JVM). A parked thread wakes
   late on Linux, once for the command and once for the sequenced frame. The prototype host's default was the backing
-  off one; `host.spin` busy-spins it, and the difference is gone. A host must therefore spin, which takes a core
+  off one; `proxy.spin` busy-spins it, and the difference is gone. A host must therefore spin, which takes a core
   (§17.9, question 2), and the figures of §17.10.1 and §17.10.2, which spun, hold.
 - **With a spinning host no arm is resolved from another.** At 5k msg/s the p50s agree within 4 µs. At 20k msg/s the
   direct arm's own p50 spans 245–312 µs, wider than its difference from the hosted arm. The tails are the VM's: p99
@@ -676,7 +676,7 @@ per-attachment images of **H-15**, and the counters of §17.2.1. It differs from
   `GateClosed` takes the edge down, epoch up, as the façade's `gateClosed()` does. A `Publish` on a connection whose
   `ConnectionOpened` is not yet placed stays at the head of the queue, un-retired, until the façade accepts it. An
   `OpenConnection` under an id the façade did not allocate closes the attachment (`CLIENT_PROTOCOL`).
-- **Consumer.** For `Kind.CONSUMER`, when `host.consumerGroup` names a group, the host builds a `Consumer` for it. It
+- **Consumer.** For `Kind.CONSUMER`, when `proxy.consumerGroup` names a group, the host builds a `Consumer` for it. It
   subscribes to no stream 304, so the attachment is judged lost by the client's heartbeat counter alone (**H-9**), and
   `Attached` carries no `sourceId` (-1).
 - **Not sent.** `ClusterTime`. `AttachPending`

@@ -334,9 +334,9 @@ class HostedSnapshotTest {
     private void startHost() {
         hostRuns++;
         hostClientId = 30 + hostRuns;
-        host = cluster.harness("host-" + hostRuns, hostedMember, HOST, null, "probe.sourceId=" + SOURCE_ID,
-                               "probe.clientId=" + hostClientId, "host.clientTimeoutMs=" + CLIENT_TIMEOUT_MS,
-                               "probe.snapshotDir=" + baseDir.resolve("snap").resolve("host"));
+        host = cluster.proxy("host-" + hostRuns, hostedMember, "proxy.sourceId=" + SOURCE_ID,
+                               "proxy.clientId=" + hostClientId, "proxy.clientTimeoutMs=" + CLIENT_TIMEOUT_MS,
+                               "proxy.snapshotDir=" + baseDir.resolve("snap").resolve("host"));
         instances.add(host);
         host.awaitLine("host ready", Duration.ofSeconds(30));
     }

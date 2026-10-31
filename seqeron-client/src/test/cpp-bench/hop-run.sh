@@ -2,11 +2,11 @@
 # Hosted-façade hop: C++ direct against C++ hosted, interleaved, against three member JVMs and the prototype host JVM.
 # Env: HOP_BENCH (hop_bench binary), SEQERON_JAR, HOP_RATES, HOP_COUNT, HOP_RUNS, HOP_LOG,
 #      HOP_HOST_CPUS / HOP_BENCH_CPUS / HOP_MEMBER_CPUS (taskset lists, Linux only), HOP_HOST_OPTS (host JVM, e.g.
-#      -Dhost.spin=true: a backing-off host adds 66-107 us at p50), HOP_MEMBER_OPTS.
+#      -Dproxy.spin=true: a backing-off host adds 66-107 us at p50), HOP_MEMBER_OPTS.
 # Linux: docker build -t seqeron-hop <this dir>; configure and build hop_bench into a volume (cmake -S /repo -B /build/out
 # -DCMAKE_BUILD_TYPE=Release, Aeron and googletest sources copied there: Aeron's Gradle needs a writable tree); then
 # docker run --shm-size=2g -v $PWD:/repo:ro -v hopbuild:/build -e HOP_BENCH=/build/out/hop_bench
-#   -e SEQERON_JAR=/repo/build/libs/seqeron-<version>-uber.jar -e HOP_HOST_OPTS=-Dhost.spin=true seqeron-hop
+#   -e SEQERON_JAR=/repo/build/libs/seqeron-<version>-uber.jar -e HOP_HOST_OPTS=-Dproxy.spin=true seqeron-hop
 #   bash /repo/seqeron-client/src/test/cpp-bench/hop-run.sh. Needs uberJar and :seqeron-service:testClasses built.
 set -uo pipefail
 REPO="${HOP_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
@@ -36,8 +36,8 @@ sleep 3
 L=$(grep -h "isLeader=true" "$LOG"/seq-*.log | grep -oE 'SequencerService/[0-9]+' | head -1 | cut -d/ -f2)
 echo "leader member $L"
 DIR="$(seqeron_aeron_dir "$L")"
-pin "${HOP_HOST_CPUS:-}" java "${JAVA_OPTS[@]}" ${HOP_HOST_OPTS:-} -Dprobe.memberId="$L" -Dprobe.aeronDir="$DIR" -Dprobe.sourceId=16 \
-  -Dprobe.clientId=31 -Dprobe.snapshotDir="$BASE/hostsnap" -Dhost.clientTimeoutMs=2000 \
+pin "${HOP_HOST_CPUS:-}" java "${JAVA_OPTS[@]}" ${HOP_HOST_OPTS:-} -Dproxy.memberId="$L" -Dproxy.aeronDir="$DIR" -Dproxy.sourceId=16 \
+  -Dproxy.clientId=31 -Dproxy.snapshotDir="$BASE/hostsnap" -Dproxy.clientTimeoutMs=2000 \
   -cp "$JAR" org.limitless.seqeron.proxy.ClientProxy > "$LOG/host.log" 2>&1 &
 PIDS+=($!)
 wait_for_log "$LOG/host.log" "host ready" 60 || { echo "host not up"; exit 1; }

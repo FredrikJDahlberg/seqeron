@@ -62,9 +62,9 @@ class HostedAllocationTest {
         cluster.loadTopology(Path.of(System.getProperty("seqeron.snapshotTopology"))
                                  .resolveSibling("topology-test-hosted-quiet.xml"));
         final int leader = cluster.awaitLeader();
-        host = cluster.harness("host", leader, HOST, null, "probe.sourceId=" + SOURCE_ID, "probe.clientId=31",
-                               "probe.snapshotDir=" + baseDir.resolve("snap"),
-                               "host.allocWarmupFrames=" + WARMUP_FRAMES, "host.allocWindowFrames=" + WINDOW_FRAMES);
+        host = cluster.proxy("host", leader, "proxy.sourceId=" + SOURCE_ID, "proxy.clientId=31",
+                               "proxy.snapshotDir=" + baseDir.resolve("snap"),
+                               "proxy.allocWarmupFrames=" + WARMUP_FRAMES, "proxy.allocWindowFrames=" + WINDOW_FRAMES);
         host.awaitLine("host ready", Duration.ofSeconds(30));
         client = cluster.harness("client", leader, CLIENT, null, "probe.sourceId=" + SOURCE_ID, "probe.intervalMs=1");
         host.awaitLine("alloc window", Duration.ofSeconds(240));

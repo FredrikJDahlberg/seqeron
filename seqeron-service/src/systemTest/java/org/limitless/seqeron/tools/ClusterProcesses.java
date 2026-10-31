@@ -195,6 +195,23 @@ final class ClusterProcesses implements AutoCloseable {
         return launch(name, args);
     }
 
+    /**
+     * Starts a {@code ClientProxy} beside member {@code m}, from the uber jar alone.
+     *
+     * @param name       the process's log name
+     * @param m          the member whose driver it attaches to
+     * @param properties {@code key=value} {@code proxy.*} system properties beyond its member and Aeron directory
+     * @return the running process
+     */
+    Child proxy(final String name, final int m, final String... properties) {
+        final List<String> args = new ArrayList<>(List.of("-Dproxy.memberId=" + m, "-Dproxy.aeronDir=" + aeronDir(m)));
+        for (final String property : properties) {
+            args.add("-D" + property);
+        }
+        args.addAll(List.of("-cp", JAR, "org.limitless.seqeron.proxy.ClientProxy"));
+        return launch(name, args);
+    }
+
     /** Starts a native program, one that is not a JVM, with its output in the log as a harness's is. */
     Child nativeProcess(final String name, final String... command) {
         final Path log = logDir.resolve(name + ".log");

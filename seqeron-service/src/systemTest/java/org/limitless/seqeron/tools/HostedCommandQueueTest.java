@@ -137,9 +137,9 @@ class HostedCommandQueueTest {
     }
 
     private void startHost() {
-        host = cluster.harness("host", leader, HOST, null, "probe.sourceId=" + SOURCE_ID, "probe.clientId=31",
-                               "probe.snapshotDir=" + baseDir.resolve("snap"), "host.commandWindow=" + WINDOW,
-                               "host.pendingCapacity=4", "host.placePerCycle=2", "host.spin=true");
+        host = cluster.proxy("host", leader, "proxy.sourceId=" + SOURCE_ID, "proxy.clientId=31",
+                               "proxy.snapshotDir=" + baseDir.resolve("snap"), "proxy.commandWindow=" + WINDOW,
+                               "proxy.pendingCapacity=4", "proxy.placePerCycle=2", "proxy.spin=true");
         host.awaitLine("host ready", Duration.ofSeconds(30));
     }
 

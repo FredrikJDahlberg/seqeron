@@ -116,9 +116,9 @@ class HostedGatewayStubTest {
     }
 
     private void startHost() {
-        host = cluster.harness("host", leader, HOST, null, "probe.sourceId=" + SOURCE_ID, "probe.clientId=31",
-                               "probe.gatewayName=GW-H-A", "probe.snapshotDir=" + baseDir.resolve("snap"),
-                               "host.spin=true");
+        host = cluster.proxy("host", leader, "proxy.sourceId=" + SOURCE_ID, "proxy.clientId=31",
+                               "proxy.gatewayName=GW-H-A", "proxy.snapshotDir=" + baseDir.resolve("snap"),
+                               "proxy.spin=true");
         host.awaitLine("host ready", Duration.ofSeconds(30));
     }
 
