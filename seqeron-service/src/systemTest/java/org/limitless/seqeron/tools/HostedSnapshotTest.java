@@ -130,8 +130,9 @@ class HostedSnapshotTest {
         check("rounds resume", waitRounds(hostedMember, hostClientId, 2));
         System.out.printf("cut-to-kill %d ms%n", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - cutAt));
 
-        // 5. A command under another attachment's id is dropped.
-        check("the host dropped the ghost command", !host.lines("dropped stale command").isEmpty());
+        // 5. A command from a publication that is not the attachment's is never read (H-15).
+        check("the client sent a command from a second publication", !client.lines("sent one command").isEmpty());
+        check("the host never read it: no ghost marker was sequenced", client.lines("GHOST MARKER SEQUENCED").isEmpty());
         check("no instance fenced", noFence());
 
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);

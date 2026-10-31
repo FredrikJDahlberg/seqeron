@@ -569,8 +569,10 @@ façade's receive and publish paths and the placement of each command.
 
 - **Result:** 0 bytes over 50,000 frames in four of five runs with the queue, and 120 bytes in the fifth; 0 in both
   runs made before the queue. A rerun of twelve, with the host logging when its window opens, gave 0 bytes in all
-  twelve. The 120 bytes is one small object in a window of about a minute, not a per-frame cost, and was not
-  reproduced or sourced, so the host is shown to allocate nothing in 16 of 17 runs and not in the other. A control with a warm-up of 20 frames
+  twelve, and three runs on the schema 218 wire gave 0 in all three. The 120 bytes is one small object in a window of
+  about a minute, not a per-frame cost, and was not reproduced or sourced, so the host is shown to allocate nothing in
+  19 of 20 runs and not in the other. On schema 218 the window's frames are payloads and placed commands only, since
+  the heartbeats are counters. A control with a warm-up of 20 frames
   allocates 195,856 bytes over the same window, so the count is not blind.
 - **Not in the window:** a snapshot cut, attach and restore (the topology has no snapshot policy), a leadership
   change, a declining façade, counters other than the retired one and a `Gateway`. The payload is 18 bytes and the
@@ -632,6 +634,10 @@ alternating, the first 20% dropped; p50 / p99.9 in µs, run 1 then run 2:
   still sit in the hosted client's path, and one of 3.8 ms is within the p99.9 seen.
 - **Not shown:** the multi-message `Payload`, whose saving needs a rate above the one the offer limits, and a tuned
   cluster.
+- **On schema 218** (C++ bench against the host on the new wire, counters and window, busy-spin host, 60,000 markers,
+  two runs a rate): at 5k msg/s direct p50 was 322 and 319 µs and hosted 318 and 318; at 20k msg/s direct 262 and 289
+  µs and hosted 337 and 288. The peak queue was 784 bytes of the 64 KiB window and no attachment was closed. The
+  hosted arm's p50 at 20k msg/s spans the direct arm's, as before.
 
 ## 17.11 Prototype: restore, cut and SIGKILL
 
@@ -642,17 +648,28 @@ one of a source's three, beside two direct `TestApplication` replicas, so each s
 with the sequenced `SnapshotEnd` and fences on a difference (**A-7**). Snapshot rounds run every 2 s (every 15 s in
 the long-cut scenario), `clientTimeoutMs` is 2 s, and the client's host timeout is 3 s.
 
-The prototype's wire differs from §17.3 in five ways. Its `Publish` carries the gate epoch and its host drops a
-stale one, as **H-3**'s, and answers nothing for a command it drops or declines (**H-4**). Its queue and window are
-**H-5**'s with two differences: the windowed length is the encoded `Publish` message, header and fields included,
-not an SBE message length, and the host closes the attachment (`CLIENT_WINDOW`) rather than fencing. The stub reads
-the retired total from an Aeron counter of the proposed type id 5303, whose id and the window `Attached` carries after
-the nonce. There is no `Reply` or `OpenConnection`. Liveness is a `Heartbeat` message on each stream rather than counters (§17.2.1). It attaches with a nonce
-and tags every message with an `attachId`, on two fixed streams, rather than with `requestId` and per-attachment
-images (**H-8**, **H-15**). Its `Payload` carries the `templateId` and the body, not the bytes with their
-`MessageHeader`, so it has no `blockLength` or `version` to decode a later schema version with. The epoch and
-exactly-once rows below are therefore **H-3** and **H-4** as specified: the client learns of no drop and counts what
-the host did.
+The prototype speaks schema 218 (`sbe-hosted.xml`) on the four streams of §17.2, with the attach of **H-8** and the
+per-attachment images of **H-15**, and the counters of §17.2.1. It differs from §17.3 and the rules in these ways:
+
+- **`Publish` and the window.** `Publish` carries the gate epoch and the host drops a stale one (**H-3**), answering
+  nothing for a command it drops or declines (**H-4**). The queue and window are **H-5**'s with one difference: the
+  host closes the attachment (`CLIENT_WINDOW`) rather than fencing. The windowed length is the encoded message, header
+  included, which the stub counts and the host retires. `groupMask` and `connectionId` are sent as 0 and ignored.
+- **Counters.** The client heartbeat, the host heartbeat and the host retired counters are as §17.2.1; the client
+  applied counter is written (the position of the last `Payload`) and not read, so **H-14**'s lag is not exported. A
+  heartbeat is written on every duty cycle, in a long cut and in a send's spin, and not in a stalled client.
+- **Attach.** By `clientId` and `requestId`, with `hostName`, `protocolVersion` and `aeronVersion` checked. A resend
+  of the live request is answered again, any other client with `BUSY`. The façade is built once the events publication
+  is connected, so the restore has a reader.
+- **Not sent.** `GroupsResolved`, `ClusterTime`, `Reply`, `OpenConnection` and the Gateway messages. `AttachPending`
+  is never needed, since the host closes a façade synchronously. The snapshot round id is the host's own cut count.
+- **`kill -9` of the host or a client** is the same as before. The ghost scenario changed: with per-attachment images a
+  command under another attachment's id cannot be sent, so the client publishes from a second publication on stream
+  304, which the host does not read, and the test asserts nothing of it is sequenced.
+
+The measurements of §17.10.1 to §17.10.7 were taken on the earlier bench-only wire (a 16-byte header, a nonce attach
+and heartbeat messages) except the last run of §17.10.7, which is on schema 218. The epoch and exactly-once rows below
+are **H-3** and **H-4** as specified: the client learns of no drop and counts what the host did.
 
 | scenario | observed |
 | --- | --- |
@@ -661,7 +678,7 @@ the host did.
 | client `kill -9`, successor attaches at once | the host refused it as another client until `CLIENT_LOST`, 2.06 s after the kill; the successor attached, the host restored a snapshot and the client held 142–231 markers; rounds resumed |
 | host `kill -9` | the client exited 70 on `HOST_LOST`; the restarted pair restored and rounds resumed |
 | client `kill -9` mid-cut (the second cut after attach) | the host abandoned the round after `clientTimeoutMs` and did not hang; the direct replicas kept completing rounds; the next attach restored from round 12, the last confirmed, not the abandoned one |
-| a command under another `attachId` | dropped and logged by the host; no effect |
+| a command from a publication that is not the attachment's (**H-15**) | never read by the host; no marker sequenced |
 | a cut of 8 s, longer than the 5 s session timeout (rounds every 15 s) | the host kept the session by calling `keepAlive()` while it waited, the client heartbeating; a round was confirmed, with no `CLIENT_LOST` and no abandoned round. Control: without the host's `keepAlive()` no round is confirmed in 80 s |
 | leadership moves to the hosted member (the leader paused until the others elect, repeated until the hosted member wins; no member killed) | the gate epoch rose 0 to 1; the client applied it; a marker sent under the previous epoch was dropped by the host, counted, and never sequenced; the client's markers were sequenced and its rounds agreed with the direct replicas |
 | leadership leaves it (its member paused until the others elect), pair alive | the gate epoch rose again and the client stopped publishing at once; it kept following the new leader's markers; the rounds went on and no instance fenced |
