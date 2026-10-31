@@ -1,52 +1,90 @@
 package org.limitless.seqeron.tools;
 
-import org.agrona.MutableDirectBuffer;
+import io.aeron.Counter;
+import org.agrona.concurrent.status.CountersReader;
+import org.limitless.seqeron.sbe.hosted.MessageHeaderDecoder;
 
 /**
- * Wire of the hosted-façade prototype (doc/hosted-facade-draft.md), bench-only and not schema 218: a 16-byte header
- * of {@code type:1, pad:7, attachId:8}, then the fields at the offsets the two mains name. Stream 301 carries the
- * host's messages, stream 302 the client's, both {@code aeron:ipc} on the member's driver.
+ * Transport of the hosted-façade prototype (doc/hosted-facade-draft.md §17.2): schema 218 on four {@code aeron:ipc}
+ * streams, and the four counters of §17.2.1. Windowed lengths (H-5) are the encoded message, {@code MessageHeader}
+ * included, which is the fragment length both ends see.
  */
 final class HostedWire {
-    static final String IPC = "aeron:ipc";
-    static final int EVENTS_STREAM = 301;
-    static final int COMMANDS_STREAM = 302;
-    static final int HEADER = 16;
+    static final String HOST_NAME = "hosted";
+    static final int PROTOCOL_VERSION = 1;
 
-    // Host to client.
-    /** nonce:8 at 16, echoing the Attach's; retiredCounterId:4 at 24, commandWindow:8 at 28. */
-    static final byte ATTACHED = 1;
-    /** clusterSeqNo:8 at 16, sourceId:4 at 24, payloadId:4 at 28, templateId:4 at 32, length:4 at 36, bytes at 40. */
-    static final byte PAYLOAD = 2;
-    /** gateEpoch:8 at 16, leading:1 at 24, canPublish:1 at 25. */
-    static final byte GATE = 3;
-    /** clusterSeqNo:8 at 16. */
-    static final byte CAUGHT_UP = 4;
-    /** recordIndex:4 at 16, formatVersion:4 at 20, length:4 at 24, bytes at 28. */
-    static final byte RESTORE_RECORD = 5;
-    /** cutNo:8 at 16. */
-    static final byte SNAPSHOT_CUT = 6;
-    /** hostNs:8 at 16. */
-    static final byte HEARTBEAT = 7;
-    /** length:4 at 16, text at 20. */
-    static final byte FENCED = 8;
+    static final String ATTACH_REQUEST_CHANNEL = "aeron:ipc?term-length=64k";
+    static final String ATTACH_REPLY_CHANNEL = "aeron:ipc?term-length=64k";
+    static final String EVENTS_CHANNEL = "aeron:ipc";
+    static final String COMMANDS_CHANNEL = "aeron:ipc?term-length=1m";
+    static final int ATTACH_REQUEST_STREAM = 301;
+    static final int ATTACH_REPLY_STREAM = 302;
+    static final int EVENTS_STREAM = 303;
+    static final int COMMANDS_STREAM = 304;
+    static final int NO_ATTACH = -1;
 
-    // Client to host.
-    /** nonce:8 at 16, clientId:4 at 24, formatVersion:4 at 28; attachId 0. */
-    static final byte ATTACH = 21;
-    /** correlationId:8 at 16, gateEpoch:8 at 24, payloadId:4 at 32, length:4 at 36, bytes at 40. */
-    static final byte PUBLISH = 22;
-    /** cutNo:8 at 16, recordIndex:4 at 24, length:4 at 28, bytes at 32. */
-    static final byte SNAPSHOT_RECORD = 23;
-    /** cutNo:8 at 16, recordCount:4 at 24. */
-    static final byte SNAPSHOT_END = 24;
-    /** clientNs:8 at 16, appliedClusterSeqNo:8 at 24. */
-    static final byte CLIENT_HEARTBEAT = 25;
-    static final byte DETACH = 26;
+    /** Proposed counter type ids (§17.2.1). */
+    static final int CLIENT_HEARTBEAT_TYPE_ID = 5300;
+    static final int CLIENT_APPLIED_TYPE_ID = 5301;
+    static final int HOST_HEARTBEAT_TYPE_ID = 5302;
+    static final int HOST_RETIRED_TYPE_ID = 5303;
 
-    static void header(final MutableDirectBuffer buffer, final byte type, final long attachId) {
-        buffer.putByte(0, type);
-        buffer.putLong(8, attachId);
+    static final int HEADER = MessageHeaderDecoder.ENCODED_LENGTH;
+
+    /** A reader's subscription to the other end's per-attachment stream (H-15). */
+    static String sessionChannel(final int sessionId) {
+        return "aeron:ipc?session-id=" + sessionId;
+    }
+
+    /** A heartbeat value: this process's monotonic clock in ms (§17.2.1). */
+    static long heartbeatNow() {
+        return System.nanoTime() / 1_000_000;
+    }
+
+    static void beat(final Counter counter) {
+        counter.setOrdered(heartbeatNow());
+    }
+
+    /**
+     * Stale when the counter's value has not changed for the timeout on the reader's own clock, or it is no longer the
+     * counter it was given (§17.2.1).
+     */
+    static final class Liveness {
+        private final CountersReader counters;
+        private final long timeoutNs;
+        private int counterId;
+        private long registrationId;
+        private long lastValue;
+        private long lastChangeNs;
+
+        Liveness(final CountersReader counters, final long timeoutNs) {
+            this.counters = counters;
+            this.timeoutNs = timeoutNs;
+        }
+
+        void watch(final int counterId, final long registrationId, final long nowNs) {
+            this.counterId = counterId;
+            this.registrationId = registrationId;
+            lastValue = counters.getCounterValue(counterId);
+            lastChangeNs = nowNs;
+        }
+
+        boolean stale(final long nowNs) {
+            if (counters.getCounterState(counterId) != CountersReader.RECORD_ALLOCATED ||
+                counters.getCounterRegistrationId(counterId) != registrationId) {
+                return true;
+            }
+            final long value = counters.getCounterValue(counterId);
+            if (value != lastValue) {
+                lastValue = value;
+                lastChangeNs = nowNs;
+            }
+            return nowNs - lastChangeNs > timeoutNs;
+        }
+
+        long silentMs(final long nowNs) {
+            return (nowNs - lastChangeNs) / 1_000_000;
+        }
     }
 
     private HostedWire() {

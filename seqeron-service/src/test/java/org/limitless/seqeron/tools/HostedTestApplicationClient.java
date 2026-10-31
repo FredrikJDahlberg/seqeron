@@ -1,12 +1,15 @@
 package org.limitless.seqeron.tools;
 
 import io.aeron.Aeron;
+import io.aeron.AeronVersion;
+import io.aeron.Counter;
+import io.aeron.ExclusivePublication;
+import io.aeron.FragmentAssembler;
 import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import org.agrona.DirectBuffer;
@@ -14,6 +17,21 @@ import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.CountersReader;
+import org.limitless.seqeron.sbe.hosted.AttachEncoder;
+import org.limitless.seqeron.sbe.hosted.AttachedDecoder;
+import org.limitless.seqeron.sbe.hosted.CaughtUpDecoder;
+import org.limitless.seqeron.sbe.hosted.FencedDecoder;
+import org.limitless.seqeron.sbe.hosted.GateDecoder;
+import org.limitless.seqeron.sbe.hosted.Kind;
+import org.limitless.seqeron.sbe.hosted.MessageHeaderDecoder;
+import org.limitless.seqeron.sbe.hosted.MessageHeaderEncoder;
+import org.limitless.seqeron.sbe.hosted.PayloadDecoder;
+import org.limitless.seqeron.sbe.hosted.PublishEncoder;
+import org.limitless.seqeron.sbe.hosted.Refusal;
+import org.limitless.seqeron.sbe.hosted.RestoreRecordDecoder;
+import org.limitless.seqeron.sbe.hosted.SnapshotCutDecoder;
+import org.limitless.seqeron.sbe.hosted.SnapshotEndEncoder;
+import org.limitless.seqeron.sbe.hosted.SnapshotRecordEncoder;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
 
 /**
@@ -26,7 +44,7 @@ import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
  * {@code probe.sourceId} (16), {@code probe.intervalMs} (100), {@code client.stallCutNo} (0: stall in that cut, after
  * printing {@code IN CUT}, until killed), {@code client.slowCutMs} (0: spend that long in every cut, heartbeating,
  * before the record), {@code client.staleEpoch} (once leading, send one marker under the previous gate epoch first),
- * {@code client.ghost} (send one command under an attachId that is not current), {@code client.corruptRecord} (write a digest one off in every snapshot record), {@code
+ * {@code client.ghost} (send one marker from a second publication on stream 304, which the host does not read: H-15), {@code client.corruptRecord} (write a digest one off in every snapshot record), {@code
  * client.hostTimeoutMs} (3000), {@code client.flood} (publish as fast as the window allows), {@code client.maxMarkers} (0: no limit; else
  * offer that many and go on counting), {@code
  * client.ignoreWindow} (a control: do not keep H-5's window, so the host must close the attachment).
@@ -36,7 +54,8 @@ public final class HostedTestApplicationClient {
     private static final long STALE_MARKER = 0x5A1E5A1EL;
     /** Set in the {@code seqNo} of every marker this client publishes, to tell them from the direct replicas'. */
     private static final long OWN_TAG = 1L << 40;
-    private static final long HEARTBEAT_NS = TimeUnit.MILLISECONDS.toNanos(100);
+    private static final long GHOST_MARKER = 0x6805_7A57L;
+    private static final long CUT_BEAT_NS = TimeUnit.MILLISECONDS.toNanos(100);
     private static final long ATTACH_RETRY_NS = TimeUnit.MILLISECONDS.toNanos(500);
     private static final long ATTACH_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(90);
 
@@ -53,15 +72,37 @@ public final class HostedTestApplicationClient {
     private final long hostTimeoutNs = TimeUnit.MILLISECONDS.toNanos(Long.getLong("client.hostTimeoutMs", 3000));
     private final UnsafeBuffer out = new UnsafeBuffer(new byte[64 * 1024]);
     private final ClusterProbe.MarkerEncoder marker = new ClusterProbe.MarkerEncoder();
-    private final FragmentHandler onEvent = this::onEvent;
+    private final UnsafeBuffer scratch = new UnsafeBuffer(new byte[128 * 1024]);
+    private final FragmentHandler onEvent = new FragmentAssembler(this::onEvent);
+    private final FragmentHandler onReply = this::onReply;
+    private final MessageHeaderDecoder headerIn = new MessageHeaderDecoder();
+    private final MessageHeaderEncoder headerOut = new MessageHeaderEncoder();
+    private final MessageHeaderDecoder bodyHeader = new MessageHeaderDecoder();
+    private final AttachedDecoder attachedIn = new AttachedDecoder();
+    private final PayloadDecoder payloadIn = new PayloadDecoder();
+    private final GateDecoder gateIn = new GateDecoder();
+    private final CaughtUpDecoder caughtUpIn = new CaughtUpDecoder();
+    private final RestoreRecordDecoder restoreIn = new RestoreRecordDecoder();
+    private final SnapshotCutDecoder cutIn = new SnapshotCutDecoder();
+    private final FencedDecoder fencedIn = new FencedDecoder();
+    private final ProbeMarkerDecoder probeIn = new ProbeMarkerDecoder();
+    private final AttachEncoder attachOut = new AttachEncoder();
+    private final PublishEncoder publishOut = new PublishEncoder();
+    private final SnapshotRecordEncoder recordOut = new SnapshotRecordEncoder();
+    private final SnapshotEndEncoder endOut = new SnapshotEndEncoder();
 
-    private Publication commands;
+    private ExclusivePublication commands;
+    private Counter heartbeat;
+    private Counter applied;
+    private HostedWire.Liveness hostLiveness;
+    private long clientId;
+    private long requestId;
+    private int eventSessionId = HostedWire.NO_ATTACH;
+    private int attachExit;
     private CountersReader counters;
     private int retiredCounterId;
     private long commandWindow;
     private long offeredBytes;
-    private long attachId;
-    private long nonce;
     private long markers;
     private long digest;
     private long lastAppliedSeqNo;
@@ -70,11 +111,9 @@ public final class HostedTestApplicationClient {
     private boolean canPublish;
     private boolean fenced;
     private boolean staleSent;
-    private long lastHostNs;
     private long markerSeqNo;
     private long ownSequenced;
     private long lastOwn;
-    private long correlationId;
     private long cuts;
     private long declined;
     private long staleDropped;
@@ -85,27 +124,32 @@ public final class HostedTestApplicationClient {
 
     private int run() {
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(ClusterProbe.aeronDir()))) {
-            final Subscription events = aeron.addSubscription(HostedWire.IPC, HostedWire.EVENTS_STREAM);
-            commands = aeron.addExclusivePublication(HostedWire.IPC, HostedWire.COMMANDS_STREAM);
             counters = aeron.countersReader();
-            if (!attach(events)) {
-                log("no ATTACHED within %ds", TimeUnit.NANOSECONDS.toSeconds(ATTACH_TIMEOUT_NS));
-                return 3;
+            heartbeat = aeron.addCounter(HostedWire.CLIENT_HEARTBEAT_TYPE_ID, "seqeron.client.heartbeat " + sourceId);
+            applied = aeron.addCounter(HostedWire.CLIENT_APPLIED_TYPE_ID, "seqeron.client.applied " + sourceId);
+            hostLiveness = new HostedWire.Liveness(counters, hostTimeoutNs);
+            commands = aeron.addExclusivePublication(HostedWire.COMMANDS_CHANNEL, HostedWire.COMMANDS_STREAM);
+            final ExclusivePublication ghostCommands =
+                ghost ? aeron.addExclusivePublication(HostedWire.COMMANDS_CHANNEL, HostedWire.COMMANDS_STREAM) : null;
+            if (!attach(aeron)) {
+                return attachExit;
             }
-            log("attached, attachId=%x", attachId);
+            final Subscription events = aeron.addSubscription(HostedWire.sessionChannel(eventSessionId),
+                                                              HostedWire.EVENTS_STREAM);
+            log("attached, clientId=%d", clientId);
             if (ghost) {
-                HostedWire.header(out, HostedWire.PUBLISH, attachId ^ 0x5A5A5A5AL);
-                out.putLong(16, ++correlationId);
-                out.putLong(24, epoch);
-                send(40);
-                log("sent one command under attachId %x", attachId ^ 0x5A5A5A5AL);
+                publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).connectionId(0).groupMask(0)
+                    .payloadId(ClusterProbe.PROBE_PAYLOAD_ID);
+                final int length = marker.encodePayload(GHOST_MARKER, ClusterProbe.NO_FILLER);
+                publishOut.putBody(marker.payload(), 0, length);
+                send(ghostCommands, HostedWire.HEADER + publishOut.encodedLength());
+                log("sent one command from a publication the host does not read");
             }
             final IdleStrategy idle = new BackoffIdleStrategy();
             long nextMarkerNs = 0;
-            long nextHeartbeatNs = 0;
             long nextStateNs = 0;
-            lastHostNs = System.nanoTime();
             while (!fenced) {
+                HostedWire.beat(heartbeat);
                 int work = events.poll(onEvent, 16);
                 final long now = System.nanoTime();
                 if (canPublish && staleEpoch && !staleSent && epoch > 0) {
@@ -121,12 +165,8 @@ public final class HostedTestApplicationClient {
                         declined, ownSequenced);
                     nextStateNs = now + TimeUnit.SECONDS.toNanos(2);
                 }
-                if (now >= nextHeartbeatNs) {
-                    heartbeat(now);
-                    nextHeartbeatNs = now + HEARTBEAT_NS;
-                }
-                if (now - lastHostNs > hostTimeoutNs) {
-                    log("HOST_LOST: silent for %dms", (now - lastHostNs) / 1_000_000);
+                if (hostLiveness.stale(now)) {
+                    log("HOST_LOST: heartbeat counter silent for %dms", hostLiveness.silentMs(now));
                     return EXIT_FENCED;
                 }
                 idle.idle(work);
@@ -135,97 +175,153 @@ public final class HostedTestApplicationClient {
         }
     }
 
-    private boolean attach(final Subscription events) {
-        nonce = ThreadLocalRandom.current().nextLong();
+    /** H-8: resend the request until the host answers it; a refusal for another client or request is ignored (H-15). */
+    private boolean attach(final Aeron aeron) {
+        clientId = aeron.nextCorrelationId();
+        requestId = 1;
+        final Publication requests = aeron.addPublication(HostedWire.ATTACH_REQUEST_CHANNEL, HostedWire.ATTACH_REQUEST_STREAM);
+        final Subscription replies = aeron.addSubscription("aeron:ipc?tether=false", HostedWire.ATTACH_REPLY_STREAM);
         final long deadline = System.nanoTime() + ATTACH_TIMEOUT_NS;
-        final boolean[] attached = {false};
-        final FragmentHandler onAttached = (buffer, offset, length, header) -> {
-            if (buffer.getByte(offset) == HostedWire.ATTACHED && buffer.getLong(offset + 16) == nonce) {
-                attachId = buffer.getLong(offset + 8);
-                retiredCounterId = buffer.getInt(offset + 24);
-                commandWindow = buffer.getLong(offset + 28);
-                attached[0] = true;
-            }
-        };
         long nextAttachNs = 0;
-        while (!attached[0] && System.nanoTime() < deadline) {
-            events.poll(onAttached, 16);
+        while (eventSessionId == HostedWire.NO_ATTACH && attachExit == 0 && System.nanoTime() < deadline) {
+            HostedWire.beat(heartbeat);
+            replies.poll(onReply, 16);
             final long now = System.nanoTime();
             if (now >= nextAttachNs) {
-                HostedWire.header(out, HostedWire.ATTACH, 0);
-                out.putLong(16, nonce);
-                out.putInt(24, 11);
-                out.putInt(28, 1);
-                send(32);
+                attachOut.wrapAndApplyHeader(out, 0, headerOut)
+                    .clientId(clientId)
+                    .requestId(requestId)
+                    .kind(Kind.APPLICATION)
+                    .protocolVersion(HostedWire.PROTOCOL_VERSION)
+                    .commandSessionId(commands.sessionId())
+                    .heartbeatCounterId(heartbeat.id())
+                    .heartbeatRegistrationId(heartbeat.registrationId())
+                    .appliedCounterId(applied.id())
+                    .appliedRegistrationId(applied.registrationId())
+                    .formatVersion(1)
+                    .supportedFormatsCount(1)
+                    .next()
+                    .formatVersion(1);
+                final byte[] hostName = HostedWire.HOST_NAME.getBytes(StandardCharsets.UTF_8);
+                final byte[] aeronVersion = AeronVersion.VERSION.getBytes(StandardCharsets.UTF_8);
+                attachOut.putHostName(hostName, 0, hostName.length).putAeronVersion(aeronVersion, 0, aeronVersion.length);
+                send(requests, HostedWire.HEADER + attachOut.encodedLength());
                 nextAttachNs = now + ATTACH_RETRY_NS;
             }
             Thread.onSpinWait();
         }
-        return attached[0];
+        if (eventSessionId == HostedWire.NO_ATTACH && attachExit == 0) {
+            log("no ATTACHED within %ds", TimeUnit.NANOSECONDS.toSeconds(ATTACH_TIMEOUT_NS));
+            attachExit = 3;
+        }
+        replies.close();
+        requests.close();
+        return attachExit == 0;
+    }
+
+    private void onReply(final DirectBuffer buffer, final int offset, final int length, final Header header) {
+        headerIn.wrap(buffer, offset);
+        if (headerIn.schemaId() != 218 || headerIn.templateId() != AttachedDecoder.TEMPLATE_ID) {
+            return;
+        }
+        attachedIn.wrap(buffer, offset + HostedWire.HEADER, headerIn.blockLength(), headerIn.version());
+        if (attachedIn.clientId() != clientId || attachedIn.requestId() != requestId) {
+            return;
+        }
+        final Refusal refusal = attachedIn.refusal();
+        if (refusal == Refusal.BUSY) {
+            return;
+        }
+        if (refusal != Refusal.NONE) {
+            log("attach refused: %s", refusal);
+            attachExit = 78;
+            return;
+        }
+        retiredCounterId = attachedIn.retiredCounterId();
+        commandWindow = attachedIn.commandWindow();
+        hostLiveness.watch(attachedIn.heartbeatCounterId(), attachedIn.heartbeatRegistrationId(), System.nanoTime());
+        eventSessionId = attachedIn.eventSessionId();
     }
 
     private void onEvent(final DirectBuffer buffer, final int offset, final int length, final Header header) {
-        final byte type = buffer.getByte(offset);
-        if (buffer.getLong(offset + 8) != attachId) {
-            staleDropped++;
-            log("dropped stale event type=%d attachId=%x", type, buffer.getLong(offset + 8));
-            return;
-        }
-        lastHostNs = System.nanoTime();
-        switch (type) {
-        case HostedWire.PAYLOAD -> {
-            final long clusterSeqNo = buffer.getLong(offset + 16);
-            if (buffer.getInt(offset + 24) == sourceId && buffer.getInt(offset + 28) == ClusterProbe.PROBE_PAYLOAD_ID &&
-                buffer.getInt(offset + 32) == ProbeMarkerDecoder.TEMPLATE_ID) {
-                final long seqNo = buffer.getLong(offset + 40);
-                if (seqNo == STALE_MARKER) {
-                    log("STALE MARKER SEQUENCED at clusterSeqNo %d", clusterSeqNo);
-                } else if ((seqNo & OWN_TAG) != 0) {
-                    final long own = seqNo & (OWN_TAG - 1);
-                    if (own <= lastOwn) {
-                        log("OWN MARKER OUT OF ORDER: %d after %d", own, lastOwn);
-                    }
-                    lastOwn = own;
-                    ownSequenced++;
+        headerIn.wrap(buffer, offset);
+        final int body = offset + HostedWire.HEADER;
+        switch (headerIn.templateId()) {
+        case PayloadDecoder.TEMPLATE_ID -> {
+            payloadIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            final long clusterSeqNo = payloadIn.clusterSeqNo();
+            final long position = payloadIn.position();
+            if (payloadIn.sourceId() == sourceId && payloadIn.payloadId() == ClusterProbe.PROBE_PAYLOAD_ID) {
+                final int payloadLength = payloadIn.bodyLength();
+                payloadIn.getBody(scratch, 0, payloadLength);
+                bodyHeader.wrap(scratch, 0);
+                if (bodyHeader.templateId() == ProbeMarkerDecoder.TEMPLATE_ID) {
+                    probeIn.wrap(scratch, HostedWire.HEADER, bodyHeader.blockLength(), bodyHeader.version());
+                    onMarker(clusterSeqNo, probeIn.seqNo());
                 }
-                markers++;
-                digest = digest * 31 + clusterSeqNo;
             }
             lastAppliedSeqNo = clusterSeqNo;
+            applied.setOrdered(position);
         }
-        case HostedWire.GATE -> {
-            epoch = buffer.getLong(offset + 16);
-            final boolean nowLeading = buffer.getByte(offset + 24) != 0;
-            canPublish = buffer.getByte(offset + 25) != 0;
-            log("gate epoch %d leading %b canPublish %b", epoch, buffer.getByte(offset + 24) != 0, canPublish);
+        case GateDecoder.TEMPLATE_ID -> {
+            gateIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            epoch = gateIn.epoch();
+            final boolean nowLeading = gateIn.leading() != 0;
+            canPublish = gateIn.canPublish() != 0;
+            log("gate epoch %d leading %b canPublish %b", epoch, nowLeading, canPublish);
             if (nowLeading != leading) {
                 leading = nowLeading;
                 log(leading ? "now leading — submitting markers" : "not leading — silent");
             }
         }
-        case HostedWire.CAUGHT_UP -> log(
-            "Caught up — following live at clusterSeqNo %d, %d marker(s) sequenced, digest %016x",
-            buffer.getLong(offset + 16), markers, digest);
-        case HostedWire.RESTORE_RECORD -> {
-            final int recordIndex = buffer.getInt(offset + 16);
-            if (recordIndex == 0) {
-                markers = buffer.getLong(offset + 28);
-                digest = buffer.getLong(offset + 36);
-            }
-            log("restored record %d (format %d): %d marker(s), digest %016x", recordIndex, buffer.getInt(offset + 20),
-                markers, digest);
+        case CaughtUpDecoder.TEMPLATE_ID -> {
+            caughtUpIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            log("Caught up — following live at clusterSeqNo %d, %d marker(s) sequenced, digest %016x",
+                caughtUpIn.clusterSeqNo(), markers, digest);
         }
-        case HostedWire.SNAPSHOT_CUT -> onCut(buffer.getLong(offset + 16));
-        case HostedWire.FENCED -> {
-            final byte[] text = new byte[buffer.getInt(offset + 16)];
-            buffer.getBytes(offset + 20, text);
+        case RestoreRecordDecoder.TEMPLATE_ID -> {
+            restoreIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            final int recordIndex = restoreIn.recordIndex();
+            final int formatVersion = restoreIn.formatVersion();
+            final int dataLength = restoreIn.dataLength();
+            restoreIn.getData(scratch, 0, dataLength);
+            if (recordIndex == 0) {
+                markers = scratch.getLong(0);
+                digest = scratch.getLong(Long.BYTES);
+            }
+            log("restored record %d (format %d): %d marker(s), digest %016x", recordIndex, formatVersion, markers, digest);
+        }
+        case SnapshotCutDecoder.TEMPLATE_ID -> {
+            cutIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            onCut(cutIn.roundId());
+        }
+        case FencedDecoder.TEMPLATE_ID -> {
+            fencedIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            final byte[] text = new byte[fencedIn.detailLength()];
+            fencedIn.getDetail(text, 0, text.length);
             log("FENCED: %s", new String(text, StandardCharsets.UTF_8));
             fenced = true;
         }
         default -> {
-            // A heartbeat: lastHostNs is all it is for.
         }
         }
+    }
+
+    private void onMarker(final long clusterSeqNo, final long seqNo) {
+        if (seqNo == STALE_MARKER) {
+            log("STALE MARKER SEQUENCED at clusterSeqNo %d", clusterSeqNo);
+        } else if (seqNo == GHOST_MARKER) {
+            log("GHOST MARKER SEQUENCED at clusterSeqNo %d", clusterSeqNo);
+        } else if ((seqNo & OWN_TAG) != 0) {
+            final long own = seqNo & (OWN_TAG - 1);
+            if (own <= lastOwn) {
+                log("OWN MARKER OUT OF ORDER: %d after %d", own, lastOwn);
+            }
+            lastOwn = own;
+            ownSequenced++;
+        }
+        markers++;
+        digest = digest * 31 + clusterSeqNo;
     }
 
     /** One record: the marker count, then the digest. The state is as of the last payload applied. */
@@ -241,41 +337,25 @@ public final class HostedTestApplicationClient {
         }
         final long slowEndNs = System.nanoTime() + slowCutNs;
         while (System.nanoTime() < slowEndNs) {
-            heartbeat(System.nanoTime());
-            LockSupport.parkNanos(HEARTBEAT_NS);
+            HostedWire.beat(heartbeat);
+            LockSupport.parkNanos(CUT_BEAT_NS);
         }
-        HostedWire.header(out, HostedWire.SNAPSHOT_RECORD, attachId);
-        out.putLong(16, cutNo);
-        out.putInt(24, 0);
-        out.putInt(28, 2 * Long.BYTES);
-        out.putLong(32, markers);
-        out.putLong(40, corruptRecord ? digest + 1 : digest);
-        send(48);
-        HostedWire.header(out, HostedWire.SNAPSHOT_END, attachId);
-        out.putLong(16, cutNo);
-        out.putInt(24, 1);
-        send(28);
+        scratch.putLong(0, markers);
+        scratch.putLong(Long.BYTES, corruptRecord ? digest + 1 : digest);
+        recordOut.wrapAndApplyHeader(out, 0, headerOut).roundId(cutNo).recordIndex(0).putData(scratch, 0, 2 * Long.BYTES);
+        send(commands, HostedWire.HEADER + recordOut.encodedLength());
+        endOut.wrapAndApplyHeader(out, 0, headerOut).roundId(cutNo).recordCount(1);
+        send(commands, HostedWire.HEADER + endOut.encodedLength());
     }
 
     /** A marker under the epoch before the current one: the host must decline it, and nothing may sequence it. */
     private void publishStaleMarker() {
         staleSent = true;
         final int length = marker.encodePayload(STALE_MARKER, ClusterProbe.NO_FILLER);
-        HostedWire.header(out, HostedWire.PUBLISH, attachId);
-        out.putLong(16, ++correlationId);
-        out.putLong(24, epoch - 1);
-        out.putInt(32, ClusterProbe.PROBE_PAYLOAD_ID);
-        out.putInt(36, length);
-        marker.payload().getBytes(0, out, 40, length);
-        send(40 + length);
+        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch - 1).connectionId(0).groupMask(0)
+            .payloadId(ClusterProbe.PROBE_PAYLOAD_ID).putBody(marker.payload(), 0, length);
+        send(commands, HostedWire.HEADER + publishOut.encodedLength());
         log("sent one marker under stale gate epoch %d", epoch - 1);
-    }
-
-    private void heartbeat(final long now) {
-        HostedWire.header(out, HostedWire.CLIENT_HEARTBEAT, attachId);
-        out.putLong(16, now);
-        out.putLong(24, lastAppliedSeqNo);
-        send(32);
     }
 
     /**
@@ -284,17 +364,13 @@ public final class HostedTestApplicationClient {
      */
     private boolean publishMarker() {
         final int length = marker.encodePayload(OWN_TAG | (markerSeqNo + 1), ClusterProbe.NO_FILLER);
-        final int messageLength = 40 + length;
+        final int messageLength = HostedWire.HEADER + PublishEncoder.BLOCK_LENGTH + Integer.BYTES + length;
         if (!ignoreWindow && offeredBytes - counters.getCounterValue(retiredCounterId) + messageLength > commandWindow) {
             declined++;
             return false;
         }
-        HostedWire.header(out, HostedWire.PUBLISH, attachId);
-        out.putLong(16, ++correlationId);
-        out.putLong(24, epoch);
-        out.putInt(32, ClusterProbe.PROBE_PAYLOAD_ID);
-        out.putInt(36, length);
-        marker.payload().getBytes(0, out, 40, length);
+        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).connectionId(0).groupMask(0)
+            .payloadId(ClusterProbe.PROBE_PAYLOAD_ID).putBody(marker.payload(), 0, length);
         if (commands.offer(out, 0, messageLength) < 0) {
             declined++;
             return false;
@@ -305,10 +381,10 @@ public final class HostedTestApplicationClient {
     }
 
     /** Offers {@code out}; with no host subscribed there is nothing to wait for, and the host's silence says so. */
-    private void send(final int length) {
+    private void send(final Publication publication, final int length) {
         final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
         while (true) {
-            final long result = commands.offer(out, 0, length);
+            final long result = publication.offer(out, 0, length);
             if (result >= 0 || result == Publication.NOT_CONNECTED || result == Publication.CLOSED ||
                 System.nanoTime() > deadline) {
                 return;

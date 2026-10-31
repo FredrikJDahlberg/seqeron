@@ -116,6 +116,7 @@ set(SBE_SCHEMAS
     "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-cluster.xml"
     "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-replay.xml"
     "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-frame.xml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-hosted.xml"
 )
 
 # QUIET, not REQUIRED: a consumer compiles the committed codecs and never runs the tool. Java is
@@ -345,6 +346,19 @@ if(SEQERON_BUILD_TESTS)
     # against a live cluster. Nothing here runs it; building it is what keeps it compiling.
     add_executable(cluster_probe seqeron-client/src/test/cpp-probe/ClusterProbe.cpp)
     target_link_libraries(cluster_probe PRIVATE seqeron_core seqeron_flags)
+
+    # hosted_probe — a hosted::Application stub holding the probe's state, which HostedCppStubTest drives against the
+    # prototype host (doc/hosted-facade-draft.md §17).
+    add_executable(hosted_probe seqeron-client/src/test/cpp-probe/HostedProbe.cpp)
+    target_link_libraries(hosted_probe PRIVATE seqeron_core seqeron_flags)
+
+    # hosted_gateway_probe — the same for a hosted::Gateway stub, which HostedGatewayStubTest drives.
+    add_executable(hosted_gateway_probe seqeron-client/src/test/cpp-probe/HostedGatewayProbe.cpp)
+    target_link_libraries(hosted_gateway_probe PRIVATE seqeron_core seqeron_flags)
+
+    # hosted_consumer_probe — the same for a hosted::Consumer stub, which HostedConsumerStubTest drives.
+    add_executable(hosted_consumer_probe seqeron-client/src/test/cpp-probe/HostedConsumerProbe.cpp)
+    target_link_libraries(hosted_consumer_probe PRIVATE seqeron_core seqeron_flags)
 
     # hop_bench — the hosted-façade hop from a C++ client (doc/hosted-facade-draft.md §17.10). Bench only; nothing runs it.
     add_executable(hop_bench seqeron-client/src/test/cpp-bench/HopBench.cpp)

@@ -195,6 +195,21 @@ final class ClusterProcesses implements AutoCloseable {
         return launch(name, args);
     }
 
+    /** Starts a native program, one that is not a JVM, with its output in the log as a harness's is. */
+    Child nativeProcess(final String name, final String... command) {
+        final Path log = logDir.resolve(name + ".log");
+        try {
+            Files.createDirectories(logDir);
+            final Process process = new ProcessBuilder(command).redirectErrorStream(true)
+                                        .redirectOutput(log.toFile()).start();
+            final Child child = new Child(process, log);
+            children.add(child);
+            return child;
+        } catch (final IOException ex) {
+            throw new UncheckedIOException(ex);
+        }
+    }
+
     /** Runs clusterctl against member {@code m} to completion and returns its process, for its output and status. */
     Child clusterctl(final String name, final int m, final String... arguments) {
         final List<String> args = new ArrayList<>(List.of("-Dclusterctl.memberId=" + m,
@@ -364,7 +379,7 @@ final class ClusterProcesses implements AutoCloseable {
         }
     }
 
-    private String aeronDir(final int m) {
+    String aeronDir(final int m) {
         return baseDir.resolve("aeron-" + m).toString();
     }
 
