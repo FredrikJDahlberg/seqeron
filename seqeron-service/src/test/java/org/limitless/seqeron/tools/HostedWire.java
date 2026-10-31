@@ -14,7 +14,7 @@ final class HostedWire {
     static final int HEADER = 16;
 
     // Host to client.
-    /** nonce:8 at 16, echoing the Attach's. */
+    /** nonce:8 at 16, echoing the Attach's; retiredCounterId:4 at 24, commandWindow:8 at 28. */
     static final byte ATTACHED = 1;
     /** clusterSeqNo:8 at 16, sourceId:4 at 24, payloadId:4 at 28, templateId:4 at 32, length:4 at 36, bytes at 40. */
     static final byte PAYLOAD = 2;
@@ -30,8 +30,6 @@ final class HostedWire {
     static final byte HEARTBEAT = 7;
     /** length:4 at 16, text at 20. */
     static final byte FENCED = 8;
-    /** correlationId:8 at 16, gateEpoch:8 at 24, result:4 at 32. */
-    static final byte VERDICT = 9;
 
     // Client to host.
     /** nonce:8 at 16, clientId:4 at 24, formatVersion:4 at 28; attachId 0. */
@@ -45,9 +43,6 @@ final class HostedWire {
     /** clientNs:8 at 16, appliedClusterSeqNo:8 at 24. */
     static final byte CLIENT_HEARTBEAT = 25;
     static final byte DETACH = 26;
-
-    static final int VERDICT_EPOCH = 1;
-    static final int VERDICT_DECLINED = 2;
 
     static void header(final MutableDirectBuffer buffer, final byte type, final long attachId) {
         buffer.putByte(0, type);

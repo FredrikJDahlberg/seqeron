@@ -12,7 +12,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import io.aeron.Counter;
 import org.agrona.DirectBuffer;
+import org.agrona.ExpandableRingBuffer;
+import org.agrona.BitUtil;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.BusySpinIdleStrategy;
@@ -23,6 +26,7 @@ import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.app.SnapshotListener;
+import org.limitless.seqeron.app.Tuning;
 import org.limitless.seqeron.protocol.Publish;
 
 /**
@@ -32,12 +36,16 @@ import org.limitless.seqeron.protocol.Publish;
  *
  * <p>Properties on top of {@link ClusterProbe}'s {@code probe.memberId} / {@code probe.aeronDir}:
  * {@code probe.sourceId} (16), {@code probe.clientId} (11), {@code probe.snapshotDir}, {@code host.clientTimeoutMs}
- * (2000), {@code host.spin} (busy-spin the loop rather than back off), {@code host.allocWarmupFrames} (0: off) and {@code host.allocWindowFrames} (20000): once that many frames
+ * (2000), {@code host.commandWindow} (65536 bytes: H-5's window, here the encoded length of the {@code Publish}
+ * messages not yet placed), {@code host.placePerCycle} (64), {@code host.pendingCapacity} (the façade's tracker, 0: its
+ * default), {@code host.spin} (busy-spin the loop rather than back off), {@code host.allocWarmupFrames} (0: off) and {@code host.allocWindowFrames} (20000): once that many frames
  * have crossed the loop, logs the bytes it allocated over the next window, for {@code HostedAllocationTest}.
  */
 public final class HostedTestApplicationHost implements Application.Listener, SnapshotListener {
     private static final int EXIT_FENCED = 70;
     private static final long HEARTBEAT_NS = TimeUnit.MILLISECONDS.toNanos(100);
+    /** The proposed type id of the host-retired counter (doc/hosted-facade-draft.md §17.2.1). */
+    static final int RETIRED_TYPE_ID = 5303;
     private static final long BACK_PRESSURE_NS = TimeUnit.SECONDS.toNanos(1);
 
     private final int sourceId = Integer.getInteger("probe.sourceId", 16);
@@ -47,6 +55,15 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     private final UnsafeBuffer scratch = new UnsafeBuffer(new byte[16 * 1024]);
     private final List<byte[]> cutRecords = new ArrayList<>();
     private final FragmentHandler onCommand = this::onCommand;
+    private final long commandWindow = Long.getLong("host.commandWindow", 64 * 1024);
+    private final int placePerCycle = Integer.getInteger("host.placePerCycle", 64);
+    private final int pendingCapacity = Integer.getInteger("host.pendingCapacity", 0);
+    /** Sized once to hold the window with its per-message framing, so it never grows. */
+    private final ExpandableRingBuffer queue = new ExpandableRingBuffer(
+        BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)),
+        BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)), false);
+    private final ExpandableRingBuffer.MessageConsumer place = this::place;
+    private final ExpandableRingBuffer.MessageConsumer discard = (buffer, offset, length, head) -> true;
     private final long allocWarmupFrames = Long.getLong("host.allocWarmupFrames", 0);
     private final long allocWindowFrames = Long.getLong("host.allocWindowFrames", 20_000);
     private final ThreadMXBean threads = (ThreadMXBean)ManagementFactory.getThreadMXBean();
@@ -63,6 +80,17 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     private long lastClientNs;
     private long lastHeartbeatNs;
     private long frames;
+    private Counter retiredCounter;
+    private long retired;
+    private long queuedBytes;
+    private long peakQueuedBytes;
+    private long placed;
+    private long epochDrops;
+    private long refusedDrops;
+    private long headDeclines;
+    private long loggedDropsAndDeclines;
+    private long loggedPlaced;
+    private long lastQueueLogNs;
     private long windowFrames;
     private long windowBytes;
     private long windowReadCost;
@@ -96,6 +124,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(ClusterProbe.aeronDir()));
         events = aeron.addExclusivePublication(HostedWire.IPC, HostedWire.EVENTS_STREAM);
         commands = aeron.addSubscription(HostedWire.IPC, HostedWire.COMMANDS_STREAM);
+        retiredCounter = aeron.addCounter(RETIRED_TYPE_ID, "seqeron.host.retired");
         log("host ready: member %d, sourceId %d, clientId %d", ClusterProbe.memberId(), sourceId, clientId);
         final IdleStrategy idle = Boolean.getBoolean("host.spin") ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();
         while (running && !fenced) {
@@ -103,6 +132,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
             if (app != null) {
                 work += app.doWork();
                 if (!fenced) {
+                    placeCommands();
                     afterDoWork();
                     allocWindow();
                 }
@@ -147,6 +177,14 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
         if (now - lastHeartbeatNs >= HEARTBEAT_NS) {
             sendHeartbeat(now);
         }
+        final long dropsAndDeclines = epochDrops + refusedDrops + headDeclines;
+        if (dropsAndDeclines != 0 && (dropsAndDeclines != loggedDropsAndDeclines || placed != loggedPlaced) &&
+            now - lastQueueLogNs >= 1_000_000_000L) {
+            logQueue();
+            loggedDropsAndDeclines = dropsAndDeclines;
+            loggedPlaced = placed;
+            lastQueueLogNs = now;
+        }
         if (stalled) {
             closeApp("CLIENT_STALLED: events stream back-pressured for " + BACK_PRESSURE_NS / 1_000_000 + "ms");
         } else if (now - lastClientNs > clientTimeoutNs) {
@@ -170,7 +208,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
         }
         lastClientNs = System.nanoTime();
         switch (type) {
-        case HostedWire.PUBLISH -> onPublish(buffer, offset);
+        case HostedWire.PUBLISH -> onPublish(buffer, offset, length);
         case HostedWire.SNAPSHOT_RECORD -> {
             if (collecting && buffer.getLong(offset + 16) == cutNo) {
                 final int recordLength = buffer.getInt(offset + 28);
@@ -207,6 +245,10 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
             return;
         }
         liveNonce = nonce;
+        retired = 0;
+        queuedBytes = 0;
+        retiredCounter.setOrdered(0);
+        placed = epochDrops = refusedDrops = headDeclines = peakQueuedBytes = 0;
         attachId = ThreadLocalRandom.current().nextLong() | 1;
         epoch = 0;
         cutNo = 0;
@@ -221,37 +263,78 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
                   .egressChannel(ClusterProbe.egressChannel())
                   .ingressEndpoints(ClusterProbe.ingressEndpoints())
                   .listener(this)
+                  .tuning(pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity))
                   .snapshots(this, snapshotDir)
                   .build();
         app.start(aeron);
         lastClientNs = System.nanoTime();
         HostedWire.header(out, HostedWire.ATTACHED, attachId);
         out.putLong(16, nonce);
-        send(24);
+        out.putInt(24, retiredCounter.id());
+        out.putLong(28, commandWindow);
+        send(36);
         log("ATTACHED attachId=%x", attachId);
     }
 
-    private void onPublish(final DirectBuffer buffer, final int offset) {
-        frames++;
-        final long correlationId = buffer.getLong(offset + 16);
-        final long gateEpoch = buffer.getLong(offset + 24);
-        if (gateEpoch != epoch) {
-            sendVerdict(correlationId, HostedWire.VERDICT_EPOCH);
+    /** Queues the message whole; H-5's window decides whether the client may have sent it. */
+    private void onPublish(final DirectBuffer buffer, final int offset, final int length) {
+        if (queuedBytes + length > commandWindow || !queue.append(buffer, offset, length)) {
+            closeApp("CLIENT_WINDOW: " + queuedBytes + " bytes queued, window " + commandWindow);
             return;
         }
-        final int payloadId = buffer.getInt(offset + 32);
-        final int length = buffer.getInt(offset + 36);
-        buffer.getBytes(offset + 40, scratch, 0, length);
-        if (app.publish(payloadId, scratch, length) != Publish.Published) {
-            sendVerdict(correlationId, HostedWire.VERDICT_DECLINED);
+        queuedBytes += length;
+        peakQueuedBytes = Math.max(peakQueuedBytes, queuedBytes);
+    }
+
+    private void placeCommands() {
+        if (queuedBytes > 0) {
+            queue.consume(place, placePerCycle);
         }
+    }
+
+    /** H-3 and H-5: the head is placed in the epoch it was decided in, dropped otherwise, kept if the façade declines. */
+    private boolean place(final MutableDirectBuffer buffer, final int offset, final int length, final int head) {
+        if (buffer.getLong(offset + 24) != epoch || !leading) {
+            epochDrops++;
+            retire(length);
+            return true;
+        }
+        final int payloadLength = buffer.getInt(offset + 36);
+        buffer.getBytes(offset + 40, scratch, 0, payloadLength);
+        final Publish result = app.publish(buffer.getInt(offset + 32), scratch, payloadLength);
+        if (result == Publish.Declined) {
+            headDeclines++;
+            return false;
+        }
+        if (result == Publish.Published) {
+            placed++;
+        } else {
+            refusedDrops++;
+        }
+        frames++;
+        retire(length);
+        return true;
+    }
+
+    private void logQueue() {
+        log("queue: placed %d, epochDrops %d, refused %d, headDeclines %d, queued %d, peakQueued %d, window %d", placed,
+            epochDrops, refusedDrops, headDeclines, queuedBytes, peakQueuedBytes, commandWindow);
+    }
+
+    private void retire(final int length) {
+        queuedBytes -= length;
+        retired += length;
+        retiredCounter.setOrdered(retired);
     }
 
     private void closeApp(final String reason) {
         log("%s", reason);
+        logQueue();
         app.close();
         app = null;
         attachId = 0;
+        queue.consume(discard, Integer.MAX_VALUE);
+        queuedBytes = 0;
         collecting = false;
     }
 
@@ -265,7 +348,8 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     public void onLeadershipChanged(final boolean nowLeading) {
         leading = nowLeading;
         epoch++;
-        log(nowLeading ? "now leading — gate epoch %d" : "not leading — gate epoch %d", epoch);
+        log(nowLeading ? "now leading — gate epoch %d, epochDrops %d" : "not leading — gate epoch %d, epochDrops %d", epoch,
+            epochDrops);
         sendGate();
     }
 
@@ -373,14 +457,6 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
         out.putByte(24, (byte)(leading ? 1 : 0));
         out.putByte(25, (byte)(app != null && app.canPublish() ? 1 : 0));
         send(26);
-    }
-
-    private void sendVerdict(final long correlationId, final int result) {
-        HostedWire.header(out, HostedWire.VERDICT, attachId);
-        out.putLong(16, correlationId);
-        out.putLong(24, epoch);
-        out.putInt(32, result);
-        send(36);
     }
 
     private void sendHeartbeat(final long now) {

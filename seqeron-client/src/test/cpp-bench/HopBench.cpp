@@ -61,7 +61,6 @@ constexpr std::uint8_t ATTACHED = 1;
 constexpr std::uint8_t PAYLOAD = 2;
 constexpr std::uint8_t GATE = 3;
 constexpr std::uint8_t FENCED = 8;
-constexpr std::uint8_t VERDICT = 9;
 constexpr std::uint8_t ATTACH = 21;
 constexpr std::uint8_t PUBLISH = 22;
 constexpr std::uint8_t CLIENT_HEARTBEAT = 25;
@@ -434,9 +433,6 @@ class HostedClient
             case GATE:
                 m_epoch = get<std::int64_t>(base, 16);
                 m_canPublish = base[25] != 0;
-                break;
-            case VERDICT:
-                m_run.declines++;
                 break;
             case FENCED:
                 m_fenced = true;

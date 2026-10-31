@@ -444,8 +444,13 @@ client's driver connection.
 
 ## 17.9 Open questions
 
-1. **The command window.** Its size, and the host's queue when the façade's tracker is full or ingress is held
-   for long (**H-5**), are open until built.
+1. **The command window.** Built in the prototype host (§17.11): a queue sized to the window, a retired counter the
+   stub reads, no reply to a drop. With a tracker of four and a window of 1,024 bytes (about seventeen
+   `Publish` messages), a client flooding 20,000 markers had every one placed and sequenced exactly once and in order,
+   the queue peaked at 986 bytes, the façade declined at the head and the stub at the window; a stub that ignored the
+   window was closed by the host. A gate edge dropped 17 queued commands, counted, and none was placed late. Still
+   open: the size for a real deployment (the prototype's 64 KiB default was never reached outside the test), a held
+   ingress of seconds rather than an edge, and `Reply` and `OpenConnection` in the window, which the prototype lacks.
 2. **Cost.** The hops measure 0.2–0.5 µs each way with the cluster out of process, and about 1.5 µs for both
    with it in the host's JVM (§17.10.1, §17.10.2), on the laptop of §17.10; against a C++ `Application` the whole
    loop shows no resolvable difference (§17.10.2). The remaining risk is the host's thread: it needs its own core,
@@ -495,8 +500,8 @@ client thread. The wire format is the bench's own, not schema 218. Three members
 - **The hops total about 1.5 µs at the median**, about 0.9 µs out and 0.6 µs back. This is 3–5 times the
   relay's 125–250 ns (§17.10.3), the difference being façade dispatch, the body copy and the framing.
 - **A command is an offer (H-4)**, so a `publish` adds the one-way send hop, about 0.9 µs at the median, to the
-  façade's placement, and no round trip. The prototype's `Publish` is asynchronous too, though its host answers a
-  decline (§17.11).
+  façade's placement, and no round trip. The prototype's `Publish` is asynchronous too; this bench's host answers a
+  decline, which the prototype host of §17.11 no longer does.
 - **The whole-loop difference is about 14 µs at p50 and is not resolved.** It is comparable to the spread of
   the direct p50 between runs (264–283 µs at 5k msg/s). The 0.6–0.9 µs hops do not account for it. The p99 and
   p99.9 of the two loops do not differ beyond that spread.
@@ -546,9 +551,9 @@ re-offer each message on a second stream. Receive path only.
 
 - The C# client, and a real hosted C++ or C# stub: §17.10.6 uses a bench client on the prototype wire, with no schema
   218 decode and none of the stub's local checks.
-- The host's command queue and the command window (**H-5**), which the prototype does not have, the counters
-  (§17.2.1), the stub's local checks (**H-4**), schema 218 and a hosted `Consumer`. Restore, the snapshot cut and
-  SIGKILL are exercised in §17.11, not timed.
+- The counters other than the retired one (§17.2.1), the stub's local checks (**H-4**), schema 218 and a hosted
+  `Consumer`. The command queue and window are exercised in §17.11 and allocation-checked in §17.10.5, and their
+  cost is in §17.10.6. Restore, the snapshot cut and SIGKILL are exercised in §17.11, not timed.
 - The proposed shape on bare metal or the deployment's hypervisor: §17.10.6 ran it in a Docker Desktop VM on an
   Apple-silicon laptop.
 - The host's allocation with a command queue, counters or a `Gateway`, which the prototype lacks (§17.10.5).
@@ -558,14 +563,17 @@ re-offer each message on a second stream. Receive path only.
 `HostedAllocationTest` (systemTest) starts three members, the prototype host on the leader and its client, which
 publishes a marker every millisecond. The host counts the bytes its loop thread allocates
 (`ThreadMXBean.getThreadAllocatedBytes`) across 50,000 frames, delivered payloads, published markers and heartbeats,
-after a warm-up of 100,000, and the test asserts zero and that the gate epoch did not move in the window. The loop
-thread runs the real `Application` and the relay, so the count covers the façade's receive and publish paths.
+after a warm-up of 100,000, and the test asserts at most 1,024 bytes and that the gate epoch did not move in the
+window. The loop thread runs the real `Application`, the relay and the command queue (§17.11), so the count covers the
+façade's receive and publish paths and the placement of each command.
 
-- **Result:** 0 bytes over 50,000 frames, in both runs made. A control with a warm-up of 20 frames allocates
-  195,856 bytes over the same window, so the count is not blind.
+- **Result:** 0 bytes over 50,000 frames in four of five runs with the queue, and 120 bytes in the fifth; 0 in both
+  runs made before the queue. 120 bytes is one small object in a window of about a minute, not a per-frame cost, but
+  its source is not found, so the host is not shown to allocate nothing. A control with a warm-up of 20 frames
+  allocates 195,856 bytes over the same window, so the count is not blind.
 - **Not in the window:** a snapshot cut, attach and restore (the topology has no snapshot policy), a leadership
-  change, and the command queue, window, counters and `Gateway`, none of which the prototype has. The payload is
-  20 bytes and the rate 1k msg/s; a larger payload or rate is not shown to stay at zero.
+  change, a declining façade, counters other than the retired one and a `Gateway`. The payload is 18 bytes and the
+  rate 1k msg/s; a larger payload or rate is not shown to stay flat.
 
 ### 17.10.6 A C++ client beside a separate host JVM, on Linux
 
@@ -592,6 +600,10 @@ the host to two and the client to two. Arms alternate within a rate. Whole loop,
   direct arm's own p50 spans 245–312 µs, wider than its difference from the hosted arm. The tails are the VM's: p99
   is 0.5–1.5 ms in the quiet runs and 9.6 ms in one direct run, p99.9 is 0.6–7 ms in both arms, and neither arm's tail is
   lower than the other's across runs.
+- **With the command queue** (§17.11) the busy-spin runs were repeated, three a rate: at 5k msg/s direct p50 is
+  319–323 µs and hosted 317–323 µs; at 20k msg/s direct 338–389 µs and hosted 304–367 µs. The queue costs nothing
+  resolvable. The bench client does not keep the window, which the 64 KiB default (about 1,100 `Publish` messages)
+  never reached in these runs.
 - **Not shown:** a hosted stub's schema 218 decode and local checks, a host with a command queue, counters or a
   `Gateway`, and a tuned cluster, whose faster commit would expose the hop more (§17.9, question 2).
 
@@ -605,13 +617,16 @@ with the sequenced `SnapshotEnd` and fences on a difference (**A-7**). Snapshot 
 the long-cut scenario), `clientTimeoutMs` is 2 s, and the client's host timeout is 3 s.
 
 The prototype's wire differs from §17.3 in five ways. Its `Publish` carries the gate epoch and its host drops a
-stale one, as **H-3**'s, but the host also answers a decline. It keeps no command queue and no command window
-(**H-5**). Liveness is a `Heartbeat` message on each stream rather than counters (§17.2.1). It attaches with a nonce
+stale one, as **H-3**'s, and answers nothing for a command it drops or declines (**H-4**). Its queue and window are
+**H-5**'s with two differences: the windowed length is the encoded `Publish` message, header and fields included,
+not an SBE message length, and the host closes the attachment (`CLIENT_WINDOW`) rather than fencing. The stub reads
+the retired total from an Aeron counter of the proposed type id 5303, whose id and the window `Attached` carries after
+the nonce. There is no `Reply` or `OpenConnection`. Liveness is a `Heartbeat` message on each stream rather than counters (§17.2.1). It attaches with a nonce
 and tags every message with an `attachId`, on two fixed streams, rather than with `requestId` and per-attachment
 images (**H-8**, **H-15**). Its `Payload` carries the `templateId` and the body, not the bytes with their
-`MessageHeader`, so it has no `blockLength` or `version` to decode a later schema version with. Its client is
-therefore told of every drop, so the epoch and exactly-once rows below do not yet show **H-3** and **H-4** as
-specified, where the host sends nothing back.
+`MessageHeader`, so it has no `blockLength` or `version` to decode a later schema version with. The epoch and
+exactly-once rows below are therefore **H-3** and **H-4** as specified: the client learns of no drop and counts what
+the host did.
 
 | scenario | observed |
 | --- | --- |
@@ -622,10 +637,10 @@ specified, where the host sends nothing back.
 | client `kill -9` mid-cut (the second cut after attach) | the host abandoned the round after `clientTimeoutMs` and did not hang; the direct replicas kept completing rounds; the next attach restored from round 12, the last confirmed, not the abandoned one |
 | a command under another `attachId` | dropped and logged by the host; no effect |
 | a cut of 8 s, longer than the 5 s session timeout (rounds every 15 s) | the host kept the session by calling `keepAlive()` while it waited, the client heartbeating; a round was confirmed, with no `CLIENT_LOST` and no abandoned round. Control: without the host's `keepAlive()` no round is confirmed in 80 s |
-| leadership moves to the hosted member (the leader paused until the others elect, repeated until the hosted member wins; no member killed) | the gate epoch rose 0 to 1; the client applied it; a marker sent under the previous epoch was declined by the host and never sequenced; the client's markers were sequenced and its rounds agreed with the direct replicas |
+| leadership moves to the hosted member (the leader paused until the others elect, repeated until the hosted member wins; no member killed) | the gate epoch rose 0 to 1; the client applied it; a marker sent under the previous epoch was dropped by the host, counted, and never sequenced; the client's markers were sequenced and its rounds agreed with the direct replicas |
 | leadership leaves it (its member paused until the others elect), pair alive | the gate epoch rose again and the client stopped publishing at once; it kept following the new leader's markers; the rounds went on and no instance fenced |
-| the client's own markers across both changes | every marker it published was sequenced exactly once and in order, or declined: 566 published, 1 declined (the stale probe), 566 sequenced |
-| a new term with the same leader | the host saw `not leading` and `leading` in the same millisecond, the epoch rose by two, and the eight commands in flight were declined and not placed |
+| the client's own markers across both changes | every marker it offered was sequenced exactly once and in order, or dropped by the host: 168 offered, 1 dropped (the stale probe), 168 sequenced |
+| a new term with the same leader | the host saw `not leading` and `leading` in the same millisecond, the epoch rose by two, and the eight commands in flight were dropped by their epoch and not placed (observed before the queue, when the host answered each drop) |
 | control: the host does not check the epoch | the stale marker was placed and sequenced, and the test failed on the decline, on both stale-marker checks and on the exactly-once count |
 | control: the client writes a digest one off | the host fenced `SNAPSHOT_DIVERGED`, sent `Fenced`, the client exited 70, and no direct replica fenced |
 
@@ -640,8 +655,11 @@ is the pattern behind the known Aeron 1.53.2 committed-entry loss. Pausing the o
 hosted member win (the other follower was elected in one run), so the test pauses the leader and repeats until the
 hosted member is elected, which took one or two pauses in the runs made.
 
-Not covered: the epoch and exactly-once rows against a host that answers nothing (**H-4**), the host's command
-queue and window (**H-5**), liveness by counter and the attach of **H-8**, the
-stub's local checks and connection ids (**H-4**), a hosted `Gateway` and its edge (§17.5), a host killed in a cut,
+The command queue and window have their own scenarios (`HostedCommandQueueTest`): a flood against a tracker of four
+and a window of 1,024 bytes, a stub that ignores the window, and a gate edge across a paused leader (17 queued
+commands dropped, 4,197 offered, 4,180 sequenced, none out of order).
+
+Not covered: liveness by counter and the attach of **H-8**, the stub's local checks and connection ids (**H-4**),
+a held ingress of seconds, a hosted `Gateway` and its edge (§17.5), a host killed in a cut,
 a leader killed and not paused, state of more than one record or a record near the 65,535-byte limit, and a C++ or
 C# stub.

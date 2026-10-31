@@ -13,6 +13,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
 
 /**
@@ -26,7 +27,9 @@ import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
  * printing {@code IN CUT}, until killed), {@code client.slowCutMs} (0: spend that long in every cut, heartbeating,
  * before the record), {@code client.staleEpoch} (once leading, send one marker under the previous gate epoch first),
  * {@code client.ghost} (send one command under an attachId that is not current), {@code client.corruptRecord} (write a digest one off in every snapshot record), {@code
- * client.hostTimeoutMs} (3000).
+ * client.hostTimeoutMs} (3000), {@code client.flood} (publish as fast as the window allows), {@code client.maxMarkers} (0: no limit; else
+ * offer that many and go on counting), {@code
+ * client.ignoreWindow} (a control: do not keep H-5's window, so the host must close the attachment).
  */
 public final class HostedTestApplicationClient {
     private static final int EXIT_FENCED = 70;
@@ -43,6 +46,9 @@ public final class HostedTestApplicationClient {
     private final long slowCutNs = TimeUnit.MILLISECONDS.toNanos(Long.getLong("client.slowCutMs", 0));
     private final boolean staleEpoch = Boolean.getBoolean("client.staleEpoch");
     private final boolean ghost = Boolean.getBoolean("client.ghost");
+    private final long maxMarkers = Long.getLong("client.maxMarkers", 0);
+    private final boolean flood = Boolean.getBoolean("client.flood");
+    private final boolean ignoreWindow = Boolean.getBoolean("client.ignoreWindow");
     private final boolean corruptRecord = Boolean.getBoolean("client.corruptRecord");
     private final long hostTimeoutNs = TimeUnit.MILLISECONDS.toNanos(Long.getLong("client.hostTimeoutMs", 3000));
     private final UnsafeBuffer out = new UnsafeBuffer(new byte[64 * 1024]);
@@ -50,6 +56,10 @@ public final class HostedTestApplicationClient {
     private final FragmentHandler onEvent = this::onEvent;
 
     private Publication commands;
+    private CountersReader counters;
+    private int retiredCounterId;
+    private long commandWindow;
+    private long offeredBytes;
     private long attachId;
     private long nonce;
     private long markers;
@@ -77,6 +87,7 @@ public final class HostedTestApplicationClient {
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(ClusterProbe.aeronDir()))) {
             final Subscription events = aeron.addSubscription(HostedWire.IPC, HostedWire.EVENTS_STREAM);
             commands = aeron.addExclusivePublication(HostedWire.IPC, HostedWire.COMMANDS_STREAM);
+            counters = aeron.countersReader();
             if (!attach(events)) {
                 log("no ATTACHED within %ds", TimeUnit.NANOSECONDS.toSeconds(ATTACH_TIMEOUT_NS));
                 return 3;
@@ -100,8 +111,8 @@ public final class HostedTestApplicationClient {
                 if (canPublish && staleEpoch && !staleSent && epoch > 0) {
                     publishStaleMarker();
                 }
-                if (canPublish && now >= nextMarkerNs) {
-                    publishMarker();
+                if (canPublish && (maxMarkers == 0 || markerSeqNo < maxMarkers) && (flood || now >= nextMarkerNs) &&
+                    publishMarker()) {
                     nextMarkerNs = now + intervalNs;
                     work++;
                 }
@@ -131,6 +142,8 @@ public final class HostedTestApplicationClient {
         final FragmentHandler onAttached = (buffer, offset, length, header) -> {
             if (buffer.getByte(offset) == HostedWire.ATTACHED && buffer.getLong(offset + 16) == nonce) {
                 attachId = buffer.getLong(offset + 8);
+                retiredCounterId = buffer.getInt(offset + 24);
+                commandWindow = buffer.getLong(offset + 28);
                 attached[0] = true;
             }
         };
@@ -203,10 +216,6 @@ public final class HostedTestApplicationClient {
                 markers, digest);
         }
         case HostedWire.SNAPSHOT_CUT -> onCut(buffer.getLong(offset + 16));
-        case HostedWire.VERDICT -> {
-            declined++;
-            log("declined: result %d at epoch %d", buffer.getInt(offset + 32), buffer.getLong(offset + 24));
-        }
         case HostedWire.FENCED -> {
             final byte[] text = new byte[buffer.getInt(offset + 16)];
             buffer.getBytes(offset + 20, text);
@@ -269,15 +278,30 @@ public final class HostedTestApplicationClient {
         send(32);
     }
 
-    private void publishMarker() {
-        final int length = marker.encodePayload(OWN_TAG | ++markerSeqNo, ClusterProbe.NO_FILLER);
+    /**
+     * Offers one marker if H-5's window has room for it and the stream takes it; false is a local decline, retried.
+     * It counts as published only once offered, since the host answers nothing for a command it drops (H-4).
+     */
+    private boolean publishMarker() {
+        final int length = marker.encodePayload(OWN_TAG | (markerSeqNo + 1), ClusterProbe.NO_FILLER);
+        final int messageLength = 40 + length;
+        if (!ignoreWindow && offeredBytes - counters.getCounterValue(retiredCounterId) + messageLength > commandWindow) {
+            declined++;
+            return false;
+        }
         HostedWire.header(out, HostedWire.PUBLISH, attachId);
         out.putLong(16, ++correlationId);
         out.putLong(24, epoch);
         out.putInt(32, ClusterProbe.PROBE_PAYLOAD_ID);
         out.putInt(36, length);
         marker.payload().getBytes(0, out, 40, length);
-        send(40 + length);
+        if (commands.offer(out, 0, messageLength) < 0) {
+            declined++;
+            return false;
+        }
+        markerSeqNo++;
+        offeredBytes += messageLength;
+        return true;
     }
 
     /** Offers {@code out}; with no host subscribed there is nothing to wait for, and the host's silence says so. */

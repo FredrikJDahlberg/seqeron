@@ -172,8 +172,8 @@ class HostedSnapshotTest {
     /**
      * The hosted pair is a follower. The leader is paused until the other two members elect, and again, until the
      * hosted member wins (no member is killed or restarted); then its own member is paused to depose it. At each
-     * change the gate epoch must rise, a command under the previous epoch must be declined and never sequenced,
-     * and everything the client published must be sequenced exactly once or declined.
+     * change the gate epoch must rise, a command under the previous epoch must be dropped by the host and never
+     * sequenced, and everything the client offered must be sequenced exactly once or counted as dropped.
      */
     @Test
     @Timeout(value = 400, unit = TimeUnit.SECONDS)
@@ -198,8 +198,8 @@ class HostedSnapshotTest {
         check("the client applied the host's gate epoch", poll(this::epochsAgree));
         final long leadingEpoch = lastNumber(host, "gate epoch", GATE_EPOCH);
         check("the host's gate epoch rose (" + followerEpoch + " to " + leadingEpoch + ")", leadingEpoch > followerEpoch);
-        check("the host declined the marker sent under the previous epoch",
-              poll(() -> !client.lines("declined: result 1 at").isEmpty()));
+        check("the host dropped the marker sent under the previous epoch (H-3), and said nothing back",
+              poll(() -> lastNumber(host, "queue:", EPOCH_DROPS) >= 1));
         check("the client's markers were sequenced", poll(() -> lastNumber(client, "state: ", PUBLISHED) >= 20));
         check("the stale marker was never sequenced", client.lines("STALE MARKER SEQUENCED").isEmpty());
         check("the hosted replica's rounds complete as leader", waitRounds(hostedMember, hostClientId, 2));
@@ -221,9 +221,9 @@ class HostedSnapshotTest {
         check("the client publishes nothing as a follower", lastNumber(client, "state: ", PUBLISHED) == published);
         check("it follows the new leader's markers", poll(() -> stateMarkers(client) >= markersBefore + 20));
         check("the stale marker was still never sequenced", client.lines("STALE MARKER SEQUENCED").isEmpty());
-        check("every marker the client published was sequenced exactly once, or declined: published - declined " +
-              "(the stale one apart) = sequenced", poll(() -> {
-                  return lastNumber(client, "state: ", PUBLISHED) - (lastNumber(client, "state: ", DECLINED) - 1) ==
+        check("every marker the client offered was sequenced exactly once, or dropped by the host: published - " +
+              "epoch drops (the stale one apart) = sequenced", poll(() -> {
+                  return lastNumber(client, "state: ", PUBLISHED) - (lastNumber(host, "queue:", EPOCH_DROPS) - 1) ==
                          lastNumber(client, "state: ", OWN);
               }));
         System.out.println(client.lastLine("state: "));
@@ -263,12 +263,12 @@ class HostedSnapshotTest {
               waitRounds(direct, 11, 3));
         check("the hosted replica's rounds complete", waitRounds(hostedMember, hostClientId, 2));
         check("no instance fenced", noFence());
-        System.out.printf("declined verdicts: %d%n", client.lines("declined:").size());
+        System.out.println(host.lastLine("queue:"));
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
     private static final Pattern PUBLISHED = Pattern.compile("published (\\d+)");
-    private static final Pattern DECLINED = Pattern.compile("declined (\\d+)");
+    private static final Pattern EPOCH_DROPS = Pattern.compile("epochDrops (\\d+)");
     private static final Pattern OWN = Pattern.compile("own (\\d+)");
     private static final Pattern GATE_EPOCH = Pattern.compile("gate epoch (\\d+)");
 
