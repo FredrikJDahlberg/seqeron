@@ -58,8 +58,8 @@ they would see on a member.
 - **The queues** are node-local `aeron:ipc` publications, one per group (stream 2000 + `groupId`). A queue
   carries every system message and the application messages addressed to its group. Every member publishes
   its own, leader and follower alike, and since every member applies the same committed log in the same
-  order, each queue is byte-identical across members, message for message, from `groupSeqNo` 1 or from the cut a restarted
-  member restored at.
+  order, each queue carries the same frames in the same order on every member, from `groupSeqNo` 1 or from the cut a
+  restarted member restored at. Recording positions are each node's own.
 - **The archive** records the queues. Each member therefore holds a complete copy of each, written
   locally, with no cross-node replication and no leader-only recording. A queue is created once, when the
   first topology load activates the groups, and survives leadership changes, so a member's recording of it
@@ -89,9 +89,9 @@ All three speak the same protocol.
    `Unsequenced` message — 28 bytes of envelope — and offers it to the cluster session.
 2. The leader appends the message to the Raft log and replicates it. The entry commits once a majority of
    members hold it.
-3. Every member applies the committed entry. `Sequencer` validates the message against the ten ingress
-   conditions of spec §9.2, copies its 18-byte header, appends `clusterSeqNo` and the consensus timestamp,
-   and republishes it as a `Sequenced` message on the member's queue. The payload is copied, never decoded or
+3. Every member applies the committed entry. `Sequencer` validates the message against the fourteen ingress
+   conditions of spec §9.2, copies its 20-byte header, appends `clusterSeqNo`, the consensus timestamp and
+   the queue's `groupSeqNo`, and republishes it as a `Sequenced` message on the member's queue. The payload is copied, never decoded or
    re-encoded.
 4. The queue offer is reliable: it retries until the message is published, since a dropped message would leave
    a permanent hole. Only the archive's recording can hold it back, as the queue's one tethered subscriber.
@@ -114,7 +114,7 @@ Everything on the wire is one SBE schema (210), in two families sharing one head
   queue. `header.payloadId` names the payload's protocol. The cluster decodes no payload.
 - The **system family** is seqeron's own vocabulary, named by `header.systemEventType` at the same offset:
   connections opening and closing, the gateway list and the election, the cluster's start and stop
-  markers, the protocol registry, and snapshot rounds. Producers submit twelve such events; the
+  markers, the group table, the protocol registry, and snapshot rounds. Producers submit thirteen such events; the
   sequencer synthesizes five (`LeadershipChanged`, `ClusterHeartbeat`, `GatewayActive`,
   `SnapshotStarted`, `SessionClosed`).
 
@@ -124,11 +124,19 @@ Everything on the wire is one SBE schema (210), in two families sharing one head
 | 4 | `connectionId` — the producer's connection, or −1 | ✓ | ✓ |
 | 8 | `sessionId` — the cluster session it arrived on | ✓ | ✓ (set by the sequencer) |
 | 16 | `payloadId` or `systemEventType` | ✓ | ✓ |
-| 18 | `clusterSeqNo` | | ✓ |
-| 26 | `timestamp` — Raft consensus time, epoch ns | | ✓ |
+| 18 | `groupMask` — the groups whose queues the message reaches, bit *g* − 1 for group *g* | ✓ | ✓ |
+| 20 | `clusterSeqNo` | | ✓ |
+| 28 | `timestamp` — Raft consensus time, epoch ns | | ✓ |
+| 36 | `groupSeqNo` — the message's sequence number on its own queue | | ✓ |
 
 Every field sits at the same offset in every template, so a consumer tracks continuity without branching
 on the message type. A consumer splits by family first, then dispatches on `(payloadId, templateId)`.
+**Groups.** The topology declares up to 16 groups, each with its own queue. A producer names the groups an
+application message reaches in `groupMask`, and the message is on each of those queues under that queue's
+`groupSeqNo`; a system message is on every queue. `clusterSeqNo` is shared by all of them, so it jumps along
+a queue and `groupSeqNo` does not. Until a `GroupsRegistered` activates the groups, the sequencer refuses
+every other frame.
+
 Payloads are at most 8,874 bytes, which keeps a message within one 8,960-byte IPC MTU.
 
 ## Time
@@ -231,8 +239,8 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
   its media driver embedded, configured through system properties and the `SEQERON_HOSTS` list of member
   hosts ([`running-a-cluster.md`](running-a-cluster.md)).
 - **Clients** attach to a member's media driver, or a gateway host's, and submit over IPC or UDP.
-- **Topology.** The gateway pairs, the co-located applications, the payload protocols and the snapshot
-  policy are declared in one XML document, validated against a packaged schema and published once onto
+- **Topology.** The groups, the gateway pairs, the co-located applications, the payload protocols and the
+  snapshot policy are declared in one XML document, validated against a packaged schema and published once onto
   the log.
 - **Operations.** `clusterctl` starts and stops the cluster, designates gateways, loads the topology and
   requests snapshot rounds ([`clusterctl.md`](clusterctl.md)). Each member exports its counters to

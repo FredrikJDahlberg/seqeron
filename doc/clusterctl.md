@@ -165,7 +165,7 @@ command until its groups are active, a `GatewayStarted` that arrives before the 
 **S-6**), and a gateway publishes nothing until it finds its own row. Running it again is safe, and is how
 a deployment grows. A later file may add gateways, applications and protocols; its `<groups>` must equal
 the active ones, and it may not move a source to another group (spec **S-8**). Adding groups to a running
-cluster is proposed (spec §7.4). The sequencer de-duplicates rows on
+cluster is proposed ([`upgrades.md`](upgrades.md) §7.4). The sequencer de-duplicates rows on
 `gatewayId` and designates a gateway's bootstrap instance only once, so a file loaded again changes
 nothing. The first load holds up every member's queues for as long as its archive takes to start
 recording them, at most 5 s (spec §7.4).

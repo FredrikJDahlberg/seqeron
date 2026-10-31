@@ -80,8 +80,9 @@ Where each kind of message travels, and which of those streams is the durable re
   one, a member's queue starts again at the cut of the snapshot it restarts from (`doc/snapshot.md` §10.3). Every frame
   sequenced after activation (§7.4) is on at least one queue, and a frame on several queues is recorded once
   on each. An application snapshot (§7.3) is frames on a queue like any other.
-- **F-2. Every node's queues are byte-identical, frame for frame.** A replay from any node's archive can
-  stand in for any other's from where both begin. §9.3 keeps this true, `groupSeqNo` included (**F-6**). A
+- **F-2. Every node's queues carry the same frames in the same order.** Each frame is byte-identical on every
+  queue that carries it, so a replay from any node's archive can stand in for any other's from where both begin.
+  What is shared is the frames and their `clusterSeqNo` and `groupSeqNo`, not the recording's bytes. §9.3 keeps this true, `groupSeqNo` included (**F-6**). A
   recording begins at `groupSeqNo` 1, or at the cut its member restarted from, and its positions match another's
   only between nodes with the same IPC MTU and term length (§12).
 
@@ -412,7 +413,7 @@ its section. An application row has no `id` or `rank` because applications are n
 | group `id` 1–16 (`MAX_GROUPS`, §12) | schema |
 | every gateway and application has a `group`, naming a declared group | schema (key/keyref) |
 | exactly one `rank="0"` per gateway `sourceId` | loader |
-| no `sourceId` is a reserved id (§5) | loader |
+| no `sourceId` is `clusterctl`'s, 2 (§5) | loader |
 | no application `sourceId` equals a gateway `sourceId` | loader |
 | every row of one gateway `sourceId` has the same `snapshot` and `group` | loader |
 | `<snapshots>` has a row with `snapshot="true"`, and no row without | loader |
@@ -768,32 +769,7 @@ derive from the queue they read (**A-8**). A producer's masks stay valid for its
 replays the log from `clusterSeqNo` 1 and activates the groups at the same frame as before, into new
 recordings.
 
-**Proposed: adding groups.** This is the proposed design for adding groups to a running cluster; none of
-it is implemented, and the rules above hold until it is. The sequencer already compares every later
-`GroupsRegistered` with the active table (**S-8** case 2); this design relaxes that comparison and
-deals with queues that start at different frames.
-
-- **S-8 case 2** refuses only a table that changes or removes an active group: a slot that names a group
-  names another or none. One that only adds groups activates them; one that equals the active table
-  changes nothing. Loader step 1 (§6.4) stops on the same condition rather than on any difference.
-- **Activation** runs on each `GroupsRegistered` that adds groups, for the added groups only: open, wait
-  at most 5 s for all of them, prologue. Every load that adds groups then holds up every node's
-  processing of the log, not only the first.
-- **The first queue.** A queue added later starts at its own activation and holds none of the rows
-  before it. The archive's first queue, that of the lowest `groupId` in its first `GroupsRegistered`,
-  carries every system frame from the first activation on and is never removed. It replaces the default
-  queue in §3.1, in loader steps 1 to 5 (§6.4) and, on a member, in **R-6**.
-- **Frames before a later activation** include every frame of the groups before it. They concern none of
-  the added group's sources, whose rows follow its activation, since a row naming an inactive group is
-  refused (**S-8** case 3).
-- **Gateway hosts.** A source's rows are on its own group's queue, which a host serving that source
-  relays. A host whose relayed queues were all added after a source's row never sees it, and **R-6**
-  logs that case too.
-- **Producers.** A running producer keeps the directory it resolved (**A-9**), so a group added later is
-  addressed only by producers started after it, or restarted with the name in `addressedGroups`.
-- **Conformance.** §14 row 11 gains: a table that adds a group is accepted; its queue opens with the most
-  recent `LeadershipChanged` and that table, while the existing queues carry the table as any system
-  frame; and a row naming the added group is accepted after it.
+Adding groups to a running cluster is proposed, not implemented; the rules above hold until it is ([`upgrades.md`](upgrades.md) §7.4).
 
 ---
 
@@ -809,8 +785,9 @@ seqeron owns two SBE schemas: the frames on the log and the replay control proto
 The envelopes and system messages are one schema because they have one owner, ship in one artifact and
 follow the same change rule. `version` stays 0 for the life of schema 210, including system message
 changes: under **V-3** no decoder reads bytes from another build, so a version number would carry no
-information. Schema 211 is unallocated. Schemas 111 (`sbe-cluster.xml`, Aeron's) and 214
-(`sbe-probe.xml`, an application payload) are not part of this protocol.
+information. Schema 211 is unallocated. Schemas 111 (`sbe-cluster.xml`, Aeron's), 214
+(`sbe-probe.xml`, an application payload) and 216 (`sbe-sequencer.xml`, the sequencer's own cluster-snapshot
+state, written and read by one node's build alone) are not part of this protocol.
 
 An application includes nothing from seqeron's schemas and generates nothing from them. It defines its
 own payload encoding and reads frames through seqeron's compiled codecs (the jar in Java, the
@@ -1080,7 +1057,7 @@ This section covers seqeron's two schemas. Payload versioning belongs to the app
 | schema 210 envelopes | frozen; any change is a new wire format | every producer and consumer |
 | a submitted system event in schema 210 | allowed under **V-3**: a new `systemEventType` inside an unchanged envelope | the cluster tier and consumers of the system family |
 | a synthesized system event in schema 210 | a frame-layer change: only the sequencer emits it, and it needs a template id | every producer and consumer |
-| the `<groups>` section of the topology, and each source's group | fixed at the first topology load for the life of an archive, as is each source's group (**S-8**); adding groups is proposed (§7.4) | every producer and consumer |
+| the `<groups>` section of the topology, and each source's group | fixed at the first topology load for the life of an archive, as is each source's group (**S-8**); adding groups is proposed ([`upgrades.md`](upgrades.md) §7.4) | every producer and consumer |
 | schema 212 | in place, no version bump (§10) | one node's build |
 | an application schema | the application's | the application |
 
@@ -1110,7 +1087,9 @@ so there is nothing to stay compatible with.
   synthesized frame differently break **F-2**; an archive that survives an upgrade is the same fault
   later. After such a change, every node's archive is purged. Schema 212 is exempt: it is not recorded
   and never leaves the node. A change to what §9.2 rejects is the same kind of change: a log replayed
-  under another rule sequences another history.
+  under another rule sequences another history. A node enforces this at start-up: `LogVersion`, the major of
+  Aeron's `appVersion`, is raised by every such change, and a node started on a log or snapshot of another
+  major stops with "incompatible version" rather than sequence a different history (`doc/ops.md`).
 
 ## 12. Limits
 

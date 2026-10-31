@@ -289,7 +289,7 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
 - **`N` is a new source**: its own `sourceId` and topology row, one replica per member as `O` has.
 - **`N` is in one of the active groups.** The groups are fixed by the first topology load (spec **S-8**):
   adding, removing or renaming one, or moving a source to another, needs every archive purged. Adding
-  groups to a running cluster is proposed (spec §7.4).
+  groups to a running cluster is proposed (§7.4).
 - **v2 has its own `payloadId`**, with a `PayloadIdRegistered` row. A consumer that does not know it skips
   it (spec **P-1**), so `O`'s consumers ignore `N` unchanged. Under `O`'s `payloadId` with a higher schema
   version, they would decode it too, since **P-4** checks only the `schemaId`, and act on two replies to
@@ -305,7 +305,7 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
    replies. `N` builds its state by replaying from `clusterSeqNo` 1, which means decoding every request
    version in the log. Proposed: `N` restores `O`'s newest confirmed snapshot instead, upcasting its records
    (§3.1, §5), and takes part in rounds under its own `sourceId` from then on. A snapshot server
-   ([`snapshot.md`](snapshot.md) §11) serves `O`'s snapshot on any host.
+   ([`snapshot-server.md`](snapshot-server.md)) serves `O`'s snapshot on any host.
 2. **Compare.** Before any consumer depends on `N`, a comparator checks `N`'s reply to each request against
    `O`'s, matched by whatever the replies carry to name their request: offline over a member's archive with
    both schemas' IR, as `SbeLogPrinter` reads one, or as a live consumer that publishes nothing.
@@ -339,6 +339,35 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
   consumer replaying that stretch skips one of them.
 - **`N`'s full replay** at its start, until it can restore from `O`'s snapshot.
 
+### 7.4 Adding groups to a running cluster (proposed)
+
+This is the proposed design for adding groups to a running cluster; none of
+it is implemented, and the rules in spec §7.4 hold until it is. The sequencer already compares every later
+`GroupsRegistered` with the active table (spec **S-8** case 2); this design relaxes that comparison and
+deals with queues that start at different frames.
+
+- **S-8 case 2** refuses only a table that changes or removes an active group: a slot that names a group
+  names another or none. One that only adds groups activates them; one that equals the active table
+  changes nothing. Loader step 1 (spec §6.4) stops on the same condition rather than on any difference.
+- **Activation** runs on each `GroupsRegistered` that adds groups, for the added groups only: open, wait
+  at most 5 s for all of them, prologue. Every load that adds groups then holds up every node's
+  processing of the log, not only the first.
+- **The first queue.** A queue added later starts at its own activation and holds none of the rows
+  before it. The archive's first queue, that of the lowest `groupId` in its first `GroupsRegistered`,
+  carries every system frame from the first activation on and is never removed. It replaces the default
+  queue in spec §3.1, in loader steps 1 to 5 (spec §6.4) and, on a member, in spec **R-6**.
+- **Frames before a later activation** include every frame of the groups before it. They concern none of
+  the added group's sources, whose rows follow its activation, since a row naming an inactive group is
+  refused (spec **S-8** case 3).
+- **Gateway hosts.** A source's rows are on its own group's queue, which a host serving that source
+  relays. A host whose relayed queues were all added after a source's row never sees it, and spec **R-6**
+  logs that case too.
+- **Producers.** A running producer keeps the directory it resolved (spec **A-9**), so a group added later is
+  addressed only by producers started after it, or restarted with the name in `addressedGroups`.
+- **Conformance.** spec §14 row 11 gains: a table that adds a group is accepted; its queue opens with the most
+  recent `LeadershipChanged` and that table, while the existing queues carry the table as any system
+  frame; and a row naming the added group is accepted after it.
+
 ## 8. Status
 
 | piece | status |
@@ -354,11 +383,11 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
 | consumers-first enforced by the cluster: announced versions and an activation frame | proposed (§5.4): a schema 210 change |
 | a new source beside the old: its own `sourceId`, `payloadId` and rows, loaded into a running cluster | implemented (§7.1) |
 | groups: a queue per group, fixed by the first topology load | implemented (spec §3.1, §7.4) |
-| groups added to a running cluster by a later topology load | proposed, a second step (spec §7.4) |
+| groups added to a running cluster by a later topology load | proposed, a second step (§7.4) |
 | a source restoring another source's snapshot | proposed (§7.2 step 1) |
 | a reply comparator | proposed (§7.2 step 2) |
 | a cutover marker convention | proposed (§7.2 step 3): application-level; a system event for it could join the next schema 210 change, which purges anyway (spec **V-3**) |
-| retiring a source | proposed: nothing deregisters one. Each instance's directory keeps its last confirmed file, and a snapshot server ([`snapshot.md`](snapshot.md) §11.4) its last two confirmed rounds, since no newer round supersedes them |
+| retiring a source | proposed: nothing deregisters one. Each instance's directory keeps its last confirmed file, and a snapshot server ([`snapshot-server.md`](snapshot-server.md) §4) its last two confirmed rounds, since no newer round supersedes them |
 | knowing that nothing reads v1 | proposed: a `consumes` attribute on topology rows, a label like the others, would let a tool check that a retirement is safe |
 | compatibility rules for application protocols in the spec | not specified |
 
