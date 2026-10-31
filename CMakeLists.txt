@@ -352,6 +352,10 @@ if(SEQERON_BUILD_TESTS)
     add_executable(hosted_probe seqeron-client/src/test/cpp-probe/HostedProbe.cpp)
     target_link_libraries(hosted_probe PRIVATE seqeron_core seqeron_flags)
 
+    # hosted_gateway_probe — the same for a hosted::Gateway stub, which HostedGatewayStubTest drives.
+    add_executable(hosted_gateway_probe seqeron-client/src/test/cpp-probe/HostedGatewayProbe.cpp)
+    target_link_libraries(hosted_gateway_probe PRIVATE seqeron_core seqeron_flags)
+
     # hop_bench — the hosted-façade hop from a C++ client (doc/hosted-facade-draft.md §17.10). Bench only; nothing runs it.
     add_executable(hop_bench seqeron-client/src/test/cpp-bench/HopBench.cpp)
     target_link_libraries(hop_bench PRIVATE seqeron_core seqeron_flags)

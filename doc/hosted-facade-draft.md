@@ -430,11 +430,12 @@ client's driver connection.
   supervise per instance (§17.6), and a JVM and a core per client (§17.10.1). The parity the C++ client carried
   does not go with it: `ReplayerRecovery`, `PendingSends` and the façades stay case for case in Java and C#, two
   languages rather than three. **The added lines are only partly counted, and the first stage is not decided until
-  they are.** What exists: a C++ stub of `Application` alone, `hosted/Application.hpp`, is 583 lines with its
-  comments (a build of the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217
-  lines of XML and its generated C++ codecs 16,800 more, and the prototype host is 624 lines of Java (test scope,
-  with the harness's own options and the allocation window). The stub has no `Gateway` or `Consumer` and none of the
-  connection ids, so it is a floor, not the answer.
+  they are.** What exists: the C++ stubs of `Application` and `Gateway` share a core,
+  `hosted/detail/Attachment.hpp`, of 608 lines with its comments, and are 140 and 252 lines on top of it (a build of
+  the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217 lines of XML and its
+  generated C++ codecs 16,800 more, and the prototype host, which runs either façade, is 846 lines of Java (test scope,
+  with the harness's own options and the allocation window). There is no `Consumer` stub, so it is a floor, not the
+  answer.
 - Conformance is by golden trace, so that the stubs' tests are not three ports of one suite. A trace is streams
   303 and 304 and the counters recorded from the Java host through a scripted scenario: attach, restore, steady
   state, a leader change, a hold, a cut, a lost client, a detach. Each stub is tested by replaying the host half
@@ -666,7 +667,15 @@ per-attachment images of **H-15**, and the counters of §17.2.1. It differs from
   of the live request is answered again, any other client with `BUSY`. The façade is built once the events publication
   is connected, so the restore has a reader.
 - **`GroupsResolved`** is sent once, from `onGroupsResolved`, before the first `Gate`.
-- **Not sent.** `ClusterTime`, `OpenConnection` and the Gateway messages. `AttachPending`
+- **Gateway.** For `Kind.GATEWAY`, when `probe.gatewayName` names the row, the host builds a `Gateway`. Its
+  `onActivated` sends `Role` and spins, keeping the cluster session alive, until the client's `Activated`; on `true`
+  the host takes the open edge at once (epoch up, `Gate`), so the first `OpenConnection` is stamped with the epoch it
+  is placed under. `onStandby` sends `Role(false)` and then the `Gate`. `OpenConnection` is windowed; `CloseConnection`
+  and `GateClosed` are queued behind it in order but are outside the window and the retired counter (**H-5**), and
+  `GateClosed` takes the edge down, epoch up, as the façade's `gateClosed()` does. A `Publish` on a connection whose
+  `ConnectionOpened` is not yet placed stays at the head of the queue, un-retired, until the façade accepts it. An
+  `OpenConnection` under an id the façade did not allocate closes the attachment (`CLIENT_PROTOCOL`).
+- **Not sent.** `ClusterTime`. `AttachPending`
   is never needed, since the host closes a façade synchronously. The snapshot round id is the host's own cut count.
 - **`kill -9` of the host or a client** is the same as before. The ghost scenario changed: with per-attachment images a
   command under another attachment's id cannot be sent, so the client publishes from a second publication on stream
@@ -707,8 +716,8 @@ The command queue and window have their own scenarios (`HostedCommandQueueTest`)
 and a window of 1,024 bytes, a stub that ignores the window, and a gate edge across a paused leader (17 queued
 commands dropped, 4,197 offered, 4,180 sequenced, none out of order).
 
-Not covered: the stub's connection ids (**H-4**), a held ingress of seconds, a hosted `Gateway` and its edge (§17.5),
-a host killed in a cut, a leader killed and not paused, state of more than one record or a record near the 65,535-byte
+Not covered: a held ingress of seconds, a hosted `Gateway`'s pair, standby and failover (§17.5), its snapshots, a
+host killed in a cut, a leader killed and not paused, state of more than one record or a record near the 65,535-byte
 limit, and a C# stub. Liveness by counter, the attach of **H-8**, the stub's other local checks and a C++ stub of an
 `Application` are covered by §17.11.1.
 
@@ -720,11 +729,14 @@ limit, and a C# stub. Liveness by counter, the attach of **H-8**, the stub's oth
 `payloadId`, a payload above `MAX_PAYLOAD_LENGTH`), the mirrored gate (**H-16**) and the window (**H-5**). It answers
 the host's `SnapshotCut` from a `SnapshotListener`, restores from `RestoreRecord` and keeps the heartbeat counter. `reply` takes the
 `RequestRef` of the request, and `GroupsResolved` hands the listener a `GroupDirectory` and gives `publish` the direct
-call's group-mask check (`Refused` for a group the table lacks). Not built: the Gateway messages, the connection ids
-and a `Consumer`. `hosted_probe`
+call's group-mask check (`Refused` for a group the table lacks). Not built: a `Consumer`. `hosted::Gateway`
+(`.../hosted/Gateway.hpp`) is the stub of a `Gateway` on the same core (`hosted/detail/Attachment.hpp`): its listener is the direct
+`Gateway`'s, `onActivated` is answered with `Activated` and the stub then serves under the epoch one above the last `Gate`'s
+(§17.5), `openConnection` allocates its ids from the last `Role` and returns `NO_CONNECTION` for a full window or a
+back-pressured stream, and `closeConnection` and `gateClosed` retry within the call. `hosted_probe`
 (`seqeron-client/src/test/cpp-probe`) holds the probe's state in it, as `HostedTestApplicationClient` does.
 
-Two system tests drive it against the Java host, with `HOSTED_PROBE` naming the binary:
+Three system tests drive the stubs against the Java host, with `HOSTED_PROBE` naming the binary:
 
 - `HostedCppStubTest`: it attaches, the gate opens, 2,000 markers are sequenced once and in order, and the two local
   refusals fire. With the host's tracker at 4 and a 1 KiB window, 20,000 markers offered flat out are all placed and
@@ -738,3 +750,10 @@ Two system tests drive it against the Java host, with `HOSTED_PROBE` naming the 
   corrupt record fenced with `SNAPSHOT_DIVERGED`, each check as with the Java client and the direct replicas
   comparing the stub's rounds (**A-7**). Not run with it: the stale-epoch scenario and the ghost command, which need
   a client that sends what the stub never would.
+- `HostedGatewayStubTest` (`hosted_gateway_probe`, beside `hosted_probe`; one gateway row, no standby, no snapshot
+  policy): the stub opens three connections under the ids the first `Role` named (0, 1, 2), publishes 20 markers on each,
+  and every one is sequenced under its own `connectionId`; the three `ConnectionOpened` and three `ConnectionClosed`
+  reach the listener. A `Publish` that reached the host before its `ConnectionOpened` was placed stayed at the head
+  (`headDeclines` 1), and nothing fenced. In a second scenario the stub then calls `gateClosed()`: the host takes the
+  edge down and asks again with a second `Role` whose `firstConnectionId` is 3, past the highest id issued, and three
+  more connections run the same way.

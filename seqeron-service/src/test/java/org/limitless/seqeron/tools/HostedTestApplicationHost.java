@@ -26,6 +26,7 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.app.RequestRef;
@@ -33,21 +34,27 @@ import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.app.Tuning;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.sbe.hosted.ActivatedDecoder;
 import org.limitless.seqeron.sbe.hosted.AttachDecoder;
 import org.limitless.seqeron.sbe.hosted.AttachedEncoder;
 import org.limitless.seqeron.sbe.hosted.CaughtUpEncoder;
+import org.limitless.seqeron.sbe.hosted.CloseConnectionDecoder;
+import org.limitless.seqeron.sbe.hosted.ConnectionEncoder;
 import org.limitless.seqeron.sbe.hosted.DetachDecoder;
 import org.limitless.seqeron.sbe.hosted.FencedEncoder;
+import org.limitless.seqeron.sbe.hosted.GateClosedDecoder;
 import org.limitless.seqeron.sbe.hosted.GateEncoder;
 import org.limitless.seqeron.sbe.hosted.GroupsResolvedEncoder;
 import org.limitless.seqeron.sbe.hosted.Kind;
 import org.limitless.seqeron.sbe.hosted.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.hosted.MessageHeaderEncoder;
+import org.limitless.seqeron.sbe.hosted.OpenConnectionDecoder;
 import org.limitless.seqeron.sbe.hosted.PayloadEncoder;
 import org.limitless.seqeron.sbe.hosted.PublishDecoder;
 import org.limitless.seqeron.sbe.hosted.Refusal;
 import org.limitless.seqeron.sbe.hosted.ReplyDecoder;
 import org.limitless.seqeron.sbe.hosted.RestoreRecordEncoder;
+import org.limitless.seqeron.sbe.hosted.RoleEncoder;
 import org.limitless.seqeron.sbe.hosted.SnapshotCutEncoder;
 import org.limitless.seqeron.sbe.hosted.SnapshotEndDecoder;
 import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
@@ -64,7 +71,7 @@ import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
  * default), {@code host.spin} (busy-spin the loop rather than back off), {@code host.allocWarmupFrames} (0: off) and {@code host.allocWindowFrames} (20000): once that many frames
  * have crossed the loop, logs the bytes it allocated over the next window, for {@code HostedAllocationTest}.
  */
-public final class HostedTestApplicationHost implements Application.Listener, SnapshotListener {
+public final class HostedTestApplicationHost implements Application.Listener, Gateway.Listener, SnapshotListener {
     private static final int EXIT_FENCED = 70;
     private static final long BACK_PRESSURE_NS = TimeUnit.SECONDS.toNanos(1);
 
@@ -83,6 +90,13 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     private final PublishDecoder publishIn = new PublishDecoder();
     private final ReplyDecoder replyIn = new ReplyDecoder();
     private final GroupsResolvedEncoder groupsOut = new GroupsResolvedEncoder();
+    private final OpenConnectionDecoder openIn = new OpenConnectionDecoder();
+    private final CloseConnectionDecoder closeIn = new CloseConnectionDecoder();
+    private final GateClosedDecoder gateClosedIn = new GateClosedDecoder();
+    private final ActivatedDecoder activatedIn = new ActivatedDecoder();
+    private final ConnectionEncoder connectionOut = new ConnectionEncoder();
+    private final RoleEncoder roleOut = new RoleEncoder();
+    private final String gatewayName = System.getProperty("probe.gatewayName");
     private final SnapshotRecordDecoder recordIn = new SnapshotRecordDecoder();
     private final SnapshotEndDecoder endIn = new SnapshotEndDecoder();
     private final AttachedEncoder attachedOut = new AttachedEncoder();
@@ -114,6 +128,13 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     private Counter hostHeartbeat;
     private Path snapshotDir;
     private Application app;
+    private Gateway gateway;
+    private boolean gatewayKind;
+    private boolean activating;
+    private String breach;
+    private boolean activatedSeen;
+    private boolean activatedOpened;
+    private long connectionsOpened;
     private boolean attached;
     private long liveClientId;
     private long liveRequestId;
@@ -181,9 +202,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
                     connect();
                 }
             }
-            if (app != null) {
-                work += app.doWork();
-                if (!fenced) {
+            if (facade()) {
+                work += app != null ? app.doWork() : gateway.doWork();
+                if (!fenced && facade()) {
                     placeCommands();
                     afterDoWork();
                     allocWindow();
@@ -191,9 +212,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
             }
             idle.idle(work);
         }
-        if (app != null) {
-            app.close();
-        }
+        closeFacade();
         aeron.close();
         return fenced ? EXIT_FENCED : 0;
     }
@@ -222,7 +241,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
 
     private void afterDoWork() {
         final long now = System.nanoTime();
-        final boolean canPublish = app.canPublish();
+        final boolean canPublish = app != null ? app.canPublish() : gateway.canAccept();
         if (canPublish != lastCanPublish) {
             lastCanPublish = canPublish;
             sendGate();
@@ -257,7 +276,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
             onAttach();
         } else if (headerIn.templateId() == DetachDecoder.TEMPLATE_ID) {
             detachIn.wrap(buffer, offset + HostedWire.HEADER, headerIn.blockLength(), headerIn.version());
-            if (app != null && detachIn.clientId() == liveClientId) {
+            if (facade() && detachIn.clientId() == liveClientId) {
                 if (collecting) {
                     cutLost = true;
                     endSeen = true;
@@ -306,11 +325,12 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
             sendAttached(clientId, requestId, Refusal.VERSION);
             return;
         }
-        if (kind != Kind.APPLICATION) {
+        if (kind != Kind.APPLICATION && !(kind == Kind.GATEWAY && gatewayName != null)) {
             sendAttached(clientId, requestId, Refusal.KIND);
             return;
         }
         liveClientId = clientId;
+        gatewayKind = kind == Kind.GATEWAY;
         liveRequestId = requestId;
         retired = 0;
         queuedBytes = 0;
@@ -349,7 +369,46 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
         }
     }
 
+    private boolean facade() {
+        return app != null || gateway != null;
+    }
+
+    private void keepFacadeAlive() {
+        if (app != null) {
+            app.keepAlive();
+        } else {
+            gateway.keepAlive();
+        }
+    }
+
+    private void closeFacade() {
+        if (app != null) {
+            app.close();
+            app = null;
+        }
+        if (gateway != null) {
+            gateway.close();
+            gateway = null;
+        }
+    }
+
     private void startApp() {
+        if (gatewayKind) {
+            gateway = Gateway.builder()
+                          .gatewayName(gatewayName)
+                          .sourceId(sourceId)
+                          .clientId(clientId)
+                          .memberId(ClusterProbe.memberId())
+                          .egressChannel(ClusterProbe.egressChannel())
+                          .ingressEndpoints(ClusterProbe.ingressEndpoints())
+                          .listener(this)
+                          .tuning(pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity))
+                          .build();
+            attached = true;
+            gateway.start(aeron);
+            log("ATTACHED clientId=%d (gateway %s)", liveClientId, gatewayName);
+            return;
+        }
         app = Application.builder()
                   .sourceId(sourceId)
                   .clientId(clientId)
@@ -389,14 +448,23 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
 
     private void onCommand(final DirectBuffer buffer, final int offset, final int length,
                            final io.aeron.logbuffer.Header header) {
-        if (app == null) {
+        if (!facade()) {
             return;
         }
         commandsSeen = true;
         headerIn.wrap(buffer, offset);
         final int body = offset + HostedWire.HEADER;
         switch (headerIn.templateId()) {
-        case PublishDecoder.TEMPLATE_ID, ReplyDecoder.TEMPLATE_ID -> onPublish(buffer, offset, length);
+        case PublishDecoder.TEMPLATE_ID, ReplyDecoder.TEMPLATE_ID, OpenConnectionDecoder.TEMPLATE_ID ->
+            onPublish(buffer, offset, length, true);
+        case CloseConnectionDecoder.TEMPLATE_ID, GateClosedDecoder.TEMPLATE_ID -> onPublish(buffer, offset, length, false);
+        case ActivatedDecoder.TEMPLATE_ID -> {
+            if (activating) {
+                activatedIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+                activatedOpened = activatedIn.opened() != 0;
+                activatedSeen = true;
+            }
+        }
         case SnapshotRecordDecoder.TEMPLATE_ID -> {
             recordIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
             if (collecting && recordIn.roundId() == cutNo) {
@@ -416,54 +484,107 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
         }
     }
 
-    /** Queues the message whole; H-5's window decides whether the client may have sent it. */
-    private void onPublish(final DirectBuffer buffer, final int offset, final int length) {
-        if (queuedBytes + length > commandWindow || !queue.append(buffer, offset, length)) {
+    /** Queues the message whole; H-5's window decides whether the client may have sent it, and does not count a close. */
+    private void onPublish(final DirectBuffer buffer, final int offset, final int length, final boolean windowed) {
+        final int counted = windowed ? length : 0;
+        if (queuedBytes + counted > commandWindow || !queue.append(buffer, offset, length)) {
             closeApp("CLIENT_WINDOW: " + queuedBytes + " bytes queued, window " + commandWindow);
             return;
         }
-        queuedBytes += length;
+        queuedBytes += counted;
         peakQueuedBytes = Math.max(peakQueuedBytes, queuedBytes);
     }
 
     private void placeCommands() {
-        if (queuedBytes > 0) {
+        if (!queue.isEmpty()) {
             queue.consume(place, placePerCycle);
+        }
+        if (breach != null) {
+            final String reason = breach;
+            breach = null;
+            closeApp(reason);
         }
     }
 
     /** H-3 and H-5: the head is placed in the epoch it was decided in, dropped otherwise, kept if the façade declines. */
     private boolean place(final MutableDirectBuffer buffer, final int offset, final int length, final int head) {
         headerIn.wrap(buffer, offset);
-        final boolean isReply = headerIn.templateId() == ReplyDecoder.TEMPLATE_ID;
+        final int templateId = headerIn.templateId();
+        final boolean windowed =
+            templateId != CloseConnectionDecoder.TEMPLATE_ID && templateId != GateClosedDecoder.TEMPLATE_ID;
         final int body = offset + HostedWire.HEADER;
         final long commandEpoch;
-        if (isReply) {
+        switch (templateId) {
+        case ReplyDecoder.TEMPLATE_ID -> {
             replyIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
             commandEpoch = replyIn.epoch();
-        } else {
+        }
+        case OpenConnectionDecoder.TEMPLATE_ID -> {
+            openIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            commandEpoch = openIn.epoch();
+        }
+        case CloseConnectionDecoder.TEMPLATE_ID -> {
+            closeIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            commandEpoch = closeIn.epoch();
+        }
+        case GateClosedDecoder.TEMPLATE_ID -> {
+            gateClosedIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            commandEpoch = gateClosedIn.epoch();
+        }
+        default -> {
             publishIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
             commandEpoch = publishIn.epoch();
         }
+        }
         if (commandEpoch != epoch || !leading) {
             epochDrops++;
-            retire(length);
+            retire(length, windowed);
             return true;
         }
-        final int payloadId;
-        final int payloadLength;
         final Publish result;
-        if (isReply) {
-            payloadId = replyIn.payloadId();
-            payloadLength = replyIn.bodyLength();
+        switch (templateId) {
+        case ReplyDecoder.TEMPLATE_ID -> {
+            final int payloadLength = replyIn.bodyLength();
             replyIn.getBody(scratch, 0, payloadLength);
             result = app.reply(new RequestRef(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
-                payloadId, scratch, payloadLength);
-        } else {
-            payloadId = publishIn.payloadId();
-            payloadLength = publishIn.bodyLength();
+                replyIn.payloadId(), scratch, payloadLength);
+        }
+        case OpenConnectionDecoder.TEMPLATE_ID -> {
+            final int dataLength = openIn.dataLength();
+            openIn.getData(scratch, 0, dataLength);
+            final int id = gateway.openConnection(scratch, dataLength);
+            if (id == Gateway.NO_CONNECTION) {
+                result = Publish.Refused;
+            } else if (id != openIn.connectionId()) {
+                breach = "CLIENT_PROTOCOL: connection id " + openIn.connectionId() + " but the façade allocated " + id;
+                result = Publish.Refused;
+            } else {
+                connectionsOpened++;
+                log("opened connection %d", id);
+                result = Publish.Published;
+            }
+        }
+        case CloseConnectionDecoder.TEMPLATE_ID -> {
+            gateway.closeConnection((int)closeIn.connectionId());
+            result = Publish.Published;
+        }
+        case GateClosedDecoder.TEMPLATE_ID -> {
+            gateway.gateClosed();
+            leading = false;
+            epoch++;
+            lastCanPublish = false;
+            log("gate closed by the client — gate epoch %d", epoch);
+            sendGate();
+            result = Publish.Published;
+        }
+        default -> {
+            final int payloadLength = publishIn.bodyLength();
             publishIn.getBody(scratch, 0, payloadLength);
-            result = app.publish((int)publishIn.groupMask(), payloadId, scratch, payloadLength);
+            result = gateway != null ? gateway.publish((int)publishIn.connectionId(), (int)publishIn.groupMask(),
+                                                       publishIn.payloadId(), scratch, payloadLength)
+                                     : app.publish((int)publishIn.groupMask(), publishIn.payloadId(), scratch,
+                                                   payloadLength);
+        }
         }
         if (result == Publish.Declined) {
             headDeclines++;
@@ -475,28 +596,28 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
             refusedDrops++;
         }
         frames++;
-        retire(length);
+        retire(length, windowed);
         return true;
     }
 
     private void logQueue() {
-        log("queue: placed %d, epochDrops %d, refused %d, headDeclines %d, queued %d, peakQueued %d, window %d", placed,
-            epochDrops, refusedDrops, headDeclines, queuedBytes, peakQueuedBytes, commandWindow);
+        log("queue: placed %d, epochDrops %d, refused %d, headDeclines %d, queued %d, peakQueued %d, window %d, connections %d",
+            placed, epochDrops, refusedDrops, headDeclines, queuedBytes, peakQueuedBytes, commandWindow,
+            connectionsOpened);
     }
 
-    private void retire(final int length) {
-        queuedBytes -= length;
-        retired += length;
-        retiredCounter.setOrdered(retired);
+    private void retire(final int length, final boolean windowed) {
+        if (windowed) {
+            queuedBytes -= length;
+            retired += length;
+            retiredCounter.setOrdered(retired);
+        }
     }
 
     private void closeApp(final String reason) {
         log("%s", reason);
         logQueue();
-        if (app != null) {
-            app.close();
-            app = null;
-        }
+        closeFacade();
         attached = false;
         CloseHelper.quietClose(commands);
         CloseHelper.quietClose(events);
@@ -537,6 +658,58 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     }
 
     @Override
+    public boolean onActivated(final int firstConnectionId) {
+        roleOut.wrapAndApplyHeader(out, 0, headerOut).active((short)1).firstConnectionId(firstConnectionId);
+        send(HostedWire.HEADER + roleOut.encodedLength());
+        activatedSeen = false;
+        activatedOpened = false;
+        activating = true;
+        while (!activatedSeen) {
+            commands.poll(onCommand, 16);
+            gateway.keepAlive();
+            HostedWire.beat(hostHeartbeat);
+            if (stalled || clientLiveness.stale(System.nanoTime())) {
+                activating = false;
+                return false;
+            }
+            Thread.onSpinWait();
+        }
+        if (activatedOpened) {
+            leading = true;
+            epoch++;
+            lastCanPublish = true;
+            log("now serving — gate epoch %d, first connection id %d", epoch, firstConnectionId);
+            sendGate();
+        }
+        activating = false;
+        return activatedOpened;
+    }
+
+    @Override
+    public void onStandby() {
+        roleOut.wrapAndApplyHeader(out, 0, headerOut).active((short)0).firstConnectionId(0);
+        send(HostedWire.HEADER + roleOut.encodedLength());
+        leading = false;
+        epoch++;
+        lastCanPublish = false;
+        log("standby — gate epoch %d", epoch);
+        sendGate();
+    }
+
+    @Override
+    public void onConnectionOpened(final int connectionId, final DirectBuffer data, final int offset, final int length) {
+        connectionOut.wrapAndApplyHeader(out, 0, headerOut).connectionId(connectionId).opened((short)1).putData(data, offset,
+            length);
+        send(HostedWire.HEADER + connectionOut.encodedLength());
+    }
+
+    @Override
+    public void onConnectionClosed(final int connectionId) {
+        connectionOut.wrapAndApplyHeader(out, 0, headerOut).connectionId(connectionId).opened((short)0).putData(scratch, 0, 0);
+        send(HostedWire.HEADER + connectionOut.encodedLength());
+    }
+
+    @Override
     public void onSequenced(final Payload payload) {
         frames++;
         payloadOut.wrapAndApplyHeader(out, 0, headerOut)
@@ -552,6 +725,11 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
             .payloadId(payload.payloadId())
             .putBody(payload.buffer(), payload.payloadOffset(), payload.payloadLength());
         send(HostedWire.HEADER + payloadOut.encodedLength());
+    }
+
+    /** Both listeners default it, so the host must choose; ClusterTime is not sent by the prototype. */
+    @Override
+    public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
     }
 
     @Override
@@ -595,7 +773,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
             while (!endSeen) {
                 commands.poll(onCommand, 16);
                 attachRequests.poll(onAttachRequest, 16);
-                app.keepAlive();
+                keepFacadeAlive();
                 HostedWire.beat(hostHeartbeat);
                 if (clientLiveness.stale(System.nanoTime())) {
                     cutLost = true;
@@ -631,11 +809,15 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
 
     // ── Sends ────────────────────────────────────────────────────────────────────────────────────────────────
 
+    private boolean canPublishNow() {
+        return app != null ? app.canPublish() : gateway != null && (gateway.canAccept() || activating);
+    }
+
     private void sendGate() {
         gateOut.wrapAndApplyHeader(out, 0, headerOut)
             .epoch(epoch)
             .leading((short)(leading ? 1 : 0))
-            .canPublish((short)(app != null && app.canPublish() ? 1 : 0))
+            .canPublish((short)(canPublishNow() ? 1 : 0))
             .caughtUp((short)0);
         send(HostedWire.HEADER + gateOut.encodedLength());
     }
