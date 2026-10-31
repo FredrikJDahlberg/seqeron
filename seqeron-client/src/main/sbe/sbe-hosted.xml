@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+    The hosted-façade protocol: schema 218, drafted in doc/hosted-facade-draft.md §17.3 (not normative).
+
+    Between a host that runs the real façade and a client stub, on node-local aeron:ipc streams 301 to 304. Never
+    sequenced or recorded, and never leaves the node. Every message carries a messageHeader, since a reader checks
+    its schemaId is 218 (T-1) and the stub reads a Payload's own header past the host's.
+
+    Booleans are uint8 (0 or 1). Counter ids are int32 and registration ids int64, as Aeron's.
+-->
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="org.limitless.seqeron.sbe.hosted"
+                   id="218"
+                   version="0"
+                   description="Hosted-façade protocol between a host and a client stub (draft)"
+                   byteOrder="littleEndian">
+
+    <types>
+
+        <composite name="messageHeader">
+            <type name="blockLength" primitiveType="uint16"/>
+            <type name="templateId"  primitiveType="uint16"/>
+            <type name="schemaId"    primitiveType="uint16"/>
+            <type name="version"     primitiveType="uint16"/>
+        </composite>
+
+        <composite name="groupSizeEncoding">
+            <type name="blockLength" primitiveType="uint16"/>
+            <type name="numInGroup"  primitiveType="uint16"/>
+        </composite>
+
+        <!-- uint32: a snapshot record is at most 65,535 bytes, which a uint16 length cannot carry (SBE reserves
+             65,535 of uint16 as null for the optional case); 1 MiB bounds a field well inside an eighth of a term -->
+        <composite name="varDataEncoding">
+            <type name="length"  primitiveType="uint32" maxValue="1048576"/>
+            <type name="varData" primitiveType="uint8" length="0"/>
+        </composite>
+
+        <enum name="Kind" encodingType="uint8">
+            <validValue name="GATEWAY">0</validValue>
+            <validValue name="APPLICATION">1</validValue>
+            <validValue name="CONSUMER">2</validValue>
+        </enum>
+
+        <enum name="Refusal" encodingType="uint8">
+            <validValue name="NONE">0</validValue>
+            <validValue name="BUSY">1</validValue>
+            <validValue name="VERSION">2</validValue>
+            <validValue name="KIND">3</validValue>
+        </enum>
+
+    </types>
+
+    <!-- Attach, streams 301 (client to host) and 302 (host to client) -->
+
+    <sbe:message name="Attach" id="1" description="Starts a façade (H-8)">
+        <field name="clientId"                id="1"  type="int64"/>
+        <field name="requestId"               id="2"  type="int64"/>
+        <field name="kind"                    id="3"  type="Kind"/>
+        <field name="protocolVersion"         id="4"  type="uint16"/>
+        <field name="commandSessionId"        id="5"  type="int32"
+               description="The client's stream 304 publication; unused for a Consumer"/>
+        <field name="heartbeatCounterId"      id="6"  type="int32"/>
+        <field name="heartbeatRegistrationId" id="7"  type="int64"/>
+        <field name="appliedCounterId"        id="8"  type="int32"/>
+        <field name="appliedRegistrationId"   id="9"  type="int64"/>
+        <field name="formatVersion"           id="10" type="int32"/>
+        <group name="supportedFormats" id="11" dimensionType="groupSizeEncoding">
+            <field name="formatVersion" id="12" type="int32"/>
+        </group>
+        <data name="hostName"     id="13" type="varDataEncoding"/>
+        <data name="aeronVersion" id="14" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="Detach" id="2" description="Orderly shutdown (H-9); not resent">
+        <field name="clientId" id="1" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="Attached" id="3"
+                 description="Accepts an Attach, or refuses it with eventSessionId NO_ATTACH (-1) and a reason">
+        <field name="clientId"                id="1" type="int64"/>
+        <field name="requestId"               id="2" type="int64"/>
+        <field name="eventSessionId"          id="3" type="int32"/>
+        <field name="refusal"                 id="4" type="Refusal"/>
+        <field name="heartbeatCounterId"      id="5" type="int32"/>
+        <field name="heartbeatRegistrationId" id="6" type="int64"/>
+        <field name="retiredCounterId"        id="7" type="int32"/>
+        <field name="retiredRegistrationId"   id="8" type="int64"/>
+        <field name="commandWindow"           id="9" type="int64"
+               description="Bytes of windowed commands the stub may have outstanding (H-5)"/>
+        <field name="sourceId"                id="10" type="int32"/>
+    </sbe:message>
+
+    <sbe:message name="AttachPending" id="4"
+                 description="Not now: the host is still closing a previous attachment's façade; resend">
+        <field name="clientId"  id="1" type="int64"/>
+        <field name="requestId" id="2" type="int64"/>
+    </sbe:message>
+
+    <!-- Host to client, stream 303 -->
+
+    <sbe:message name="GroupsResolved" id="10" description="The GroupDirectory, once, before the first Gate or Role">
+        <group name="groups" id="1" dimensionType="groupSizeEncoding">
+            <field name="groupId" id="2" type="int32"/>
+            <field name="mask"    id="3" type="int64"/>
+            <data  name="name"    id="4" type="varDataEncoding"/>
+        </group>
+    </sbe:message>
+
+    <sbe:message name="RestoreRecord" id="11"
+                 description="One onRestore call, in call order; recordIndex 0 means clear state (H-7)">
+        <field name="recordIndex"   id="1" type="int32"/>
+        <field name="formatVersion" id="2" type="int32"/>
+        <data  name="data"          id="3" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="Payload" id="12"
+                 description="onSequenced: one application payload; the bytes carry their own messageHeader">
+        <field name="clusterSeqNo"       id="1"  type="int64"/>
+        <field name="groupSeqNo"         id="2"  type="int64"/>
+        <field name="sourceId"           id="3"  type="int32"/>
+        <field name="connectionId"       id="4"  type="int64"/>
+        <field name="groupMask"          id="5"  type="int64"/>
+        <field name="sourceSessionId"    id="6"  type="int64"/>
+        <field name="clusterTimestampNs" id="7"  type="int64"/>
+        <field name="receiveTimeNs"      id="8"  type="int64"/>
+        <field name="position"           id="9"  type="int64"/>
+        <field name="payloadId"          id="10" type="uint16"/>
+        <data  name="body"               id="11" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="Connection" id="13" description="Gateway only: onConnectionOpened or onConnectionClosed">
+        <field name="connectionId" id="1" type="int64"/>
+        <field name="opened"       id="2" type="uint8"/>
+        <data  name="data"         id="3" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="ClusterTime" id="14" description="onClusterHeartbeat">
+        <field name="clusterTimeNs" id="1" type="int64"/>
+        <field name="receiveTimeNs" id="2" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="Gate" id="15" description="Every change of the façade's gate state, in event order (H-3, H-16)">
+        <field name="epoch"      id="1" type="int64"/>
+        <field name="leading"    id="2" type="uint8"/>
+        <field name="canPublish" id="3" type="uint8"/>
+        <field name="caughtUp"   id="4" type="uint8"/>
+    </sbe:message>
+
+    <sbe:message name="Role" id="16" description="Gateway only: onActivated or onStandby, before the Gate that follows">
+        <field name="active"            id="1" type="uint8"/>
+        <field name="firstConnectionId" id="2" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="CaughtUp" id="17" description="onCaughtUp">
+        <field name="clusterSeqNo" id="1" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="SnapshotCut" id="18" description="Write the records for this cut (H-6)">
+        <field name="roundId" id="1" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="Fenced" id="19" description="onFenced: terminal">
+        <field name="errorCode" id="1" type="int32"/>
+        <data  name="detail" id="2" type="varDataEncoding"/>
+    </sbe:message>
+
+    <!-- Client to host, stream 304 -->
+
+    <sbe:message name="Publish" id="30" description="publish (H-4); queued, placed later (H-3, H-5)">
+        <field name="epoch"        id="1" type="int64"/>
+        <field name="connectionId" id="2" type="int64"/>
+        <field name="groupMask"    id="3" type="int64"/>
+        <field name="payloadId"    id="4" type="uint16"/>
+        <data  name="body"         id="5" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="Reply" id="31" description="reply; sourceId, connectionId and groupMask are the request's RequestRef (H-11)">
+        <field name="epoch"        id="1" type="int64"/>
+        <field name="sourceId"     id="2" type="int32"/>
+        <field name="connectionId" id="3" type="int64"/>
+        <field name="groupMask"    id="4" type="int64"/>
+        <field name="payloadId"    id="5" type="uint16"/>
+        <data  name="body"         id="6" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="OpenConnection" id="32" description="Gateway only: openConnection with the stub's allocated id (H-4)">
+        <field name="epoch"        id="1" type="int64"/>
+        <field name="connectionId" id="2" type="int64"/>
+        <data  name="data"         id="3" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="CloseConnection" id="33" description="Gateway only: closeConnection">
+        <field name="epoch"        id="1" type="int64"/>
+        <field name="connectionId" id="2" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="GateClosed" id="34" description="Gateway only: the edge closed on its own">
+        <field name="epoch" id="1" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="Activated" id="35" description="Gateway only: the result of onActivated, answering Role">
+        <field name="opened" id="1" type="uint8"/>
+    </sbe:message>
+
+    <sbe:message name="SnapshotRecord" id="36" description="One onSnapshot result (H-6)">
+        <field name="roundId"     id="1" type="int64"/>
+        <field name="recordIndex" id="2" type="int32"/>
+        <data  name="data"        id="3" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="SnapshotEnd" id="37" description="No more records; recordCount -1 abandons the round">
+        <field name="roundId"     id="1" type="int64"/>
+        <field name="recordCount" id="2" type="int32"/>
+    </sbe:message>
+
+</sbe:messageSchema>

@@ -116,6 +116,7 @@ set(SBE_SCHEMAS
     "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-cluster.xml"
     "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-replay.xml"
     "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-frame.xml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-hosted.xml"
 )
 
 # QUIET, not REQUIRED: a consumer compiles the committed codecs and never runs the tool. Java is
