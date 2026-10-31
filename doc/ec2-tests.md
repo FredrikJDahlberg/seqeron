@@ -47,6 +47,7 @@ Running test 1 again with `MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.leve
 | Role | Instance | vCPU / cores | Network | $/hr |
 | --- | --- | --- | --- | --- |
 | Member (tests 1, 3) | c6in.8xlarge, ×3 | 32 / 16 | 50 Gbps | 1.81 each |
+| Member on bare metal (tests 1, 3) | c6id.metal, ×3 | 128 / 64, two sockets | 50 Gbps | 6.45 each |
 | Driver and gateway host (tests 1, 3) | c6in.4xlarge | 16 / 8 | up to 50 Gbps | 0.91 |
 | Fault suite (test 2) | c7i.4xlarge, ×3, on-demand | 16 / 8 | up to 12.5 Gbps | 0.71 each |
 | Failover soak (test 2) | c7i.4xlarge, spot | 16 / 8 | up to 12.5 Gbps | about 0.25 |
@@ -92,6 +93,11 @@ EBS for a day (four 100 GB gp3 volumes) and the public addresses add about $1. E
 instances run past the plan costs $6.35, so stop them between attempts and launch them with a shutdown timer (§4).
 Budget twice the session for a first attempt.
 
+With the members on c6id.metal the four hosts cost $20.26/hr. Allow about 10 minutes more for a metal launch, so the
+launch and check take 20 minutes: tests 1 and 3 cost about $23.60, the session about $24.80, and every hour past the
+plan $20.26. Test 1 alone on metal, after the session above, takes 45 minutes and costs about $15.20, for a direct
+comparison of the same CPU with and without the hypervisor.
+
 ## 4. Image
 
 One Ubuntu 24.04 x86_64 image serves every host. Build it on a c6in.large and save it as an AMI:
@@ -107,7 +113,11 @@ cmake --build cmake-build-release --target hop_bench
 Tuning, all of it applied at boot so the image carries it:
 
 - **Hyper-threading off at launch**: `--cpu-options CoreCount=16,ThreadsPerCore=1` on c6in.8xlarge, so vCPUs 0–15
-  are 16 physical cores.
+  are 16 physical cores. A metal instance takes no `--cpu-options`: put `echo off >
+  /sys/devices/system/cpu/smt/control` in the metal members' user data instead. Not `nosmt` in the image, which would
+  halve test 2's hosts.
+- **One socket on metal**: c6id.metal has two. Keep `MULTIHOST_MEMBER_CPUS`, `MULTIHOST_HOST_CPUS` and
+  `MULTIHOST_BENCH_CPUS` within one NUMA node's CPUs, as `lscpu` lists them, so the hop never crosses the socket link.
 - **Interrupts on CPUs 0–1**: `irqaffinity=0-1` on the kernel command line. The drivers keep the measured processes
   apart with `taskset` (§5). Not `isolcpus`: the kernel does not balance load across isolated CPUs, so a JVM pinned to
   a set of them would run every thread on the first.
@@ -159,4 +169,5 @@ ROUNDS=200 ./gradlew :seqeron-service:networkFaultTest --tests '*DockerFailoverS
 | 2 | Its faults are timed against the 200 ms heartbeat and the 2 s election timeout, far above anything virtualization adds. | — |
 | 3 | The relay's flow control and NAK repair over a real network card. | A single flow is capped at about 10 Gbps in a placement group, and one replay is one flow. EBS is network storage: a forced write costs about 0.5–1 ms, against tens of µs on local NVMe. For local disk, run the sync comparison on an instance with instance storage (c6id, i4i). |
 
-c6in.metal (about $7.26/hr) removes the hypervisor from test 1's CPU path; its network is still ENA.
+c6id.metal (§2) removes the hypervisor from test 1's CPU path and puts the sync comparison on local NVMe; its network
+is still ENA. Its CPU is c6in's, so its results compare with the c6in.8xlarge run's.
