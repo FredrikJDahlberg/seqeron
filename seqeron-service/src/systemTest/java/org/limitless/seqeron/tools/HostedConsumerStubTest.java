@@ -26,7 +26,7 @@ import org.junit.jupiter.api.io.TempDir;
  * test is skipped.
  */
 class HostedConsumerStubTest {
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
     private static final int SOURCE_ID = 16;
     private static final int MARKERS = 500;
     private static final int TIMEOUT_SECS = 60;

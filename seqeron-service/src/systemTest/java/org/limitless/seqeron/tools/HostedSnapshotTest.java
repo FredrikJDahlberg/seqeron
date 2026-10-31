@@ -28,7 +28,7 @@ import org.limitless.seqeron.protocol.SeqeronCounters;
  */
 class HostedSnapshotTest {
     private static final String TEST_APPLICATION = "org.limitless.seqeron.tools.TestApplication";
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
     /** HOSTED_CLIENT=cpp in the Gradle run: the clients are hosted_probe (HOSTED_PROBE), the C++ stub. */
     private static final boolean CPP = "cpp".equals(System.getProperty("seqeron.hostedClient"));
     private static final String CLIENT = "org.limitless.seqeron.tools.HostedTestApplicationClient";

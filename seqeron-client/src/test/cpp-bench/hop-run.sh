@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hosted-façade hop: C++ direct against C++ hosted, interleaved, against three member JVMs and the prototype host JVM.
-# Env: HOP_BENCH (hop_bench binary), SEQERON_JAR, HOP_TEST_CLASSES, HOP_RATES, HOP_COUNT, HOP_RUNS, HOP_LOG,
+# Env: HOP_BENCH (hop_bench binary), SEQERON_JAR, HOP_RATES, HOP_COUNT, HOP_RUNS, HOP_LOG,
 #      HOP_HOST_CPUS / HOP_BENCH_CPUS / HOP_MEMBER_CPUS (taskset lists, Linux only), HOP_HOST_OPTS (host JVM, e.g.
 #      -Dhost.spin=true: a backing-off host adds 66-107 us at p50), HOP_MEMBER_OPTS.
 # Linux: docker build -t seqeron-hop <this dir>; configure and build hop_bench into a volume (cmake -S /repo -B /build/out
@@ -14,7 +14,6 @@ MAIN="${REPO}/seqeron-service/src/main/scripts"
 source "${MAIN}/ports.sh"; source "${MAIN}/paths.sh"; source "${MAIN}/seqeron-home.sh"
 seqeron_require_jar; JAR="${SEQERON_JAR}"
 BENCH="${HOP_BENCH:?}"
-TESTCLASSES="${HOP_TEST_CLASSES:-${REPO}/seqeron-service/build/classes/java/test}"
 LOG="${HOP_LOG:-${TMPDIR:-/tmp}/hop}"; RATES="${HOP_RATES:-5000 20000}"; COUNT="${HOP_COUNT:-60000}"; RUNS="${HOP_RUNS:-3}"
 pin() { local cpus=$1; shift; if [[ -n "$cpus" ]]; then taskset -c "$cpus" "$@"; else "$@"; fi; }
 rm -rf "$LOG"; mkdir -p "$LOG"
@@ -39,7 +38,7 @@ echo "leader member $L"
 DIR="$(seqeron_aeron_dir "$L")"
 pin "${HOP_HOST_CPUS:-}" java "${JAVA_OPTS[@]}" ${HOP_HOST_OPTS:-} -Dprobe.memberId="$L" -Dprobe.aeronDir="$DIR" -Dprobe.sourceId=16 \
   -Dprobe.clientId=31 -Dprobe.snapshotDir="$BASE/hostsnap" -Dhost.clientTimeoutMs=2000 \
-  -cp "$JAR:$TESTCLASSES" org.limitless.seqeron.tools.HostedTestApplicationHost > "$LOG/host.log" 2>&1 &
+  -cp "$JAR" org.limitless.seqeron.proxy.ClientProxy > "$LOG/host.log" 2>&1 &
 PIDS+=($!)
 wait_for_log "$LOG/host.log" "host ready" 60 || { echo "host not up"; exit 1; }
 for rate in $RATES; do

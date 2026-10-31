@@ -3,7 +3,7 @@
 // its own frame sequenced, through either
 //
 //   direct: app::Application against the member's driver, as a C++ application runs today; or
-//   hosted: the prototype Java host (HostedTestApplicationHost) in schema 218 over ProxyProtocol's four aeron:ipc
+//   hosted: the Java proxy (ClientProxy) in schema 218 over ProxyProtocol's four aeron:ipc
 //           streams and its counters, as a stub would. ProxyProtocol.java is the transport; this is its only other reader.
 //
 //   hop_bench <direct|hosted> --member M --rate R/s --count N [--client-id C] [--egress-port P] [--aeron-dir D]

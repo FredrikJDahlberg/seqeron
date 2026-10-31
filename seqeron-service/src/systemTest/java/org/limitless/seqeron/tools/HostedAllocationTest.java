@@ -22,7 +22,7 @@ import org.junit.jupiter.api.io.TempDir;
  * the window, and the window must see no change of gate epoch, whose log line allocates.
  */
 class HostedAllocationTest {
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
     private static final String CLIENT = "org.limitless.seqeron.tools.HostedTestApplicationClient";
     private static final int SOURCE_ID = 16;
     private static final int WARMUP_FRAMES = 100_000;

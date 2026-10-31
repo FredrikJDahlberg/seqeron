@@ -23,7 +23,7 @@ import org.junit.jupiter.api.io.TempDir;
  * it the test is skipped.
  */
 class HostedGatewayStubTest {
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
     private static final int SOURCE_ID = 9;
     private static final int TIMEOUT_SECS = 60;
 

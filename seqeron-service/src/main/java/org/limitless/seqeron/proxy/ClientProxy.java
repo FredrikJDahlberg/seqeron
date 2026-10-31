@@ -1,4 +1,4 @@
-package org.limitless.seqeron.tools;
+package org.limitless.seqeron.proxy;
 
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.ProxyProtocol;
@@ -37,6 +37,7 @@ import org.limitless.seqeron.app.RequestRef;
 import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.app.Tuning;
 import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.proxy.AttachRules;
 import org.limitless.seqeron.proxy.CommandLedger;
@@ -66,21 +67,26 @@ import org.limitless.seqeron.sbe.hosted.SnapshotEndDecoder;
 import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
 
 /**
- * The host of the hosted-façade prototype (doc/hosted-facade-draft.md): the real {@link Application}, started when a
- * client sends {@code Attach} and closed when it is lost, its callbacks relayed in schema 218 over {@link ProxyProtocol}'s streams.
- * Harness code in the test source set, launched by {@code HostedSnapshotTest} beside a member.
+ * The proxy of the hosted façades (doc/hosted-facade-draft.md): the real {@link Application}, {@link Gateway} or
+ * {@link Consumer}, started when a client sends {@code Attach} and closed when it is lost, its callbacks relayed in
+ * schema 218 over {@link ProxyProtocol}'s streams. Launched beside a member.
  *
- * <p>Properties on top of {@link ClusterProbe}'s {@code probe.memberId} / {@code probe.aeronDir}:
+ * <p>Properties: {@code probe.memberId} (0), {@code probe.aeronDir}, {@code probe.ingressEndpoints}, {@code probe.egressHost}:
  * {@code probe.sourceId} (16), {@code probe.clientId} (11), {@code probe.snapshotDir}, {@code host.clientTimeoutMs}
  * (2000), {@code host.commandWindow} (65536 bytes: H-5's window, here the encoded length of the {@code Publish}
  * messages not yet placed), {@code host.placePerCycle} (64), {@code host.pendingCapacity} (the façade's tracker, 0: its
  * default), {@code host.spin} (busy-spin the loop rather than back off), {@code host.allocWarmupFrames} (0: off) and {@code host.allocWindowFrames} (20000): once that many frames
  * have crossed the loop, logs the bytes it allocated over the next window, for {@code HostedAllocationTest}.
  */
-public final class HostedTestApplicationHost implements Application.Listener, Gateway.Listener, Consumer.Listener, SnapshotListener {
+public final class ClientProxy implements Application.Listener, Gateway.Listener, Consumer.Listener, SnapshotListener {
     private static final int EXIT_FENCED = 70;
     private static final long BACK_PRESSURE_NS = TimeUnit.SECONDS.toNanos(1);
 
+    private final int memberId = Integer.getInteger("probe.memberId", 0);
+    private final String aeronDir = System.getProperty("probe.aeronDir", PortLayout.aeronDir(memberId));
+    private final String ingressEndpoints = System.getProperty("probe.ingressEndpoints", PortLayout.ingressEndpoints());
+    private final String egressChannel = "aeron:udp?endpoint=" + System.getProperty("probe.egressHost",
+        memberId < PortLayout.HOSTS.size() ? PortLayout.HOSTS.get(memberId) : PortLayout.DEFAULT_HOST) + ":0";
     private final int sourceId = Integer.getInteger("probe.sourceId", 16);
     private final int clientId = Integer.getInteger("probe.clientId", 11);
     private final long clientTimeoutNs = TimeUnit.MILLISECONDS.toNanos(Long.getLong("host.clientTimeoutMs", 2000));
@@ -174,7 +180,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     private volatile boolean fenced;
 
     public static void main(final String[] args) {
-        System.exit(new HostedTestApplicationHost().run());
+        System.exit(new ClientProxy().run());
     }
 
     private int run() {
@@ -188,14 +194,14 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
                 Thread.currentThread().interrupt();
             }
         }));
-        aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(ClusterProbe.aeronDir()));
+        aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
         attachRequests = aeron.addSubscription(ProxyProtocol.ATTACH_REQUEST_CHANNEL + "|tether=false",
                                                ProxyProtocol.ATTACH_REQUEST_STREAM);
         attachReplies = aeron.addPublication(ProxyProtocol.ATTACH_REPLY_CHANNEL, ProxyProtocol.ATTACH_REPLY_STREAM);
         hostHeartbeat = aeron.addCounter(SeqeronCounters.PROXY_HEARTBEAT_TYPE_ID, "seqeron.host.heartbeat " + sourceId);
         retiredCounter = aeron.addCounter(SeqeronCounters.PROXY_RETIRED_TYPE_ID, "seqeron.host.retired " + sourceId);
         clientLiveness = new Liveness(aeron.countersReader(), clientTimeoutNs);
-        log("host ready: member %d, sourceId %d, clientId %d", ClusterProbe.memberId(), sourceId, clientId);
+        log("host ready: member %d, sourceId %d, clientId %d", memberId, sourceId, clientId);
         final IdleStrategy idle = Boolean.getBoolean("host.spin") ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();
         while (running && !fenced) {
             ProxyProtocol.beat(hostHeartbeat);
@@ -410,7 +416,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         if (consumerKind) {
             consumer = Consumer.builder()
                            .clientId(clientId)
-                           .memberId(ClusterProbe.memberId())
+                           .memberId(memberId)
                            .groupId(consumerGroup)
                            .listener(this)
                            .build();
@@ -424,9 +430,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
                           .gatewayName(gatewayName)
                           .sourceId(sourceId)
                           .clientId(clientId)
-                          .memberId(ClusterProbe.memberId())
-                          .egressChannel(ClusterProbe.egressChannel())
-                          .ingressEndpoints(ClusterProbe.ingressEndpoints())
+                          .memberId(memberId)
+                          .egressChannel(egressChannel)
+                          .ingressEndpoints(ingressEndpoints)
                           .listener(this)
                           .tuning(pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity))
                           .build();
@@ -438,9 +444,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         app = Application.builder()
                   .sourceId(sourceId)
                   .clientId(clientId)
-                  .memberId(ClusterProbe.memberId())
-                  .egressChannel(ClusterProbe.egressChannel())
-                  .ingressEndpoints(ClusterProbe.ingressEndpoints())
+                  .memberId(memberId)
+                  .egressChannel(egressChannel)
+                  .ingressEndpoints(ingressEndpoints)
                   .listener(this)
                   .tuning(pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity))
                   .snapshots(this, snapshotDir)
