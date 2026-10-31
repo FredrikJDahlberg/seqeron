@@ -433,8 +433,8 @@ client's driver connection.
   they are.** What exists: a C++ stub of `Application` alone, `hosted/Application.hpp`, is 583 lines with its
   comments (a build of the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217
   lines of XML and its generated C++ codecs 16,800 more, and the prototype host is 624 lines of Java (test scope,
-  with the harness's own options and the allocation window). The stub has no `Reply`, no `GroupsResolved` and its
-  group-mask check, no `Gateway` or `Consumer` and none of the connection ids, so it is a floor, not the answer.
+  with the harness's own options and the allocation window). The stub has no `Gateway` or `Consumer` and none of the
+  connection ids, so it is a floor, not the answer.
 - Conformance is by golden trace, so that the stubs' tests are not three ports of one suite. A trace is streams
   303 and 304 and the counters recorded from the Java host through a scripted scenario: attach, restore, steady
   state, a leader change, a hold, a cut, a lost client, a detach. Each stub is tested by replaying the host half
@@ -657,14 +657,16 @@ per-attachment images of **H-15**, and the counters of §17.2.1. It differs from
 - **`Publish` and the window.** `Publish` carries the gate epoch and the host drops a stale one (**H-3**), answering
   nothing for a command it drops or declines (**H-4**). The queue and window are **H-5**'s with one difference: the
   host closes the attachment (`CLIENT_WINDOW`) rather than fencing. The windowed length is the encoded message, header
-  included, which the stub counts and the host retires. `groupMask` and `connectionId` are sent as 0 and ignored.
+  included, which the stub counts and the host retires. `Publish` carries the `groupMask` and the host places it with that mask; `Reply` is queued through the same window
+  and placed with the `RequestRef` it names (**H-11**). The prototype allocates one `RequestRef` per reply.
 - **Counters.** The client heartbeat, the host heartbeat and the host retired counters are as §17.2.1; the client
   applied counter is written (the position of the last `Payload`) and not read, so **H-14**'s lag is not exported. A
   heartbeat is written on every duty cycle, in a long cut and in a send's spin, and not in a stalled client.
 - **Attach.** By `clientId` and `requestId`, with `hostName`, `protocolVersion` and `aeronVersion` checked. A resend
   of the live request is answered again, any other client with `BUSY`. The façade is built once the events publication
   is connected, so the restore has a reader.
-- **Not sent.** `GroupsResolved`, `ClusterTime`, `Reply`, `OpenConnection` and the Gateway messages. `AttachPending`
+- **`GroupsResolved`** is sent once, from `onGroupsResolved`, before the first `Gate`.
+- **Not sent.** `ClusterTime`, `OpenConnection` and the Gateway messages. `AttachPending`
   is never needed, since the host closes a façade synchronously. The snapshot round id is the host's own cut count.
 - **`kill -9` of the host or a client** is the same as before. The ghost scenario changed: with per-attachment images a
   command under another attachment's id cannot be sent, so the client publishes from a second publication on stream
@@ -716,8 +718,10 @@ limit, and a C# stub. Liveness by counter, the attach of **H-8**, the stub's oth
 `Application`: its listener is the direct `Application`'s, a `Payload` reaches it as `app::Payload` over the received
 `Payload` message, and `publish` returns `protocol::Publish` after the local checks of a direct call (a retired
 `payloadId`, a payload above `MAX_PAYLOAD_LENGTH`), the mirrored gate (**H-16**) and the window (**H-5**). It answers
-the host's `SnapshotCut` from a `SnapshotListener`, restores from `RestoreRecord` and keeps the heartbeat counter. Not
-built: `Reply`, `GroupsResolved` and the group-mask check, the Gateway messages and a `Consumer`. `hosted_probe`
+the host's `SnapshotCut` from a `SnapshotListener`, restores from `RestoreRecord` and keeps the heartbeat counter. `reply` takes the
+`RequestRef` of the request, and `GroupsResolved` hands the listener a `GroupDirectory` and gives `publish` the direct
+call's group-mask check (`Refused` for a group the table lacks). Not built: the Gateway messages, the connection ids
+and a `Consumer`. `hosted_probe`
 (`seqeron-client/src/test/cpp-probe`) holds the probe's state in it, as `HostedTestApplicationClient` does.
 
 Two system tests drive it against the Java host, with `HOSTED_PROBE` naming the binary:
@@ -726,7 +730,9 @@ Two system tests drive it against the Java host, with `HOSTED_PROBE` naming the 
   refusals fire. With the host's tracker at 4 and a 1 KiB window, 20,000 markers offered flat out are all placed and
   sequenced once, the stub having declined 223,070 times at the window, with a peak queue of 1,008 of 1,024 bytes. At
   a gate edge (the leader paused 4.5 s) the stub stopped at the `Gate` and offered 3,582, the host dropped 18 by their
-  epoch and 3,564 were sequenced.
+  epoch and 3,564 were sequenced. In a fourth scenario the stub is handed the directory, a mask naming an absent group
+  is refused and one naming the own group is published, and of 2,000 markers every tenth is answered: the 200 replies
+  are each sequenced once under the sourceId, connectionId and groupMask of their request.
 - `HostedSnapshotTest` with `HOSTED_CLIENT=cpp` runs its clients as the probe: restore, cuts, a client `kill -9`
   with an immediate successor, a host `kill -9`, an abandoned cut, the 8 s cut, the leading hosted replica, and the
   corrupt record fenced with `SNAPSHOT_DIVERGED`, each check as with the Java client and the direct replicas

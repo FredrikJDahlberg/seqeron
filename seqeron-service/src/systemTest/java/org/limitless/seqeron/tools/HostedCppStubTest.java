@@ -34,6 +34,9 @@ class HostedCppStubTest {
     private static final Pattern OWN = Pattern.compile("own (\\d+)");
     private static final Pattern PUBLISHED = Pattern.compile("published (\\d+)");
     private static final Pattern EPOCH_DROPS = Pattern.compile("epochDrops (\\d+)");
+    private static final Pattern REPLIED = Pattern.compile("replied (\\d+)");
+    private static final Pattern REPLIES = Pattern.compile("replies (\\d+)");
+    private static final Pattern BAD = Pattern.compile("bad (\\d+)");
     private static final Pattern DECLINED = Pattern.compile("declined (\\d+)");
 
     @TempDir
@@ -138,6 +141,28 @@ class HostedCppStubTest {
               + ", sequenced " + own + ")", own <= published - drops);
         check("none was sequenced out of order or twice", client.lines("OUT OF ORDER").isEmpty());
         check("the stub published nothing once the gate closed", number(client, "state: ", PUBLISHED) == published);
+        System.out.println(host.lastLine("queue:"));
+        System.out.println(client.lastLine("state: "));
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /** GroupsResolved reaches the stub, its group-mask check is the direct one's, and a Reply returns under its request's ref. */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCppStubResolvesGroupsAndRepliesUnderTheRequestsRef() {
+        startHost("host.spin=true", "host.commandWindow=" + WINDOW, "host.pendingCapacity=4", "host.placePerCycle=2");
+        startClient("--interval-ms", "1", "--max-markers", "2000", "--check-groups", "1", "--reply-every", "10");
+        check("the stub was handed the group directory", poll(() -> client.lastLine("group 1 test mask 1") != null));
+        check("the gate opened", poll(() -> client.lastLine("now leading") != null));
+        check("a mask naming a group the table lacks was refused", poll(() -> client.lastLine("REFUSED unknown group") != null));
+        check("a mask naming the own group was published", poll(() -> client.lastLine("published to the own group by mask") != null));
+        check("every marker was sequenced", poll(() -> number(client, "state: ", OWN) == 2000));
+        check("every tenth was answered", poll(() -> number(client, "state: ", REPLIED) == 200));
+        check("every reply was sequenced once under its request's ref", poll(() -> number(client, "state: ", REPLIES) == 200));
+        check("none came back under another ref", number(client, "state: ", BAD) == 0 && client.lines("BAD REPLY").isEmpty());
+        check("no marker carried another group mask", client.lines("UNEXPECTED groupMask").isEmpty());
+        check("the host did not close the attachment", host.lines("CLIENT_WINDOW").isEmpty());
+        check("the host did not fence", host.lines("FENCED").isEmpty());
         System.out.println(host.lastLine("queue:"));
         System.out.println(client.lastLine("state: "));
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);

@@ -4,7 +4,7 @@
 //
 //   hosted_probe --aeron-dir D [--source-id 16] [--interval-ms 100] [--flood 1] [--max-markers N]
 //                [--host-timeout-ms 3000] [--check-refusals 1] [--stall-cut-no N] [--slow-cut-ms N]
-//                [--corrupt-record 1]
+//                [--corrupt-record 1] [--check-groups 1] [--reply-every N]
 //
 // Exits 70 when fenced or the host is lost, 78 when the attach is refused and 3 when it times out, as the Java client.
 
@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -36,6 +37,7 @@ namespace util = org::limitless::seqeron::util;
 
 constexpr std::uint16_t PROBE_PAYLOAD_ID = 5;
 constexpr std::uint16_t PROBE_MARKER_TEMPLATE_ID = 1;
+constexpr std::uint16_t PROBE_REPLY_TEMPLATE_ID = 2;
 constexpr std::uint16_t PROBE_SCHEMA_ID = 214;
 constexpr std::size_t HEADER = 8;
 constexpr std::size_t MARKER_LENGTH = HEADER + 8 + sizeof(std::uint16_t);
@@ -65,8 +67,9 @@ class Probe final : public app::SnapshotListener
 {
   public:
     Probe(const std::int32_t sourceId, const std::int64_t stallCutNo, const std::int64_t slowCutMs,
-          const bool corruptRecord) :
+          const bool corruptRecord, const std::int64_t replyEvery) :
       m_sourceId{ sourceId },
+      m_replyEvery{ replyEvery },
       m_stallCutNo{ stallCutNo },
       m_slowCutMs{ slowCutMs },
       m_corruptRecord{ corruptRecord }
@@ -81,15 +84,35 @@ class Probe final : public app::SnapshotListener
         log(leading ? "now leading - submitting markers" : "not leading - silent");
     }
 
+    void onGroupsResolved(const app::GroupDirectory& directory)
+    {
+        for (std::int32_t groupId = 1; groupId <= protocol::MAX_GROUPS; ++groupId)
+        {
+            const std::string_view name = directory.name(groupId);
+            if (!name.empty())
+            {
+                log("group %d %.*s mask %u", groupId, static_cast<int>(name.size()), name.data(), directory.mask(name));
+            }
+        }
+    }
+
     void onSequenced(const app::Payload& payload)
     {
-        if (payload.sourceId() != m_sourceId || payload.payloadId() != PROBE_PAYLOAD_ID ||
-            payload.templateId() != PROBE_MARKER_TEMPLATE_ID)
+        if (payload.sourceId() != m_sourceId || payload.payloadId() != PROBE_PAYLOAD_ID)
         {
             return;
         }
         std::int64_t seqNo;
         std::memcpy(&seqNo, payload.body(), sizeof seqNo);
+        if (payload.templateId() == PROBE_REPLY_TEMPLATE_ID)
+        {
+            onReply(payload, seqNo);
+            return;
+        }
+        if (payload.templateId() != PROBE_MARKER_TEMPLATE_ID)
+        {
+            return;
+        }
         if ((seqNo & OWN_TAG) != 0 && (seqNo & ~(OWN_TAG | INDEX_MASK)) == m_salt)
         {
             const std::int64_t own = seqNo & INDEX_MASK;
@@ -100,6 +123,14 @@ class Probe final : public app::SnapshotListener
             }
             m_lastOwn = own;
             m_ownSequenced++;
+            if (payload.groupMask() != 1)
+            {
+                log("UNEXPECTED groupMask %u", payload.groupMask());
+            }
+            if (m_replyEvery > 0 && own % m_replyEvery == 0)
+            {
+                m_toReply.push_back({ seqNo, payload.requestRef() });
+            }
         }
         m_markers++;
         m_digest = m_digest * 31 + static_cast<std::uint64_t>(payload.clusterSeqNo());
@@ -132,10 +163,36 @@ class Probe final : public app::SnapshotListener
 
     void state(const std::int64_t declined) const
     {
-        log("state: %llu marker(s), digest %016llx, published %lld, declined %lld, own %lld",
+        log("state: %llu marker(s), digest %016llx, published %lld, declined %lld, own %lld, replied %lld, "
+            "replies %lld, bad %lld",
             static_cast<unsigned long long>(m_markers), static_cast<unsigned long long>(m_digest),
             static_cast<long long>(m_published), static_cast<long long>(declined),
-            static_cast<long long>(m_ownSequenced));
+            static_cast<long long>(m_ownSequenced), static_cast<long long>(m_replied),
+            static_cast<long long>(m_repliesSequenced), static_cast<long long>(m_badReplies));
+    }
+
+    // Answers the sequenced markers waiting for a reply, each with the RequestRef it was sequenced under.
+    template<typename Application>
+    int sendReplies(Application& application)
+    {
+        int sent = 0;
+        while (!m_toReply.empty())
+        {
+            const auto& [seqNo, ref] = m_toReply.front();
+            std::array<std::uint8_t, MARKER_LENGTH> reply = m_marker;
+            const std::uint16_t templateId = PROBE_REPLY_TEMPLATE_ID;
+            std::memcpy(reply.data() + 2, &templateId, sizeof templateId);
+            std::memcpy(reply.data() + HEADER, &seqNo, sizeof seqNo);
+            if (application.reply(ref, PROBE_PAYLOAD_ID, reply.data(), MARKER_LENGTH) != protocol::Publish::Published)
+            {
+                break;
+            }
+            m_expected[seqNo] = ref;
+            m_replied++;
+            m_toReply.pop_front();
+            sent++;
+        }
+        return sent;
     }
 
     [[nodiscard]] std::int64_t publishedCount() const
@@ -192,7 +249,28 @@ class Probe final : public app::SnapshotListener
     }
 
   private:
+    // A reply must come back under the request's RequestRef (H-11), exactly once.
+    void onReply(const app::Payload& payload, const std::int64_t seqNo)
+    {
+        const auto it = m_expected.find(seqNo);
+        if (it == m_expected.end() || it->second.sourceId != payload.sourceId() ||
+            it->second.connectionId != payload.connectionId() || it->second.groupMask != payload.groupMask())
+        {
+            m_badReplies++;
+            log("BAD REPLY for %lld", static_cast<long long>(seqNo & INDEX_MASK));
+            return;
+        }
+        m_expected.erase(it);
+        m_repliesSequenced++;
+    }
+
     std::int32_t m_sourceId;
+    std::int64_t m_replyEvery;
+    std::deque<std::pair<std::int64_t, app::RequestRef>> m_toReply;
+    std::map<std::int64_t, app::RequestRef> m_expected;
+    std::int64_t m_replied = 0;
+    std::int64_t m_repliesSequenced = 0;
+    std::int64_t m_badReplies = 0;
     std::int64_t m_stallCutNo;
     std::int64_t m_slowCutMs;
     bool m_corruptRecord;
@@ -246,6 +324,7 @@ int main(const int argc, char** argv)
     const bool flood = options.integer("flood", 0) != 0;
     const std::int64_t maxMarkers = options.integer("max-markers", 0);
     bool checkRefusals = options.integer("check-refusals", 0) != 0;
+    bool checkGroups = options.integer("check-groups", 0) != 0;
     const std::vector<std::uint8_t> oversized(9000);
 
     aeron::Context context;
@@ -253,7 +332,7 @@ int main(const int argc, char** argv)
     const auto aeron = aeron::Aeron::connect(context);
 
     Probe probe{ sourceId, options.integer("stall-cut-no", 0), options.integer("slow-cut-ms", 0),
-                 options.integer("corrupt-record", 0) != 0 };
+                 options.integer("corrupt-record", 0) != 0, options.integer("reply-every", 0) };
     hosted::Application<Probe> application{
         { .sourceId = sourceId, .snapshots = &probe, .hostTimeoutMs = options.integer("host-timeout-ms", 3000) }, probe
     };
@@ -279,6 +358,22 @@ int main(const int argc, char** argv)
                 log("REFUSED oversized payload");
             }
         }
+        if (checkGroups && application.canPublish())
+        {
+            checkGroups = false;
+            if (application.publish(0x2, PROBE_PAYLOAD_ID, probe.nextMarker(), MARKER_LENGTH) ==
+                protocol::Publish::Refused)
+            {
+                log("REFUSED unknown group");
+            }
+            if (application.publish(0x1, PROBE_PAYLOAD_ID, probe.nextMarker(), MARKER_LENGTH) ==
+                protocol::Publish::Published)
+            {
+                probe.published();
+                log("published to the own group by mask");
+            }
+        }
+        work += probe.sendReplies(application);
         if (application.canPublish() && (maxMarkers == 0 || probe.publishedCount() < maxMarkers) &&
             (flood || now >= nextMarkerNs) &&
             application.publish(PROBE_PAYLOAD_ID, probe.nextMarker(), MARKER_LENGTH) == protocol::Publish::Published)

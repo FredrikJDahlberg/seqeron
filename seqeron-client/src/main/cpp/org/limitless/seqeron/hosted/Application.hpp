@@ -15,6 +15,7 @@
 #include "FragmentAssembler.h"
 
 #include "org/limitless/seqeron/app/Application.hpp"
+#include "org/limitless/seqeron/app/detail/GroupResolution.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 
@@ -24,9 +25,11 @@
 #include "org_limitless_seqeron_sbe_hosted/Detach.h"
 #include "org_limitless_seqeron_sbe_hosted/Fenced.h"
 #include "org_limitless_seqeron_sbe_hosted/Gate.h"
+#include "org_limitless_seqeron_sbe_hosted/GroupsResolved.h"
 #include "org_limitless_seqeron_sbe_hosted/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_hosted/Payload.h"
 #include "org_limitless_seqeron_sbe_hosted/Publish.h"
+#include "org_limitless_seqeron_sbe_hosted/Reply.h"
 #include "org_limitless_seqeron_sbe_hosted/RestoreRecord.h"
 #include "org_limitless_seqeron_sbe_hosted/SnapshotCut.h"
 #include "org_limitless_seqeron_sbe_hosted/SnapshotEnd.h"
@@ -206,35 +209,45 @@ class Application
     [[nodiscard]] protocol::Publish publish(const std::uint16_t payloadId, const std::uint8_t* payload,
                                             const std::uint16_t payloadLength)
     {
-        if (m_config.sourceId == -1 || payloadId == 0 || payloadId == 1 || payloadLength > protocol::MAX_PAYLOAD_LENGTH)
-        {
-            return protocol::Publish::Refused;
-        }
-        if (!m_attached || !m_canPublish)
-        {
-            return protocol::Publish::Declined;
-        }
-        const std::int64_t length = static_cast<std::int64_t>(detail::HEADER + wire::Publish::sbeBlockLength() +
-                                                              sizeof(std::uint32_t) + payloadLength);
-        if (m_offeredBytes + length - retired() > m_window)
-        {
-            m_windowDeclines++;
-            return protocol::Publish::Declined;
-        }
-        wire::Publish publish;
-        publish.wrapAndApplyHeader(out(), 0, m_out.size())
-            .epoch(m_epoch)
-            .connectionId(0)
-            .groupMask(0)
-            .payloadId(payloadId)
-            .putBody(reinterpret_cast<const char*>(payload), payloadLength);
-        if (m_commands->offer(buffer(), 0,
-                              static_cast<aeron::util::index_t>(detail::HEADER + publish.encodedLength())) < 0)
-        {
-            return protocol::Publish::Declined;
-        }
-        m_offeredBytes += length;
-        return protocol::Publish::Published;
+        return publish(0, payloadId, payload, payloadLength);
+    }
+
+    /**
+     * The same to the groups groupMask names as well as its own.
+     *
+     * @param groupMask     bits from the GroupDirectory; one the table lacks is Refused
+     * @param payloadId     the payload's protocol
+     * @param payload       the payload's first byte, its own messageHeader included if it has one
+     * @param payloadLength the payload's length
+     */
+    [[nodiscard]] protocol::Publish publish(const std::uint16_t groupMask, const std::uint16_t payloadId,
+                                            const std::uint8_t* payload, const std::uint16_t payloadLength)
+    {
+        return offer<wire::Publish>(groupMask, payloadId, payloadLength, [&](wire::Publish& command) {
+            command.connectionId(-1).groupMask(groupMask).payloadId(payloadId).putBody(
+                reinterpret_cast<const char*>(payload), payloadLength);
+        });
+    }
+
+    /**
+     * The same on behalf of the producer that asked for it (H-11): the reply carries the request's sourceId,
+     * connectionId and groupMask.
+     *
+     * @param request       the request's RequestRef, kept from its Payload
+     * @param payloadId     the reply's protocol
+     * @param payload       the reply's first byte, its own messageHeader included if it has one
+     * @param payloadLength the reply's length
+     */
+    [[nodiscard]] protocol::Publish reply(const app::RequestRef& request, const std::uint16_t payloadId,
+                                          const std::uint8_t* payload, const std::uint16_t payloadLength)
+    {
+        return offer<wire::Reply>(request.groupMask, payloadId, payloadLength, [&](wire::Reply& command) {
+            command.sourceId(request.sourceId)
+                .connectionId(request.connectionId)
+                .groupMask(request.groupMask)
+                .payloadId(payloadId)
+                .putBody(reinterpret_cast<const char*>(payload), payloadLength);
+        });
     }
 
     /** Writes the client heartbeat, as a direct Application's keepAlive() keeps its session: call it while spinning. */
@@ -402,6 +415,64 @@ class Application
         return now - m_hostChangeNs > m_config.hostTimeoutMs * 1'000'000LL;
     }
 
+    // The local checks of a direct Application, then the window (H-5), then the offer on stream 304.
+    template<typename Command, typename Fill>
+    [[nodiscard]] protocol::Publish offer(const std::uint16_t groupMask, const std::uint16_t payloadId,
+                                          const std::uint16_t payloadLength, Fill&& fill)
+    {
+        if (m_config.sourceId == -1 || payloadId == 0 || payloadId == 1 || payloadLength > protocol::MAX_PAYLOAD_LENGTH)
+        {
+            return protocol::Publish::Refused;
+        }
+        if (!m_attached || !m_canPublish || m_groups.directory() == nullptr)
+        {
+            return protocol::Publish::Declined;
+        }
+        if (m_groups.frameMask(groupMask) == app::detail::GroupResolution::NOT_ADDRESSABLE)
+        {
+            return protocol::Publish::Refused;
+        }
+        const std::int64_t length = static_cast<std::int64_t>(detail::HEADER + Command::sbeBlockLength() +
+                                                              sizeof(std::uint32_t) + payloadLength);
+        if (m_offeredBytes + length - retired() > m_window)
+        {
+            m_windowDeclines++;
+            return protocol::Publish::Declined;
+        }
+        Command command;
+        command.wrapAndApplyHeader(out(), 0, m_out.size()).epoch(m_epoch);
+        fill(command);
+        if (m_commands->offer(buffer(), 0,
+                              static_cast<aeron::util::index_t>(detail::HEADER + command.encodedLength())) < 0)
+        {
+            return protocol::Publish::Declined;
+        }
+        m_offeredBytes += length;
+        return protocol::Publish::Published;
+    }
+
+    void onGroupsResolved(wire::GroupsResolved message)
+    {
+        std::vector<protocol::SnapshotGroup> table;
+        auto& groups = message.groups();
+        while (groups.hasNext())
+        {
+            groups.next();
+            table.push_back(protocol::SnapshotGroup{ groups.groupId(), groups.getNameAsString() });
+        }
+        if (table.empty())
+        {
+            return;
+        }
+        // The own group id only sets the bit a direct frame adds to its mask; the stub reads the directory alone.
+        m_groups.onSnapshotHeader(table);
+        m_groups.onCaughtUp(table.front().groupId);
+        if constexpr (requires { m_listener.onGroupsResolved(*m_groups.directory()); })
+        {
+            m_listener.onGroupsResolved(*m_groups.directory());
+        }
+    }
+
     void onEvent(const aeron::concurrent::AtomicBuffer& buf, const aeron::util::index_t offset,
                  const aeron::util::index_t length)
     {
@@ -411,6 +482,9 @@ class Application
         const std::uint16_t version = header.version();
         switch (header.templateId())
         {
+            case wire::GroupsResolved::sbeTemplateId():
+                onGroupsResolved(wire::GroupsResolved(base, detail::HEADER, length, blockLength, version));
+                break;
             case wire::Payload::sbeTemplateId():
                 onPayload(wire::Payload(base, detail::HEADER, length, blockLength, version));
                 break;
@@ -556,6 +630,7 @@ class Application
     aeron::FragmentAssembler m_assembler{ [this](const aeron::concurrent::AtomicBuffer& buf,
                                                  const aeron::util::index_t offset, const aeron::util::index_t length,
                                                  const aeron::Header&) { onEvent(buf, offset, length); } };
+    app::detail::GroupResolution m_groups{ {} };
     std::int64_t m_clientId = 0;
     std::int64_t m_requestId = 1;
     std::int64_t m_attachDeadlineNs = 0;

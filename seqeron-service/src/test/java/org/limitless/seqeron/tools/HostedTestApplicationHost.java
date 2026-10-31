@@ -28,8 +28,10 @@ import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
+import org.limitless.seqeron.app.RequestRef;
 import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.app.Tuning;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.sbe.hosted.AttachDecoder;
 import org.limitless.seqeron.sbe.hosted.AttachedEncoder;
@@ -37,12 +39,14 @@ import org.limitless.seqeron.sbe.hosted.CaughtUpEncoder;
 import org.limitless.seqeron.sbe.hosted.DetachDecoder;
 import org.limitless.seqeron.sbe.hosted.FencedEncoder;
 import org.limitless.seqeron.sbe.hosted.GateEncoder;
+import org.limitless.seqeron.sbe.hosted.GroupsResolvedEncoder;
 import org.limitless.seqeron.sbe.hosted.Kind;
 import org.limitless.seqeron.sbe.hosted.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.hosted.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.hosted.PayloadEncoder;
 import org.limitless.seqeron.sbe.hosted.PublishDecoder;
 import org.limitless.seqeron.sbe.hosted.Refusal;
+import org.limitless.seqeron.sbe.hosted.ReplyDecoder;
 import org.limitless.seqeron.sbe.hosted.RestoreRecordEncoder;
 import org.limitless.seqeron.sbe.hosted.SnapshotCutEncoder;
 import org.limitless.seqeron.sbe.hosted.SnapshotEndDecoder;
@@ -77,6 +81,8 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     private final AttachDecoder attachIn = new AttachDecoder();
     private final DetachDecoder detachIn = new DetachDecoder();
     private final PublishDecoder publishIn = new PublishDecoder();
+    private final ReplyDecoder replyIn = new ReplyDecoder();
+    private final GroupsResolvedEncoder groupsOut = new GroupsResolvedEncoder();
     private final SnapshotRecordDecoder recordIn = new SnapshotRecordDecoder();
     private final SnapshotEndDecoder endIn = new SnapshotEndDecoder();
     private final AttachedEncoder attachedOut = new AttachedEncoder();
@@ -390,7 +396,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
         headerIn.wrap(buffer, offset);
         final int body = offset + HostedWire.HEADER;
         switch (headerIn.templateId()) {
-        case PublishDecoder.TEMPLATE_ID -> onPublish(buffer, offset, length);
+        case PublishDecoder.TEMPLATE_ID, ReplyDecoder.TEMPLATE_ID -> onPublish(buffer, offset, length);
         case SnapshotRecordDecoder.TEMPLATE_ID -> {
             recordIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
             if (collecting && recordIn.roundId() == cutNo) {
@@ -429,16 +435,36 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     /** H-3 and H-5: the head is placed in the epoch it was decided in, dropped otherwise, kept if the façade declines. */
     private boolean place(final MutableDirectBuffer buffer, final int offset, final int length, final int head) {
         headerIn.wrap(buffer, offset);
-        publishIn.wrap(buffer, offset + HostedWire.HEADER, headerIn.blockLength(), headerIn.version());
-        if (publishIn.epoch() != epoch || !leading) {
+        final boolean isReply = headerIn.templateId() == ReplyDecoder.TEMPLATE_ID;
+        final int body = offset + HostedWire.HEADER;
+        final long commandEpoch;
+        if (isReply) {
+            replyIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            commandEpoch = replyIn.epoch();
+        } else {
+            publishIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            commandEpoch = publishIn.epoch();
+        }
+        if (commandEpoch != epoch || !leading) {
             epochDrops++;
             retire(length);
             return true;
         }
-        final int payloadId = publishIn.payloadId();
-        final int payloadLength = publishIn.bodyLength();
-        publishIn.getBody(scratch, 0, payloadLength);
-        final Publish result = app.publish(payloadId, scratch, payloadLength);
+        final int payloadId;
+        final int payloadLength;
+        final Publish result;
+        if (isReply) {
+            payloadId = replyIn.payloadId();
+            payloadLength = replyIn.bodyLength();
+            replyIn.getBody(scratch, 0, payloadLength);
+            result = app.reply(new RequestRef(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
+                payloadId, scratch, payloadLength);
+        } else {
+            payloadId = publishIn.payloadId();
+            payloadLength = publishIn.bodyLength();
+            publishIn.getBody(scratch, 0, payloadLength);
+            result = app.publish((int)publishIn.groupMask(), payloadId, scratch, payloadLength);
+        }
         if (result == Publish.Declined) {
             headDeclines++;
             return false;
@@ -485,6 +511,20 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
 
     @Override
     public void onGroupsResolved(final GroupDirectory directory) {
+        int count = 0;
+        for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+            count += directory.name(groupId) == null ? 0 : 1;
+        }
+        groupsOut.wrapAndApplyHeader(out, 0, headerOut);
+        final GroupsResolvedEncoder.GroupsEncoder groups = groupsOut.groupsCount(count);
+        for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+            final String name = directory.name(groupId);
+            if (name != null) {
+                groups.next().groupId(groupId).mask(directory.mask(name)).putName(name.getBytes(StandardCharsets.UTF_8), 0,
+                    name.length());
+            }
+        }
+        send(HostedWire.HEADER + groupsOut.encodedLength());
     }
 
     @Override
