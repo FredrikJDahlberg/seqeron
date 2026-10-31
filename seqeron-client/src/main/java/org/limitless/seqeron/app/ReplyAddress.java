@@ -5,5 +5,5 @@ package org.limitless.seqeron.app;
  * groupMask}. Unlike the {@link Payload} it came from, it outlives the callback, so keep it for a reply dispatched
  * later.
  */
-public record RequestRef(int sourceId, int connectionId, int groupMask) {
+public record ReplyAddress(int sourceId, int connectionId, int groupMask) {
 }

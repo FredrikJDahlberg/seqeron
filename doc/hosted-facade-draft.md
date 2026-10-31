@@ -140,7 +140,7 @@ rest as it reads them:
 | message | fields | handled | meaning |
 | --- | --- | --- | --- |
 | `Publish` | `epoch`, `connectionId`, `groupMask`, `payloadId`, `payload` | queued | `publish` (**H-4**) |
-| `Reply` | `epoch`, `sourceId`, `connectionId`, `groupMask`, `payloadId`, `payload` | queued | `reply`; the three ids are the request's `RequestRef` (**H-11**) |
+| `Reply` | `epoch`, `sourceId`, `connectionId`, `groupMask`, `payloadId`, `payload` | queued | `reply`; the three ids are the request's `ReplyAddress` (**H-11**) |
 | `OpenConnection` | `epoch`, `connectionId`, `data` | queued | Gateway only: `openConnection`, with the id the stub allocated (**H-4**) |
 | `CloseConnection` | `epoch`, `connectionId` | queued | Gateway only: `closeConnection` |
 | `GateClosed` | `epoch` | queued | Gateway only: the edge closed on its own (`gateClosed()`) |
@@ -273,8 +273,8 @@ concern the listener apply unchanged.
   send's 10 s stall bound. A hung host's session times out within `sequencer.sessionTimeoutMs` whatever the client
   does, so `hostTimeoutMs` decides only how soon the client restarts the pair.
 - **H-11. `Reply` names its request by value.** `Payload` carries the request's `sourceId`, `connectionId` and
-  `groupMask`, which are its `RequestRef`, and `Reply` carries the same three, as the direct `reply` takes a
-  `RequestRef` the application kept. The host retains nothing per request.
+  `groupMask`, which are its `ReplyAddress`, and `Reply` carries the same three, as the direct `reply` takes a
+  `ReplyAddress` the application kept. The host retains nothing per request.
 - **H-12. After `Fenced` the host sends nothing.** The host releases the cluster session before sending it,
   as the façade does, and the client exits with 70.
 - **H-13. A payload is copied once.** The host never decodes a payload: it copies the queue's payload bytes into
@@ -432,7 +432,7 @@ client's driver connection.
   does not go with it: `ReplayerRecovery`, `PendingSends` and the façades stay case for case in Java and C#, two
   languages rather than three. **The added lines are only partly counted, and the first stage is not decided until
   they are.** What exists: the C++ stubs of `Application`, `Gateway` and `Consumer` share a core,
-  `hosted/detail/Attachment.hpp`, of 612 lines with its comments, and are 140, 252 and 49 lines on top of it (a build of
+  `hosted/detail/ClientLink.hpp`, of 612 lines with its comments, and are 140, 252 and 49 lines on top of it (a build of
   the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217 lines of XML and its
   generated C++ codecs 16,800 more, and the host, `ClientProxy`, which runs any of the three façades, is about 910 lines of Java with its
   configuration checks and the allocation window, plus `Liveness`, `CommandLedger` and `AttachRules`, its Aeron-free seams. A C# stub and the golden-trace harness are not counted,
@@ -664,7 +664,7 @@ per-attachment images of **H-15**, and the counters of §17.2.1. It differs from
   nothing for a command it drops or declines (**H-4**). The queue and window are **H-5**'s with one difference: the
   host closes the attachment (`CLIENT_WINDOW`) rather than fencing. The windowed length is the encoded message, header
   included, which the stub counts and the host retires. `Publish` carries the `groupMask` and the host places it with that mask; `Reply` is queued through the same window
-  and placed with the `RequestRef` it names (**H-11**). The prototype allocates one `RequestRef` per reply.
+  and placed with the `ReplyAddress` it names (**H-11**). The host caches them (256 slots, keyed by the three fields), so a reply allocates nothing.
 - **Counters.** The client heartbeat, the host heartbeat and the host retired counters are as §17.2.1; the client
   applied counter is written (the position of the last `Payload`) and not read, so **H-14**'s lag is not exported. A
   heartbeat is written on every duty cycle, in a long cut and in a send's spin, and not in a stalled client.
@@ -679,7 +679,7 @@ per-attachment images of **H-15**, and the counters of §17.2.1. It differs from
   and `GateClosed` are queued behind it in order but are outside the window and the retired counter (**H-5**), and
   `GateClosed` takes the edge down, epoch up, as the façade's `gateClosed()` does. A `Publish` on a connection whose
   `ConnectionOpened` is not yet placed stays at the head of the queue, un-retired, until the façade accepts it. An
-  `OpenConnection` under an id the façade did not allocate closes the attachment (`CLIENT_PROTOCOL`).
+  `OpenConnection` under an id the façade did not allocate fences the host with `CLIENT_PROTOCOL` (**H-4**).
 - **Consumer.** For `Kind.CONSUMER`, when `proxy.consumerGroup` names a group, the host builds a `Consumer` for it. It
   subscribes to no stream 304, so the attachment is judged lost by the client's heartbeat counter alone (**H-9**), and
   `Attached` carries no `sourceId` (-1).
@@ -736,10 +736,10 @@ limit, and a C# stub. Liveness by counter, the attach of **H-8**, the stub's oth
 `Payload` message, and `publish` returns `protocol::Publish` after the local checks of a direct call (a retired
 `payloadId`, a payload above `MAX_PAYLOAD_LENGTH`), the mirrored gate (**H-16**) and the window (**H-5**). It answers
 the host's `SnapshotCut` from a `SnapshotListener`, restores from `RestoreRecord` and keeps the heartbeat counter. `reply` takes the
-`RequestRef` of the request, and `GroupsResolved` hands the listener a `GroupDirectory` and gives `publish` the direct
+`ReplyAddress` of the request, and `GroupsResolved` hands the listener a `GroupDirectory` and gives `publish` the direct
 call's group-mask check (`Refused` for a group the table lacks). `hosted::Consumer` (`.../hosted/Consumer.hpp`, 49 lines) is the stub of a `Consumer`: it sends
 only `Attach` and `Detach`, takes no stream 304, and delivers `Payload` and `CaughtUp` to the direct `Consumer`'s listener. `hosted::Gateway`
-(`.../hosted/Gateway.hpp`) is the stub of a `Gateway` on the same core (`hosted/detail/Attachment.hpp`): its listener is the direct
+(`.../hosted/Gateway.hpp`) is the stub of a `Gateway` on the same core (`hosted/detail/ClientLink.hpp`): its listener is the direct
 `Gateway`'s, `onActivated` is answered with `Activated` and the stub then serves under the epoch one above the last `Gate`'s
 (§17.5), `openConnection` allocates its ids from the last `Role` and returns `NO_CONNECTION` for a full window or a
 back-pressured stream, and `closeConnection` and `gateClosed` retry within the call. `hosted_probe`

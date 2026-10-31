@@ -42,6 +42,9 @@ constexpr std::uint16_t PROBE_REPLY_TEMPLATE_ID = 2;
 constexpr std::uint16_t PROBE_SCHEMA_ID = 214;
 constexpr std::size_t HEADER = 8;
 constexpr std::size_t MARKER_LENGTH = HEADER + 8 + sizeof(std::uint16_t);
+// The most replies the probe holds to send, and the most it holds to check; the oldest go first.
+constexpr std::size_t REPLY_BACKLOG_MAX = 4096;
+constexpr std::size_t EXPECTED_MAX = 65536;
 // Set in the seqNo of this client's markers; bits 24-39 salt it per run, since the host replays the queue's history.
 constexpr std::int64_t OWN_TAG = 1LL << 40;
 constexpr int SALT_SHIFT = 24;
@@ -130,7 +133,12 @@ class Probe final : public app::SnapshotListener
             }
             if (m_replyEvery > 0 && own % m_replyEvery == 0)
             {
-                m_toReply.push_back({ seqNo, payload.requestRef() });
+                if (m_toReply.size() >= REPLY_BACKLOG_MAX)
+                {
+                    m_toReply.pop_front();
+                    m_replyDropped++;
+                }
+                m_toReply.push_back({ seqNo, payload.replyAddress() });
             }
         }
         m_markers++;
@@ -165,14 +173,15 @@ class Probe final : public app::SnapshotListener
     void state(const std::int64_t declined) const
     {
         log("state: %llu marker(s), digest %016llx, published %lld, declined %lld, own %lld, replied %lld, "
-            "replies %lld, bad %lld",
+            "replies %lld, bad %lld, dropped %lld",
             static_cast<unsigned long long>(m_markers), static_cast<unsigned long long>(m_digest),
             static_cast<long long>(m_published), static_cast<long long>(declined),
             static_cast<long long>(m_ownSequenced), static_cast<long long>(m_replied),
-            static_cast<long long>(m_repliesSequenced), static_cast<long long>(m_badReplies));
+            static_cast<long long>(m_repliesSequenced), static_cast<long long>(m_badReplies),
+            static_cast<long long>(m_replyDropped));
     }
 
-    // Answers the sequenced markers waiting for a reply, each with the RequestRef it was sequenced under.
+    // Answers the sequenced markers waiting for a reply, each with the ReplyAddress it was sequenced under.
     template<typename Application>
     int sendReplies(Application& application)
     {
@@ -189,6 +198,10 @@ class Probe final : public app::SnapshotListener
                 break;
             }
             m_expected[seqNo] = ref;
+            if (m_expected.size() > EXPECTED_MAX)
+            {
+                m_expected.erase(m_expected.begin());
+            }
             m_replied++;
             m_toReply.pop_front();
             sent++;
@@ -250,7 +263,7 @@ class Probe final : public app::SnapshotListener
     }
 
   private:
-    // A reply must come back under the request's RequestRef (H-11), exactly once.
+    // A reply must come back under the request's ReplyAddress (H-11), exactly once.
     void onReply(const app::Payload& payload, const std::int64_t seqNo)
     {
         const auto it = m_expected.find(seqNo);
@@ -267,9 +280,10 @@ class Probe final : public app::SnapshotListener
 
     std::int32_t m_sourceId;
     std::int64_t m_replyEvery;
-    std::deque<std::pair<std::int64_t, app::RequestRef>> m_toReply;
-    std::map<std::int64_t, app::RequestRef> m_expected;
+    std::deque<std::pair<std::int64_t, app::ReplyAddress>> m_toReply;
+    std::map<std::int64_t, app::ReplyAddress> m_expected;
     std::int64_t m_replied = 0;
+    std::int64_t m_replyDropped = 0;
     std::int64_t m_repliesSequenced = 0;
     std::int64_t m_badReplies = 0;
     std::int64_t m_stallCutNo;

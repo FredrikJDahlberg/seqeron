@@ -107,6 +107,6 @@ class ApplicationBuilderTest {
         assertFalse(application.isLeading());
         assertFalse(application.isCaughtUp());
         assertEquals(Publish.Declined, application.publish(1, 5, payload, 16));
-        assertEquals(Publish.Declined, application.reply(new RequestRef(2, 9, 1), 5, payload, 16));
+        assertEquals(Publish.Declined, application.reply(new ReplyAddress(2, 9, 1), 5, payload, 16));
     }
 }

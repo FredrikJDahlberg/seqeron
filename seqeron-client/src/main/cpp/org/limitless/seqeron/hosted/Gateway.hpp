@@ -4,7 +4,7 @@
 #include <string_view>
 
 #include "org/limitless/seqeron/app/Gateway.hpp"
-#include "org/limitless/seqeron/hosted/detail/Attachment.hpp"
+#include "org/limitless/seqeron/hosted/detail/ClientLink.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 
 #include "org_limitless_seqeron_sbe_hosted/Activated.h"
@@ -29,9 +29,9 @@ namespace org::limitless::seqeron::hosted {
  * Single-threaded: every method belongs to the caller's one duty-cycle thread.
  */
 template<typename Listener>
-class Gateway : public detail::Attachment<Gateway<Listener>, Listener>
+class Gateway : public detail::ClientLink<Gateway<Listener>, Listener>
 {
-    using Base = detail::Attachment<Gateway<Listener>, Listener>;
+    using Base = detail::ClientLink<Gateway<Listener>, Listener>;
     friend Base;
 
   public:
@@ -182,7 +182,7 @@ class Gateway : public detail::Attachment<Gateway<Listener>, Listener>
     }
 
   private:
-    // The hooks of Attachment.
+    // The hooks of ClientLink.
     void onGate(const bool leading)
     {
         m_serving = leading;

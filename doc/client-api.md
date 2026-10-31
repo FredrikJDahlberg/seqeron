@@ -33,7 +33,7 @@ A **fence** is `onFenced(ClusterError, detail)`, raised once, after which the in
 action; the façade releases its cluster session before raising it, and its queue and replay subscriptions at the
 end of that `doWork()`, so a fenced instance holds no Replayer slot. Causes: cluster session lost (on a `Gateway` instance that announced its activation on it, or not replaced within 20 s),
 ingress confirmation fault, recovery stall, queue stall, snapshot divergence, unrestorable snapshot, an addressed group the
-log lacks ([`fault-tolerance.md`](fault-tolerance.md) §2.1). Loss of the media driver
+log lacks, a hosted client's protocol breach ([`fault-tolerance.md`](fault-tolerance.md) §2.1). Loss of the media driver
 is not a fence; it raises from `doWork()`.
 
 ## Execution model
@@ -306,7 +306,7 @@ otherwise.
 | `canPublish()` | gate open and ingress not held |
 | `isLeading()` | gate open |
 | `publish(payloadId, payload, length)`, `publish(groupMask, payloadId, payload, length)` | submit under the application's `sourceId`, no connection, to its own group or to those `groupMask` names. C++ also `publish<Encoder>([groupMask,] payloadId, fill)` |
-| `reply(request, payloadId, payload, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `RequestRef`, from `Payload.requestRef()`, which unlike the `Payload` outlives the callback. C++ also `reply<Encoder>(request, payloadId, fill)` |
+| `reply(request, payloadId, payload, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `ReplyAddress`, from `Payload.replyAddress()`, which unlike the `Payload` outlives the callback. C++ also `reply<Encoder>(request, payloadId, fill)` |
 | `sourceId()`, `isCaughtUp()`, `lastClusterSeqNo()` | replica state |
 | `keepAlive()` | session keep-alive for a callback that spins, or waits on a snapshot record; `doWork()` already sends one per cycle |
 
@@ -318,7 +318,7 @@ a reply submitted during the election may be lost, and the next opening redispat
 `std::function<void()>`; C# `ApplicationOptions.OnNotLeader`, an `Action`), and it runs before
 `onLeadershipChanged(false)`, so the listener need not. The gate is also
 shut while a lost cluster session is replaced, for the same reason, and it closes at a fence: an open gate
-reports `false` before `onFenced`, and `isLeading()` and `canPublish()` are false from then on. Retain a request's `RequestRef`, not its
+reports `false` before `onFenced`, and `isLeading()` and `canPublish()` are false from then on. Retain a request's `ReplyAddress`, not its
 `Payload`.
 
 **Off-cluster.** On a gateway host, `offCluster(true)` makes the replica the sole instance. Its gate opens

@@ -3,7 +3,7 @@
 #include <cstdint>
 
 #include "org/limitless/seqeron/app/Application.hpp"
-#include "org/limitless/seqeron/hosted/detail/Attachment.hpp"
+#include "org/limitless/seqeron/hosted/detail/ClientLink.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 
 #include "org_limitless_seqeron_sbe_hosted/Publish.h"
@@ -22,9 +22,9 @@ namespace org::limitless::seqeron::hosted {
  * Single-threaded: every method belongs to the caller's one duty-cycle thread.
  */
 template<typename Listener>
-class Application : public detail::Attachment<Application<Listener>, Listener>
+class Application : public detail::ClientLink<Application<Listener>, Listener>
 {
-    using Base = detail::Attachment<Application<Listener>, Listener>;
+    using Base = detail::ClientLink<Application<Listener>, Listener>;
     friend Base;
 
   public:
@@ -100,12 +100,12 @@ class Application : public detail::Attachment<Application<Listener>, Listener>
      * The same on behalf of the producer that asked for it (H-11): the reply carries the request's sourceId,
      * connectionId and groupMask.
      *
-     * @param request       the request's RequestRef, kept from its Payload
+     * @param request       the request's ReplyAddress, kept from its Payload
      * @param payloadId     the reply's protocol
      * @param payload       the reply's first byte, its own messageHeader included if it has one
      * @param payloadLength the reply's length
      */
-    [[nodiscard]] protocol::Publish reply(const app::RequestRef& request, const std::uint16_t payloadId,
+    [[nodiscard]] protocol::Publish reply(const app::ReplyAddress& request, const std::uint16_t payloadId,
                                           const std::uint8_t* payload, const std::uint16_t payloadLength)
     {
         if (m_config.sourceId == -1)
@@ -123,7 +123,7 @@ class Application : public detail::Attachment<Application<Listener>, Listener>
     }
 
   private:
-    // The hooks of Attachment.
+    // The hooks of ClientLink.
     void onGate(const bool leading)
     {
         if (leading != m_leading)

@@ -207,17 +207,17 @@ public sealed class Application : IDisposable
     /// <summary>
     /// The same on behalf of the producer that asked for it: a reply carries the <b>requester's</b> <c>sourceId</c>,
     /// <c>connectionId</c> and <c>groupMask</c>, which is how the gateway that took the request routes the answer
-    /// back out of it, and how every group that saw the request sees the answer. Keep the <see cref="RequestRef"/>
-    /// (<see cref="Payload.RequestRef"/>) rather than the request itself — a <see cref="Payload"/> is valid only
+    /// back out of it, and how every group that saw the request sees the answer. Keep the <see cref="ReplyAddress"/>
+    /// (<see cref="Payload.ReplyAddress"/>) rather than the request itself — a <see cref="Payload"/> is valid only
     /// during its callback, and a reply is usually dispatched later.
     /// </summary>
-    public Publish Reply(RequestRef request, int payloadId, IDirectBuffer payload, int length)
+    public Publish Reply(ReplyAddress request, int payloadId, IDirectBuffer payload, int length)
     {
         return Submit(request.SourceId, request.ConnectionId, request.GroupMask, payloadId, payload, length);
     }
 
     /// <summary>The same from a span, copied once into a buffer this replica owns.</summary>
-    public Publish Reply(RequestRef request, int payloadId, ReadOnlySpan<byte> payload)
+    public Publish Reply(ReplyAddress request, int payloadId, ReadOnlySpan<byte> payload)
     {
         return Submit(request.SourceId, request.ConnectionId, request.GroupMask, payloadId, Stage(payload),
                       payload.Length);
