@@ -347,6 +347,11 @@ if(SEQERON_BUILD_TESTS)
     add_executable(cluster_probe seqeron-client/src/test/cpp-probe/ClusterProbe.cpp)
     target_link_libraries(cluster_probe PRIVATE seqeron_core seqeron_flags)
 
+    # hosted_probe — a hosted::Application stub holding the probe's state, which HostedCppStubTest drives against the
+    # prototype host (doc/hosted-facade-draft.md §17).
+    add_executable(hosted_probe seqeron-client/src/test/cpp-probe/HostedProbe.cpp)
+    target_link_libraries(hosted_probe PRIVATE seqeron_core seqeron_flags)
+
     # hop_bench — the hosted-façade hop from a C++ client (doc/hosted-facade-draft.md §17.10). Bench only; nothing runs it.
     add_executable(hop_bench seqeron-client/src/test/cpp-bench/HopBench.cpp)
     target_link_libraries(hop_bench PRIVATE seqeron_core seqeron_flags)
