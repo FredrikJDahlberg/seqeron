@@ -14,6 +14,7 @@ hosts that run applications but no member.
 | --- | --- | --- |
 | `SequencerServer` | once per member | the member: Aeron Cluster's consensus module, the sequencer, an embedded media driver, the archive that records the queue, and the Replayer |
 | `ReplayerServer` | once per gateway host | the Replayer alone, with its own media driver and archive, relaying a member's queue onto the host's own |
+| `ClientProxy` | once per hosted client, beside a member or on a gateway host | the host of a hosted façade: runs the `Application`, `Gateway` or `Consumer` for a C++ stub over `aeron:ipc` ([Client proxy](#client-proxy)) |
 | an application | beside a member or on a gateway host | the client tier, attached to that host's media driver |
 | `clusterctl` | on demand, on a member | starts and stops the cluster, designates gateways, loads the topology, requests snapshot rounds |
 | `MetricsExporter` | once per member, optionally | serves the member's counters to Prometheus ([`ops.md`](ops.md)) |
@@ -37,6 +38,36 @@ snapshots"). The two instances of a gateway never run on one host.
 
 The client tier runs in the application's own process: Java, the header-only C++ library, or the C#
 package ([`client-api.md`](client-api.md)). There is no C++ or C# server; the cluster is Java.
+
+## Client proxy
+
+`org.limitless.seqeron.proxy.ClientProxy` (service jar) runs one façade for one hosted client, attached to the
+driver of the member or gateway host it sits beside; the design is `hosted-facade-draft.md` §17. It starts the
+façade when a stub's `Attach` names it and closes it when the client detaches or its heartbeat counter stops. It
+is configured by system properties and fails at start, exit 2 with one line, on a value that is missing,
+non-numeric or out of range.
+
+| property | default | description |
+|---|---|---|
+| `proxy.hostName` | `hosted` | the name an `Attach` must carry; unique on the driver, so several proxies can share it |
+| `proxy.memberId` | `0` | the member whose driver and port block it uses |
+| `proxy.aeronDir` | `PortLayout.aeronDir(memberId)` | the media driver's directory |
+| `proxy.ingressEndpoints` | `PortLayout.ingressEndpoints()` | the members' ingress endpoints; `SEQERON_HOSTS` and `SEQERON_PORT_BASE` apply |
+| `proxy.egressHost` | this member's entry in the hosts | the host the cluster client's egress is advertised on |
+| `proxy.sourceId` | `16` | the `sourceId` of the `Application` or `Gateway` it runs |
+| `proxy.clientId` | `11` | the façade's `clientId` ([`ops.md`](ops.md), "Client ids") |
+| `proxy.snapshotDir` | required | the façade's snapshot directory |
+| `proxy.gatewayName` | unset | set: serve a `Gateway` of that row |
+| `proxy.consumerGroup` | `0` | non-zero: serve a `Consumer` of that group; exclusive with `gatewayName` |
+| `proxy.clientTimeoutMs` | `2000` | how long a silent client's heartbeat may stall before it is lost |
+| `proxy.commandWindow` | `65536` | bytes of encoded commands accepted and not yet placed (H-5) |
+| `proxy.placePerCycle` | `64` | commands placed per duty cycle |
+| `proxy.pendingCapacity` | `0` | the façade's pending-send tracker; `0` is its default |
+| `proxy.spin` | `false` | busy-spin the loop; a backing-off proxy adds tens of microseconds (§17.10.6) |
+| `proxy.allocWarmupFrames` | `0` | non-zero: log the bytes allocated over the next `proxy.allocWindowFrames` (default 20000) frames; a measurement, off by default |
+
+Under `proxy.spin` the proxy holds a core. It logs a `queue:` line of the command queue's counters, at most once a
+second, while commands are being dropped or declined, and when it closes an attachment.
 
 Three more processes serve the system tests ([`building.md`](building.md)):
 

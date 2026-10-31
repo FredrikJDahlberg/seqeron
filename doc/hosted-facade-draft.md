@@ -389,7 +389,7 @@ client's driver connection.
 
 ## 17.8 Consequences for the tree
 
-- Java host: a `seqeron-service` class composing `Application`, `Gateway` or `Consumer` with a remote listener and
+- Java host: `org.limitless.seqeron.proxy.ClientProxy`, a `seqeron-service` class composing `Application`, `Gateway` or `Consumer` with a remote listener and
   the command queue. `seqeron-client` stays free of it, so the direction rule holds.
 - Java client tier: the `Application` and `Gateway` builders take the `IdleStrategy` that `ClusterStreamSender.send`
   spins on, `YieldingIdleStrategy` by default as now (**H-10**). It is a change to the client tier's surface, so the
@@ -434,8 +434,8 @@ client's driver connection.
   they are.** What exists: the C++ stubs of `Application`, `Gateway` and `Consumer` share a core,
   `hosted/detail/Attachment.hpp`, of 612 lines with its comments, and are 140, 252 and 49 lines on top of it (a build of
   the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217 lines of XML and its
-  generated C++ codecs 16,800 more, and the prototype host, which runs any of the three façades, is 875 lines of Java (test scope,
-  with the harness's own options and the allocation window). A C# stub and the golden-trace harness are not counted,
+  generated C++ codecs 16,800 more, and the host, `ClientProxy`, which runs any of the three façades, is about 910 lines of Java with its
+  configuration checks and the allocation window, plus `Liveness`, `CommandLedger` and `AttachRules`, its Aeron-free seams. A C# stub and the golden-trace harness are not counted,
   so it is a floor, not the answer.
 - Conformance is by golden trace, so that the stubs' tests are not three ports of one suite. A trace is streams
   303 and 304 and the counters recorded from the Java host through a scripted scenario: attach, restore, steady
@@ -644,7 +644,11 @@ alternating, the first 20% dropped; p50 / p99.9 in µs, run 1 then run 2:
   µs and hosted 337 and 288. The peak queue was 784 bytes of the 64 KiB window and no attachment was closed. The
   hosted arm's p50 at 20k msg/s spans the direct arm's, as before.
 
-## 17.11 Prototype: restore, cut and SIGKILL
+## 17.11 The host: restore, cut and SIGKILL
+
+The host is `ClientProxy` in `seqeron-service`, configured by `proxy.*` properties (`running-a-cluster.md`). Its decisions
+are `Liveness`, `CommandLedger` and `AttachRules`, unit-tested without Aeron; the system tests below launch it from the
+uber jar.
 
 A Java host runs the real `Application` with snapshots; a Java client holds `TestApplication`'s state (a marker count
 and a digest) and writes its one 16-byte record byte for byte. Host and client are child processes beside member
