@@ -38,7 +38,7 @@ concept ConsumerListener =
  *
  * Fenced, like them, when it can no longer be trusted to see the queue: ClusterError::RecoveryStalled and
  * ClusterError::QueueStalled. It takes no snapshots and so always restarts from the start of its queue, which a
- * cluster with a <snapshots> policy no longer holds; a consumer there is an Application or Gateway with a
+ * cluster with a `<snapshots>` policy no longer holds; a consumer there is an Application or Gateway with a
  * SnapshotListener that writes no records.
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each iteration.
