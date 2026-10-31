@@ -156,7 +156,7 @@ of a source serializing the same state to the same bytes (§8).
 
 ### 4.1 The snapshot directory
 
-Each instance has a directory of its own, `snapshotDirectory` on either façade, which a `SnapshotListener`
+Each instance has a directory of its own, the snapshot directory on either façade, which a `SnapshotListener`
 requires. A restart restores from what it holds, so it must outlive the process, and no other instance may
 write to it, the other instance of a gateway pair included. §11 proposes a snapshot server per host in its
 place.

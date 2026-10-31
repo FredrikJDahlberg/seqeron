@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -30,20 +32,19 @@
 
 namespace org::limitless::seqeron::app {
 
-/** What an Application's Listener provides. */
+/**
+ * What an Application's Listener provides. onGroupsResolved(directory), onCaughtUp(clusterSeqNo) and
+ * onClusterHeartbeat(clusterTimeNs, receiveTimeNs) are optional: the replica calls them only if the Listener has them.
+ */
 template<typename L>
 concept ApplicationListener = requires(L& listener, const GroupDirectory& directory, const Payload& payload,
                                        bool leading, std::int64_t clusterSeqNo, std::int64_t clusterTimeNs,
                                        std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
-    // The log's group table, once, before the gate first opens: what publish takes its masks from.
-    listener.onGroupsResolved(directory);
-    // The gate crossed an edge. False is where OutstandingWork::onNotLeader() belongs: every leadership
-    // change shuts an open gate, and the work may have gone with the election. False also comes before
+    // The gate crossed an edge. Every leadership change shuts an open gate, and the work may have gone with the
+    // election: Config::onNotLeader is where OutstandingWork::onNotLeader() belongs. False also comes before
     // onFenced when this replica fences with its gate open.
     listener.onLeadershipChanged(leading);
     listener.onSequenced(payload);
-    listener.onCaughtUp(clusterSeqNo);
-    listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
     listener.onFenced(fence, detail);
 };
 
@@ -55,8 +56,8 @@ concept ApplicationListener = requires(L& listener, const GroupDirectory& direct
  * the fences that say it may no longer act.
  *
  * Off the cluster (Config::offCluster), on a gateway host, it is the one instance rather than one of three:
- * its gate opens once caught up, whoever leads, and it submits over UDP. Nothing stops a second instance
- * publishing too; an application that needs a standby off the cluster is a Gateway.
+ * its gate opens once caught up, whoever leads, and it submits over UDP, never over a member's aeron:ipc. Nothing stops
+ * a second instance publishing too; an application that needs a standby off the cluster is a Gateway.
  *
  * What is left to the consumer is its own work: the payloads it reads, the state it keeps, the payloads it
  * submits. Every replica reads the same ordered stream and so holds the same state, which is what makes
@@ -90,28 +91,30 @@ class Application
         // The names of the groups this application publishes to besides its own; one the log's group table lacks
         // fences it with ClusterError::GroupUnknown.
         std::vector<std::string> addressedGroups;
-        // This replica's client id, its counters' label; unique among the co-located apps on its node.
-        std::int32_t clientId = 0;
+        // This replica's client id, its counters' label — required, and unique among the clients on its node: two
+        // sharing one share their counters' series.
+        std::optional<std::int32_t> clientId;
         // The node this replica runs on: whose queue it follows, and whose leadership opens its gate.
         std::int32_t memberId = 0;
         // Whether this node is a gateway host, running no member, rather than a member: the gate then opens
-        // whoever leads, and ingress is UDP alone. Run one instance, as nothing elects between two.
+        // whoever leads, and ingress is UDP alone. Run one instance, as nothing elects between two. Not with an
+        // ipcConnectTimeoutMs, which has no IPC ingress to time.
         bool offCluster = false;
         // This client's own egress endpoint; two media drivers on one host cannot both bind a port.
-        std::string egressChannel;
+        std::string egressChannel = DEFAULT_EGRESS_CHANNEL;
         // The members to reach when this node is not leading, "memberId=host:port,...".
         std::string ingressEndpoints = protocol::ingressEndpointsCsv();
-        std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
-        std::int64_t queueStallTimeoutMs = DEFAULT_QUEUE_STALL_TIMEOUT_MS;
-        std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-        std::int64_t ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
-        // What serializes this application's state for snapshot rounds and restores it on start; without one it
-        // takes part in none, whatever its topology row says, and recovers from clusterSeqNo 1. Must outlive the
-        // replica.
-        SnapshotListener* snapshotListener = nullptr;
-        // Where this replica keeps its snapshots, one file per round; required with a snapshotListener. Its own: no
-        // other instance may write it. A restart restores from what it holds, so it must outlive the process.
-        std::filesystem::path snapshotDirectory;
+        // The stall and capacity policy.
+        Tuning tuning;
+        // How long to wait for IPC ingress to the local member while it leads before using UDP; empty means
+        // DEFAULT_IPC_CONNECT_TIMEOUT_MS. Not with offCluster.
+        std::optional<std::int64_t> ipcConnectTimeoutMs;
+        // Takes this replica into snapshot rounds; without it it takes part in none, whatever its topology row says,
+        // and recovers from clusterSeqNo 1.
+        std::optional<Snapshots> snapshots;
+        // Called whenever the gate closes, before onLeadershipChanged(false): the place for OutstandingWork's
+        // onNotLeader(). Optional; without it the listener does so.
+        std::function<void()> onNotLeader;
     };
 
     /**
@@ -119,19 +122,21 @@ class Application
      *
      * @param config   the replica's identity and deployment policy
      * @param listener the application; must outlive the replica
-     * @throws std::invalid_argument if config has a snapshotListener and no snapshotDirectory
+     * @throws std::invalid_argument if config has no clientId, offCluster with an ipcConnectTimeoutMs, or snapshots
+     * with an empty directory
      */
     Application(Config config, Listener& listener) :
-      m_config{ std::move(config) },
+      m_config{ validated(std::move(config)) },
       m_listener{ listener },
       m_gate{ m_config.memberId, m_config.offCluster },
       m_store{ snapshotStore(m_config) },
-      m_snapshots{ m_config.snapshotListener, m_store.get(), [this] { m_session.keepAlive(); } },
+      m_snapshots{ m_config.snapshots ? &m_config.snapshots->listener : nullptr, m_store.get(),
+                   [this] { m_session.keepAlive(); } },
       m_dispatch{ *this },
-      m_session{ m_config.clientId,
-                 m_config.pendingCapacity,
-                 m_config.queueStallTimeoutMs,
-                 m_config.recoveryStallTimeoutMs,
+      m_session{ *m_config.clientId,
+                 m_config.tuning.pendingCapacity,
+                 m_config.tuning.queueStallTimeoutMs,
+                 m_config.tuning.recoveryStallTimeoutMs,
                  m_config.sourceId,
                  "",
                  m_config.addressedGroups,
@@ -163,8 +168,8 @@ class Application
             m_snapshotRoundCounterRegId = protocol::addAppCounter(
                 m_aeron, protocol::APP_SNAPSHOT_ROUND_TYPE_ID,
                 "seqeron.app.snapshotRound source=" + std::to_string(m_config.sourceId) +
-                    " member=" + std::to_string(m_config.memberId) + " client=" + std::to_string(m_config.clientId),
-                m_config.memberId, m_config.clientId);
+                    " member=" + std::to_string(m_config.memberId) + " client=" + std::to_string(*m_config.clientId),
+                m_config.memberId, *m_config.clientId);
         }
         if (m_config.offCluster)
         {
@@ -172,7 +177,8 @@ class Application
         }
         else
         {
-            m_session.startColocated(std::move(aeron), m_config.memberId, m_config.ipcConnectTimeoutMs,
+            m_session.startColocated(std::move(aeron), m_config.memberId,
+                                     m_config.ipcConnectTimeoutMs.value_or(DEFAULT_IPC_CONNECT_TIMEOUT_MS),
                                      m_config.egressChannel, m_config.ingressEndpoints);
         }
     }
@@ -192,7 +198,7 @@ class Application
             m_gate.update(m_session.isCaughtUp() && m_session.hasSession(), m_session.currentLeaderMemberId());
         if (transition != detail::LeaderGate::Transition::None)
         {
-            m_listener.onLeadershipChanged(transition == detail::LeaderGate::Transition::Opened);
+            gateEdge(transition == detail::LeaderGate::Transition::Opened);
             ++work;
         }
         work += m_snapshots.signal(m_snapshotSignals);
@@ -201,6 +207,17 @@ class Application
             work += m_snapshots.submit(m_snapshotFrames);
         }
         return work;
+    }
+
+    // A closing gate discharges the tracked work's dispatches before the listener hears of it. The duty cycle's;
+    // public as a test seam, not API.
+    void gateEdge(const bool leading)
+    {
+        if (!leading && m_config.onNotLeader)
+        {
+            m_config.onNotLeader();
+        }
+        m_listener.onLeadershipChanged(leading);
     }
 
     // Whether leader-only work may reach ingress right now: the gate is open, and ingress is not held.
@@ -213,6 +230,15 @@ class Application
     [[nodiscard]] bool isLeading() const noexcept
     {
         return m_gate.isOpen();
+    }
+
+    // Tells the cluster this instance is alive. doWork() already does it once a cycle, and a snapshot round once
+    // per record; call this as well from inside a listener callback that spins, since doWork() cannot run again
+    // until that callback returns and the cluster drops a session that goes quiet for sessionTimeoutMs.
+    // Self-throttling.
+    void keepAlive()
+    {
+        m_session.keepAlive();
     }
 
     /**
@@ -281,42 +307,38 @@ class Application
     /**
      * Encodes and submits a reply on behalf of the producer that asked for it. It carries the requester's
      * sourceId, connectionId and groupMask, which is how the gateway that took the request routes the answer back
-     * out, and how every group that saw the request sees the answer. Keep those three off the request rather than
-     * the request itself — a Payload is valid only during its callback, and a reply is usually dispatched later.
+     * out, and how every group that saw the request sees the answer. Keep the RequestRef (Payload::requestRef())
+     * rather than the request itself — a Payload is valid only during its callback, and a reply is usually
+     * dispatched later.
      *
-     * @tparam Encoder          the reply's SBE encoder
-     * @param requesterSourceId the request's sourceId
-     * @param connectionId      the request's connectionId
-     * @param groupMask         the request's groupMask
-     * @param payloadId         the reply's protocol
+     * @tparam Encoder  the reply's SBE encoder
+     * @param request   the request being answered
+     * @param payloadId the reply's protocol
      * @param fill              called with the encoder, its messageHeader already applied, to stamp the fields
      * @return Published; Declined while the gate is shut, ingress is held or the transport is back-pressured
      *         — retry it; Refused, permanently
      */
     template<typename Encoder, typename Fill>
-    [[nodiscard]] protocol::Publish reply(const std::int32_t requesterSourceId, const std::int32_t connectionId,
-                                          const std::uint16_t groupMask, const std::uint16_t payloadId, Fill&& fill)
+    [[nodiscard]] protocol::Publish reply(const RequestRef& request, const std::uint16_t payloadId, Fill&& fill)
     {
-        return submit<Encoder>(requesterSourceId, connectionId, groupMask, payloadId, std::forward<Fill>(fill));
+        return submit<Encoder>(request.sourceId, request.connectionId, request.groupMask, payloadId,
+                               std::forward<Fill>(fill));
     }
 
     /**
      * Submits a reply the caller encoded itself, on behalf of the producer that asked for it.
      *
-     * @param requesterSourceId the request's sourceId
-     * @param connectionId      the request's connectionId
-     * @param groupMask         the request's groupMask
-     * @param payloadId         the reply's protocol
-     * @param payload           the reply's first byte, its own messageHeader included if it has one
-     * @param payloadLength     the reply's length
+     * @param request       the request being answered
+     * @param payloadId     the reply's protocol
+     * @param payload       the reply's first byte, its own messageHeader included if it has one
+     * @param payloadLength the reply's length
      * @return Published; Declined while the gate is shut, ingress is held or the transport is back-pressured
      *         — retry it; Refused, permanently
      */
-    [[nodiscard]] protocol::Publish reply(const std::int32_t requesterSourceId, const std::int32_t connectionId,
-                                          const std::uint16_t groupMask, const std::uint16_t payloadId,
+    [[nodiscard]] protocol::Publish reply(const RequestRef& request, const std::uint16_t payloadId,
                                           const std::uint8_t* payload, const std::uint16_t payloadLength)
     {
-        return submit(requesterSourceId, connectionId, groupMask, payloadId, payload, payloadLength);
+        return submit(request.sourceId, request.connectionId, request.groupMask, payloadId, payload, payloadLength);
     }
 
     // This replica's own sourceId, the one its topology row gives it.
@@ -453,12 +475,18 @@ class Application
 
         void onGroupsResolved(const GroupDirectory& directory)
         {
-            m_app.m_listener.onGroupsResolved(directory);
+            if constexpr (requires { m_app.m_listener.onGroupsResolved(directory); })
+            {
+                m_app.m_listener.onGroupsResolved(directory);
+            }
         }
 
         void onCaughtUp(const std::int64_t clusterSeqNo)
         {
-            m_app.m_listener.onCaughtUp(clusterSeqNo);
+            if constexpr (requires { m_app.m_listener.onCaughtUp(clusterSeqNo); })
+            {
+                m_app.m_listener.onCaughtUp(clusterSeqNo);
+            }
         }
 
         // The cluster clock's tick (spec §7), once a second. It is the one time source that keeps
@@ -466,7 +494,10 @@ class Application
         // it is identical on every node — so a timer driven by it decides the same thing everywhere.
         void onClusterHeartbeat(const std::int64_t clusterTimeNs, const std::int64_t receiveTimeNs)
         {
-            m_app.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
+            if constexpr (requires { m_app.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs); })
+            {
+                m_app.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
+            }
         }
 
         // An open gate closes first, so the listener has given up leader-only work by the time it hears why.
@@ -474,7 +505,7 @@ class Application
         {
             if (m_app.m_gate.onFenced())
             {
-                m_app.m_listener.onLeadershipChanged(false);
+                m_app.gateEdge(false);
             }
             m_app.m_listener.onFenced(fence, detail);
         }
@@ -495,18 +526,31 @@ class Application
         Application& m_app;
     };
 
+    static Config validated(Config config)
+    {
+        if (!config.clientId)
+        {
+            throw std::invalid_argument("clientId is required");
+        }
+        if (config.offCluster && config.ipcConnectTimeoutMs)
+        {
+            throw std::invalid_argument("ipcConnectTimeoutMs has no meaning with offCluster");
+        }
+        return config;
+    }
+
     // The store of a replica given a listener, which requires its directory.
     static std::unique_ptr<replayer::client::SnapshotStore> snapshotStore(const Config& config)
     {
-        if (config.snapshotListener == nullptr)
+        if (!config.snapshots)
         {
             return nullptr;
         }
-        if (config.snapshotDirectory.empty())
+        if (config.snapshots->directory.empty())
         {
-            throw std::invalid_argument("snapshotDirectory is required with a snapshotListener");
+            throw std::invalid_argument("snapshots.directory is required");
         }
-        return std::make_unique<replayer::client::SnapshotStore>(config.snapshotDirectory);
+        return std::make_unique<replayer::client::SnapshotStore>(config.snapshots->directory);
     }
 
     Config m_config;

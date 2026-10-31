@@ -17,9 +17,9 @@ namespace Org.Limitless.Seqeron.App;
 /// over the node's own <c>aeron:ipc</c>, the queue it follows, the leader gate, confirmed ingress across a failover,
 /// and the fences that say it may no longer act.
 /// <para><b>Off the cluster</b> (<see cref="ApplicationOptions.OffCluster"/>), on a gateway host, it is the one
-/// instance rather than one of three: its gate opens once caught up, whoever leads, and it submits over UDP. Nothing
-/// stops a second instance publishing too; an application that needs a standby off the cluster is a
-/// <see cref="Gateway"/>.</para>
+/// instance rather than one of three: its gate opens once caught up, whoever leads, and it submits over UDP, never
+/// over a member's <c>aeron:ipc</c>. Nothing stops a second instance publishing too; an application that needs a
+/// standby off the cluster is a <see cref="Gateway"/>.</para>
 /// <para><b>What is left to the consumer is its own work</b>: the payloads it reads, the state it keeps, the
 /// payloads it submits. Every replica reads the same ordered stream and so holds the same state, which is what makes
 /// <see cref="OutstandingWork{TKey,TWork}"/> — fed that same stream — the way work survives the gate closing under
@@ -57,6 +57,7 @@ public sealed class Application : IDisposable
     private readonly Session _session;
     private readonly LeaderGate _gate;
     private readonly IApplicationListener _listener;
+    private readonly Action _onNotLeader;
     private readonly SnapshotTaker _snapshots;
     private readonly SnapshotFrames _snapshotFrames;
     private readonly SnapshotSignals _snapshotSignals;
@@ -80,24 +81,29 @@ public sealed class Application : IDisposable
         Require(options.EgressChannel, nameof(options.EgressChannel));
         Require(options.IngressEndpoints, nameof(options.IngressEndpoints));
         Require(options.Listener, nameof(options.Listener));
-        if (options.SnapshotListener != null && options.SnapshotDirectory == null)
+        if (options.OffCluster && options.IpcConnectTimeoutMs != null)
         {
-            throw new ArgumentException("SnapshotDirectory is required with a SnapshotListener", nameof(options));
+            throw new ArgumentException("IpcConnectTimeoutMs has no meaning with OffCluster", nameof(options));
+        }
+        if (options.Snapshots != null && options.Snapshots.Directory == null)
+        {
+            throw new ArgumentException("Snapshots.Directory is required", nameof(options));
         }
         _listener = options.Listener;
+        _onNotLeader = options.OnNotLeader;
         _sourceId = options.SourceId;
         _memberId = options.MemberId;
         _clientId = options.ClientId;
         _offCluster = options.OffCluster;
-        _ipcConnectTimeoutMs = options.IpcConnectTimeoutMs;
+        _ipcConnectTimeoutMs = options.IpcConnectTimeoutMs ?? DefaultIpcConnectTimeoutMs;
         _egressChannel = options.EgressChannel;
         _ingressEndpoints = options.IngressEndpoints;
         _stagingBuffer = new UnsafeBuffer(_staging);
         _gate = new LeaderGate(options.MemberId, options.OffCluster);
-        SnapshotStore store = options.SnapshotListener == null ? null : new SnapshotStore(options.SnapshotDirectory);
-        _snapshots = new SnapshotTaker(options.SnapshotListener, store, KeepAlive);
-        _session = new Session(options.ClientId, options.PendingCapacity, options.QueueStallTimeoutMs,
-                               options.RecoveryStallTimeoutMs, options.SourceId, null, options.AddressedGroups,
+        SnapshotStore store = options.Snapshots == null ? null : new SnapshotStore(options.Snapshots.Directory);
+        _snapshots = new SnapshotTaker(options.Snapshots?.Listener, store, KeepAlive);
+        _session = new Session(options.ClientId, options.Tuning.PendingCapacity, options.Tuning.QueueStallTimeoutMs,
+                               options.Tuning.RecoveryStallTimeoutMs, options.SourceId, null, options.AddressedGroups,
                                new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _sourceId);
         _snapshotSignals = new SnapshotSignals(this);
@@ -144,7 +150,7 @@ public sealed class Application : IDisposable
             _gate.Update(_session.IsCaughtUp && _session.HasSession, _session.CurrentLeaderMemberId);
         if (transition != LeaderGate.Transition.None)
         {
-            _listener.OnLeadershipChanged(transition == LeaderGate.Transition.Opened);
+            GateEdge(transition == LeaderGate.Transition.Opened);
             work++;
         }
         work += _snapshots.Signal(_snapshotSignals);
@@ -201,21 +207,20 @@ public sealed class Application : IDisposable
     /// <summary>
     /// The same on behalf of the producer that asked for it: a reply carries the <b>requester's</b> <c>sourceId</c>,
     /// <c>connectionId</c> and <c>groupMask</c>, which is how the gateway that took the request routes the answer
-    /// back out of it, and how every group that saw the request sees the answer. Keep those three off the request
-    /// rather than the request itself — a <see cref="Payload"/> is valid only during its callback, and a reply is
-    /// usually dispatched later.
+    /// back out of it, and how every group that saw the request sees the answer. Keep the <see cref="RequestRef"/>
+    /// (<see cref="Payload.RequestRef"/>) rather than the request itself — a <see cref="Payload"/> is valid only
+    /// during its callback, and a reply is usually dispatched later.
     /// </summary>
-    public Publish Reply(int requesterSourceId, int connectionId, ushort groupMask, int payloadId,
-                         IDirectBuffer payload, int length)
+    public Publish Reply(RequestRef request, int payloadId, IDirectBuffer payload, int length)
     {
-        return Submit(requesterSourceId, connectionId, groupMask, payloadId, payload, length);
+        return Submit(request.SourceId, request.ConnectionId, request.GroupMask, payloadId, payload, length);
     }
 
     /// <summary>The same from a span, copied once into a buffer this replica owns.</summary>
-    public Publish Reply(int requesterSourceId, int connectionId, ushort groupMask, int payloadId,
-                         ReadOnlySpan<byte> payload)
+    public Publish Reply(RequestRef request, int payloadId, ReadOnlySpan<byte> payload)
     {
-        return Submit(requesterSourceId, connectionId, groupMask, payloadId, Stage(payload), payload.Length);
+        return Submit(request.SourceId, request.ConnectionId, request.GroupMask, payloadId, Stage(payload),
+                      payload.Length);
     }
 
     /// <summary>This replica's own <c>sourceId</c>, the one its topology row gives it.</summary>
@@ -251,8 +256,23 @@ public sealed class Application : IDisposable
         return _stagingBuffer;
     }
 
-    // The session's keep-alive, for a round serialized inside a dispatch.
-    private void KeepAlive()
+    // A closing gate discharges the tracked work's dispatches before the listener hears of it.
+    internal void GateEdge(bool leading)
+    {
+        if (!leading)
+        {
+            _onNotLeader?.Invoke();
+        }
+        _listener.OnLeadershipChanged(leading);
+    }
+
+    /// <summary>
+    /// Tells the cluster this instance is alive. <see cref="DoWork"/> already does it once a cycle, and a snapshot
+    /// round once per record; call this as well from inside an <see cref="IApplicationListener"/> callback that
+    /// spins, since <c>DoWork</c> cannot run again until that callback returns, and the cluster drops a session that
+    /// goes quiet for <c>sequencer.sessionTimeoutMs</c>. Self-throttling, so a call per spin costs nothing.
+    /// </summary>
+    public void KeepAlive()
     {
         _session.KeepAlive();
     }
@@ -391,7 +411,7 @@ public sealed class Application : IDisposable
         {
             if (_app._gate.OnFenced())
             {
-                _app._listener.OnLeadershipChanged(false);
+                _app.GateEdge(false);
             }
             _app._listener.OnFenced(fence, detail);
         }

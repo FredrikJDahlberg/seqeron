@@ -9,6 +9,17 @@ namespace org::limitless::seqeron::app {
 
 class Payload;
 
+/**
+ * What a reply needs of the request it answers: the requester's sourceId, connectionId and groupMask. Unlike the
+ * Payload it comes from, it outlives the callback, so keep it for a reply dispatched later.
+ */
+struct RequestRef
+{
+    std::int32_t sourceId;
+    std::int32_t connectionId;
+    std::uint16_t groupMask;
+};
+
 namespace detail {
 template<typename Dispatch>
 class Session;
@@ -62,6 +73,12 @@ class Payload
     [[nodiscard]] std::uint16_t groupMask() const noexcept
     {
         return m_event.groupMask;
+    }
+
+    // The reference a later Application::reply takes; unlike this payload, it outlives the callback.
+    [[nodiscard]] RequestRef requestRef() const noexcept
+    {
+        return { m_event.sourceId, m_event.connectionId, m_event.groupMask };
     }
 
     // The cluster session it was submitted on; a gateway pair shares its sourceId but not this.

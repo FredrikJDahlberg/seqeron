@@ -9,7 +9,8 @@ as the Java client, `%org.limitless:seqeron`, and its namespaces mirror that jar
 |---|---|
 | Run one instance of an elected active/standby gateway pair | \ref org::limitless::seqeron::app::Gateway "app::Gateway" |
 | Run a co-located application: one replica per node, publishing while its node leads | \ref org::limitless::seqeron::app::Application "app::Application" |
-| Follow the ordered stream: history off the recording, then the live queue | \ref org::limitless::seqeron::replayer::client::ReplayerStreamReceiver "replayer::client::ReplayerStreamReceiver" |
+| Follow the ordered stream, publishing nothing: history off the recording, then the live queue | \ref org::limitless::seqeron::app::Consumer "app::Consumer" |
+| The same, one level down | \ref org::limitless::seqeron::replayer::client::ReplayerStreamReceiver "replayer::client::ReplayerStreamReceiver" |
 
 A façade assembles the whole duty cycle. Its listener sees \ref org::limitless::seqeron::app::Payload "Payload"
 and \ref org::limitless::seqeron::app::ClusterError "ClusterError", and a publish returns

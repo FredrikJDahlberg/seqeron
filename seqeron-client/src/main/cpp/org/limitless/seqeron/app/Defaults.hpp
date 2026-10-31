@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 
@@ -21,5 +22,23 @@ inline constexpr std::size_t DEFAULT_PENDING_CAPACITY = 1024;
 
 // How long ingress is tried on this member's own aeron:ipc: short, as a follower never answers.
 inline constexpr std::int64_t DEFAULT_IPC_CONNECT_TIMEOUT_MS = 500;
+
+// An ephemeral port: one cluster session, and no port of its own to allocate.
+inline const std::string DEFAULT_EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:0";
+
+/**
+ * The policy knobs a producer rarely changes, kept off its Config so that holds only identity and wiring.
+ *
+ * pendingCapacity is the messages confirmed ingress tracks, beyond which publish returns Declined; a Consumer sends
+ * nothing and ignores it. queueStallTimeoutMs fences, with QUEUE_STALLED, an instance that acts when no
+ * ClusterHeartbeat arrives for that long, and recoveryStallTimeoutMs does so with RECOVERY_STALLED when recovery
+ * dispatches nothing for that long; any other instance logs.
+ */
+struct Tuning
+{
+    std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
+    std::int64_t queueStallTimeoutMs = DEFAULT_QUEUE_STALL_TIMEOUT_MS;
+    std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
+};
 
 } // namespace org::limitless::seqeron::app

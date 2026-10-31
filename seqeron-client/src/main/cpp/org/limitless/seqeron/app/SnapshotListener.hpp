@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <span>
 
 namespace org::limitless::seqeron::app {
@@ -63,6 +64,17 @@ class SnapshotListener
 
   protected:
     ~SnapshotListener() = default;
+};
+
+/**
+ * What takes a façade into snapshot rounds: the listener, which must outlive the façade, and the directory where the
+ * instance keeps its snapshots, one file per round. The directory is the instance's own (no other instance, its
+ * pair's included, may write it), and a restart restores from what it holds, so it must outlive the process.
+ */
+struct Snapshots
+{
+    SnapshotListener& listener;
+    std::filesystem::path directory;
 };
 
 } // namespace org::limitless::seqeron::app

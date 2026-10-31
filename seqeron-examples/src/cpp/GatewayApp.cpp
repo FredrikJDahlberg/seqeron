@@ -66,10 +66,6 @@ void onSignal(int)
 // The edge: what a gateway does that the façade cannot do for it. Here, one simulated client.
 struct Edge
 {
-    // Publishes to its own group alone; one that addresses others takes their masks from here.
-    void onGroupsResolved(const app::GroupDirectory&)
-    {}
-
     // Designated: open the edge. A real gateway binds its listen socket here; false would be retried.
     bool onActivated(const std::int32_t firstConnectionId)
     {
@@ -120,9 +116,6 @@ struct Edge
     {
         std::printf("# caught up at %lld — following the queue live\n", static_cast<long long>(clusterSeqNo));
     }
-
-    void onClusterHeartbeat(std::int64_t, std::int64_t)
-    {}
 
     // Latched, once: this instance may no longer act. Exiting releases its session, so the standby takes over.
     void onFenced(const app::ClusterError fence, const std::string& detail)

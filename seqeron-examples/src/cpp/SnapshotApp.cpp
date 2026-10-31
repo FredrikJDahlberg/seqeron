@@ -166,9 +166,6 @@ struct Ledger final : app::SnapshotListener
         }
     }
 
-    void onGroupsResolved(const app::GroupDirectory&) const
-    {}
-
     void onLeadershipChanged(const bool leading) const
     {
         std::puts(leading ? "# leading — submitting transfers" : "# not leading — silent");
@@ -182,9 +179,6 @@ struct Ledger final : app::SnapshotListener
                     static_cast<long long>(rejected),
                     static_cast<long long>(std::accumulate(balances.begin(), balances.end(), std::int64_t{ 0 })));
     }
-
-    void onClusterHeartbeat(std::int64_t, std::int64_t) const
-    {}
 
     // SNAPSHOT_DIVERGED and SNAPSHOT_UNRESTORABLE arrive here like every other fence.
     void onFenced(const app::ClusterError fence, const std::string& detail) const
@@ -226,8 +220,7 @@ int main()
           .memberId = memberId,
           .egressChannel = "aeron:udp?endpoint=localhost:" +
                            std::to_string(util::envInt("SEQERON_EXAMPLE_EGRESS_PORT", 9207 + memberId)),
-          .snapshotListener = &ledger,
-          .snapshotDirectory = snapshotDir },
+          .snapshots = app::Snapshots{ ledger, snapshotDir } },
         ledger
     };
     application.start(aeron);

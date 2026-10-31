@@ -39,8 +39,6 @@ public sealed class SnapshotApp : IApplicationListener, ISnapshotListener
     // is overridden to accept it and OnRestore reads it.
     private const int SnapshotFormatVersion = 1;
 
-    private const string EgressChannel = "aeron:udp?endpoint=localhost:0";
-
     // Agrona.NET's backoff parks for up to 16 ms by default; Java's for at most 1 ms, which this keeps.
     private const long MaxParkPeriodMs = 1;
 
@@ -79,8 +77,9 @@ public sealed class SnapshotApp : IApplicationListener, ISnapshotListener
         using Aeron aeron = Aeron.Connect(new Aeron.Context().AeronDirectoryName(aeronDir));
         using var app =
             new Application(new ApplicationOptions { SourceId = SourceId, ClientId = clientId, MemberId = memberId,
-                                                     EgressChannel = EgressChannel, Listener = application,
-                                                     SnapshotListener = application, SnapshotDirectory = snapshotDir });
+                                                     Listener = application,
+                                                     Snapshots = new SnapshotOptions {
+                                                         Listener = application, Directory = snapshotDir } });
         application._app = app;
         app.Start(aeron);
         Console.WriteLine($"# member {memberId} via {aeronDir} — snapshots in {snapshotDir}");
@@ -194,10 +193,6 @@ public sealed class SnapshotApp : IApplicationListener, ISnapshotListener
         }
     }
 
-    public void OnGroupsResolved(GroupDirectory directory)
-    {
-    }
-
     public void OnLeadershipChanged(bool leading)
     {
         Console.WriteLine(leading ? "# leading — submitting transfers" : "# not leading — silent");
@@ -208,10 +203,6 @@ public sealed class SnapshotApp : IApplicationListener, ISnapshotListener
     {
         Console.WriteLine($"# caught up at {clusterSeqNo} — {_applied} transfers, {_rejected} rejected, " +
                           $"total {_balances.Sum()}");
-    }
-
-    public void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs)
-    {
     }
 
     // SnapshotDiverged and SnapshotUnrestorable arrive here like every other fence.

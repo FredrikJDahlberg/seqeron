@@ -43,14 +43,118 @@ public class FacadeConstructionTest
         public void OnRestore(IDirectBuffer buffer, int length, int recordIndex, int formatVersion) { }
     }
 
+    private sealed class MinimalApplicationListener : IApplicationListener
+    {
+        public void OnLeadershipChanged(bool leading) { }
+        public void OnSequenced(Payload payload) { }
+        public void OnFenced(ClusterError fence, string detail) { }
+    }
+
+    private sealed class MinimalGatewayListener : IGatewayListener
+    {
+        public bool OnActivated(int firstConnectionId) => false;
+        public void OnStandby() { }
+        public void OnSequenced(Payload payload) { }
+        public void OnFenced(ClusterError fence, string detail) { }
+    }
+
+    private sealed class GateRecorder : IApplicationListener
+    {
+        public readonly System.Collections.Generic.List<string> Seen = new System.Collections.Generic.List<string>();
+        public Func<bool> Discharged = () => false;
+        public void OnLeadershipChanged(bool leading) => Seen.Add(leading + ":" + Discharged());
+        public void OnSequenced(Payload payload) { }
+        public void OnFenced(ClusterError fence, string detail) { }
+    }
+
+    [Fact(DisplayName = "a closing gate runs OnNotLeader before the listener hears false; an opening one does not")]
+    public void ClosingTheGateRunsTheHookFirst()
+    {
+        var recorder = new GateRecorder();
+        bool discharged = false;
+        recorder.Discharged = () => discharged;
+        var options = new ApplicationOptions
+        {
+            SourceId = 7, ClientId = 1, EgressChannel = Egress, IngressEndpoints = "0=localhost:1", Listener = recorder,
+            MemberId = 1, OnNotLeader = () => discharged = true,
+        };
+        var application = new Application(options);
+
+        application.GateEdge(true);
+        Assert.False(discharged);
+        application.GateEdge(false);
+        Assert.Equal(new[] { "True:False", "False:True" }, recorder.Seen);
+    }
+
+    [Fact(DisplayName = "off the cluster there is no IPC ingress to time, so the two options are rejected together")]
+    public void OffClusterRejectsAnIpcTimeout()
+    {
+        var offCluster = new Application(new ApplicationOptions
+        {
+            SourceId = 7, ClientId = 3, MemberId = 9, Listener = new MinimalApplicationListener(), OffCluster = true,
+            Tuning = new Tuning { PendingCapacity = 16 },
+        });
+        Assert.False(offCluster.IsLeading);
+        var error = Assert.Throws<ArgumentException>(() => new Application(new ApplicationOptions
+        {
+            SourceId = 7, ClientId = 3, Listener = new MinimalApplicationListener(), OffCluster = true,
+            IpcConnectTimeoutMs = 4000,
+        }));
+        Assert.Contains("IpcConnectTimeoutMs has no meaning with OffCluster", error.Message);
+    }
+
+    [Fact(DisplayName = "a consumer needs a group and a listener, and is idle before it starts")]
+    public void ConsumerConstructs()
+    {
+        var consumer = new Consumer(new ConsumerOptions
+        {
+            ClientId = 4, MemberId = 2, GroupId = 1, Listener = new MinimalConsumerListener(),
+        });
+        Assert.False(consumer.IsCaughtUp);
+        Assert.Equal(0, consumer.LastClusterSeqNo);
+        Assert.Throws<ArgumentException>(() => new Consumer(new ConsumerOptions { ClientId = 4, GroupId = 1, Listener = null }));
+    }
+
+    private sealed class MinimalConsumerListener : IConsumerListener
+    {
+        public void OnSequenced(Payload payload) { }
+        public void OnFenced(ClusterError fence, string detail) { }
+    }
+
+    [Fact(DisplayName = "a listener implementing only the required callbacks is accepted, and the rest do nothing")]
+    public void ListenersNeedOnlyTheRequiredCallbacks()
+    {
+        IApplicationListener application = new MinimalApplicationListener();
+        application.OnGroupsResolved(null);
+        application.OnCaughtUp(1);
+        application.OnClusterHeartbeat(1, 1);
+        IGatewayListener gateway = new MinimalGatewayListener();
+        gateway.OnGroupsResolved(null);
+        gateway.OnConnectionOpened(1, null, 0, 0);
+        gateway.OnConnectionClosed(1);
+        gateway.OnCaughtUp(1);
+        gateway.OnClusterHeartbeat(1, 1);
+        var options = new ApplicationOptions
+        {
+            SourceId = 7, ClientId = 1, EgressChannel = Egress, IngressEndpoints = "0=localhost:1", Listener = application,
+            MemberId = 1, OnNotLeader = () => { },
+        };
+        Assert.NotNull(new Application(options));
+    }
+
+    private static SnapshotOptions SnapshotsWith(ISnapshotListener snapshots, string directory)
+    {
+        return snapshots == null ? null : new SnapshotOptions { Listener = snapshots, Directory = directory };
+    }
+
     private static ApplicationOptions ApplicationWith(string ingress = "0=localhost:1", string directory = null,
                                                   ISnapshotListener snapshots = null, IApplicationListener listener = null)
     {
         return new ApplicationOptions
         {
-            SourceId = 7, EgressChannel = Egress, IngressEndpoints = ingress,
-            Listener = listener ?? new StubApplicationListener(), SnapshotListener = snapshots,
-            SnapshotDirectory = directory, MemberId = 1,
+            SourceId = 7, ClientId = 1, EgressChannel = Egress, IngressEndpoints = ingress,
+            Listener = listener ?? new StubApplicationListener(), Snapshots = SnapshotsWith(snapshots, directory),
+            MemberId = 1,
         };
     }
 
@@ -60,8 +164,8 @@ public class FacadeConstructionTest
     {
         return new GatewayOptions
         {
-            GatewayName = name, EgressChannel = Egress, IngressEndpoints = ingress, Listener = new StubGatewayListener(),
-            SnapshotListener = snapshots, SnapshotDirectory = directory, SourceId = sourceId,
+            GatewayName = name, ClientId = 1, EgressChannel = Egress, IngressEndpoints = ingress, Listener = new StubGatewayListener(),
+            Snapshots = SnapshotsWith(snapshots, directory), SourceId = sourceId,
         };
     }
 
@@ -69,7 +173,7 @@ public class FacadeConstructionTest
     public void ApplicationRequiresIngressAndListener()
     {
         Assert.Equal("IngressEndpoints", Assert.Throws<ArgumentException>(() => new Application(ApplicationWith(null))).ParamName);
-        var noListener = new ApplicationOptions { EgressChannel = Egress, Listener = null };
+        var noListener = new ApplicationOptions { ClientId = 1, EgressChannel = Egress, Listener = null };
         Assert.Equal("Listener", Assert.Throws<ArgumentException>(() => new Application(noListener)).ParamName);
         Assert.Throws<ArgumentNullException>(() => new Application(null));
     }
@@ -78,7 +182,7 @@ public class FacadeConstructionTest
     public void ApplicationSnapshotListenerNeedsDirectory()
     {
         var error = Assert.Throws<ArgumentException>(() => new Application(ApplicationWith(snapshots: new StubSnapshotListener())));
-        Assert.Contains("SnapshotDirectory is required with a SnapshotListener", error.Message);
+        Assert.Contains("Snapshots.Directory is required", error.Message);
     }
 
     [Fact(DisplayName = "before it has caught up a replica is not leading, has seen nothing, and declines every publish")]
@@ -91,7 +195,7 @@ public class FacadeConstructionTest
         Assert.False(application.CanPublish);
         Assert.False(application.IsCaughtUp);
         Assert.Equal(Publish.Declined, application.Publish(5, payload));
-        Assert.Equal(Publish.Declined, application.Reply(2, 9, 1, 5, payload));
+        Assert.Equal(Publish.Declined, application.Reply(new RequestRef(2, 9, 1), 5, payload));
     }
 
     [Fact(DisplayName = "a gateway needs a name, its ingress endpoints and a listener")]
@@ -99,7 +203,7 @@ public class FacadeConstructionTest
     {
         Assert.Equal("GatewayName", Assert.Throws<ArgumentException>(() => new Gateway(GatewayWith(name: null))).ParamName);
         Assert.Equal("IngressEndpoints", Assert.Throws<ArgumentException>(() => new Gateway(GatewayWith(ingress: null))).ParamName);
-        var noListener = new GatewayOptions { GatewayName = "GW-A", EgressChannel = Egress, Listener = null };
+        var noListener = new GatewayOptions { GatewayName = "GW-A", ClientId = 1, EgressChannel = Egress, Listener = null };
         Assert.Equal("Listener", Assert.Throws<ArgumentException>(() => new Gateway(noListener)).ParamName);
     }
 
@@ -108,10 +212,10 @@ public class FacadeConstructionTest
     {
         var noSourceId = Assert.Throws<ArgumentException>(
             () => new Gateway(GatewayWith(directory: "unused", snapshots: new StubSnapshotListener())));
-        Assert.Contains("SourceId is required with a SnapshotListener", noSourceId.Message);
+        Assert.Contains("SourceId is required with Snapshots", noSourceId.Message);
         var noDirectory = Assert.Throws<ArgumentException>(
             () => new Gateway(GatewayWith(sourceId: 4, snapshots: new StubSnapshotListener())));
-        Assert.Contains("SnapshotDirectory is required with a SnapshotListener", noDirectory.Message);
+        Assert.Contains("Snapshots.Directory is required", noDirectory.Message);
     }
 
     [Fact(DisplayName = "an instance that is not serving accepts no connection and has nothing to close")]

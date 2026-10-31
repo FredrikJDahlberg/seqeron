@@ -16,14 +16,14 @@ The sections before [Façades](#façades-app) define the model and the contract;
 | --- | --- | --- |
 | **Gateway** | Edge producer deployed as an active/hot-standby pair, the active instance designated by the cluster: exchange session, client gateway, feed handler | [`Gateway`](#gateway) |
 | **Replicated service** | One replica per cluster member, deterministic over the stream, publishing from the leader's replica | [`Application`](#application) |
-| **Consumer** | Reads the stream and publishes nothing: audit, risk, downstream feed | [`ReplayerStreamReceiver`](#replayerstreamreceiver) |
+| **Consumer** | Reads the stream and publishes nothing: audit, risk, downstream feed | [`Consumer`](#consumer) |
 | **Offline reader** | Decodes messages from a recording, outside a live client | `SequencedFrameDecoder` (Java, C#), `unwrapFrame` / `ClusterStreamClient` (C++) |
 
 ## Guarantees
 
 | API | guarantees | out of scope |
 | --- | --- | --- |
-| [`ReplayerStreamReceiver`](#replayerstreamreceiver) | Every message on its group's queue exactly once, in `clusterSeqNo` order: archive replay from the local recording, then the live queue, with gap detection and resumption internal. Optional snapshot restore first. | Filtering within a group: every consumer receives every message addressed to its group, and every system message. |
+| [`Consumer`](#consumer), on [`ReplayerStreamReceiver`](#replayerstreamreceiver) | Every message on its group's queue exactly once, in `clusterSeqNo` order: archive replay from the local recording, then the live queue, with gap detection and resumption internal. Optional snapshot restore first. | Filtering within a group: every consumer receives every message addressed to its group, and every system message. |
 | [`Gateway`](#gateway) | One instance of an active/hot-standby pair; the cluster designates the active instance. A connection id space never reused across handovers, and every connection's open and close on the log, so a successor knows its predecessor's connection state. Nothing an instance sends after a sibling is designated reaches the log (spec **S-6**). Confirmed ingress; fencing. | Edge connection continuity across a handover: the successor reopens the edge and counterparties reconnect. |
 | [`Application`](#application) | One replica per cluster member, all holding identical state; only the leader's replica publishes. Work outstanding at a failover is redispatched by the next leader's replica (`OutstandingWork`). Confirmed ingress; fencing. | Exactly-once replies: across a failover, delivery is at-least-once. |
 | Confirmed ingress (both façades) | Every placed message is sequenced exactly once, in order, across any number of leader failovers and replaced cluster sessions. | Producer process failure: a restarted producer, or a promoted standby, starts with nothing pending. A gateway instance a sibling superseded: what was pending is dropped. |
@@ -134,7 +134,7 @@ The guarantees are conditional on these; spec §16 states them normatively (**A-
 
 ### Read-only consumers
 
-Audit, risk or downstream feeds take a `ReplayerStreamReceiver` (or an `Application` if they may later
+Audit, risk or downstream feeds take a [`Consumer`](#consumer) (or an `Application` if they may later
 publish): replay from the start of the queue or the newest confirmed snapshot, then follow the queue. Consumers are
 invisible to the cluster and unbounded in number per node. `FollowStream` in `seqeron-examples` is the
 minimal case.
@@ -167,19 +167,23 @@ top-level rather than nested, per .NET design guidelines.
 |---|---|---|---|---|
 | `listener` | required | required | | edge or service logic |
 | `gatewayName` | required | | | topology row this instance joins |
-| `sourceId` | with `snapshotListener` | required | | `sourceId` declared in the topology row |
+| `sourceId` | with `snapshots` | required | | `sourceId` declared in the topology row |
 | `addressedGroups` | ✓ | ✓ | none | names of the other groups the instance publishes to |
-| `clientId` | ✓ | ✓ | 0 | the client's counter label, unique per node |
+| `clientId` | required | required | | the client's counter label, unique per node |
 | `memberId` | ✓ | ✓ | 0 | member (or gateway host node id) whose queue is followed |
-| `egressChannel` | required | required | | cluster session egress channel |
+| `egressChannel` | ✓ | ✓ | `aeron:udp?endpoint=localhost:0` | cluster session egress channel; the default is an ephemeral port |
 | `ingressEndpoints` | ✓ | ✓ | `PortLayout.ingressEndpoints()` | member ingress endpoints |
-| `offCluster` | | ✓ | false | single instance on a gateway host ([Application](#application)) |
-| `snapshotListener` | ✓ | ✓ | none | participate in snapshot rounds |
-| `snapshotDirectory` | with `snapshotListener` | with `snapshotListener` | | this instance's snapshot files |
-| `pendingCapacity` | ✓ | ✓ | 1,024 | messages tracked by confirmed ingress; beyond it `publish` returns `Declined` |
-| `queueStallTimeoutMs` | ✓ | ✓ | 20,000 | no `ClusterHeartbeat` for this long fences with `QUEUE_STALLED` a designated instance or the leader's replica; any other logs it |
-| `recoveryStallTimeoutMs` | ✓ | ✓ | 60,000 | recovery dispatching nothing for this long fences with `RECOVERY_STALLED`, as above |
-| `ipcConnectTimeoutMs` | | ✓ | 500 | wait for IPC ingress to the local member while it leads |
+| `offCluster` | | ✓ | false | single instance on a gateway host ([Application](#application)); not with `ipcConnectTimeoutMs`, which `build()` rejects |
+| `snapshots` (listener, directory) | ✓ | ✓ | none | participate in snapshot rounds; the listener and this instance's snapshot directory are one setting (Java `snapshots(listener, dir)`, C++ `Config::snapshots`, C# `Snapshots`) |
+| `tuning` | ✓ | ✓ | `Tuning.DEFAULT` | the policy knobs below, in one value (Java `Tuning` record with `withX` methods, C++ `Tuning` aggregate, C# `Tuning` options class) |
+| `outstandingWork` (C++ `onNotLeader`, C# `OnNotLeader`) | | ✓ | none | Java: tracker; C++, C#: hook. `onNotLeader()` is called when the gate closes |
+| `ipcConnectTimeoutMs` | | ✓ | 500 | wait for IPC ingress to the local member while it leads; empty by default so that `offCluster` can tell it was not set |
+
+| `tuning` field | default | meaning |
+|---|---|---|
+| `pendingCapacity` | 1,024 | messages tracked by confirmed ingress; beyond it `publish` returns `Declined`. A `Consumer` sends nothing and ignores it |
+| `queueStallTimeoutMs` | 20,000 | no `ClusterHeartbeat` for this long fences with `QUEUE_STALLED` a designated instance, the leader's replica or a `Consumer`; any other logs it |
+| `recoveryStallTimeoutMs` | 60,000 | recovery dispatching nothing for this long fences with `RECOVERY_STALLED`, as above |
 
 The stall defaults are `DEFAULT_QUEUE_STALL_TIMEOUT_MS` (20 heartbeat intervals) and
 `DEFAULT_RECOVERY_STALL_TIMEOUT_MS` (3× that).
@@ -234,7 +238,7 @@ edge.
 ```java
 try (Gateway gateway = Gateway.builder()
         .gatewayName("GW-A").clientId(10).memberId(memberId)
-        .egressChannel(egressChannel).listener(listener)
+        .listener(listener)
         .build()) {
     gateway.start(aeron);
     while (running) { idle.idle(gateway.doWork()); }
@@ -244,7 +248,7 @@ try (Gateway gateway = Gateway.builder()
 ```cpp
 Edge edge; // satisfies app::GatewayListener
 app::Gateway<Edge> gateway{
-    { .gatewayName = "GW-A", .clientId = 10, .memberId = memberId, .egressChannel = egressChannel }, edge
+    { .gatewayName = "GW-A", .clientId = 10, .memberId = memberId }, edge
 };
 gateway.start(aeron);
 while (running) { idle.idle(gateway.doWork()); }
@@ -262,6 +266,10 @@ gateway.close();
 | `publish(connectionId, payloadId, payload, length)`, `publish(connectionId, groupMask, payloadId, payload, length)` | submit a payload under this gateway's `sourceId`, to its own group or to those `groupMask` names ([Groups](#groups)). C++ also `publish<Encoder>(connectionId, [groupMask,] payloadId, fill)` |
 | `isActivated()`, `isServing()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastClusterSeqNo()` | instance state; `sourceId()` and `gatewayId()` are `UNRESOLVED` until a `GatewayRegistered` row names the instance |
 
+Only `onActivated`, `onStandby`, `onSequenced` and `onFenced` (`Application`: `onLeadershipChanged`,
+`onSequenced`, `onFenced`) are required; the other callbacks default to doing nothing in Java and C#, and C++
+calls them only if the listener has them (the concepts require just the former).
+
 | listener callback | trigger |
 |---|---|
 | `onGroupsResolved(GroupDirectory)` | the group table, once, before the first `onActivated` ([Groups](#groups)) |
@@ -273,8 +281,8 @@ gateway.close();
 | `onClusterHeartbeat(clusterTimeNs, receiveTimeNs)` | 1 Hz cluster clock |
 | `onFenced(ClusterError, detail)` | terminal: the session is already released, so the standby takes over, and a serving edge has had `onStandby`; normally exit |
 
-**Snapshots.** With a `snapshotListener` the gateway also requires `sourceId` (the pair's, which labels the
-instance's snapshot counter) and `snapshotDirectory` (per instance, not per pair). Every instance writes a
+**Snapshots.** With `snapshots` the gateway also requires `sourceId` (the pair's, which labels the
+instance's snapshot counter); the snapshot directory is per instance, not per pair. Every instance writes a
 file at each cut; the instance whose `GatewayStarted` for its current activation has been placed submits the
 round's `SnapshotEnd`. The façade's file header carries the pair's rows, the active instance and the
 highest connection id, replacing the pre-cut messages on restore. See [Snapshots](#snapshots).
@@ -298,16 +306,20 @@ otherwise.
 | `canPublish()` | gate open and ingress not held |
 | `isLeading()` | gate open |
 | `publish(payloadId, payload, length)`, `publish(groupMask, payloadId, payload, length)` | submit under the application's `sourceId`, no connection, to its own group or to those `groupMask` names. C++ also `publish<Encoder>([groupMask,] payloadId, fill)` |
-| `reply(requesterSourceId, connectionId, groupMask, payloadId, payload, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. C++ also `reply<Encoder>(…, fill)` |
+| `reply(request, payloadId, payload, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `RequestRef`, from `Payload.requestRef()`, which unlike the `Payload` outlives the callback. C++ also `reply<Encoder>(request, payloadId, fill)` |
 | `sourceId()`, `isCaughtUp()`, `lastClusterSeqNo()` | replica state |
+| `keepAlive()` | session keep-alive for a callback that spins, or waits on a snapshot record; `doWork()` already sends one per cycle |
 
 **Leader gate.** `onLeadershipChanged(boolean leading)` replaces `onActivated`/`onStandby`; `onGroupsResolved`,
 `onSequenced`, `onCaughtUp`, `onClusterHeartbeat` and `onFenced` are as for `Gateway`, and there is no connection
-lifecycle. **Every leadership change closes the gate**, so call `OutstandingWork.onNotLeader()` on `false`:
-a reply submitted during the election may be lost, and the next opening redispatches it. The gate is also
+lifecycle. **Every leadership change closes the gate**, so `OutstandingWork.onNotLeader()` must run on `false`:
+a reply submitted during the election may be lost, and the next opening redispatches it. Give the façade the tracker
+(Java: the builder's `outstandingWork`) or a hook that calls it (C++ `Config::onNotLeader`, a
+`std::function<void()>`; C# `ApplicationOptions.OnNotLeader`, an `Action`), and it runs before
+`onLeadershipChanged(false)`, so the listener need not. The gate is also
 shut while a lost cluster session is replaced, for the same reason, and it closes at a fence: an open gate
-reports `false` before `onFenced`, and `isLeading()` and `canPublish()` are false from then on. Retain a request's `sourceId`,
-`connectionId` and `groupMask`, not its `Payload`.
+reports `false` before `onFenced`, and `isLeading()` and `canPublish()` are false from then on. Retain a request's `RequestRef`, not its
+`Payload`.
 
 **Off-cluster.** On a gateway host, `offCluster(true)` makes the replica the sole instance. Its gate opens
 once caught up regardless of leader, and closes for one cycle on every leadership change; ingress is UDP
@@ -320,9 +332,9 @@ equivalent, and `src/csharp/Directory.Build.targets`).
 
 ### Snapshots
 
-[`snapshot.md`](snapshot.md) specifies the protocol. A façade participates when it has a `snapshotListener`
-(C++: a `SnapshotListener*` that outlives the façade) and, for an `Application`, its topology row sets
-`snapshot="true"`. `snapshotDirectory` holds the instance's confirmed file and the one being written, and must
+[`snapshot.md`](snapshot.md) specifies the protocol. A façade participates when it has `snapshots`
+(C++: a `Snapshots` holding a `SnapshotListener&` that outlives the façade) and, for an `Application`, its topology row sets
+`snapshot="true"`. The snapshot directory holds the instance's confirmed file and the one being written, and must
 outlive the process ([`snapshot.md`](snapshot.md) §4.1).
 
 | listener operation | Java | C++ | C# |
@@ -362,11 +374,37 @@ the application's work rather than seqeron's. The election, leader gate and stal
 package-private (Java), `internal` (C#) or in `app::detail` (C++). Confirmed ingress is
 [`PendingSends`](#producer-components), an internal type.
 
+### `Consumer`
+
+A read-only client: it reads one group's queue and publishes nothing, so it opens no cluster session, takes no
+part in an election and needs no topology row. It is the façade shape for the read path: `doWork()`, a
+`Listener`, fences, and `Payload`, over a [`ReplayerStreamReceiver`](#replayerstreamreceiver) it owns.
+
+| option | default | meaning |
+|---|---|---|
+| `listener` | required | `onSequenced(Payload)` and `onFenced` are required; `onCaughtUp` and `onClusterHeartbeat` are optional |
+| `clientId` | required | the client's counter label, unique per node |
+| `groupId` | required | the group whose queue is read; the first topology's is 1 |
+| `memberId` | 0 | member (or gateway host node id) whose queue is followed |
+| `tuning` | `Tuning.DEFAULT` | the stall timeouts apply; `pendingCapacity` is unused |
+
+| operation | semantics |
+|---|---|
+| `start(aeron)` | start following the group's queue on this node |
+| `doWork()` | one duty-cycle iteration: replay, live queue, fences. Nothing once fenced |
+| `isCaughtUp()`, `lastClusterSeqNo()` | consumer state |
+
+System messages never reach `onSequenced`; `ClusterHeartbeat` is `onClusterHeartbeat`. It fences with
+`RECOVERY_STALLED` and `QUEUE_STALLED`, releasing its subscriptions before `onFenced`. It takes no snapshots, so
+with a `<snapshots>` policy loaded it cannot restart (see below): use an `Application` or `Gateway` with a
+`SnapshotListener` that writes no records. `FollowStream` in `seqeron-examples` uses the receiver directly.
+
 ## `ReplayerStreamReceiver`
 
-The single read path (`replayer.client`, every language). It replays local history through the co-located
+The lower-level read path (`replayer.client`, every language): reach for it when `Consumer` is too little, for
+example to see system messages or to restore from a snapshot store. It replays local history through the co-located
 Replayer (an Aeron Archive replay), switches to the live queue once caught up, recovers gaps internally, and
-delivers every message once in `clusterSeqNo` order. Each façade owns one.
+delivers every message once in `clusterSeqNo` order. Each façade and `Consumer` owns one.
 
 The local node is a cluster member or a **gateway host** — a host with no member, running
 `start-gateway-host.sh`, whose Replayer relays a member's queues, those of the groups it is configured with, into local recordings
@@ -452,7 +490,7 @@ Aeron's layout: a component's server at the package root, its client in `.client
 | `protocol` | client | `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters`, `Publish` (C++: `SequencedFrame.hpp`, `PortLayout.hpp`, `ReplayProtocol.hpp`, `SeqeronCounters.hpp`, `Publish.hpp`) |
 | `sequencer.client` | client | internal: the [producer components](#producer-components) (C++ also `ClusterStreamClient`) |
 | `replayer.client` | client | `ReplayerStreamReceiver`, its callback types (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), `SnapshotRestoreHandler`, `SnapshotStore`; `SequencedEvent` in Java and C# (C++: `protocol`, beside `unwrapFrame` and `decodeSystem`/`decodeSequenced`) |
-| `app` | client | the façades and their components |
+| `app` | client | the façades (`Gateway`, `Application`, `Consumer`) and their components |
 | `util` | client | support code |
 | `sbe.frame`, `sbe.replay` | client | generated codecs |
 | `sequencer`, `replayer.server`, `tools`, `metrics`, `sbe.probe` | service | not client API |

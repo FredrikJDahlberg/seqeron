@@ -89,8 +89,7 @@ public final class TestApplication implements Application.Listener, SnapshotList
                  .egressChannel(ClusterProbe.egressChannel())
                  .ingressEndpoints(ClusterProbe.ingressEndpoints())
                  .listener(this)
-                 .snapshotListener(this)
-                 .snapshotDirectory(snapshotDir)
+                 .snapshots(this, snapshotDir)
                  .build()) {
             app = application;
             app.start(aeron);

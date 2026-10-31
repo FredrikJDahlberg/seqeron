@@ -6,6 +6,7 @@
 #include <deque>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -40,24 +41,22 @@
 
 namespace org::limitless::seqeron::app {
 
-/** What a Gateway's Listener provides: the edge. */
+/**
+ * What a Gateway's Listener provides: the edge. onGroupsResolved(directory), onConnectionOpened(connectionId, data,
+ * length), onConnectionClosed(connectionId), onCaughtUp(clusterSeqNo) and onClusterHeartbeat(clusterTimeNs,
+ * receiveTimeNs) are optional: the gateway calls them only if the Listener has them.
+ */
 template<typename L>
 concept GatewayListener =
     requires(L& listener, const GroupDirectory& directory, const Payload& payload, std::int32_t connectionId,
              const char* data, std::size_t length, std::int64_t clusterSeqNo, std::int64_t clusterTimeNs,
              std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
-        // The log's group table, once, before the first onActivated: what publish takes its masks from.
-        listener.onGroupsResolved(directory);
         // Open the edge; false is retried on the next doWork().
         { listener.onActivated(connectionId) } -> std::convertible_to<bool>;
         // Close it and drop every connection it let in: on a sibling's designation, and before onFenced when this
         // instance fences while serving.
         listener.onStandby();
         listener.onSequenced(payload);
-        listener.onConnectionOpened(connectionId, data, length);
-        listener.onConnectionClosed(connectionId);
-        listener.onCaughtUp(clusterSeqNo);
-        listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
         listener.onFenced(fence, detail);
     };
 
@@ -103,27 +102,23 @@ class Gateway
         // The names of the groups this gateway publishes to besides its own; one the log's group table lacks fences
         // it with ClusterError::GroupUnknown.
         std::vector<std::string> addressedGroups;
-        // This replica's client id, its counters' label; unique among the co-located apps on its node.
-        std::int32_t clientId = 0;
+        // This instance's client id, its counters' label — required, and unique among the clients on its node: two
+        // sharing one share their counters' series.
+        std::optional<std::int32_t> clientId;
         // The node whose queue this instance follows.
         std::int32_t memberId = 0;
         // This client's own egress endpoint; two media drivers on one host cannot both bind a port.
-        std::string egressChannel;
+        std::string egressChannel = DEFAULT_EGRESS_CHANNEL;
         // The members to reach, "memberId=host:port,...".
         std::string ingressEndpoints = protocol::ingressEndpointsCsv();
-        std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
-        std::int64_t queueStallTimeoutMs = DEFAULT_QUEUE_STALL_TIMEOUT_MS;
-        std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-        // The logical gateway's sourceId, the one its rows declare. Required with a snapshotListener, whose snapshot
+        // The stall and capacity policy.
+        Tuning tuning;
+        // The logical gateway's sourceId, the one its rows declare. Required with snapshots, whose snapshot
         // counter it labels.
         std::int32_t sourceId = UNRESOLVED;
-        // What serializes this instance's state for snapshot rounds and restores it on start; without one it takes
-        // part in none, whatever its rows say, and recovers from clusterSeqNo 1. Must outlive the gateway.
-        SnapshotListener* snapshotListener = nullptr;
-        // Where this instance keeps its snapshots, one file per round; required with a snapshotListener. Its own: no
-        // other instance, its pair's included, may write it. A restart restores from what it holds, so it must
-        // outlive the process.
-        std::filesystem::path snapshotDirectory;
+        // Takes this instance into snapshot rounds; without it it takes part in none, whatever its rows say, and
+        // recovers from clusterSeqNo 1. Requires a sourceId.
+        std::optional<Snapshots> snapshots;
     };
 
     /**
@@ -131,21 +126,22 @@ class Gateway
      *
      * @param config   the instance's identity and deployment policy
      * @param listener the edge; must outlive the gateway
-     * @throws std::invalid_argument if config has a snapshotListener and no sourceId or snapshotDirectory
+     * @throws std::invalid_argument if config has no clientId, or snapshots and no sourceId, or with an empty directory
      */
     Gateway(Config config, Listener& listener) :
-      m_config{ std::move(config) },
+      m_config{ requireClientId(std::move(config)) },
       m_listener{ listener },
       m_actions{ *this },
       m_lifecycle{ m_config.gatewayName, m_actions },
       m_store{ snapshotStore(m_config) },
-      m_snapshots{ m_config.snapshotListener, m_store.get(), [this] { m_session.keepAlive(); } },
+      m_snapshots{ m_config.snapshots ? &m_config.snapshots->listener : nullptr, m_store.get(),
+                   [this] { m_session.keepAlive(); } },
       m_restore{ *this },
       m_dispatch{ *this },
-      m_session{ m_config.clientId,
-                 m_config.pendingCapacity,
-                 m_config.queueStallTimeoutMs,
-                 m_config.recoveryStallTimeoutMs,
+      m_session{ *m_config.clientId,
+                 m_config.tuning.pendingCapacity,
+                 m_config.tuning.queueStallTimeoutMs,
+                 m_config.tuning.recoveryStallTimeoutMs,
                  protocol::REPLAYER_NO_SOURCE_ID,
                  m_config.gatewayName,
                  m_config.addressedGroups,
@@ -174,15 +170,15 @@ class Gateway
         m_connectionsCounterRegId =
             protocol::addAppCounter(m_aeron, protocol::GATEWAY_CONNECTIONS_TYPE_ID,
                                     "seqeron.gateway.connections member=" + std::to_string(m_config.memberId) +
-                                        " client=" + std::to_string(m_config.clientId),
-                                    m_config.memberId, m_config.clientId);
+                                        " client=" + std::to_string(*m_config.clientId),
+                                    m_config.memberId, *m_config.clientId);
         if (m_snapshots.isListening())
         {
             m_snapshotRoundCounterRegId = protocol::addAppCounter(
                 m_aeron, protocol::APP_SNAPSHOT_ROUND_TYPE_ID,
                 "seqeron.app.snapshotRound source=" + std::to_string(m_config.sourceId) +
-                    " member=" + std::to_string(m_config.memberId) + " client=" + std::to_string(m_config.clientId),
-                m_config.memberId, m_config.clientId);
+                    " member=" + std::to_string(m_config.memberId) + " client=" + std::to_string(*m_config.clientId),
+                m_config.memberId, *m_config.clientId);
         }
         m_session.start(std::move(aeron), m_config.memberId, m_config.egressChannel, m_config.ingressEndpoints);
     }
@@ -473,14 +469,22 @@ class Gateway
     {
         if (event.payloadLength < sbe::frame::ConnectionOpened::connectionDataHeaderLength())
         {
-            m_listener.onConnectionOpened(event.connectionId, nullptr, 0);
+            connectionOpened(event.connectionId, nullptr, 0);
             return;
         }
         auto opened = protocol::decodeSystem<sbe::frame::ConnectionOpened>(event);
         // Length first: connectionData() advances sbePosition past the var-data, and reading the length
         // after that reads off the end of the payload.
         const std::uint16_t length = opened.connectionDataLength();
-        m_listener.onConnectionOpened(event.connectionId, opened.connectionData(), length);
+        connectionOpened(event.connectionId, opened.connectionData(), length);
+    }
+
+    void connectionOpened(const std::int32_t connectionId, const char* data, const std::size_t length)
+    {
+        if constexpr (requires { m_listener.onConnectionOpened(connectionId, data, length); })
+        {
+            m_listener.onConnectionOpened(connectionId, data, length);
+        }
     }
 
     // The resume point, read off every frame this logical gateway's history holds, whichever instance
@@ -608,7 +612,10 @@ class Gateway
                 case protocol::CONNECTION_CLOSED:
                     if (event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
                     {
-                        m_gateway.m_listener.onConnectionClosed(event.connectionId);
+                        if constexpr (requires { m_gateway.m_listener.onConnectionClosed(event.connectionId); })
+                        {
+                            m_gateway.m_listener.onConnectionClosed(event.connectionId);
+                        }
                     }
                     break;
                 case protocol::GATEWAY_REGISTERED: {
@@ -679,13 +686,19 @@ class Gateway
 
         void onGroupsResolved(const GroupDirectory& directory)
         {
-            m_gateway.m_listener.onGroupsResolved(directory);
+            if constexpr (requires { m_gateway.m_listener.onGroupsResolved(directory); })
+            {
+                m_gateway.m_listener.onGroupsResolved(directory);
+            }
         }
 
         void onCaughtUp(const std::int64_t clusterSeqNo)
         {
             m_gateway.m_lifecycle.onCaughtUp();
-            m_gateway.m_listener.onCaughtUp(clusterSeqNo);
+            if constexpr (requires { m_gateway.m_listener.onCaughtUp(clusterSeqNo); })
+            {
+                m_gateway.m_listener.onCaughtUp(clusterSeqNo);
+            }
         }
 
         // The cluster clock's tick (spec §7), once a second. It is the one time source that keeps
@@ -693,7 +706,10 @@ class Gateway
         // it is identical on every node — so a timer driven by it decides the same thing everywhere.
         void onClusterHeartbeat(const std::int64_t clusterTimeNs, const std::int64_t receiveTimeNs)
         {
-            m_gateway.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
+            if constexpr (requires { m_gateway.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs); })
+            {
+                m_gateway.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
+            }
         }
 
         // A serving edge closes first, so the listener has stood down by the time it hears why.
@@ -721,22 +737,31 @@ class Gateway
         Gateway& m_gateway;
     };
 
+    static Config requireClientId(Config config)
+    {
+        if (!config.clientId)
+        {
+            throw std::invalid_argument("clientId is required");
+        }
+        return config;
+    }
+
     // The store of an instance given a listener, which requires its sourceId and directory.
     static std::unique_ptr<replayer::client::SnapshotStore> snapshotStore(const Config& config)
     {
-        if (config.snapshotListener == nullptr)
+        if (!config.snapshots)
         {
             return nullptr;
         }
         if (config.sourceId == UNRESOLVED)
         {
-            throw std::invalid_argument("sourceId is required with a snapshotListener");
+            throw std::invalid_argument("sourceId is required with snapshots");
         }
-        if (config.snapshotDirectory.empty())
+        if (config.snapshots->directory.empty())
         {
-            throw std::invalid_argument("snapshotDirectory is required with a snapshotListener");
+            throw std::invalid_argument("snapshots.directory is required");
         }
-        return std::make_unique<replayer::client::SnapshotStore>(config.snapshotDirectory);
+        return std::make_unique<replayer::client::SnapshotStore>(config.snapshots->directory);
     }
 
     Config m_config;

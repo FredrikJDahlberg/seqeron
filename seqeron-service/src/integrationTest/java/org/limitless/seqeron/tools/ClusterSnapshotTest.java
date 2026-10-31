@@ -647,8 +647,7 @@ class ClusterSnapshotTest {
                 .ingressEndpoints(PortLayout.ingressEndpoints(InProcessCluster.MEMBERS))
                 .listener(this)
                 .sourceId(GATEWAY_SOURCE_ID)
-                .snapshotListener(this)
-                .snapshotDirectory(baseDir.resolve("gateway-snapshots"))
+                .snapshots(this, baseDir.resolve("gateway-snapshots"))
                 .build();
             gateway.start(aeron);
             duty = new Thread(() -> {

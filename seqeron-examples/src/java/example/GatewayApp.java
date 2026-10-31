@@ -13,7 +13,6 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Gateway;
-import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.protocol.Publish;
 
@@ -36,9 +35,6 @@ public final class GatewayApp implements Gateway.Listener {
     private static final int PING_PAYLOAD_ID = 6;
 
     private static final long PING_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1);
-
-    /** Ephemeral: one session, and no port of its own to allocate. */
-    private static final String EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:0";
 
     private static final DirectBuffer CLIENT_LABEL =
         new UnsafeBuffer("example-client".getBytes(StandardCharsets.US_ASCII));
@@ -82,7 +78,6 @@ public final class GatewayApp implements Gateway.Listener {
                                    .gatewayName(gatewayName)
                                    .clientId(clientId)
                                    .memberId(memberId)
-                                   .egressChannel(EGRESS_CHANNEL)
                                    .listener(edge)
                                    .build()) {
             edge.gateway = gateway;
@@ -121,11 +116,6 @@ public final class GatewayApp implements Gateway.Listener {
             }
             idle.idle(work);
         }
-    }
-
-    @Override
-    public void onGroupsResolved(final GroupDirectory directory) {
-        // Publishes to its own group alone; one that addresses others takes their masks from here.
     }
 
     /** Designated: open the edge. A real gateway binds its listen socket here; false would be retried. */
@@ -175,11 +165,6 @@ public final class GatewayApp implements Gateway.Listener {
     @Override
     public void onCaughtUp(final long clusterSeqNo) {
         System.out.printf("# caught up at %d — following the queue live%n", clusterSeqNo);
-    }
-
-    @Override
-    public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
-        // Nothing to time here; a gateway with a watchdog runs it off this.
     }
 
     /** Latched, once: this instance may no longer act. Exiting releases its session, so the standby takes over. */

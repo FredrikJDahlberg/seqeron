@@ -86,7 +86,8 @@ public final class Gateway implements AutoCloseable {
          * The log's group table, once, before the first {@link #onActivated}: what {@link #publish(int, int, int,
          * DirectBuffer, int)} takes its masks from.
          */
-        void onGroupsResolved(GroupDirectory directory);
+        default void onGroupsResolved(final GroupDirectory directory) {
+        }
 
         /**
          * This instance has been designated, has announced itself and may now serve: open the edge.
@@ -111,23 +112,28 @@ public final class Gateway implements AutoCloseable {
          * per-connection state rebuilds it from these while it replays. The buffer is valid only during
          * the call.
          */
-        void onConnectionOpened(int connectionId, DirectBuffer connectionData, int offset, int length);
+        default void onConnectionOpened(final int connectionId, final DirectBuffer connectionData, final int offset,
+                                        final int length) {
+        }
 
         /**
          * That connection has gone. A client that drops its socket without logging out produces no payload
          * at all, so this is the only notice of it.
          */
-        void onConnectionClosed(int connectionId);
+        default void onConnectionClosed(final int connectionId) {
+        }
 
         /** Every transition to caught-up, the first included. */
-        void onCaughtUp(long clusterSeqNo);
+        default void onCaughtUp(final long clusterSeqNo) {
+        }
 
         /**
          * The cluster clock's tick (spec §7), once a second. It is the one time source that keeps advancing
          * while every producer is silent, which is exactly when a watchdog must still fire, and it is
          * identical on every node — so a timer driven by it decides the same thing everywhere.
          */
-        void onClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
+        default void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
+        }
 
         /** Once, latched: the cluster session is already released, so a standby takes over. Exiting is usual. */
         void onFenced(ClusterError fence, String detail);
@@ -191,8 +197,9 @@ public final class Gateway implements AutoCloseable {
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
         this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
-        this.session = new Session(builder.clientId, builder.pendingCapacity, builder.queueStallTimeoutMs,
-                                   builder.recoveryStallTimeoutMs, ReplayProtocol.NO_SOURCE_ID, builder.gatewayName,
+        this.session = new Session(builder.clientId, builder.tuning.pendingCapacity(),
+                                   builder.tuning.queueStallTimeoutMs(),
+                                   builder.tuning.recoveryStallTimeoutMs(), ReplayProtocol.NO_SOURCE_ID, builder.gatewayName,
                                    builder.addressedGroups, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, lifecycle::gatewaySourceId);
         if (store != null) {
@@ -635,14 +642,12 @@ public final class Gateway implements AutoCloseable {
         private int sourceId = UNRESOLVED;
         private SnapshotListener snapshotListener;
         private Path snapshotDirectory;
-        private int clientId;
+        private Integer clientId;
         private int memberId;
-        private String egressChannel;
+        private String egressChannel = Session.DEFAULT_EGRESS_CHANNEL;
         private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
-        private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
-        private long queueStallTimeoutMs = DEFAULT_QUEUE_STALL_TIMEOUT_MS;
-        private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
+        private Tuning tuning = Tuning.DEFAULT;
 
         /** The {@code GatewayRegistered} row name this instance joins on. */
         public Builder gatewayName(final String gatewayName) {
@@ -661,7 +666,7 @@ public final class Gateway implements AutoCloseable {
 
         /**
          * The logical gateway's {@code sourceId}, the one its rows declare. Required with a {@link
-         * #snapshotListener}, whose snapshot counter it labels.
+         * #snapshots}, whose snapshot counter it labels.
          */
         public Builder sourceId(final int sourceId) {
             this.sourceId = sourceId;
@@ -669,25 +674,24 @@ public final class Gateway implements AutoCloseable {
         }
 
         /**
-         * What serializes this instance's state for snapshot rounds and restores it on start; without one it takes
-         * part in none, whatever its rows say, and recovers from {@code clusterSeqNo} 1.
+         * Takes this instance into snapshot rounds; without it it takes part in none, whatever its rows say, and
+         * recovers from {@code clusterSeqNo} 1. Requires a {@link #sourceId}.
+         *
+         * @param snapshotListener  serializes this instance's state for a round and restores it on start
+         * @param snapshotDirectory where this instance keeps its snapshots, one file per round. Its own: no other
+         *                          instance, its pair's included, may write it. A restart restores from what it
+         *                          holds, so it must outlive the process.
          */
-        public Builder snapshotListener(final SnapshotListener snapshotListener) {
-            this.snapshotListener = snapshotListener;
+        public Builder snapshots(final SnapshotListener snapshotListener, final Path snapshotDirectory) {
+            this.snapshotListener = Objects.requireNonNull(snapshotListener, "snapshotListener");
+            this.snapshotDirectory = Objects.requireNonNull(snapshotDirectory, "snapshotDirectory");
             return this;
         }
 
         /**
-         * Where this instance keeps its snapshots, one file per round; required with a {@link #snapshotListener}.
-         * Its own: no other instance, its pair's included, may write it. A restart restores from what it holds, so
-         * it must outlive the process.
+         * This instance's client id, its counters' label — required, and unique among the clients on its node: two
+         * sharing one share their counters' series.
          */
-        public Builder snapshotDirectory(final Path snapshotDirectory) {
-            this.snapshotDirectory = snapshotDirectory;
-            return this;
-        }
-
-        /** This replica's client id, its counters' label; unique among the co-located apps on its node. */
         public Builder clientId(final int clientId) {
             this.clientId = clientId;
             return this;
@@ -699,7 +703,10 @@ public final class Gateway implements AutoCloseable {
             return this;
         }
 
-        /** This client's own egress endpoint; two media drivers on one host cannot both bind a port. */
+        /**
+         * This client's own egress endpoint; two media drivers on one host cannot both bind a port. An ephemeral
+         * port on localhost, {@code aeron:udp?endpoint=localhost:0}, by default.
+         */
         public Builder egressChannel(final String egressChannel) {
             this.egressChannel = egressChannel;
             return this;
@@ -716,31 +723,20 @@ public final class Gateway implements AutoCloseable {
             return this;
         }
 
-        public Builder pendingCapacity(final int pendingCapacity) {
-            this.pendingCapacity = pendingCapacity;
-            return this;
-        }
-
-        public Builder queueStallTimeoutMs(final long queueStallTimeoutMs) {
-            this.queueStallTimeoutMs = queueStallTimeoutMs;
-            return this;
-        }
-
-        public Builder recoveryStallTimeoutMs(final long recoveryStallTimeoutMs) {
-            this.recoveryStallTimeoutMs = recoveryStallTimeoutMs;
+        /** The stall and capacity policy, {@link Tuning#DEFAULT} by default. */
+        public Builder tuning(final Tuning tuning) {
+            this.tuning = Objects.requireNonNull(tuning, "tuning");
             return this;
         }
 
         public Gateway build() {
             Objects.requireNonNull(gatewayName, "gatewayName");
+            Objects.requireNonNull(clientId, "clientId");
             Objects.requireNonNull(egressChannel, "egressChannel");
             Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
             Objects.requireNonNull(listener, "listener");
             if (snapshotListener != null && sourceId == UNRESOLVED) {
-                throw new IllegalStateException("sourceId is required with a snapshotListener");
-            }
-            if (snapshotListener != null && snapshotDirectory == null) {
-                throw new IllegalStateException("snapshotDirectory is required with a snapshotListener");
+                throw new IllegalStateException("sourceId is required with snapshots");
             }
             return new Gateway(this);
         }

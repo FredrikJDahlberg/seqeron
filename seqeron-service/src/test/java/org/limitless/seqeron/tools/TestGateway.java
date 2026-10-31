@@ -163,19 +163,20 @@ public final class TestGateway {
 
     private int serve() {
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(ClusterProbe.aeronDir()));
-        gateway = Gateway.builder()
+        final Gateway.Builder builder = Gateway.builder()
             .gatewayName(gatewayName)
             .clientId(clientId)
             .memberId(ClusterProbe.memberId())
             .egressChannel(ClusterProbe.egressChannel())
             .ingressEndpoints(ClusterProbe.ingressEndpoints())
             .listener(new GateListener())
-            .sourceId(sourceId)
-            .snapshotListener(snapshot ? new Snapshots() : null)
-            .snapshotDirectory(Path.of(System.getProperty(
+            .sourceId(sourceId);
+        if (snapshot) {
+            builder.snapshots(new Snapshots(), Path.of(System.getProperty(
                 "probe.snapshotDir",
-                Path.of(System.getProperty("java.io.tmpdir"), "seqeron-snapshots-" + gatewayName).toString())))
-            .build();
+                Path.of(System.getProperty("java.io.tmpdir"), "seqeron-snapshots-" + gatewayName).toString())));
+        }
+        gateway = builder.build();
         gateway.start(aeron);
         log("standby — following the queue as %s, gate shut until a GatewayActive names this instance", gatewayName);
 

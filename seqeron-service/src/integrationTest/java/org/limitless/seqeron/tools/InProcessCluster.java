@@ -27,6 +27,7 @@ import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.server.RelayedCut;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
+import org.limitless.seqeron.sbe.frame.ApplicationRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
@@ -67,6 +68,8 @@ final class InProcessCluster implements AutoCloseable {
     private ReplayerServer gatewayHost;
     private ExpandableArrayBuffer gatewayRow;
     private int gatewayRowLength;
+    private ExpandableArrayBuffer applicationRow;
+    private int applicationRowLength;
 
     InProcessCluster(final Path baseDir) {
         this.baseDir = baseDir;
@@ -123,6 +126,13 @@ final class InProcessCluster implements AutoCloseable {
                                            SystemFrame.GROUPS_REGISTERED, body, length) != Publish.Published) {
                 Tests.yield();
             }
+            if (applicationRow != null) {
+                while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
+                                               SystemFrame.APPLICATION_REGISTERED, applicationRow,
+                                               applicationRowLength) != Publish.Published) {
+                    Tests.yield();
+                }
+            }
             if (gatewayRow != null) {
                 while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
                                                SystemFrame.GATEWAY_REGISTERED, gatewayRow, gatewayRowLength)
@@ -171,6 +181,19 @@ final class InProcessCluster implements AutoCloseable {
                                .groupId((short)GROUP_ID)
                                .encodedLength();
         gatewayRow = body;
+    }
+
+    /** Has the next {@link #startAll} register an application row for {@code sourceId} in {@link #GROUP_ID}. */
+    void withApplication(final int sourceId) {
+        final ExpandableArrayBuffer body = new ExpandableArrayBuffer(ApplicationRegisteredEncoder.BLOCK_LENGTH);
+        applicationRowLength = new ApplicationRegisteredEncoder()
+                                   .wrap(body, 0)
+                                   .applicationSourceId(sourceId)
+                                   .applicationName("app-" + sourceId)
+                                   .snapshot((short)0)
+                                   .groupId((short)GROUP_ID)
+                                   .encodedLength();
+        applicationRow = body;
     }
 
     /** Launches member {@code m} on its directories, which a previous run of it may have left. */

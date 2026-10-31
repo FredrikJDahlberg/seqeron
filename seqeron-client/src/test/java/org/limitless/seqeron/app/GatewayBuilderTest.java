@@ -27,38 +27,42 @@ class GatewayBuilderTest {
     }
 
     private static Gateway.Builder complete() {
-        return Gateway.builder().gatewayName("GW-A").egressChannel(EGRESS).listener(listener());
+        return Gateway.builder().gatewayName("GW-A").clientId(1).listener(listener());
     }
 
     @Test
-    @DisplayName("a name, an egress channel and a listener are required")
-    void requiresNameEgressAndListener() {
+    @DisplayName("a name, a client id and a listener are required; the egress channel is not")
+    void requiresNameClientIdAndListener() {
         assertEquals("gatewayName", assertThrows(NullPointerException.class,
-            () -> Gateway.builder().egressChannel(EGRESS).listener(listener()).build()).getMessage());
-        assertEquals("egressChannel", assertThrows(NullPointerException.class,
+            () -> Gateway.builder().clientId(1).listener(listener()).build()).getMessage());
+        assertEquals("clientId", assertThrows(NullPointerException.class,
             () -> Gateway.builder().gatewayName("GW-A").listener(listener()).build()).getMessage());
         assertEquals("listener", assertThrows(NullPointerException.class,
-            () -> Gateway.builder().gatewayName("GW-A").egressChannel(EGRESS).build()).getMessage());
+            () -> Gateway.builder().gatewayName("GW-A").clientId(1).build()).getMessage());
+        assertEquals("egressChannel", assertThrows(NullPointerException.class,
+            () -> complete().egressChannel(null).build()).getMessage());
         assertEquals("ingressEndpoints", assertThrows(NullPointerException.class,
             () -> complete().ingressEndpoints(null).build()).getMessage());
     }
 
     @Test
-    @DisplayName("a snapshot listener needs a source id, then a directory")
-    void snapshotListenerNeedsSourceIdAndDirectory() {
-        assertEquals("sourceId is required with a snapshotListener", assertThrows(IllegalStateException.class,
-            () -> complete().snapshotListener(snapshotListener()).snapshotDirectory(Path.of("unused")).build())
-            .getMessage());
-        assertEquals("snapshotDirectory is required with a snapshotListener", assertThrows(IllegalStateException.class,
-            () -> complete().snapshotListener(snapshotListener()).sourceId(4).build()).getMessage());
+    @DisplayName("snapshots need a source id, a listener and a directory")
+    void snapshotsNeedSourceId() {
+        assertEquals("sourceId is required with snapshots", assertThrows(IllegalStateException.class,
+            () -> complete().snapshots(snapshotListener(), Path.of("unused")).build()).getMessage());
+        assertEquals("snapshotDirectory", assertThrows(NullPointerException.class,
+            () -> complete().snapshots(snapshotListener(), null)).getMessage());
+        assertEquals(Gateway.UNRESOLVED,
+            complete().snapshots(snapshotListener(), Path.of("unused")).sourceId(4).build().sourceId());
     }
 
     @Test
     @DisplayName("every option is accepted, and the ids stay unresolved until a topology row names them")
     void acceptsEveryOption() {
         final Gateway gateway = complete().addressedGroups("A").sourceId(4).clientId(2).memberId(1)
-            .ingressEndpoints("0=localhost:1").pendingCapacity(16).queueStallTimeoutMs(2000)
-            .recoveryStallTimeoutMs(3000).build();
+            .ingressEndpoints("0=localhost:1").egressChannel(EGRESS)
+            .tuning(Tuning.DEFAULT.withPendingCapacity(16).withQueueStallTimeoutMs(2000).withRecoveryStallTimeoutMs(3000))
+            .build();
         assertEquals(Gateway.UNRESOLVED, gateway.sourceId());
         assertEquals(Gateway.UNRESOLVED, gateway.gatewayId());
         assertFalse(gateway.isServing());

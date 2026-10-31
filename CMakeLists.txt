@@ -346,6 +346,10 @@ if(SEQERON_BUILD_TESTS)
     add_executable(cluster_probe seqeron-client/src/test/cpp-probe/ClusterProbe.cpp)
     target_link_libraries(cluster_probe PRIVATE seqeron_core seqeron_flags)
 
+    # hop_bench — the hosted-façade hop from a C++ client (doc/hosted-facade-draft.md §17.10). Bench only; nothing runs it.
+    add_executable(hop_bench seqeron-client/src/test/cpp-bench/HopBench.cpp)
+    target_link_libraries(hop_bench PRIVATE seqeron_core seqeron_flags)
+
     # core_headers — every public header compiled on its own under -Werror, as a consumer's build would.
     # A header no test includes is otherwise never compiled here at all.
     set(SEQERON_HEADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/cpp")

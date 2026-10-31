@@ -45,6 +45,9 @@ final class Session implements AutoCloseable {
     /** Frames in flight between a publish and the queue; far above what one round trip holds. */
     static final int DEFAULT_PENDING_CAPACITY = 1024;
 
+    /** An ephemeral port: one cluster session, and no port of its own to allocate. */
+    static final String DEFAULT_EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:0";
+
     /** How often an attempt to replace a lost session begins while the façade allows it. */
     static final long RECONNECT_INTERVAL_MS = 1_000;
 

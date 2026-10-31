@@ -45,6 +45,10 @@ public sealed class Payload
     /// <summary>The groups whose queues carry it; a reply to it takes this mask (spec A-2, A-9).</summary>
     public ushort GroupMask => (ushort)_event.GroupMask;
 
+    /// <summary>The reference a later <see cref="Application.Reply(RequestRef, int, Adaptive.Agrona.IDirectBuffer, int)"/>
+    /// takes; unlike this payload, it outlives the callback.</summary>
+    public RequestRef RequestRef => new RequestRef(SourceId, ConnectionId, GroupMask);
+
     /// <summary>The cluster session it was submitted on; a gateway pair shares its <c>SourceId</c> but not
     /// this.</summary>
     public long SourceSessionId => _event.SourceSessionId;
