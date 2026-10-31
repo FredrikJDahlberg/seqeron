@@ -454,7 +454,9 @@ client's driver connection.
    and the host's pauses weigh more. **The first stage waits on two results**: the proposed shape measured, a C++
    client process beside a separate host JVM, pinned, on Linux; and an allocation test that holds the host's
    steady state to zero bytes a frame, as the C# suite does for its client. The second is met by the
-   prototype host (§17.10.5); the first is open.
+   prototype host (§17.10.5). The first is measured in an aarch64 Linux VM (§17.10.6) and open on the deployment's
+   own hardware: with the host spinning, a C++ client beside it shows no resolvable difference at the median, and
+   a host that backs off adds 66–107 µs.
 3. **Throughput.** The rate at which the per-message offer, not the hop, is the limit is unmeasured (the one
    20,000 msg/s pass was noise-bound, §17.10). A multi-message `Payload` would save one IPC offer per frame, under
    a microsecond (§17.10), and would hold the first frame back until the last is encoded.
@@ -542,12 +544,13 @@ re-offer each message on a second stream. Receive path only.
 
 ### 17.10.4 Not measured
 
-- The C# client, and a hosted C++ or C# stub.
+- The C# client, and a real hosted C++ or C# stub: §17.10.6 uses a bench client on the prototype wire, with no schema
+  218 decode and none of the stub's local checks.
 - The host's command queue and the command window (**H-5**), which the prototype does not have, the counters
   (§17.2.1), the stub's local checks (**H-4**), schema 218 and a hosted `Consumer`. Restore, the snapshot cut and
   SIGKILL are exercised in §17.11, not timed.
-- The proposed shape: a C++ client process beside a separate host JVM, pinned, on Linux (§17.10.2 separates only
-  the cluster).
+- The proposed shape on bare metal or the deployment's hypervisor: §17.10.6 ran it in a Docker Desktop VM on an
+  Apple-silicon laptop.
 - The host's allocation with a command queue, counters or a `Gateway`, which the prototype lacks (§17.10.5).
 
 ### 17.10.5 Allocation in steady state
@@ -563,6 +566,34 @@ thread runs the real `Application` and the relay, so the count covers the façad
 - **Not in the window:** a snapshot cut, attach and restore (the topology has no snapshot policy), a leadership
   change, and the command queue, window, counters and `Gateway`, none of which the prototype has. The payload is
   20 bytes and the rate 1k msg/s; a larger payload or rate is not shown to stay at zero.
+
+### 17.10.6 A C++ client beside a separate host JVM, on Linux
+
+`hop_bench` (`seqeron-client/src/test/cpp-bench`, bench only) is a C++ client with two arms: `direct`, the C++
+`Application`, and `hosted`, the prototype wire of `HostedWire.java` to the Java host, byte for byte. Both publish an
+18-byte `ProbeMarker` open loop at 5k and 20k msg/s and time each from its intended send until the process sees its
+own frame sequenced. The first 20% of each run is dropped. Three member JVMs, the host JVM and the client are
+separate processes in one aarch64 Ubuntu 24.04 container, in Docker Desktop's VM on an Apple-silicon laptop with 6
+vCPUs, so a Linux VM but not the deployment's hardware. `taskset` pins inside the VM: the members to two vCPUs,
+the host to two and the client to two. Arms alternate within a rate. Whole loop, p50, 60,000 markers a run:
+
+| host loop | rate | C++ direct | C++ hosted |
+| --- | --- | --- | --- |
+| busy-spin | 5k msg/s | 318–328 µs (4 runs) | 321–322 µs (4 runs) |
+| busy-spin | 20k msg/s | 245–312 µs (4 runs) | 284–324 µs (4 runs) |
+| `BackoffIdleStrategy` | 5k msg/s | 320 µs (2 runs) | 402 µs (2 runs) |
+
+- **The host's idle strategy decides it.** A host that backs off between messages added 66–107 µs at p50, in every
+  pinning tried (none; members on three, two and four vCPUs; one vCPU for the whole host JVM). A parked thread wakes
+  late on Linux, once for the command and once for the sequenced frame. The prototype host's default was the backing
+  off one; `host.spin` busy-spins it, and the difference is gone. A host must therefore spin, which takes a core
+  (§17.9, question 2), and the figures of §17.10.1 and §17.10.2, which spun, hold.
+- **With a spinning host no arm is resolved from another.** At 5k msg/s the p50s agree within 4 µs. At 20k msg/s the
+  direct arm's own p50 spans 245–312 µs, wider than its difference from the hosted arm. The tails are the VM's: p99
+  is 0.5–1.5 ms in the quiet runs and 9.6 ms in one direct run, p99.9 is 0.6–7 ms in both arms, and neither arm's tail is
+  lower than the other's across runs.
+- **Not shown:** a hosted stub's schema 218 decode and local checks, a host with a command queue, counters or a
+  `Gateway`, and a tuned cluster, whose faster commit would expose the hop more (§17.9, question 2).
 
 ## 17.11 Prototype: restore, cut and SIGKILL
 

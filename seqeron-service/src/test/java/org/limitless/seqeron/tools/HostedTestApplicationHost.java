@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.Application;
@@ -31,7 +32,7 @@ import org.limitless.seqeron.protocol.Publish;
  *
  * <p>Properties on top of {@link ClusterProbe}'s {@code probe.memberId} / {@code probe.aeronDir}:
  * {@code probe.sourceId} (16), {@code probe.clientId} (11), {@code probe.snapshotDir}, {@code host.clientTimeoutMs}
- * (2000), {@code host.allocWarmupFrames} (0: off) and {@code host.allocWindowFrames} (20000): once that many frames
+ * (2000), {@code host.spin} (busy-spin the loop rather than back off), {@code host.allocWarmupFrames} (0: off) and {@code host.allocWindowFrames} (20000): once that many frames
  * have crossed the loop, logs the bytes it allocated over the next window, for {@code HostedAllocationTest}.
  */
 public final class HostedTestApplicationHost implements Application.Listener, SnapshotListener {
@@ -96,7 +97,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
         events = aeron.addExclusivePublication(HostedWire.IPC, HostedWire.EVENTS_STREAM);
         commands = aeron.addSubscription(HostedWire.IPC, HostedWire.COMMANDS_STREAM);
         log("host ready: member %d, sourceId %d, clientId %d", ClusterProbe.memberId(), sourceId, clientId);
-        final IdleStrategy idle = new BackoffIdleStrategy();
+        final IdleStrategy idle = Boolean.getBoolean("host.spin") ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();
         while (running && !fenced) {
             int work = commands.poll(onCommand, 16);
             if (app != null) {
