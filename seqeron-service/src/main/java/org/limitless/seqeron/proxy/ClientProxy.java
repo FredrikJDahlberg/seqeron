@@ -823,7 +823,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     /**
      * The first call of a round sends the cut and waits for the client's records and end, then each call serves one.
      * Waiting, the host polls the command stream and keeps the cluster session alive; a client silent for
-     * {@code proxy.clientTimeoutMs} abandons the round.
+     * {@code proxy.clientTimeoutMs}, or a host told to stop, abandons the round.
      */
     @Override
     public int onSnapshot(final MutableDirectBuffer buffer, final int recordIndex) {
@@ -840,7 +840,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
                 attachRequests.poll(onAttachRequest, 16);
                 keepFacadeAlive();
                 ProxyProtocol.beat(hostHeartbeat);
-                if (clientLiveness.stale(System.nanoTime())) {
+                if (!running || clientLiveness.stale(System.nanoTime())) {
                     cutLost = true;
                     break;
                 }
@@ -848,7 +848,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             }
             collecting = false;
             if (cutLost) {
-                log("ABANDON round: client lost in cut %d after %d record(s)", cutNo, cutRecords.size());
+                log("ABANDON round: client lost or host stopping in cut %d after %d record(s)", cutNo, cutRecords.size());
                 return -1;
             }
         }
