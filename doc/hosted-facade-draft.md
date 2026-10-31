@@ -389,14 +389,15 @@ client's driver connection.
 
 ## 17.8 Consequences for the tree
 
-- Java host: a `seqeron-service` class composing `Application`, `Gateway` or `Consumer` with a remote listener and
+- Java host: `org.limitless.seqeron.proxy.ClientProxy`, a `seqeron-service` class composing `Application`, `Gateway` or `Consumer` with a remote listener and
   the command queue. `seqeron-client` stays free of it, so the direction rule holds.
 - Java client tier: the `Application` and `Gateway` builders take the `IdleStrategy` that `ClusterStreamSender.send`
   spins on, `YieldingIdleStrategy` by default as now (**H-10**). It is a change to the client tier's surface, so the
   C# façades' options and `client-api.md` follow it, and the direct C++ façades until they are retired.
-- Where the ids live. Streams 301–304, their channels, `NO_ATTACH` and the protocol version (§17.7) are a
-  `HostedProtocol` class in `protocol`,
-  beside `ReplayProtocol`, with a C++ twin, since the host and the stub share them. The four counters take a new
+- Where the ids live. Streams 301–304, `NO_ATTACH`, the schema id and the protocol version (§17.7) are a
+  `ProxyProtocol` class in `protocol`,
+  beside `ReplayProtocol`, with a C++ twin, since the proxy and the stub share them; the channels are in the Java
+  class only, since the two ends build theirs differently. The four counters take a new
   range of `SeqeronCounters`, 5300–5399, after the sequencer's, the replayer's and the façades', and `MAX_TYPE_ID`
   widens to it, so `clusterctl` lists them; the three copies of `SeqeronCounters` stay in step. The C++ stub
   connects only to its own driver and needs no port, so C++ `PortLayout` retires with the direct façades, and
@@ -433,8 +434,8 @@ client's driver connection.
   they are.** What exists: the C++ stubs of `Application`, `Gateway` and `Consumer` share a core,
   `hosted/detail/Attachment.hpp`, of 612 lines with its comments, and are 140, 252 and 49 lines on top of it (a build of
   the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217 lines of XML and its
-  generated C++ codecs 16,800 more, and the prototype host, which runs any of the three façades, is 875 lines of Java (test scope,
-  with the harness's own options and the allocation window). A C# stub and the golden-trace harness are not counted,
+  generated C++ codecs 16,800 more, and the host, `ClientProxy`, which runs any of the three façades, is about 910 lines of Java with its
+  configuration checks and the allocation window, plus `Liveness`, `CommandLedger` and `AttachRules`, its Aeron-free seams. A C# stub and the golden-trace harness are not counted,
   so it is a floor, not the answer.
 - Conformance is by golden trace, so that the stubs' tests are not three ports of one suite. A trace is streams
   303 and 304 and the counters recorded from the Java host through a scripted scenario: attach, restore, steady
@@ -585,7 +586,7 @@ façade's receive and publish paths and the placement of each command.
 ### 17.10.6 A C++ client beside a separate host JVM, on Linux
 
 `hop_bench` (`seqeron-client/src/test/cpp-bench`, bench only) is a C++ client with two arms: `direct`, the C++
-`Application`, and `hosted`, the prototype wire of `HostedWire.java` to the Java host, byte for byte. Both publish an
+`Application`, and `hosted`, the prototype wire of `ProxyProtocol.java` to the Java host, byte for byte. Both publish an
 18-byte `ProbeMarker` open loop at 5k and 20k msg/s and time each from its intended send until the process sees its
 own frame sequenced. The first 20% of each run is dropped. Three member JVMs, the host JVM and the client are
 separate processes in one aarch64 Ubuntu 24.04 container, in Docker Desktop's VM on an Apple-silicon laptop with 6
@@ -601,7 +602,7 @@ the host to two and the client to two. Arms alternate within a rate. Whole loop,
 - **The host's idle strategy decides it.** A host that backs off between messages added 66–107 µs at p50, in every
   pinning tried (none; members on three, two and four vCPUs; one vCPU for the whole host JVM). A parked thread wakes
   late on Linux, once for the command and once for the sequenced frame. The prototype host's default was the backing
-  off one; `host.spin` busy-spins it, and the difference is gone. A host must therefore spin, which takes a core
+  off one; `proxy.spin` busy-spins it, and the difference is gone. A host must therefore spin, which takes a core
   (§17.9, question 2), and the figures of §17.10.1 and §17.10.2, which spun, hold.
 - **With a spinning host no arm is resolved from another.** At 5k msg/s the p50s agree within 4 µs. At 20k msg/s the
   direct arm's own p50 spans 245–312 µs, wider than its difference from the hosted arm. The tails are the VM's: p99
@@ -643,7 +644,11 @@ alternating, the first 20% dropped; p50 / p99.9 in µs, run 1 then run 2:
   µs and hosted 337 and 288. The peak queue was 784 bytes of the 64 KiB window and no attachment was closed. The
   hosted arm's p50 at 20k msg/s spans the direct arm's, as before.
 
-## 17.11 Prototype: restore, cut and SIGKILL
+## 17.11 The host: restore, cut and SIGKILL
+
+The host is `ClientProxy` in `seqeron-service`, configured by `proxy.*` properties (`running-a-cluster.md`). Its decisions
+are `Liveness`, `CommandLedger` and `AttachRules`, unit-tested without Aeron; the system tests below launch it from the
+uber jar.
 
 A Java host runs the real `Application` with snapshots; a Java client holds `TestApplication`'s state (a marker count
 and a digest) and writes its one 16-byte record byte for byte. Host and client are child processes beside member
@@ -675,7 +680,7 @@ per-attachment images of **H-15**, and the counters of §17.2.1. It differs from
   `GateClosed` takes the edge down, epoch up, as the façade's `gateClosed()` does. A `Publish` on a connection whose
   `ConnectionOpened` is not yet placed stays at the head of the queue, un-retired, until the façade accepts it. An
   `OpenConnection` under an id the façade did not allocate closes the attachment (`CLIENT_PROTOCOL`).
-- **Consumer.** For `Kind.CONSUMER`, when `host.consumerGroup` names a group, the host builds a `Consumer` for it. It
+- **Consumer.** For `Kind.CONSUMER`, when `proxy.consumerGroup` names a group, the host builds a `Consumer` for it. It
   subscribes to no stream 304, so the attachment is judged lost by the client's heartbeat counter alone (**H-9**), and
   `Attached` carries no `sourceId` (-1).
 - **Not sent.** `ClusterTime`. `AttachPending`

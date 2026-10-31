@@ -3,7 +3,7 @@
 // and with --rounds 2 closes the edge itself and does it again once the host reactivates it.
 //
 //   hosted_gateway_probe --aeron-dir D [--source-id 9] [--connections 3] [--per-connection 20] [--rounds 1]
-//                        [--hold 0] [--host-timeout-ms 3000]
+//                        [--hold 0] [--host-timeout-ms 3000] [--host-name hosted]
 //
 // With --hold 1 the connections stay open after the first round and a marker follows every 20 ms until it is stopped.
 //
@@ -257,7 +257,10 @@ int main(const int argc, char** argv)
     const auto aeron = aeron::Aeron::connect(context);
 
     Probe probe{ sourceId };
-    hosted::Gateway<Probe> gateway{ { .sourceId = sourceId, .hostTimeoutMs = options.integer("host-timeout-ms", 3000) },
+    hosted::Gateway<Probe> gateway{ { .sourceId = sourceId,
+                                      .hostTimeoutMs = options.integer("host-timeout-ms", 3000),
+                                      .hostName = options.string(
+                                          "host-name", org::limitless::seqeron::protocol::PROXY_DEFAULT_HOST_NAME) },
                                     probe };
     gateway.start(aeron);
 

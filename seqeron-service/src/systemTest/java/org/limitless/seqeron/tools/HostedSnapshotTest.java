@@ -28,7 +28,7 @@ import org.limitless.seqeron.protocol.SeqeronCounters;
  */
 class HostedSnapshotTest {
     private static final String TEST_APPLICATION = "org.limitless.seqeron.tools.TestApplication";
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
     /** HOSTED_CLIENT=cpp in the Gradle run: the clients are hosted_probe (HOSTED_PROBE), the C++ stub. */
     private static final boolean CPP = "cpp".equals(System.getProperty("seqeron.hostedClient"));
     private static final String CLIENT = "org.limitless.seqeron.tools.HostedTestApplicationClient";
@@ -334,9 +334,9 @@ class HostedSnapshotTest {
     private void startHost() {
         hostRuns++;
         hostClientId = 30 + hostRuns;
-        host = cluster.harness("host-" + hostRuns, hostedMember, HOST, null, "probe.sourceId=" + SOURCE_ID,
-                               "probe.clientId=" + hostClientId, "host.clientTimeoutMs=" + CLIENT_TIMEOUT_MS,
-                               "probe.snapshotDir=" + baseDir.resolve("snap").resolve("host"));
+        host = cluster.proxy("host-" + hostRuns, hostedMember, "proxy.sourceId=" + SOURCE_ID,
+                               "proxy.clientId=" + hostClientId, "proxy.clientTimeoutMs=" + CLIENT_TIMEOUT_MS,
+                               "proxy.snapshotDir=" + baseDir.resolve("snap").resolve("host"));
         instances.add(host);
         host.awaitLine("host ready", Duration.ofSeconds(30));
     }

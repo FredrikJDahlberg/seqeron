@@ -1,7 +1,7 @@
 // A hosted::Consumer stub for HostedConsumerStubTest (doc/hosted-facade-draft.md §17.1): it follows a queue through
 // its host and counts the probe markers of one source, checking the order the queue delivers them in.
 //
-//   hosted_consumer_probe --aeron-dir D [--source-id 16] [--host-timeout-ms 3000]
+//   hosted_consumer_probe --aeron-dir D [--source-id 16] [--host-timeout-ms 3000] [--host-name hosted]
 //
 // Exits 70 when fenced or the host is lost, 78 when the attach is refused and 3 when it times out.
 
@@ -128,7 +128,10 @@ int main(const int argc, char** argv)
     const auto aeron = aeron::Aeron::connect(context);
 
     Probe probe{ static_cast<std::int32_t>(options.integer("source-id", 16)) };
-    hosted::Consumer<Probe> consumer{ { .hostTimeoutMs = options.integer("host-timeout-ms", 3000) }, probe };
+    hosted::Consumer<Probe> consumer{ { .hostTimeoutMs = options.integer("host-timeout-ms", 3000),
+                                        .hostName = options.string(
+                                            "host-name", org::limitless::seqeron::protocol::PROXY_DEFAULT_HOST_NAME) },
+                                      probe };
     consumer.start(aeron);
 
     auto idle = util::resolveIdleStrategy();

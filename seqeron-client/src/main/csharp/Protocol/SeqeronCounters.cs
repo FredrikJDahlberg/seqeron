@@ -110,11 +110,31 @@ public static class SeqeronCounters
     /// serve.</summary>
     public const int GatewayConnectionsTypeId = 5299;
 
+    // ClientProxy and the clients it serves (5300-5399).
+
+    /// <summary>First type id of the proxy's block.</summary>
+    public const int ProxyTypeIdMin = 5300;
+
+    /// <summary>Last type id of the proxy's block.</summary>
+    public const int ProxyTypeIdMax = 5399;
+
+    /// <summary>A client's monotonic clock in ms, written by the client every duty cycle.</summary>
+    public const int ProxyClientHeartbeatTypeId = 5300;
+
+    /// <summary>The position of the last payload a client applied, written by the client.</summary>
+    public const int ProxyClientAppliedTypeId = 5301;
+
+    /// <summary>A proxy's monotonic clock in ms, written by the proxy every duty cycle.</summary>
+    public const int ProxyHeartbeatTypeId = 5302;
+
+    /// <summary>Total encoded length of the windowed commands that have left the proxy's queue.</summary>
+    public const int ProxyRetiredTypeId = 5303;
+
     /// <summary>First type id seqeron owns, for a typeId-range scan.</summary>
     public const int MinTypeId = SequencerTypeIdMin;
 
     /// <summary>Last type id seqeron owns.</summary>
-    public const int MaxTypeId = AppTypeIdMax;
+    public const int MaxTypeId = ProxyTypeIdMax;
 
     /// <summary>Offset of the memberId int within a counter's key.</summary>
     public const int KeyMemberIdOffset = 0;

@@ -3,7 +3,8 @@
 // prototype host to snapshot. HostedCppStubTest drives it against a cluster and the host; nothing else runs it.
 //
 //   hosted_probe --aeron-dir D [--source-id 16] [--interval-ms 100] [--flood 1] [--max-markers N]
-//                [--host-timeout-ms 3000] [--check-refusals 1] [--stall-cut-no N] [--slow-cut-ms N]
+//                [--host-timeout-ms 3000] [--host-name hosted] [--check-refusals 1] [--stall-cut-no N] [--slow-cut-ms
+//                N]
 //                [--corrupt-record 1] [--check-groups 1] [--reply-every N]
 //
 // Exits 70 when fenced or the host is lost, 78 when the attach is refused and 3 when it times out, as the Java client.
@@ -334,7 +335,11 @@ int main(const int argc, char** argv)
     Probe probe{ sourceId, options.integer("stall-cut-no", 0), options.integer("slow-cut-ms", 0),
                  options.integer("corrupt-record", 0) != 0, options.integer("reply-every", 0) };
     hosted::Application<Probe> application{
-        { .sourceId = sourceId, .snapshots = &probe, .hostTimeoutMs = options.integer("host-timeout-ms", 3000) }, probe
+        { .sourceId = sourceId,
+          .snapshots = &probe,
+          .hostTimeoutMs = options.integer("host-timeout-ms", 3000),
+          .hostName = options.string("host-name", org::limitless::seqeron::protocol::PROXY_DEFAULT_HOST_NAME) },
+        probe
     };
     application.start(aeron);
     probe.keepAliveWith([&application] { application.keepAlive(); });

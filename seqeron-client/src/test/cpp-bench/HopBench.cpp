@@ -3,12 +3,12 @@
 // its own frame sequenced, through either
 //
 //   direct: app::Application against the member's driver, as a C++ application runs today; or
-//   hosted: the prototype Java host (HostedTestApplicationHost) in schema 218 over HostedWire's four aeron:ipc
-//           streams and its counters, as a stub would. HostedWire.java is the transport; this is its only other reader.
+//   hosted: the Java proxy (ClientProxy) in schema 218 over ProxyProtocol's four aeron:ipc
+//           streams and its counters, as a stub would. ProxyProtocol.java is the transport; this is its only other reader.
 //
 //   hop_bench <direct|hosted> --member M --rate R/s --count N [--client-id C] [--egress-port P] [--aeron-dir D]
 //
-// The first 20% of the markers are warm-up and are not reported. Transport constants below are HostedWire.java's.
+// The first 20% of the markers are warm-up and are not reported. Transport constants below are ProxyProtocol.java's.
 
 #include <algorithm>
 #include <array>
@@ -63,7 +63,7 @@ constexpr std::int64_t TIMEOUT_NS = 90'000'000'000LL;
 constexpr std::int64_t START_DELAY_NS = 200'000'000LL;
 constexpr std::int64_t ATTACH_RETRY_NS = 500'000'000LL;
 
-// HostedWire.java.
+// ProxyProtocol.java.
 constexpr const char* HOST_NAME = "hosted";
 constexpr std::uint16_t PROTOCOL_VERSION = 1;
 constexpr std::uint16_t HOSTED_SCHEMA_ID = 218;

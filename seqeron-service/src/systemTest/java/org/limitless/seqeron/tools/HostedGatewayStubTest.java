@@ -23,7 +23,7 @@ import org.junit.jupiter.api.io.TempDir;
  * it the test is skipped.
  */
 class HostedGatewayStubTest {
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
     private static final int SOURCE_ID = 9;
     private static final int TIMEOUT_SECS = 60;
 
@@ -116,9 +116,9 @@ class HostedGatewayStubTest {
     }
 
     private void startHost() {
-        host = cluster.harness("host", leader, HOST, null, "probe.sourceId=" + SOURCE_ID, "probe.clientId=31",
-                               "probe.gatewayName=GW-H-A", "probe.snapshotDir=" + baseDir.resolve("snap"),
-                               "host.spin=true");
+        host = cluster.proxy("host", leader, "proxy.sourceId=" + SOURCE_ID, "proxy.clientId=31",
+                               "proxy.gatewayName=GW-H-A", "proxy.snapshotDir=" + baseDir.resolve("snap"),
+                               "proxy.spin=true");
         host.awaitLine("host ready", Duration.ofSeconds(30));
     }
 

@@ -24,7 +24,7 @@ import org.junit.jupiter.api.io.TempDir;
  * standby, each a host and a C++ stub, on different members. Needs {@code HOSTED_PROBE}, as the other hosted tests.
  */
 class HostedGatewayFailoverTest {
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
     private static final int SOURCE_ID = 9;
     private static final int CONNECTIONS = 3;
     private static final int TIMEOUT_SECS = 90;
@@ -192,10 +192,10 @@ class HostedGatewayFailoverTest {
 
     private ClusterProcesses.Child startHost(final String name, final int member, final String gateway,
                                              final int clientId) {
-        final ClusterProcesses.Child host = cluster.harness(name, member, HOST, null, "probe.sourceId=" + SOURCE_ID,
-                                                            "probe.clientId=" + clientId, "probe.gatewayName=" + gateway,
-                                                            "probe.snapshotDir=" + baseDir.resolve("snap-" + name),
-                                                            "host.spin=true");
+        final ClusterProcesses.Child host = cluster.proxy(name, member, "proxy.sourceId=" + SOURCE_ID,
+                                                            "proxy.clientId=" + clientId, "proxy.gatewayName=" + gateway,
+                                                            "proxy.snapshotDir=" + baseDir.resolve("snap-" + name),
+                                                            "proxy.spin=true");
         host.awaitLine("host ready", Duration.ofSeconds(30));
         return host;
     }

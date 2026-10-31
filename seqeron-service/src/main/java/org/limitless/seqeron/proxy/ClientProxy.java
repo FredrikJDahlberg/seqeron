@@ -1,5 +1,7 @@
-package org.limitless.seqeron.tools;
+package org.limitless.seqeron.proxy;
 
+import org.limitless.seqeron.protocol.SeqeronCounters;
+import org.limitless.seqeron.protocol.ProxyProtocol;
 import io.aeron.Aeron;
 import io.aeron.AeronVersion;
 import io.aeron.ExclusivePublication;
@@ -34,6 +36,7 @@ import org.limitless.seqeron.app.RequestRef;
 import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.app.Tuning;
 import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.sbe.hosted.ActivatedDecoder;
 import org.limitless.seqeron.sbe.hosted.AttachDecoder;
@@ -61,24 +64,35 @@ import org.limitless.seqeron.sbe.hosted.SnapshotEndDecoder;
 import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
 
 /**
- * The host of the hosted-façade prototype (doc/hosted-facade-draft.md): the real {@link Application}, started when a
- * client sends {@code Attach} and closed when it is lost, its callbacks relayed in schema 218 over {@link HostedWire}'s streams.
- * Harness code in the test source set, launched by {@code HostedSnapshotTest} beside a member.
+ * The proxy of the hosted façades (doc/hosted-facade-draft.md): the real {@link Application}, {@link Gateway} or
+ * {@link Consumer}, started when a client sends {@code Attach} and closed when it is lost, its callbacks relayed in
+ * schema 218 over {@link ProxyProtocol}'s streams. Launched beside a member.
  *
- * <p>Properties on top of {@link ClusterProbe}'s {@code probe.memberId} / {@code probe.aeronDir}:
- * {@code probe.sourceId} (16), {@code probe.clientId} (11), {@code probe.snapshotDir}, {@code host.clientTimeoutMs}
- * (2000), {@code host.commandWindow} (65536 bytes: H-5's window, here the encoded length of the {@code Publish}
- * messages not yet placed), {@code host.placePerCycle} (64), {@code host.pendingCapacity} (the façade's tracker, 0: its
- * default), {@code host.spin} (busy-spin the loop rather than back off), {@code host.allocWarmupFrames} (0: off) and {@code host.allocWindowFrames} (20000): once that many frames
- * have crossed the loop, logs the bytes it allocated over the next window, for {@code HostedAllocationTest}.
+ * <p>Properties, each defaulting as {@code ClusterProbe} did: {@code proxy.memberId} (0), {@code proxy.aeronDir},
+ * {@code proxy.hostName} ("hosted": the name an {@code Attach} must carry, unique on its driver),
+ * {@code proxy.ingressEndpoints} and {@code proxy.egressHost} (from {@code PortLayout}, so {@code SEQERON_HOSTS} and
+ * {@code SEQERON_PORT_BASE} apply), {@code proxy.sourceId} (16), {@code proxy.clientId} (11), {@code proxy.snapshotDir}
+ * (required), {@code proxy.gatewayName} (set: the proxy serves a Gateway), {@code proxy.consumerGroup} (0: none),
+ * {@code proxy.clientTimeoutMs} (2000), {@code proxy.commandWindow} (65536 bytes: H-5's window, here the encoded
+ * length of the {@code Publish} messages not yet placed), {@code proxy.placePerCycle} (64),
+ * {@code proxy.pendingCapacity} (the façade's tracker, 0: its default) and {@code proxy.spin} (busy-spin the loop
+ * rather than back off). A value that is absent, unparsable or out of range stops the proxy before it attaches to
+ * anything. {@code proxy.allocWarmupFrames} (0: off) and {@code proxy.allocWindowFrames} (20000): once that many
+ * frames have crossed the loop, logs the bytes it allocated over the next window, for {@code HostedAllocationTest}.
  */
-public final class HostedTestApplicationHost implements Application.Listener, Gateway.Listener, Consumer.Listener, SnapshotListener {
+public final class ClientProxy implements Application.Listener, Gateway.Listener, Consumer.Listener, SnapshotListener {
     private static final int EXIT_FENCED = 70;
+    private static final int EXIT_CONFIG = 2;
     private static final long BACK_PRESSURE_NS = TimeUnit.SECONDS.toNanos(1);
 
-    private final int sourceId = Integer.getInteger("probe.sourceId", 16);
-    private final int clientId = Integer.getInteger("probe.clientId", 11);
-    private final long clientTimeoutNs = TimeUnit.MILLISECONDS.toNanos(Long.getLong("host.clientTimeoutMs", 2000));
+    private final int memberId = intProp("proxy.memberId", 0);
+    private final String aeronDir = System.getProperty("proxy.aeronDir", PortLayout.aeronDir(memberId));
+    private final String ingressEndpoints = System.getProperty("proxy.ingressEndpoints", PortLayout.ingressEndpoints());
+    private final String egressChannel = "aeron:udp?endpoint=" + System.getProperty("proxy.egressHost",
+        memberId < PortLayout.HOSTS.size() ? PortLayout.HOSTS.get(memberId) : PortLayout.DEFAULT_HOST) + ":0";
+    private final int sourceId = intProp("proxy.sourceId", 16);
+    private final int clientId = intProp("proxy.clientId", 11);
+    private final long clientTimeoutNs = TimeUnit.MILLISECONDS.toNanos(longProp("proxy.clientTimeoutMs", 2000));
     private final UnsafeBuffer out = new UnsafeBuffer(new byte[128 * 1024]);
     private final UnsafeBuffer scratch = new UnsafeBuffer(new byte[16 * 1024]);
     private final List<byte[]> cutRecords = new ArrayList<>();
@@ -97,8 +111,10 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     private final ActivatedDecoder activatedIn = new ActivatedDecoder();
     private final ConnectionEncoder connectionOut = new ConnectionEncoder();
     private final RoleEncoder roleOut = new RoleEncoder();
-    private final String gatewayName = System.getProperty("probe.gatewayName");
-    private final int consumerGroup = Integer.getInteger("host.consumerGroup", 0);
+    private final String hostName = System.getProperty("proxy.hostName", ProxyProtocol.DEFAULT_HOST_NAME);
+    private final String gatewayName = System.getProperty("proxy.gatewayName");
+    private final int consumerGroup = intProp("proxy.consumerGroup", 0);
+    private final AttachRules attachRules = new AttachRules(hostName, AeronVersion.VERSION, gatewayName != null, consumerGroup != 0);
     private final SnapshotRecordDecoder recordIn = new SnapshotRecordDecoder();
     private final SnapshotEndDecoder endIn = new SnapshotEndDecoder();
     private final AttachedEncoder attachedOut = new AttachedEncoder();
@@ -108,17 +124,18 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     private final RestoreRecordEncoder restoreOut = new RestoreRecordEncoder();
     private final SnapshotCutEncoder cutOut = new SnapshotCutEncoder();
     private final FencedEncoder fencedOut = new FencedEncoder();
-    private final long commandWindow = Long.getLong("host.commandWindow", 64 * 1024);
-    private final int placePerCycle = Integer.getInteger("host.placePerCycle", 64);
-    private final int pendingCapacity = Integer.getInteger("host.pendingCapacity", 0);
+    private final long commandWindow = longProp("proxy.commandWindow", 64 * 1024);
+    private final CommandLedger ledger = new CommandLedger(commandWindow);
+    private final int placePerCycle = intProp("proxy.placePerCycle", 64);
+    private final int pendingCapacity = intProp("proxy.pendingCapacity", 0);
     /** Sized once to hold the window with its per-message framing, so it never grows. */
     private final ExpandableRingBuffer queue = new ExpandableRingBuffer(
         BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)),
         BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)), false);
     private final ExpandableRingBuffer.MessageConsumer place = this::place;
     private final ExpandableRingBuffer.MessageConsumer discard = (buffer, offset, length, head) -> true;
-    private final long allocWarmupFrames = Long.getLong("host.allocWarmupFrames", 0);
-    private final long allocWindowFrames = Long.getLong("host.allocWindowFrames", 20_000);
+    private final long allocWarmupFrames = longProp("proxy.allocWarmupFrames", 0);
+    private final long allocWindowFrames = longProp("proxy.allocWindowFrames", 20_000);
     private final ThreadMXBean threads = (ThreadMXBean)ManagementFactory.getThreadMXBean();
 
     private Aeron aeron;
@@ -126,7 +143,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     private Publication attachReplies;
     private ExclusivePublication events;
     private Subscription commands;
-    private HostedWire.Liveness clientLiveness;
+    private Liveness clientLiveness;
     private Counter hostHeartbeat;
     private Path snapshotDir;
     private Application app;
@@ -146,17 +163,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     private long liveRequestId;
     private long connectDeadlineNs;
     private boolean commandsSeen;
-    private long epoch;
     private long cutNo;
     private long frames;
     private Counter retiredCounter;
-    private long retired;
-    private long queuedBytes;
-    private long peakQueuedBytes;
-    private long placed;
-    private long epochDrops;
-    private long refusedDrops;
-    private long headDeclines;
     private long loggedDropsAndDeclines;
     private long loggedPlaced;
     private long lastQueueLogNs;
@@ -166,7 +175,6 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     private long windowEpoch;
     private boolean windowOpen;
     private boolean windowDone;
-    private boolean leading;
     private boolean lastCanPublish;
     private boolean collecting;
     private boolean endSeen;
@@ -176,11 +184,56 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     private volatile boolean fenced;
 
     public static void main(final String[] args) {
-        System.exit(new HostedTestApplicationHost().run());
+        final ClientProxy proxy;
+        try {
+            proxy = new ClientProxy();
+            proxy.validate();
+        } catch (final IllegalArgumentException ex) {
+            System.err.println("ClientProxy: " + ex.getMessage());
+            System.exit(EXIT_CONFIG);
+            return;
+        }
+        System.exit(proxy.run());
+    }
+
+    private void validate() {
+        require(!hostName.isBlank(), "proxy.hostName must not be blank");
+        require(sourceId > 0, "proxy.sourceId must be positive");
+        require(clientId > 0, "proxy.clientId must be positive");
+        require(clientTimeoutNs > 0, "proxy.clientTimeoutMs must be positive");
+        require(commandWindow > 0 && commandWindow <= Integer.MAX_VALUE / 2,
+                "proxy.commandWindow must be in 1.." + Integer.MAX_VALUE / 2);
+        require(placePerCycle > 0, "proxy.placePerCycle must be positive");
+        require(pendingCapacity >= 0, "proxy.pendingCapacity must not be negative");
+        require(consumerGroup >= 0, "proxy.consumerGroup must not be negative");
+        require(gatewayName == null || consumerGroup == 0, "proxy.gatewayName and proxy.consumerGroup are exclusive");
+        require(System.getProperty("proxy.snapshotDir") != null, "proxy.snapshotDir is required");
+    }
+
+    private static int intProp(final String name, final int fallback) {
+        return (int)longProp(name, fallback);
+    }
+
+    private static long longProp(final String name, final long fallback) {
+        final String value = System.getProperty(name);
+        if (value == null) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (final NumberFormatException ex) {
+            throw new IllegalArgumentException(name + " is not a number: " + value);
+        }
+    }
+
+    private static void require(final boolean condition, final String message) {
+        if (!condition) {
+            throw new IllegalArgumentException(message);
+        }
     }
 
     private int run() {
-        snapshotDir = Path.of(System.getProperty("probe.snapshotDir"));
+        snapshotDir = Path.of(System.getProperty("proxy.snapshotDir"));
         final Thread main = Thread.currentThread();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             running = false;
@@ -190,17 +243,17 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
                 Thread.currentThread().interrupt();
             }
         }));
-        aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(ClusterProbe.aeronDir()));
-        attachRequests = aeron.addSubscription(HostedWire.ATTACH_REQUEST_CHANNEL + "|tether=false",
-                                               HostedWire.ATTACH_REQUEST_STREAM);
-        attachReplies = aeron.addPublication(HostedWire.ATTACH_REPLY_CHANNEL, HostedWire.ATTACH_REPLY_STREAM);
-        hostHeartbeat = aeron.addCounter(HostedWire.HOST_HEARTBEAT_TYPE_ID, "seqeron.host.heartbeat " + sourceId);
-        retiredCounter = aeron.addCounter(HostedWire.HOST_RETIRED_TYPE_ID, "seqeron.host.retired " + sourceId);
-        clientLiveness = new HostedWire.Liveness(aeron.countersReader(), clientTimeoutNs);
-        log("host ready: member %d, sourceId %d, clientId %d", ClusterProbe.memberId(), sourceId, clientId);
-        final IdleStrategy idle = Boolean.getBoolean("host.spin") ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();
+        aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
+        attachRequests = aeron.addSubscription(ProxyProtocol.ATTACH_REQUEST_CHANNEL + "|tether=false",
+                                               ProxyProtocol.ATTACH_REQUEST_STREAM);
+        attachReplies = aeron.addPublication(ProxyProtocol.ATTACH_REPLY_CHANNEL, ProxyProtocol.ATTACH_REPLY_STREAM);
+        hostHeartbeat = aeron.addCounter(SeqeronCounters.PROXY_HEARTBEAT_TYPE_ID, "seqeron.host.heartbeat " + hostName);
+        retiredCounter = aeron.addCounter(SeqeronCounters.PROXY_RETIRED_TYPE_ID, "seqeron.host.retired " + hostName);
+        clientLiveness = new Liveness(aeron.countersReader(), clientTimeoutNs);
+        log("host ready: member %d, sourceId %d, clientId %d", memberId, sourceId, clientId);
+        final IdleStrategy idle = Boolean.getBoolean("proxy.spin") ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();
         while (running && !fenced) {
-            HostedWire.beat(hostHeartbeat);
+            ProxyProtocol.beat(hostHeartbeat);
             int work = attachRequests.poll(onAttachRequest, 16);
             if (live) {
                 work += commands != null ? commands.poll(onCommand, 16) : 0;
@@ -235,13 +288,13 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             windowBytes = threads.getThreadAllocatedBytes(id);
             windowReadCost = windowBytes - first;
             windowFrames = frames;
-            windowEpoch = epoch;
+            windowEpoch = ledger.epoch();
             windowOpen = true;
         } else if (windowOpen && frames - windowFrames >= allocWindowFrames) {
             final long bytes = threads.getThreadAllocatedBytes(id) - windowBytes - windowReadCost;
             windowDone = true;
             log("alloc window: %d bytes over %d frames, gate epoch %d to %d", bytes, frames - windowFrames,
-                windowEpoch, epoch);
+                windowEpoch, ledger.epoch());
         }
     }
 
@@ -252,12 +305,12 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             lastCanPublish = canPublish;
             sendGate();
         }
-        final long dropsAndDeclines = epochDrops + refusedDrops + headDeclines;
-        if (dropsAndDeclines != 0 && (dropsAndDeclines != loggedDropsAndDeclines || placed != loggedPlaced) &&
+        final long dropsAndDeclines = ledger.epochDrops() + ledger.refusedDrops() + ledger.headDeclines();
+        if (dropsAndDeclines != 0 && (dropsAndDeclines != loggedDropsAndDeclines || ledger.placed() != loggedPlaced) &&
             now - lastQueueLogNs >= 1_000_000_000L) {
             logQueue();
             loggedDropsAndDeclines = dropsAndDeclines;
-            loggedPlaced = placed;
+            loggedPlaced = ledger.placed();
             lastQueueLogNs = now;
         }
         if (stalled) {
@@ -278,10 +331,10 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             return;
         }
         if (headerIn.templateId() == AttachDecoder.TEMPLATE_ID) {
-            attachIn.wrap(buffer, offset + HostedWire.HEADER, headerIn.blockLength(), headerIn.version());
+            attachIn.wrap(buffer, offset + ProxyProtocol.HEADER, headerIn.blockLength(), headerIn.version());
             onAttach();
         } else if (headerIn.templateId() == DetachDecoder.TEMPLATE_ID) {
-            detachIn.wrap(buffer, offset + HostedWire.HEADER, headerIn.blockLength(), headerIn.version());
+            detachIn.wrap(buffer, offset + ProxyProtocol.HEADER, headerIn.blockLength(), headerIn.version());
             if (facade() && detachIn.clientId() == liveClientId) {
                 if (collecting) {
                     cutLost = true;
@@ -315,26 +368,30 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         attachIn.getAeronVersion(aeronVersionBytes, 0, aeronVersionBytes.length);
         final String hostName = new String(hostNameBytes, StandardCharsets.UTF_8);
         final String aeronVersion = new String(aeronVersionBytes, StandardCharsets.UTF_8);
-        if (!HostedWire.HOST_NAME.equals(hostName)) {
+        switch (attachRules.decide(live, liveClientId, liveRequestId, hostName, clientId, requestId, kind,
+                                   protocolVersion, aeronVersion)) {
+        case IGNORE -> {
             return;
         }
-        if (connectionOrLive()) {
-            if (clientId == liveClientId && requestId == liveRequestId) {
-                sendAttached(clientId, requestId, Refusal.NONE);
-            } else {
-                log("refused Attach from another client: attachment of client %d is live", liveClientId);
-                sendAttached(clientId, requestId, Refusal.BUSY);
-            }
+        case RESEND -> {
+            sendAttached(clientId, requestId, Refusal.NONE);
             return;
         }
-        if (protocolVersion != HostedWire.PROTOCOL_VERSION || !AeronVersion.VERSION.equals(aeronVersion)) {
+        case BUSY -> {
+            log("refused Attach from another client: attachment of client %d is live", liveClientId);
+            sendAttached(clientId, requestId, Refusal.BUSY);
+            return;
+        }
+        case VERSION -> {
             sendAttached(clientId, requestId, Refusal.VERSION);
             return;
         }
-        if (kind != Kind.APPLICATION && !(kind == Kind.GATEWAY && gatewayName != null) &&
-            !(kind == Kind.CONSUMER && consumerGroup != 0)) {
+        case KIND -> {
             sendAttached(clientId, requestId, Refusal.KIND);
             return;
+        }
+        case ACCEPT -> {
+        }
         }
         liveClientId = clientId;
         gatewayKind = kind == Kind.GATEWAY;
@@ -342,21 +399,17 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         attachedSourceId = consumerKind ? -1 : sourceId;
         live = true;
         liveRequestId = requestId;
-        retired = 0;
-        queuedBytes = 0;
+        ledger.reset();
         retiredCounter.setOrdered(0);
-        placed = epochDrops = refusedDrops = headDeclines = peakQueuedBytes = 0;
-        epoch = 0;
         cutNo = 0;
-        leading = false;
         lastCanPublish = false;
         cutLost = false;
         stalled = false;
         commandsSeen = false;
-        events = aeron.addExclusivePublication(HostedWire.EVENTS_CHANNEL, HostedWire.EVENTS_STREAM);
+        events = aeron.addExclusivePublication(ProxyProtocol.EVENTS_CHANNEL, ProxyProtocol.EVENTS_STREAM);
         commands = consumerKind
                        ? null
-                       : aeron.addSubscription(HostedWire.sessionChannel(commandSessionId), HostedWire.COMMANDS_STREAM);
+                       : aeron.addSubscription(ProxyProtocol.sessionChannel(commandSessionId), ProxyProtocol.COMMANDS_STREAM);
         final long now = System.nanoTime();
         clientLiveness.watch(heartbeatCounterId, heartbeatRegistrationId, now);
         connectDeadlineNs = now + clientTimeoutNs;
@@ -412,7 +465,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         if (consumerKind) {
             consumer = Consumer.builder()
                            .clientId(clientId)
-                           .memberId(ClusterProbe.memberId())
+                           .memberId(memberId)
                            .groupId(consumerGroup)
                            .listener(this)
                            .build();
@@ -426,9 +479,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
                           .gatewayName(gatewayName)
                           .sourceId(sourceId)
                           .clientId(clientId)
-                          .memberId(ClusterProbe.memberId())
-                          .egressChannel(ClusterProbe.egressChannel())
-                          .ingressEndpoints(ClusterProbe.ingressEndpoints())
+                          .memberId(memberId)
+                          .egressChannel(egressChannel)
+                          .ingressEndpoints(ingressEndpoints)
                           .listener(this)
                           .tuning(pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity))
                           .build();
@@ -440,9 +493,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         app = Application.builder()
                   .sourceId(sourceId)
                   .clientId(clientId)
-                  .memberId(ClusterProbe.memberId())
-                  .egressChannel(ClusterProbe.egressChannel())
-                  .ingressEndpoints(ClusterProbe.ingressEndpoints())
+                  .memberId(memberId)
+                  .egressChannel(egressChannel)
+                  .ingressEndpoints(ingressEndpoints)
                   .listener(this)
                   .tuning(pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity))
                   .snapshots(this, snapshotDir)
@@ -457,7 +510,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         attachedOut.wrapAndApplyHeader(out, 0, headerOut)
             .clientId(clientId)
             .requestId(requestId)
-            .eventSessionId(accepted ? events.sessionId() : HostedWire.NO_ATTACH)
+            .eventSessionId(accepted ? events.sessionId() : ProxyProtocol.NO_ATTACH)
             .refusal(refusal)
             .heartbeatCounterId(hostHeartbeat.id())
             .heartbeatRegistrationId(hostHeartbeat.registrationId())
@@ -465,7 +518,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             .retiredRegistrationId(retiredCounter.registrationId())
             .commandWindow(commandWindow)
             .sourceId(attachedSourceId);
-        final int length = HostedWire.HEADER + attachedOut.encodedLength();
+        final int length = ProxyProtocol.HEADER + attachedOut.encodedLength();
         final long deadline = System.nanoTime() + BACK_PRESSURE_NS;
         while (attachReplies.offer(out, 0, length) < 0 && System.nanoTime() < deadline) {
             Thread.onSpinWait();
@@ -481,7 +534,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         }
         commandsSeen = true;
         headerIn.wrap(buffer, offset);
-        final int body = offset + HostedWire.HEADER;
+        final int body = offset + ProxyProtocol.HEADER;
         switch (headerIn.templateId()) {
         case PublishDecoder.TEMPLATE_ID, ReplyDecoder.TEMPLATE_ID, OpenConnectionDecoder.TEMPLATE_ID ->
             onPublish(buffer, offset, length, true);
@@ -514,13 +567,11 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
 
     /** Queues the message whole; H-5's window decides whether the client may have sent it, and does not count a close. */
     private void onPublish(final DirectBuffer buffer, final int offset, final int length, final boolean windowed) {
-        final int counted = windowed ? length : 0;
-        if (queuedBytes + counted > commandWindow || !queue.append(buffer, offset, length)) {
-            closeApp("CLIENT_WINDOW: " + queuedBytes + " bytes queued, window " + commandWindow);
+        if (ledger.exceedsWindow(length, windowed) || !queue.append(buffer, offset, length)) {
+            closeApp("CLIENT_WINDOW: " + ledger.queuedBytes() + " bytes queued, window " + commandWindow);
             return;
         }
-        queuedBytes += counted;
-        peakQueuedBytes = Math.max(peakQueuedBytes, queuedBytes);
+        ledger.enqueued(length, windowed);
     }
 
     private void placeCommands() {
@@ -540,7 +591,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         final int templateId = headerIn.templateId();
         final boolean windowed =
             templateId != CloseConnectionDecoder.TEMPLATE_ID && templateId != GateClosedDecoder.TEMPLATE_ID;
-        final int body = offset + HostedWire.HEADER;
+        final int body = offset + ProxyProtocol.HEADER;
         final long commandEpoch;
         switch (templateId) {
         case ReplyDecoder.TEMPLATE_ID -> {
@@ -564,9 +615,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             commandEpoch = publishIn.epoch();
         }
         }
-        if (commandEpoch != epoch || !leading) {
-            epochDrops++;
-            retire(length, windowed);
+        if (ledger.stale(commandEpoch)) {
+            ledger.dropStale(length, windowed);
+            retiredCounter.setOrdered(ledger.retired());
             return true;
         }
         final Publish result;
@@ -598,10 +649,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         }
         case GateClosedDecoder.TEMPLATE_ID -> {
             gateway.gateClosed();
-            leading = false;
-            epoch++;
+            ledger.edge(false);
             lastCanPublish = false;
-            log("gate closed by the client — gate epoch %d", epoch);
+            log("gate closed by the client — gate epoch %d", ledger.epoch());
             sendGate();
             result = Publish.Published;
         }
@@ -614,32 +664,19 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
                                                    payloadLength);
         }
         }
-        if (result == Publish.Declined) {
-            headDeclines++;
+        if (!ledger.settle(result, length, windowed)) {
             return false;
         }
-        if (result == Publish.Published) {
-            placed++;
-        } else {
-            refusedDrops++;
-        }
         frames++;
-        retire(length, windowed);
+        retiredCounter.setOrdered(ledger.retired());
         return true;
     }
 
     private void logQueue() {
         log("queue: placed %d, epochDrops %d, refused %d, headDeclines %d, queued %d, peakQueued %d, window %d, connections %d",
-            placed, epochDrops, refusedDrops, headDeclines, queuedBytes, peakQueuedBytes, commandWindow,
+            ledger.placed(), ledger.epochDrops(), ledger.refusedDrops(), ledger.headDeclines(), ledger.queuedBytes(),
+            ledger.peakQueuedBytes(), commandWindow,
             connectionsOpened);
-    }
-
-    private void retire(final int length, final boolean windowed) {
-        if (windowed) {
-            queuedBytes -= length;
-            retired += length;
-            retiredCounter.setOrdered(retired);
-        }
     }
 
     private void closeApp(final String reason) {
@@ -653,7 +690,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         commands = null;
         events = null;
         queue.consume(discard, Integer.MAX_VALUE);
-        queuedBytes = 0;
+        ledger.discarded();
         collecting = false;
     }
 
@@ -674,29 +711,28 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
                     name.length());
             }
         }
-        send(HostedWire.HEADER + groupsOut.encodedLength());
+        send(ProxyProtocol.HEADER + groupsOut.encodedLength());
     }
 
     @Override
     public void onLeadershipChanged(final boolean nowLeading) {
-        leading = nowLeading;
-        epoch++;
-        log(nowLeading ? "now leading — gate epoch %d, epochDrops %d" : "not leading — gate epoch %d, epochDrops %d", epoch,
-            epochDrops);
+        ledger.edge(nowLeading);
+        log(nowLeading ? "now leading — gate epoch %d, epochDrops %d" : "not leading — gate epoch %d, epochDrops %d",
+            ledger.epoch(), ledger.epochDrops());
         sendGate();
     }
 
     @Override
     public boolean onActivated(final int firstConnectionId) {
         roleOut.wrapAndApplyHeader(out, 0, headerOut).active((short)1).firstConnectionId(firstConnectionId);
-        send(HostedWire.HEADER + roleOut.encodedLength());
+        send(ProxyProtocol.HEADER + roleOut.encodedLength());
         activatedSeen = false;
         activatedOpened = false;
         activating = true;
         while (!activatedSeen) {
             commands.poll(onCommand, 16);
             gateway.keepAlive();
-            HostedWire.beat(hostHeartbeat);
+            ProxyProtocol.beat(hostHeartbeat);
             if (stalled || clientLiveness.stale(System.nanoTime())) {
                 activating = false;
                 return false;
@@ -704,10 +740,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             Thread.onSpinWait();
         }
         if (activatedOpened) {
-            leading = true;
-            epoch++;
+            ledger.edge(true);
             lastCanPublish = true;
-            log("now serving — gate epoch %d, first connection id %d", epoch, firstConnectionId);
+            log("now serving — gate epoch %d, first connection id %d", ledger.epoch(), firstConnectionId);
             sendGate();
         }
         activating = false;
@@ -717,11 +752,10 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     @Override
     public void onStandby() {
         roleOut.wrapAndApplyHeader(out, 0, headerOut).active((short)0).firstConnectionId(0);
-        send(HostedWire.HEADER + roleOut.encodedLength());
-        leading = false;
-        epoch++;
+        send(ProxyProtocol.HEADER + roleOut.encodedLength());
+        ledger.edge(false);
         lastCanPublish = false;
-        log("standby — gate epoch %d", epoch);
+        log("standby — gate epoch %d", ledger.epoch());
         sendGate();
     }
 
@@ -729,13 +763,13 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     public void onConnectionOpened(final int connectionId, final DirectBuffer data, final int offset, final int length) {
         connectionOut.wrapAndApplyHeader(out, 0, headerOut).connectionId(connectionId).opened((short)1).putData(data, offset,
             length);
-        send(HostedWire.HEADER + connectionOut.encodedLength());
+        send(ProxyProtocol.HEADER + connectionOut.encodedLength());
     }
 
     @Override
     public void onConnectionClosed(final int connectionId) {
         connectionOut.wrapAndApplyHeader(out, 0, headerOut).connectionId(connectionId).opened((short)0).putData(scratch, 0, 0);
-        send(HostedWire.HEADER + connectionOut.encodedLength());
+        send(ProxyProtocol.HEADER + connectionOut.encodedLength());
     }
 
     @Override
@@ -753,7 +787,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             .position(payload.position())
             .payloadId(payload.payloadId())
             .putBody(payload.buffer(), payload.payloadOffset(), payload.payloadLength());
-        send(HostedWire.HEADER + payloadOut.encodedLength());
+        send(ProxyProtocol.HEADER + payloadOut.encodedLength());
     }
 
     /** Both listeners default it, so the host must choose; ClusterTime is not sent by the prototype. */
@@ -764,7 +798,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     @Override
     public void onCaughtUp(final long clusterSeqNo) {
         caughtUpOut.wrapAndApplyHeader(out, 0, headerOut).clusterSeqNo(clusterSeqNo);
-        send(HostedWire.HEADER + caughtUpOut.encodedLength());
+        send(ProxyProtocol.HEADER + caughtUpOut.encodedLength());
         log("host caught up at clusterSeqNo %d", clusterSeqNo);
     }
 
@@ -773,7 +807,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
         log("FENCED: %s — %s", fence, detail);
         final byte[] text = (fence + ": " + detail).getBytes(StandardCharsets.UTF_8);
         fencedOut.wrapAndApplyHeader(out, 0, headerOut).errorCode(fence.ordinal()).putDetail(text, 0, text.length);
-        send(HostedWire.HEADER + fencedOut.encodedLength());
+        send(ProxyProtocol.HEADER + fencedOut.encodedLength());
         fenced = true;
     }
 
@@ -787,7 +821,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
     /**
      * The first call of a round sends the cut and waits for the client's records and end, then each call serves one.
      * Waiting, the host polls the command stream and keeps the cluster session alive; a client silent for
-     * {@code host.clientTimeoutMs} abandons the round.
+     * {@code proxy.clientTimeoutMs} abandons the round.
      */
     @Override
     public int onSnapshot(final MutableDirectBuffer buffer, final int recordIndex) {
@@ -798,12 +832,12 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             cutLost = false;
             collecting = true;
             cutOut.wrapAndApplyHeader(out, 0, headerOut).roundId(cutNo);
-            send(HostedWire.HEADER + cutOut.encodedLength());
+            send(ProxyProtocol.HEADER + cutOut.encodedLength());
             while (!endSeen) {
                 commands.poll(onCommand, 16);
                 attachRequests.poll(onAttachRequest, 16);
                 keepFacadeAlive();
-                HostedWire.beat(hostHeartbeat);
+                ProxyProtocol.beat(hostHeartbeat);
                 if (clientLiveness.stale(System.nanoTime())) {
                     cutLost = true;
                     break;
@@ -833,7 +867,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
             .recordIndex(recordIndex)
             .formatVersion(formatVersion)
             .putData(buffer, 0, length);
-        send(HostedWire.HEADER + restoreOut.encodedLength());
+        send(ProxyProtocol.HEADER + restoreOut.encodedLength());
     }
 
     // ── Sends ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -844,18 +878,18 @@ public final class HostedTestApplicationHost implements Application.Listener, Ga
 
     private void sendGate() {
         gateOut.wrapAndApplyHeader(out, 0, headerOut)
-            .epoch(epoch)
-            .leading((short)(leading ? 1 : 0))
+            .epoch(ledger.epoch())
+            .leading((short)(ledger.leading() ? 1 : 0))
             .canPublish((short)(canPublishNow() ? 1 : 0))
             .caughtUp((short)0);
-        send(HostedWire.HEADER + gateOut.encodedLength());
+        send(ProxyProtocol.HEADER + gateOut.encodedLength());
     }
 
     /** Offers {@code out}; no subscriber means no client, which is not worth spinning on. */
     private void send(final int length) {
         final long deadline = System.nanoTime() + BACK_PRESSURE_NS;
         while (true) {
-            HostedWire.beat(hostHeartbeat);
+            ProxyProtocol.beat(hostHeartbeat);
             final long result = events.offer(out, 0, length);
             if (result >= 0 || result == Publication.NOT_CONNECTED || result == Publication.CLOSED) {
                 return;

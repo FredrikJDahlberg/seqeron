@@ -94,6 +94,7 @@ The exporter maps a counter to a metric by its Aeron type id. Aeron reserves 0�
 | 5201–5297 | an application's own counters, allocated by the deployment |
 | 5298 | `Application` and `Gateway`, inside every instance with a `SnapshotListener`: `seqeron_app_snapshot_round` |
 | 5299 | `Gateway`, inside every gateway instance: `seqeron_gateway_connections` |
+| 5300–5303 | `ClientProxy` (5302, 5303) and the client stub it serves (5300, 5301); not exported. A proxy labels its counters with its `proxy.hostName`, a stub with the `hostName` it attaches to |
 
 The ids are defined in `SeqeronCounters` in each language, and the copies must stay in step. Of the
 counters outside these ranges, only Aeron Cluster's below are exported ([Aeron Cluster's metrics](#aeron-clusters-metrics)).
