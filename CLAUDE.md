@@ -237,7 +237,8 @@ message, the failure model, the limits — keep it in step with the documents it
 `getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
 release, so bump them when one changes the API they use), `running-a-cluster.md` (the processes, a node's
 ports, properties and restart, the operator scripts), `building.md` (each language's build, the unit
-suites, the harnesses, the examples), `releasing.md`, `log-printer.md`, `seqeron-protocol-spec.md` (normative — the frames, the families,
+suites, the harnesses, the examples), `ec2-tests.md` (the measurements that need separate hosts: their cost,
+runtime and the multi-host scripts), `releasing.md`, `log-printer.md`, `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
 the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), `snapshot.md`
 (application snapshots: local files the log confirms), `upgrades.md` (seqeron and application versions,
