@@ -429,9 +429,12 @@ client's driver connection.
   Added complexity that is not lines: a second protocol (§17.7), two-process failure modes and a second unit to
   supervise per instance (§17.6), and a JVM and a core per client (§17.10.1). The parity the C++ client carried
   does not go with it: `ReplayerRecovery`, `PendingSends` and the façades stay case for case in Java and C#, two
-  languages rather than three. **The added lines are not yet counted, and the first stage is not decided until
-  they are.** The prototype's host, wire and client are about 700 lines, bench-only and without the command queue,
-  the window, the counters, the attach of **H-8** or a `Gateway`, so they are no estimate.
+  languages rather than three. **The added lines are only partly counted, and the first stage is not decided until
+  they are.** What exists: a C++ stub of `Application` alone, `hosted/Application.hpp`, is 583 lines with its
+  comments (a build of the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217
+  lines of XML and its generated C++ codecs 16,800 more, and the prototype host is 624 lines of Java (test scope,
+  with the harness's own options and the allocation window). The stub has no `Reply`, no `GroupsResolved` and its
+  group-mask check, no `Gateway` or `Consumer` and none of the connection ids, so it is a floor, not the answer.
 - Conformance is by golden trace, so that the stubs' tests are not three ports of one suite. A trace is streams
   303 and 304 and the counters recorded from the Java host through a scripted scenario: attach, restore, steady
   state, a leader change, a hold, a cut, a lost client, a detach. Each stub is tested by replaying the host half
@@ -702,7 +705,30 @@ The command queue and window have their own scenarios (`HostedCommandQueueTest`)
 and a window of 1,024 bytes, a stub that ignores the window, and a gate edge across a paused leader (17 queued
 commands dropped, 4,197 offered, 4,180 sequenced, none out of order).
 
-Not covered: liveness by counter and the attach of **H-8**, the stub's local checks and connection ids (**H-4**),
-a held ingress of seconds, a hosted `Gateway` and its edge (§17.5), a host killed in a cut,
-a leader killed and not paused, state of more than one record or a record near the 65,535-byte limit, and a C++ or
-C# stub.
+Not covered: the stub's connection ids (**H-4**), a held ingress of seconds, a hosted `Gateway` and its edge (§17.5),
+a host killed in a cut, a leader killed and not paused, state of more than one record or a record near the 65,535-byte
+limit, and a C# stub. Liveness by counter, the attach of **H-8**, the stub's other local checks and a C++ stub of an
+`Application` are covered by §17.11.1.
+
+### 17.11.1 The C++ stub against the host
+
+`hosted::Application` (`seqeron-client/src/main/cpp/org/limitless/seqeron/hosted/Application.hpp`) is the C++ stub of an
+`Application`: its listener is the direct `Application`'s, a `Payload` reaches it as `app::Payload` over the received
+`Payload` message, and `publish` returns `protocol::Publish` after the local checks of a direct call (a retired
+`payloadId`, a payload above `MAX_PAYLOAD_LENGTH`), the mirrored gate (**H-16**) and the window (**H-5**). It answers
+the host's `SnapshotCut` from a `SnapshotListener`, restores from `RestoreRecord` and keeps the heartbeat counter. Not
+built: `Reply`, `GroupsResolved` and the group-mask check, the Gateway messages and a `Consumer`. `hosted_probe`
+(`seqeron-client/src/test/cpp-probe`) holds the probe's state in it, as `HostedTestApplicationClient` does.
+
+Two system tests drive it against the Java host, with `HOSTED_PROBE` naming the binary:
+
+- `HostedCppStubTest`: it attaches, the gate opens, 2,000 markers are sequenced once and in order, and the two local
+  refusals fire. With the host's tracker at 4 and a 1 KiB window, 20,000 markers offered flat out are all placed and
+  sequenced once, the stub having declined 223,070 times at the window, with a peak queue of 1,008 of 1,024 bytes. At
+  a gate edge (the leader paused 4.5 s) the stub stopped at the `Gate` and offered 3,582, the host dropped 18 by their
+  epoch and 3,564 were sequenced.
+- `HostedSnapshotTest` with `HOSTED_CLIENT=cpp` runs its clients as the probe: restore, cuts, a client `kill -9`
+  with an immediate successor, a host `kill -9`, an abandoned cut, the 8 s cut, the leading hosted replica, and the
+  corrupt record fenced with `SNAPSHOT_DIVERGED`, each check as with the Java client and the direct replicas
+  comparing the stub's rounds (**A-7**). Not run with it: the stale-epoch scenario and the ghost command, which need
+  a client that sends what the stub never would.
