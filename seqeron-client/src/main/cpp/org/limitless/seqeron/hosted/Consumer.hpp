@@ -3,7 +3,7 @@
 #include <cstdint>
 
 #include "org/limitless/seqeron/app/Consumer.hpp"
-#include "org/limitless/seqeron/hosted/detail/Attachment.hpp"
+#include "org/limitless/seqeron/hosted/detail/ClientLink.hpp"
 
 namespace org::limitless::seqeron::hosted {
 
@@ -18,9 +18,9 @@ namespace org::limitless::seqeron::hosted {
  * Single-threaded: every method belongs to the caller's one duty-cycle thread.
  */
 template<typename Listener>
-class Consumer : public detail::Attachment<Consumer<Listener>, Listener>
+class Consumer : public detail::ClientLink<Consumer<Listener>, Listener>
 {
-    using Base = detail::Attachment<Consumer<Listener>, Listener>;
+    using Base = detail::ClientLink<Consumer<Listener>, Listener>;
     friend Base;
 
   public:
@@ -41,7 +41,7 @@ class Consumer : public detail::Attachment<Consumer<Listener>, Listener>
     }
 
   private:
-    // The hooks of Attachment: a consumer is sent neither.
+    // The hooks of ClientLink: a consumer is sent neither.
     void onGate(bool)
     {}
 

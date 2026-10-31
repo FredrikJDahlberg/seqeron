@@ -195,7 +195,7 @@ public class FacadeConstructionTest
         Assert.False(application.CanPublish);
         Assert.False(application.IsCaughtUp);
         Assert.Equal(Publish.Declined, application.Publish(5, payload));
-        Assert.Equal(Publish.Declined, application.Reply(new RequestRef(2, 9, 1), 5, payload));
+        Assert.Equal(Publish.Declined, application.Reply(new ReplyAddress(2, 9, 1), 5, payload));
     }
 
     [Fact(DisplayName = "a gateway needs a name, its ingress endpoints and a listener")]

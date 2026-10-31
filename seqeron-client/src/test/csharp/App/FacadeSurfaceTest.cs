@@ -22,7 +22,7 @@ public class FacadeSurfaceTest
         typeof(Gateway),       typeof(GatewayOptions),     typeof(IGatewayListener),
         typeof(Application),   typeof(ApplicationOptions), typeof(IApplicationListener),
         typeof(Payload),       typeof(ClusterError),       typeof(ISnapshotListener),
-        typeof(GroupDirectory),    typeof(SnapshotOptions),    typeof(RequestRef),
+        typeof(GroupDirectory),    typeof(SnapshotOptions),    typeof(ReplyAddress),
         typeof(Tuning),            typeof(Consumer),           typeof(ConsumerOptions),
         typeof(IConsumerListener)
     };

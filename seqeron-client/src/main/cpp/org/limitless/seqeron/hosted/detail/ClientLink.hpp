@@ -76,11 +76,11 @@ inline std::int64_t nowNs()
  * and the surface of its own façade. Single-threaded, as they are.
  */
 template<typename Derived, typename Listener>
-class Attachment
+class ClientLink
 {
   public:
-    Attachment(const Attachment&) = delete;
-    Attachment& operator=(const Attachment&) = delete;
+    ClientLink(const ClientLink&) = delete;
+    ClientLink& operator=(const ClientLink&) = delete;
 
     /**
      * Allocates the counters and the command publication, and starts sending Attach (H-8). The gate stays shut until
@@ -179,7 +179,7 @@ class Attachment
     }
 
   protected:
-    Attachment(Listener& listener, const wire::Kind::Value kind, const std::int32_t sourceId,
+    ClientLink(Listener& listener, const wire::Kind::Value kind, const std::int32_t sourceId,
                app::SnapshotListener* snapshots, const std::int64_t hostTimeoutMs, const std::int64_t attachTimeoutMs,
                std::string hostName, const bool hasCommands = true) :
       m_listener{ listener },

@@ -32,7 +32,6 @@ import org.limitless.seqeron.app.Consumer;
 import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.Payload;
-import org.limitless.seqeron.app.RequestRef;
 import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.app.Tuning;
 import org.limitless.seqeron.protocol.FrameLayer;
@@ -125,6 +124,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private final SnapshotCutEncoder cutOut = new SnapshotCutEncoder();
     private final FencedEncoder fencedOut = new FencedEncoder();
     private final long commandWindow = longProp("proxy.commandWindow", 64 * 1024);
+    private final ReplyAddresses replyAddresses = new ReplyAddresses();
     private final CommandLedger ledger = new CommandLedger(commandWindow);
     private final int placePerCycle = intProp("proxy.placePerCycle", 64);
     private final int pendingCapacity = intProp("proxy.pendingCapacity", 0);
@@ -265,8 +265,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
                 work += app != null ? app.doWork() : gateway != null ? gateway.doWork() : consumer.doWork();
                 if (!fenced && facade()) {
                     placeCommands();
-                    afterDoWork();
-                    allocWindow();
+                    if (!fenced) {
+                        afterDoWork();
+                        allocWindow();
+                    }
                 }
             }
             idle.idle(work);
@@ -579,9 +581,9 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             queue.consume(place, placePerCycle);
         }
         if (breach != null) {
-            final String reason = breach;
+            final String detail = breach;
             breach = null;
-            closeApp(reason);
+            onFenced(ClusterError.CLIENT_PROTOCOL, detail);
         }
     }
 
@@ -625,7 +627,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         case ReplyDecoder.TEMPLATE_ID -> {
             final int payloadLength = replyIn.bodyLength();
             replyIn.getBody(scratch, 0, payloadLength);
-            result = app.reply(new RequestRef(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
+            result = app.reply(replyAddresses.of(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
                 replyIn.payloadId(), scratch, payloadLength);
         }
         case OpenConnectionDecoder.TEMPLATE_ID -> {
@@ -635,7 +637,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             if (id == Gateway.NO_CONNECTION) {
                 result = Publish.Refused;
             } else if (id != openIn.connectionId()) {
-                breach = "CLIENT_PROTOCOL: connection id " + openIn.connectionId() + " but the façade allocated " + id;
+                breach = "connection id " + openIn.connectionId() + " but the façade allocated " + id;
                 result = Publish.Refused;
             } else {
                 connectionsOpened++;

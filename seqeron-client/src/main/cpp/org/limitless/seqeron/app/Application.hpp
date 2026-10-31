@@ -307,7 +307,7 @@ class Application
     /**
      * Encodes and submits a reply on behalf of the producer that asked for it. It carries the requester's
      * sourceId, connectionId and groupMask, which is how the gateway that took the request routes the answer back
-     * out, and how every group that saw the request sees the answer. Keep the RequestRef (Payload::requestRef())
+     * out, and how every group that saw the request sees the answer. Keep the ReplyAddress (Payload::replyAddress())
      * rather than the request itself — a Payload is valid only during its callback, and a reply is usually
      * dispatched later.
      *
@@ -319,7 +319,7 @@ class Application
      *         — retry it; Refused, permanently
      */
     template<typename Encoder, typename Fill>
-    [[nodiscard]] protocol::Publish reply(const RequestRef& request, const std::uint16_t payloadId, Fill&& fill)
+    [[nodiscard]] protocol::Publish reply(const ReplyAddress& request, const std::uint16_t payloadId, Fill&& fill)
     {
         return submit<Encoder>(request.sourceId, request.connectionId, request.groupMask, payloadId,
                                std::forward<Fill>(fill));
@@ -335,7 +335,7 @@ class Application
      * @return Published; Declined while the gate is shut, ingress is held or the transport is back-pressured
      *         — retry it; Refused, permanently
      */
-    [[nodiscard]] protocol::Publish reply(const RequestRef& request, const std::uint16_t payloadId,
+    [[nodiscard]] protocol::Publish reply(const ReplyAddress& request, const std::uint16_t payloadId,
                                           const std::uint8_t* payload, const std::uint16_t payloadLength)
     {
         return submit(request.sourceId, request.connectionId, request.groupMask, payloadId, payload, payloadLength);

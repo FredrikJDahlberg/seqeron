@@ -206,7 +206,7 @@ TEST(ApplicationFacade, ShutGateDeclinesEveryPublish)
 
     EXPECT_FALSE(app.isCaughtUp());
     EXPECT_EQ(protocol::Publish::Declined, app.publish(5, payload.data(), payload.size()));
-    EXPECT_EQ(protocol::Publish::Declined, app.reply(RequestRef{ 2, 9, 1 }, 5, payload.data(), payload.size()));
+    EXPECT_EQ(protocol::Publish::Declined, app.reply(ReplyAddress{ 2, 9, 1 }, 5, payload.data(), payload.size()));
 }
 
 TEST(ApplicationFacade, SnapshotsNeedADirectory)

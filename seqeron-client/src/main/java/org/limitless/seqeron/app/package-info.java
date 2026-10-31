@@ -20,7 +20,7 @@
  * hands them back to on a restore.
  *
  * <p>The policy knobs a producer rarely changes are one {@link org.limitless.seqeron.app.Tuning}, and a reply
- * names the request it answers by a {@link org.limitless.seqeron.app.RequestRef}, which unlike the
+ * names the request it answers by a {@link org.limitless.seqeron.app.ReplyAddress}, which unlike the
  * {@link org.limitless.seqeron.app.Payload} outlives the callback.
  *
  * <p>{@code doc/client-api.md} is this surface in full.
