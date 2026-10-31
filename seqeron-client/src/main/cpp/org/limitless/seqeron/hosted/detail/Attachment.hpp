@@ -18,7 +18,9 @@
 #include "org/limitless/seqeron/app/Payload.hpp"
 #include "org/limitless/seqeron/app/SnapshotListener.hpp"
 #include "org/limitless/seqeron/app/detail/GroupResolution.hpp"
+#include "org/limitless/seqeron/protocol/ProxyProtocol.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
+#include "org/limitless/seqeron/protocol/SeqeronCounters.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 
 #include "org_limitless_seqeron_sbe_hosted/Attach.h"
@@ -50,19 +52,10 @@ enum class Failure : std::uint8_t
 
 namespace detail {
 
-inline constexpr const char* HOST_NAME = "hosted";
-inline constexpr std::uint16_t PROTOCOL_VERSION = 1;
-inline constexpr std::uint16_t SCHEMA_ID = 218;
 inline constexpr const char* ATTACH_REQUEST_CHANNEL = "aeron:ipc?term-length=64k";
 inline constexpr const char* ATTACH_REPLY_CHANNEL = "aeron:ipc?tether=false";
 inline constexpr const char* EVENTS_CHANNEL = "aeron:ipc?session-id=";
 inline constexpr const char* COMMANDS_CHANNEL = "aeron:ipc?term-length=1m";
-inline constexpr std::int32_t ATTACH_REQUEST_STREAM = 301;
-inline constexpr std::int32_t ATTACH_REPLY_STREAM = 302;
-inline constexpr std::int32_t EVENTS_STREAM = 303;
-inline constexpr std::int32_t COMMANDS_STREAM = 304;
-inline constexpr std::int32_t CLIENT_HEARTBEAT_TYPE_ID = 5300;
-inline constexpr std::int32_t CLIENT_APPLIED_TYPE_ID = 5301;
 inline constexpr std::size_t HEADER = 8;
 inline constexpr std::int64_t ATTACH_RETRY_NS = 500'000'000LL;
 inline constexpr std::int64_t SEND_BOUND_NS = 10'000'000'000LL;
@@ -97,12 +90,14 @@ class Attachment
     {
         m_aeron = std::move(aeron);
         m_clientId = m_aeron->nextCorrelationId();
-        m_heartbeat = counter(CLIENT_HEARTBEAT_TYPE_ID, "seqeron.client.heartbeat hosted");
-        m_applied = counter(CLIENT_APPLIED_TYPE_ID, "seqeron.client.applied hosted");
+        m_heartbeat = counter(protocol::PROXY_CLIENT_HEARTBEAT_TYPE_ID, "seqeron.client.heartbeat hosted");
+        m_applied = counter(protocol::PROXY_CLIENT_APPLIED_TYPE_ID, "seqeron.client.applied hosted");
         const std::int64_t commandsId =
-            m_hasCommands ? m_aeron->addExclusivePublication(COMMANDS_CHANNEL, COMMANDS_STREAM) : -1;
-        const std::int64_t requestsId = m_aeron->addPublication(ATTACH_REQUEST_CHANNEL, ATTACH_REQUEST_STREAM);
-        const std::int64_t repliesId = m_aeron->addSubscription(ATTACH_REPLY_CHANNEL, ATTACH_REPLY_STREAM);
+            m_hasCommands ? m_aeron->addExclusivePublication(COMMANDS_CHANNEL, protocol::PROXY_COMMANDS_STREAM) : -1;
+        const std::int64_t requestsId =
+            m_aeron->addPublication(ATTACH_REQUEST_CHANNEL, protocol::PROXY_ATTACH_REQUEST_STREAM);
+        const std::int64_t repliesId =
+            m_aeron->addSubscription(ATTACH_REPLY_CHANNEL, protocol::PROXY_ATTACH_REPLY_STREAM);
         while (m_hasCommands && !(m_commands = m_aeron->findExclusivePublication(commandsId)))
         {
             std::this_thread::yield();
@@ -316,8 +311,8 @@ class Attachment
         const std::int64_t now = nowNs();
         if (m_accepted)
         {
-            const std::int64_t eventsId =
-                m_aeron->addSubscription(EVENTS_CHANNEL + std::to_string(m_eventSessionId), EVENTS_STREAM);
+            const std::int64_t eventsId = m_aeron->addSubscription(EVENTS_CHANNEL + std::to_string(m_eventSessionId),
+                                                                   protocol::PROXY_EVENTS_STREAM);
             while (!(m_events = m_aeron->findSubscription(eventsId)))
             {
                 std::this_thread::yield();
@@ -350,7 +345,7 @@ class Attachment
             .clientId(m_clientId)
             .requestId(m_requestId)
             .kind(m_kind)
-            .protocolVersion(PROTOCOL_VERSION)
+            .protocolVersion(protocol::PROXY_PROTOCOL_VERSION)
             .commandSessionId(m_hasCommands ? m_commands->sessionId() : -1)
             .heartbeatCounterId(m_heartbeat->id())
             .heartbeatRegistrationId(m_heartbeat->registrationId())
@@ -360,7 +355,8 @@ class Attachment
             .supportedFormatsCount(1)
             .next()
             .formatVersion(static_cast<std::int32_t>(format));
-        attach.putHostName(std::string{ HOST_NAME }).putAeronVersion(std::string{ aeron_version_text() });
+        attach.putHostName(std::string{ protocol::PROXY_HOST_NAME })
+            .putAeronVersion(std::string{ aeron_version_text() });
         m_requests->offer(buffer(), 0, static_cast<aeron::util::index_t>(HEADER + attach.encodedLength()));
     }
 
@@ -369,7 +365,7 @@ class Attachment
     {
         char* base = reinterpret_cast<char*>(buf.buffer()) + offset;
         wire::MessageHeader header(base, static_cast<std::uint64_t>(length));
-        if (header.schemaId() != SCHEMA_ID || header.templateId() != wire::Attached::sbeTemplateId())
+        if (header.schemaId() != protocol::PROXY_SCHEMA_ID || header.templateId() != wire::Attached::sbeTemplateId())
         {
             return;
         }

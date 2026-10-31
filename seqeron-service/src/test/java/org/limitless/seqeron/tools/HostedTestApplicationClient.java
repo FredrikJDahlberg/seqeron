@@ -1,5 +1,8 @@
 package org.limitless.seqeron.tools;
 
+import org.limitless.seqeron.protocol.SeqeronCounters;
+import org.limitless.seqeron.protocol.ProxyProtocol;
+import org.limitless.seqeron.proxy.Liveness;
 import io.aeron.Aeron;
 import io.aeron.AeronVersion;
 import io.aeron.Counter;
@@ -36,7 +39,7 @@ import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
 
 /**
  * The client of the hosted-façade prototype (doc/hosted-facade-draft.md): {@code TestApplication}'s state and snapshot
- * records, byte for byte, behind {@link HostedWire}'s streams instead of an {@code Application}. Its state is the count
+ * records, byte for byte, behind {@link ProxyProtocol}'s streams instead of an {@code Application}. Its state is the count
  * of markers sequenced under its {@code sourceId} and a digest of their {@code clusterSeqNo}s, so a direct replica
  * comparing a round against the one this client wrote fences if the two differ (spec A-7).
  *
@@ -94,10 +97,10 @@ public final class HostedTestApplicationClient {
     private ExclusivePublication commands;
     private Counter heartbeat;
     private Counter applied;
-    private HostedWire.Liveness hostLiveness;
+    private Liveness hostLiveness;
     private long clientId;
     private long requestId;
-    private int eventSessionId = HostedWire.NO_ATTACH;
+    private int eventSessionId = ProxyProtocol.NO_ATTACH;
     private int attachExit;
     private CountersReader counters;
     private int retiredCounterId;
@@ -125,31 +128,31 @@ public final class HostedTestApplicationClient {
     private int run() {
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(ClusterProbe.aeronDir()))) {
             counters = aeron.countersReader();
-            heartbeat = aeron.addCounter(HostedWire.CLIENT_HEARTBEAT_TYPE_ID, "seqeron.client.heartbeat " + sourceId);
-            applied = aeron.addCounter(HostedWire.CLIENT_APPLIED_TYPE_ID, "seqeron.client.applied " + sourceId);
-            hostLiveness = new HostedWire.Liveness(counters, hostTimeoutNs);
-            commands = aeron.addExclusivePublication(HostedWire.COMMANDS_CHANNEL, HostedWire.COMMANDS_STREAM);
+            heartbeat = aeron.addCounter(SeqeronCounters.PROXY_CLIENT_HEARTBEAT_TYPE_ID, "seqeron.client.heartbeat " + sourceId);
+            applied = aeron.addCounter(SeqeronCounters.PROXY_CLIENT_APPLIED_TYPE_ID, "seqeron.client.applied " + sourceId);
+            hostLiveness = new Liveness(counters, hostTimeoutNs);
+            commands = aeron.addExclusivePublication(ProxyProtocol.COMMANDS_CHANNEL, ProxyProtocol.COMMANDS_STREAM);
             final ExclusivePublication ghostCommands =
-                ghost ? aeron.addExclusivePublication(HostedWire.COMMANDS_CHANNEL, HostedWire.COMMANDS_STREAM) : null;
+                ghost ? aeron.addExclusivePublication(ProxyProtocol.COMMANDS_CHANNEL, ProxyProtocol.COMMANDS_STREAM) : null;
             if (!attach(aeron)) {
                 return attachExit;
             }
-            final Subscription events = aeron.addSubscription(HostedWire.sessionChannel(eventSessionId),
-                                                              HostedWire.EVENTS_STREAM);
+            final Subscription events = aeron.addSubscription(ProxyProtocol.sessionChannel(eventSessionId),
+                                                              ProxyProtocol.EVENTS_STREAM);
             log("attached, clientId=%d", clientId);
             if (ghost) {
                 publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).connectionId(0).groupMask(0)
                     .payloadId(ClusterProbe.PROBE_PAYLOAD_ID);
                 final int length = marker.encodePayload(GHOST_MARKER, ClusterProbe.NO_FILLER);
                 publishOut.putBody(marker.payload(), 0, length);
-                send(ghostCommands, HostedWire.HEADER + publishOut.encodedLength());
+                send(ghostCommands, ProxyProtocol.HEADER + publishOut.encodedLength());
                 log("sent one command from a publication the host does not read");
             }
             final IdleStrategy idle = new BackoffIdleStrategy();
             long nextMarkerNs = 0;
             long nextStateNs = 0;
             while (!fenced) {
-                HostedWire.beat(heartbeat);
+                ProxyProtocol.beat(heartbeat);
                 int work = events.poll(onEvent, 16);
                 final long now = System.nanoTime();
                 if (canPublish && staleEpoch && !staleSent && epoch > 0) {
@@ -179,12 +182,12 @@ public final class HostedTestApplicationClient {
     private boolean attach(final Aeron aeron) {
         clientId = aeron.nextCorrelationId();
         requestId = 1;
-        final Publication requests = aeron.addPublication(HostedWire.ATTACH_REQUEST_CHANNEL, HostedWire.ATTACH_REQUEST_STREAM);
-        final Subscription replies = aeron.addSubscription("aeron:ipc?tether=false", HostedWire.ATTACH_REPLY_STREAM);
+        final Publication requests = aeron.addPublication(ProxyProtocol.ATTACH_REQUEST_CHANNEL, ProxyProtocol.ATTACH_REQUEST_STREAM);
+        final Subscription replies = aeron.addSubscription("aeron:ipc?tether=false", ProxyProtocol.ATTACH_REPLY_STREAM);
         final long deadline = System.nanoTime() + ATTACH_TIMEOUT_NS;
         long nextAttachNs = 0;
-        while (eventSessionId == HostedWire.NO_ATTACH && attachExit == 0 && System.nanoTime() < deadline) {
-            HostedWire.beat(heartbeat);
+        while (eventSessionId == ProxyProtocol.NO_ATTACH && attachExit == 0 && System.nanoTime() < deadline) {
+            ProxyProtocol.beat(heartbeat);
             replies.poll(onReply, 16);
             final long now = System.nanoTime();
             if (now >= nextAttachNs) {
@@ -192,7 +195,7 @@ public final class HostedTestApplicationClient {
                     .clientId(clientId)
                     .requestId(requestId)
                     .kind(Kind.APPLICATION)
-                    .protocolVersion(HostedWire.PROTOCOL_VERSION)
+                    .protocolVersion(ProxyProtocol.PROTOCOL_VERSION)
                     .commandSessionId(commands.sessionId())
                     .heartbeatCounterId(heartbeat.id())
                     .heartbeatRegistrationId(heartbeat.registrationId())
@@ -202,15 +205,15 @@ public final class HostedTestApplicationClient {
                     .supportedFormatsCount(1)
                     .next()
                     .formatVersion(1);
-                final byte[] hostName = HostedWire.HOST_NAME.getBytes(StandardCharsets.UTF_8);
+                final byte[] hostName = ProxyProtocol.HOST_NAME.getBytes(StandardCharsets.UTF_8);
                 final byte[] aeronVersion = AeronVersion.VERSION.getBytes(StandardCharsets.UTF_8);
                 attachOut.putHostName(hostName, 0, hostName.length).putAeronVersion(aeronVersion, 0, aeronVersion.length);
-                send(requests, HostedWire.HEADER + attachOut.encodedLength());
+                send(requests, ProxyProtocol.HEADER + attachOut.encodedLength());
                 nextAttachNs = now + ATTACH_RETRY_NS;
             }
             Thread.onSpinWait();
         }
-        if (eventSessionId == HostedWire.NO_ATTACH && attachExit == 0) {
+        if (eventSessionId == ProxyProtocol.NO_ATTACH && attachExit == 0) {
             log("no ATTACHED within %ds", TimeUnit.NANOSECONDS.toSeconds(ATTACH_TIMEOUT_NS));
             attachExit = 3;
         }
@@ -224,7 +227,7 @@ public final class HostedTestApplicationClient {
         if (headerIn.schemaId() != 218 || headerIn.templateId() != AttachedDecoder.TEMPLATE_ID) {
             return;
         }
-        attachedIn.wrap(buffer, offset + HostedWire.HEADER, headerIn.blockLength(), headerIn.version());
+        attachedIn.wrap(buffer, offset + ProxyProtocol.HEADER, headerIn.blockLength(), headerIn.version());
         if (attachedIn.clientId() != clientId || attachedIn.requestId() != requestId) {
             return;
         }
@@ -245,7 +248,7 @@ public final class HostedTestApplicationClient {
 
     private void onEvent(final DirectBuffer buffer, final int offset, final int length, final Header header) {
         headerIn.wrap(buffer, offset);
-        final int body = offset + HostedWire.HEADER;
+        final int body = offset + ProxyProtocol.HEADER;
         switch (headerIn.templateId()) {
         case PayloadDecoder.TEMPLATE_ID -> {
             payloadIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
@@ -256,7 +259,7 @@ public final class HostedTestApplicationClient {
                 payloadIn.getBody(scratch, 0, payloadLength);
                 bodyHeader.wrap(scratch, 0);
                 if (bodyHeader.templateId() == ProbeMarkerDecoder.TEMPLATE_ID) {
-                    probeIn.wrap(scratch, HostedWire.HEADER, bodyHeader.blockLength(), bodyHeader.version());
+                    probeIn.wrap(scratch, ProxyProtocol.HEADER, bodyHeader.blockLength(), bodyHeader.version());
                     onMarker(clusterSeqNo, probeIn.seqNo());
                 }
             }
@@ -337,15 +340,15 @@ public final class HostedTestApplicationClient {
         }
         final long slowEndNs = System.nanoTime() + slowCutNs;
         while (System.nanoTime() < slowEndNs) {
-            HostedWire.beat(heartbeat);
+            ProxyProtocol.beat(heartbeat);
             LockSupport.parkNanos(CUT_BEAT_NS);
         }
         scratch.putLong(0, markers);
         scratch.putLong(Long.BYTES, corruptRecord ? digest + 1 : digest);
         recordOut.wrapAndApplyHeader(out, 0, headerOut).roundId(cutNo).recordIndex(0).putData(scratch, 0, 2 * Long.BYTES);
-        send(commands, HostedWire.HEADER + recordOut.encodedLength());
+        send(commands, ProxyProtocol.HEADER + recordOut.encodedLength());
         endOut.wrapAndApplyHeader(out, 0, headerOut).roundId(cutNo).recordCount(1);
-        send(commands, HostedWire.HEADER + endOut.encodedLength());
+        send(commands, ProxyProtocol.HEADER + endOut.encodedLength());
     }
 
     /** A marker under the epoch before the current one: the host must decline it, and nothing may sequence it. */
@@ -354,7 +357,7 @@ public final class HostedTestApplicationClient {
         final int length = marker.encodePayload(STALE_MARKER, ClusterProbe.NO_FILLER);
         publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch - 1).connectionId(0).groupMask(0)
             .payloadId(ClusterProbe.PROBE_PAYLOAD_ID).putBody(marker.payload(), 0, length);
-        send(commands, HostedWire.HEADER + publishOut.encodedLength());
+        send(commands, ProxyProtocol.HEADER + publishOut.encodedLength());
         log("sent one marker under stale gate epoch %d", epoch - 1);
     }
 
@@ -364,7 +367,7 @@ public final class HostedTestApplicationClient {
      */
     private boolean publishMarker() {
         final int length = marker.encodePayload(OWN_TAG | (markerSeqNo + 1), ClusterProbe.NO_FILLER);
-        final int messageLength = HostedWire.HEADER + PublishEncoder.BLOCK_LENGTH + Integer.BYTES + length;
+        final int messageLength = ProxyProtocol.HEADER + PublishEncoder.BLOCK_LENGTH + Integer.BYTES + length;
         if (!ignoreWindow && offeredBytes - counters.getCounterValue(retiredCounterId) + messageLength > commandWindow) {
             declined++;
             return false;

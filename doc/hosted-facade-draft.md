@@ -394,9 +394,10 @@ client's driver connection.
 - Java client tier: the `Application` and `Gateway` builders take the `IdleStrategy` that `ClusterStreamSender.send`
   spins on, `YieldingIdleStrategy` by default as now (**H-10**). It is a change to the client tier's surface, so the
   C# façades' options and `client-api.md` follow it, and the direct C++ façades until they are retired.
-- Where the ids live. Streams 301–304, their channels, `NO_ATTACH` and the protocol version (§17.7) are a
-  `HostedProtocol` class in `protocol`,
-  beside `ReplayProtocol`, with a C++ twin, since the host and the stub share them. The four counters take a new
+- Where the ids live. Streams 301–304, `NO_ATTACH`, the schema id and the protocol version (§17.7) are a
+  `ProxyProtocol` class in `protocol`,
+  beside `ReplayProtocol`, with a C++ twin, since the proxy and the stub share them; the channels are in the Java
+  class only, since the two ends build theirs differently. The four counters take a new
   range of `SeqeronCounters`, 5300–5399, after the sequencer's, the replayer's and the façades', and `MAX_TYPE_ID`
   widens to it, so `clusterctl` lists them; the three copies of `SeqeronCounters` stay in step. The C++ stub
   connects only to its own driver and needs no port, so C++ `PortLayout` retires with the direct façades, and
@@ -585,7 +586,7 @@ façade's receive and publish paths and the placement of each command.
 ### 17.10.6 A C++ client beside a separate host JVM, on Linux
 
 `hop_bench` (`seqeron-client/src/test/cpp-bench`, bench only) is a C++ client with two arms: `direct`, the C++
-`Application`, and `hosted`, the prototype wire of `HostedWire.java` to the Java host, byte for byte. Both publish an
+`Application`, and `hosted`, the prototype wire of `ProxyProtocol.java` to the Java host, byte for byte. Both publish an
 18-byte `ProbeMarker` open loop at 5k and 20k msg/s and time each from its intended send until the process sees its
 own frame sequenced. The first 20% of each run is dropped. Three member JVMs, the host JVM and the client are
 separate processes in one aarch64 Ubuntu 24.04 container, in Docker Desktop's VM on an Apple-silicon laptop with 6

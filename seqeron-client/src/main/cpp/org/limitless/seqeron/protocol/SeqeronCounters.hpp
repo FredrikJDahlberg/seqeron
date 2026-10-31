@@ -74,9 +74,22 @@ inline constexpr std::int32_t APP_SNAPSHOT_ROUND_TYPE_ID = 5298;
 // Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not serve.
 inline constexpr std::int32_t GATEWAY_CONNECTIONS_TYPE_ID = 5299;
 
+// ── ClientProxy and the clients it serves (5300-5399) ────────────────────────────────────────
+inline constexpr std::int32_t PROXY_TYPE_ID_MIN = 5300;
+inline constexpr std::int32_t PROXY_TYPE_ID_MAX = 5399;
+
+// A client's monotonic clock in ms, written by the client every duty cycle; the proxy judges the client by it.
+inline constexpr std::int32_t PROXY_CLIENT_HEARTBEAT_TYPE_ID = 5300;
+// The position of the last payload a client applied, written by the client.
+inline constexpr std::int32_t PROXY_CLIENT_APPLIED_TYPE_ID = 5301;
+// A proxy's monotonic clock in ms, written by the proxy every duty cycle; the client judges the proxy by it.
+inline constexpr std::int32_t PROXY_HEARTBEAT_TYPE_ID = 5302;
+// Total encoded length of the windowed commands that have left the proxy's queue, placed or dropped.
+inline constexpr std::int32_t PROXY_RETIRED_TYPE_ID = 5303;
+
 // The type ids seqeron owns, for a typeId-range scan.
 inline constexpr std::int32_t MIN_TYPE_ID = SEQUENCER_TYPE_ID_MIN;
-inline constexpr std::int32_t MAX_TYPE_ID = APP_TYPE_ID_MAX;
+inline constexpr std::int32_t MAX_TYPE_ID = PROXY_TYPE_ID_MAX;
 
 // Key layout: an operator counter's key is the memberId; an app counter's is memberId, then clientId.
 inline constexpr std::size_t KEY_MEMBER_ID_OFFSET = 0;
