@@ -1,11 +1,11 @@
 # ports.sh — canonical port-layout formula shared by every seqeron launch/test script, the
 # bash mirror of SequencerServer's PORT_BASE + memberId*10 + offset scheme (see
-# SequencerServer.java's class Javadoc, PortLayout.hpp on the C++ side, and the
+# SequencerServer.java's class Javadoc, the C# `PortLayout`, and the
 # "Port layout" section — the source of truth all three cite). Meant to be sourced, not
 # executed.
 
 # The stride is fixed; the base is a deployment knob read by all three mirrors (this file,
-# PortLayout.java, PortLayout.hpp). Set it identically for every seqeron process on every host, or a
+# PortLayout.java, PortLayout.cs). Set it identically for every seqeron process on every host, or a
 # node and a client will disagree about which ports to bind and dial — a connection that never
 # completes rather than an error naming the cause.
 CLUSTER_PORT_BASE="${SEQERON_PORT_BASE:-9300}"

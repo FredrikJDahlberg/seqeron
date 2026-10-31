@@ -393,16 +393,16 @@ client's driver connection.
   the command queue. `seqeron-client` stays free of it, so the direction rule holds.
 - Java client tier: the `Application` and `Gateway` builders take the `IdleStrategy` that `ClusterStreamSender.send`
   spins on, `YieldingIdleStrategy` by default as now (**H-10**). It is a change to the client tier's surface, so the
-  C# façades' options and `client-api.md` follow it, and the direct C++ façades until they are retired.
+  C# façades' options and `client-api.md` follow it. The direct C++ façades, which it also covered, are retired.
 - Where the ids live. Streams 301–304, `NO_ATTACH`, the schema id and the protocol version (§17.7) are a
   `ProxyProtocol` class in `protocol`,
   beside `ReplayProtocol`, with a C++ twin, since the proxy and the stub share them; the channels are in the Java
   class only, since the two ends build theirs differently. The four counters take a new
   range of `SeqeronCounters`, 5300–5399, after the sequencer's, the replayer's and the façades', and `MAX_TYPE_ID`
   widens to it, so `clusterctl` lists them; the three copies of `SeqeronCounters` stay in step. The C++ stub
-  connects only to its own driver and needs no port, so C++ `PortLayout` retires with the direct façades, and
-  `cluster_probe`, rewritten against the stub, no longer needs it. `ports.sh` is then mirrored by the Java and C#
-  `PortLayout`s alone, and the rule that they change together covers three files rather than four.
+  connects only to its own driver and needs no port, so C++ `PortLayout` retired with the direct façades, and
+  `cluster_probe`, which needed it, went with them. `ports.sh` is mirrored by the Java and C# `PortLayout`s alone, and
+  the rule that they change together covers three files rather than four.
 - C++ stubs: `RemoteApplication<Listener>`, `RemoteGateway<Listener>` and `RemoteConsumer<Listener>`
   with the façades' operation names, listener concepts and `Config`. Their counters are Aeron's `addCounter` and
   `CountersReader`, an Aeron API used rather than re-implemented. `client-api.md` gains a column for them. C#
@@ -417,12 +417,14 @@ client's driver connection.
   2, 4 and 6 say what that costs, where a host runs and whether one process hosts several.
 - Retired in the first stage: the direct C++ façades and what only they use: `ClusterStreamSender`, `PendingSends`,
   `IngressPublisher`/`IngressTracker`, `Session`, `Gateway`, `Application`, `GatewayLifecycle`, `SnapshotTaker`,
-  `LeaderGate`, the stall fences, queue and group resolution, `ReplayerRecovery`, `ReplayerStreamReceiver`,
-  `SnapshotStore`, `ClusterStreamClient`, `Consumer`, `SequencedFrame` and `PortLayout`, with their tests and the
-  schema 111 codecs: about 9,000 of the 10,100 lines under `seqeron-client/src/main/cpp`, and most of its 9,100 test
+  the stall fences, queue resolution, `ReplayerRecovery`, `ReplayerStreamReceiver`,
+  `SnapshotStore`, `ClusterStreamClient`, `Consumer` and `PortLayout`, with their tests and the schema 111 and replay
+  codecs (kept on the `cpp-direct-client` branch): about 9,000 of the 10,100 lines under `seqeron-client/src/main/cpp`, and most of its 9,100 test
   lines, before the generated codecs. What stays in the C++ client is the schema 218 codecs, the `app` types the
   stub shares (`Payload`, `GroupDirectory`, `OutstandingWork`, `ClusterError`, `SnapshotListener`, the listener
-  concepts), `protocol/Publish`, `SeqeronCounters` and `util`. The C# façades, the same set minus the cluster
+  concepts, in `app/Listeners.hpp`), `app/detail/GroupResolution` with `protocol/SequencedFrame` and `protocol/Snapshot`
+  (the stub's core reads the host's `Payload` and `GroupsResolved` through them), `LeaderGate` (kept for
+  `OutstandingWorkPropertyTest`'s model), `protocol/Publish`, `SeqeronCounters` and `util`. The C# façades, the same set minus the cluster
   sender, stay, and with them the Java/C# parity they carry.
 - Net accounting, first stage. Retired: the C++ list above. Added and maintained: the Java host and its command
   queue, the schema 218 codecs in Java and C++, the C++ stubs with their three local publish checks and the
@@ -585,7 +587,8 @@ façade's receive and publish paths and the placement of each command.
 
 ### 17.10.6 A C++ client beside a separate host JVM, on Linux
 
-`hop_bench` (`seqeron-client/src/test/cpp-bench`, bench only) is a C++ client with two arms: `direct`, the C++
+`hop_bench` (bench only, on the `cpp-direct-client` branch, in its `cpp-bench` directory, removed with the
+direct client it measured against) is a C++ client with two arms: `direct`, the C++
 `Application`, and `hosted`, the prototype wire of `ProxyProtocol.java` to the Java host, byte for byte. Both publish an
 18-byte `ProbeMarker` open loop at 5k and 20k msg/s and time each from its intended send until the process sees its
 own frame sequenced. The first 20% of each run is dropped. Three member JVMs, the host JVM and the client are

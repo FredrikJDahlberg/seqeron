@@ -159,7 +159,6 @@ each stream. An alias changes no matching: IPC publications and subscriptions ma
 | `seqeron-replay` | the replay protocol, 201–203, and the Replayer's own replays, 204 and 207 |
 | `seqeron-archive` | archive control, 100, and its responses: 120–122 in a member or gateway host |
 | `seqeron-ingress` | a co-located producer's cluster ingress, 101 |
-| `seqeron-scan` | a C++ `ClusterStreamClient` replay, 110 |
 
 ## Ports
 
@@ -175,9 +174,6 @@ seqeron's processes bind these ports, and an application's own must stay clear o
 | `9400 + memberId` | `metrics-exporter.sh`'s `/metrics` (TCP) |
 | 9200, 9201 | `TestGateway`'s TCP listeners (test harnesses only) |
 | `9202 + memberId` | `seqeron-examples`' cluster egress (UDP) |
-| 9205, 9206 | `seqeron-examples`' C++ gateway pair's cluster egress (UDP) |
-| `9207 + memberId` | `seqeron-examples`' C++ `SnapshotApp` cluster egress (UDP) |
-| 9220–9224 | `cpp-client-test.sh`'s C++ probes' cluster egress (UDP, test harnesses only) |
 | 9500–9569 | `:seqeron-service:integrationTest`'s cluster block (`SEQERON_PORT_BASE=9500`, test runs only) |
 
 - **`base`** is 9300 unless `SEQERON_PORT_BASE` sets it, to a value from 1024 to 65466; a process given an
@@ -242,7 +238,7 @@ This repository's processes use the ids below. An application's should start at 
 | 20 | `seqeron-examples` `ColocatedApp` (C#) |
 | 21, 22 | `seqeron-examples` `GatewayApp` (C#), GW-EX-CS-A, GW-EX-CS-B |
 | 23 | `seqeron-examples` `SnapshotApp` (C#) |
-| 31–38 | `csharp-client-test.sh` C# probes 31–37; `cpp-client-test.sh` C++ probes 31–36, its scan 37 and its walk 38 |
+| 31–37 | `csharp-client-test.sh` C# probes |
 | 41–43 | `csharp-windows-test.sh` C# probes |
 
 ## Consensus timeouts
@@ -351,7 +347,7 @@ bytes whole everywhere, and suits a deployment whose payloads stay below that.
 
 Larger payloads, up to `MAX_PAYLOAD_LENGTH` (8,874 bytes), stay whole on the queue with
 `-Daeron.ipc.mtu.length=8960`, passed as the term length is. A replay carries its recording's MTU, so every
-UDP replay of the queue — a gateway host's relay, a `ClusterStreamClient` following a member on another host
+UDP replay of the queue — a gateway host's relay, a client following a member on another host
 — then sends datagrams of up to 8,960 bytes, with small frames batched into them. The network between them
 needs a 9000-byte MTU; otherwise the kernel fragments each datagram, and a lost piece loses all of it.
 

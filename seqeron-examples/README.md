@@ -1,5 +1,13 @@
 # Follow the ordered stream
 
+**C++.** The C++ examples are `ColocatedApp` and `GatewayApp`, written against the hosted stubs
+(`hosted::Application`, `hosted::Gateway`). A stub does no cluster work: it attaches over `aeron:ipc` to a host
+process, `org.limitless.seqeron.proxy.ClientProxy`, which runs the cluster session and the fences
+(`doc/hosted-facade-draft.md`). Start one host per example, with `start-client-proxy.sh`, before the example (see
+"Run them"). The earlier direct C++ examples (`FollowStream`, `SnapshotApp`, and the direct `ColocatedApp` and
+`GatewayApp`) live on the `cpp-direct-client` branch; passages below that describe them, or `cpp-client-test.sh`,
+describe that branch.
+
 The smallest client of seqeron there is, once per language and the same flow in each: it replays a node's
 history through that node's co-located `ReplayerService`, switches to the live queue when it catches up, and
 prints every frame in `clusterSeqNo` order. Each also produces, in both families: one `ConnectionOpened`
@@ -9,13 +17,11 @@ through the same consumer — so the round trip is measured over the real path.
 | | |
 | --- | --- |
 | `src/java/example/FollowStream.java` | built by `build.gradle`, which resolves `org.limitless:seqeron` |
-| `src/cpp/FollowStream.cpp` | built by `CMakeLists.txt`, which pulls in `seqeron_core` |
+| `src/cpp/ColocatedApp.cpp` | built by `CMakeLists.txt`, which pulls in `seqeron_core`: the hosted `Application` stub |
+| `src/cpp/GatewayApp.cpp` | the hosted `Gateway` stub |
 | `src/java/example/ColocatedApp.java` | the same flow against the front door — see below |
-| `src/cpp/ColocatedApp.cpp` | its C++ twin |
 | `src/java/example/GatewayApp.java` | the other façade, an elected gateway pair — see below |
-| `src/cpp/GatewayApp.cpp` | its C++ twin |
 | `src/java/example/SnapshotApp.java` | a façade application whose state is restored from a snapshot — see below |
-| `src/cpp/SnapshotApp.cpp` | its C++ twin |
 | `src/csharp/FollowStream` | the low-level flow in C#, built against the `Org.Limitless.Seqeron` package — see below |
 | `src/csharp/ColocatedApp` | its front-door twin in C# |
 | `src/csharp/GatewayApp` | a C# gateway pair of its own |
@@ -26,7 +32,7 @@ through the same consumer — so the round trip is measured over the real path.
 `ColocatedApp` does what `FollowStream` does and names none of the tiers under it. Its whole import list
 from seqeron is `app` plus `protocol.Publish`: no receiver, no sender, no envelope, no `systemEventType`.
 `Application` assembles the cluster session, the queue, confirmed ingress across a failover, the
-fences and the leader gate, and hands it `Payload`s. The C++ twin adds `util/Env.hpp` and
+fences and the leader gate, and hands it `Payload`s. The C++ stub examples add `util/Env.hpp` and
 `util/IdleStrategy.hpp`, which are support code beside the façade rather than a tier under it, and which
 the Java half takes from its own standard library instead.
 
@@ -53,9 +59,7 @@ A gateway needs what a co-located application does not: an election, which its t
 reads, and `applications`, which the co-located examples read; `topology-csharp.xml` declares the same two, so
 both load into one cluster. Load it once, into a cluster that has not loaded
 another list. The cluster designates only the first list it sees; into one that has, designate an
-instance with `clusterctl.sh activate 12` instead. The Java and C++ examples run the same pair, so either
-instance may be either language. `cpp-client-test.sh` in `seqeron-service/src/test/scripts` runs the C++
-examples against a live cluster, the pair through a handover and `snapshot_app` through a restore.
+instance with `clusterctl.sh activate 12` instead. The Java and C# examples run the same pair on their own topology documents.
 
 ## C#
 
@@ -156,13 +160,23 @@ Java, the low-level one and then the façade one — either may run alone, and b
     ./gradlew -p seqeron-examples runColocated
     ./gradlew -p seqeron-examples runSnapshot
 
-C++:
+C++ — each stub needs a host process beside the node's driver, started first with the properties its comment lists
+(`doc/running-a-cluster.md`, "Client proxy"). `./gradlew uberJar` first. The application:
 
+    ./seqeron-service/src/main/scripts/start-client-proxy.sh -Dproxy.sourceId=12 -Dproxy.clientId=14 \
+        -Dproxy.snapshotDir=/tmp/colocated-example
     cmake -S seqeron-examples -B seqeron-examples/cmake-build-release -DCMAKE_BUILD_TYPE=Release
-    cmake --build seqeron-examples/cmake-build-release --target follow_stream colocated_app gateway_app snapshot_app
-    ./seqeron-examples/cmake-build-release/follow_stream
+    cmake --build seqeron-examples/cmake-build-release --target colocated_app gateway_app
     ./seqeron-examples/cmake-build-release/colocated_app
-    ./seqeron-examples/cmake-build-release/snapshot_app
+
+The gateway, one host and one client per instance, the standby under `GW-EX-B` and client id 16:
+
+    ./seqeron-service/src/main/scripts/start-client-proxy.sh -Dproxy.hostName=GW-EX-A -Dproxy.gatewayName=GW-EX-A \
+        -Dproxy.sourceId=13 -Dproxy.clientId=15 -Dproxy.snapshotDir=/tmp/gw-ex-a
+    SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-A ./seqeron-examples/cmake-build-release/gateway_app
+
+The stub refuses to attach to a host on another Aeron version, so a build directory that cached an older Aeron needs
+a fresh configure.
 
 C# — after re-packing an unchanged version, delete `~/.nuget/packages/org.limitless.seqeron`, which NuGet
 would otherwise serve instead:
@@ -172,12 +186,7 @@ would otherwise serve instead:
     dotnet run --project seqeron-examples/src/csharp/ColocatedApp
 
 The active instance of the gateway pair, whose list the node loaded. Its standby, `GW-EX-B`, belongs on another
-node, so that losing a node never takes both; `cpp-client-test.sh` runs the pair on a three-node cluster through a
-handover:
-
-    SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-A ./seqeron-examples/cmake-build-release/gateway_app
-
-or in Java, with `-Dgateway.name` in place of the variable:
+node, so that losing a node never takes both. In Java:
 
     ./gradlew -p seqeron-examples runGateway -Dgateway.name=GW-EX-A
 

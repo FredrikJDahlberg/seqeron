@@ -857,6 +857,11 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         }
         if (recordIndex < cutRecords.size()) {
             final byte[] record = cutRecords.get(recordIndex);
+            if (record.length > buffer.capacity()) {
+                log("ABANDON round: record %d of cut %d is %d bytes, the most is %d", recordIndex, cutNo, record.length,
+                    buffer.capacity());
+                return -1;
+            }
             buffer.putBytes(0, record);
             return record.length;
         }

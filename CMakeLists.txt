@@ -1,7 +1,6 @@
-# seqeron's C++ half — the cluster tier's client side: the cluster stream sender/client, the replayer
-# client, the pure policy classes, and the codecs for the three schemas the cluster tier speaks. It
-# generates no application codecs, and there is no C++ replay server: the
-# server side of the replay protocol is Java only.
+# seqeron's C++ half — the hosted client stubs (doc/hosted-facade-draft.md section 17), the types they share with
+# the Java client tier, and the codecs for the schemas they speak. It generates no application codecs. The direct
+# C++ client is retired; the cpp-direct-client branch keeps it.
 # 3.30: Aeron 1.53.2's own CMakeLists requires it, so an older CMake should stop here, not inside Aeron.
 cmake_minimum_required(VERSION 3.30)
 # VERSION is the one place the number is written; build.gradle reads the same file.
@@ -76,7 +75,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(aeron)
 
 # core_tests and everything it needs belong to whoever builds this repo, not to a consumer that adds
-# it: without this, `cmake --build .` in a consumer's tree compiles all nine test files and GoogleTest.
+# it: without this, `cmake --build .` in a consumer's tree compiles every test file and GoogleTest.
 # Off by default when added as a subdirectory — a parent that vendors this build AND wants GoogleTest
 # registered by it (rather than fetching its own) turns it back on.
 option(SEQERON_BUILD_TESTS "Build seqeron's own test suite" ${PROJECT_IS_TOP_LEVEL})
@@ -96,7 +95,7 @@ if(SEQERON_BUILD_TESTS)
 endif()
 
 # ── SBE C++ codecs ─────────────────────────────────────────────────────────────
-# The codecs for the three schemas this repo owns are GENERATED AND COMMITTED, under
+# The codecs for the schemas the C++ half speaks are GENERATED AND COMMITTED, under
 # seqeron-client/src/main/generated/sbe/core. The git tag is the C++ artifact, so shipping
 # them with it is what lets a consumer build against seqeron with no JDK and no SBE tool — a C++23
 # compiler is the whole prerequisite list. The schema is core's; there is nothing for a consumer to
@@ -107,14 +106,12 @@ endif()
 # not approximately — and this repo's own run_tests depends on it.
 #
 # generated/sbe/core, not generated/sbe: the root is named for what it holds — the schemas the cluster
-# tier owns (frame, replay, cluster) and nothing else. A deployment that builds an application's codecs
+# tier owns (frame, hosted) and nothing else. A deployment that builds an application's codecs
 # alongside these gives them their own root, so a cluster-tier file that reached for an application
 # codec fails to compile rather than merely being asked not to.
 set(SBE_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/generated/sbe/core")
 
 set(SBE_SCHEMAS
-    "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-cluster.xml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-replay.xml"
     "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-frame.xml"
     "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-hosted.xml"
 )
@@ -206,13 +203,12 @@ target_include_directories(seqeron_core SYSTEM INTERFACE
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/seqeron-sbe>
 )
 # The whole Aeron surface these headers need, not just the C++ client wrapper: Aeron.h reaches for
-# aeronc.h in the C client, and ClusterStreamClient.hpp for client/archive/AeronArchive.h and the C
-# archive client behind that. Declaring the wrapper alone left every consumer to work the rest out.
+# aeronc.h in the C client. Declaring the wrapper alone left every consumer to work the rest out.
 #
-# $<BUILD_INTERFACE:> on all four: Aeron arrives by FetchContent, where AERON_INSTALL_TARGETS defaults
+# $<BUILD_INTERFACE:> on both: Aeron arrives by FetchContent, where AERON_INSTALL_TARGETS defaults
 # off and none of these is in an export set, so an install(EXPORT) that named them would fail at
 # generate time. The exported target carries no Aeron at all and cmake/seqeronConfig.cmake.in
-# re-attaches the same four under aeron::, which is what lets find_package(seqeron) work.
+# re-attaches the same two under aeron::, which is what lets find_package(seqeron) work.
 #
 # Not seqeron_flags: those are THIS build's policy, not part of the library's interface, and in Debug
 # they carry -fsanitize=address — a consumer linking seqeron_core would silently get AddressSanitizer
@@ -220,8 +216,6 @@ target_include_directories(seqeron_core SYSTEM INTERFACE
 target_link_libraries(seqeron_core INTERFACE
     $<BUILD_INTERFACE:aeron::aeron_client_wrapper>
     $<BUILD_INTERFACE:aeron::aeron>
-    $<BUILD_INTERFACE:aeron::aeron_archive_wrapper>
-    $<BUILD_INTERFACE:aeron::aeron_archive_c_client>
 )
 
 # Installing is the top-level build's business: a parent that vendors this one should not find
@@ -294,39 +288,21 @@ if(SEQERON_BUILD_TESTS)
     enable_testing()
 
     add_executable(core_tests
-        seqeron-client/src/test/cpp/org/limitless/seqeron/app/AppFacadeTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/app/GatewayLifecycleTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/GroupResolutionTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/app/LeaderGateTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkPropertyTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/app/RecoveryStallFenceTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/app/SnapshotTakerTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/app/QueueResolutionTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/app/QueueStallFenceTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterCodecTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/PendingSendsTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/PendingSendsPropertyTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/ConformanceTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSenderTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/FrameStartPositionTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/PortLayoutTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/SequencedEventTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/SequencedFrameTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/SnapshotFormatTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/replayer/client/SnapshotStoreTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/helpers/SplitMix64Test.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/util/EnvTest.cpp
-        seqeron-client/src/main/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp
         seqeron-client/src/main/cpp/org/limitless/seqeron/util/Logger.hpp
     )
     target_link_libraries(core_tests PRIVATE
         seqeron_core
         seqeron_flags
-        aeron::aeron_archive_wrapper
-        aeron::aeron_archive_c_client
         aeron::aeron
         GTest::gtest_main
     )
@@ -342,11 +318,6 @@ if(SEQERON_BUILD_TESTS)
     include(GoogleTest)
     gtest_discover_tests(core_tests)
 
-    # cluster_probe — the C++ twin of tools/ClusterProbe's confirm and follow modes, which cpp-client-test.sh runs
-    # against a live cluster. Nothing here runs it; building it is what keeps it compiling.
-    add_executable(cluster_probe seqeron-client/src/test/cpp-probe/ClusterProbe.cpp)
-    target_link_libraries(cluster_probe PRIVATE seqeron_core seqeron_flags)
-
     # hosted_probe — a hosted::Application stub holding the probe's state, which HostedCppStubTest drives against the
     # prototype host (doc/hosted-facade-draft.md §17).
     add_executable(hosted_probe seqeron-client/src/test/cpp-probe/HostedProbe.cpp)
@@ -359,10 +330,6 @@ if(SEQERON_BUILD_TESTS)
     # hosted_consumer_probe — the same for a hosted::Consumer stub, which HostedConsumerStubTest drives.
     add_executable(hosted_consumer_probe seqeron-client/src/test/cpp-probe/HostedConsumerProbe.cpp)
     target_link_libraries(hosted_consumer_probe PRIVATE seqeron_core seqeron_flags)
-
-    # hop_bench — the hosted-façade hop from a C++ client (doc/hosted-facade-draft.md §17.10). Bench only; nothing runs it.
-    add_executable(hop_bench seqeron-client/src/test/cpp-bench/HopBench.cpp)
-    target_link_libraries(hop_bench PRIVATE seqeron_core seqeron_flags)
 
     # core_headers — every public header compiled on its own under -Werror, as a consumer's build would.
     # A header no test includes is otherwise never compiled here at all.

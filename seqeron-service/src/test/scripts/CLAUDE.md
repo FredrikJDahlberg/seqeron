@@ -7,9 +7,8 @@ state from the members' CnC counters or `clusterctl counters`, never from a log 
 deadlines; kills by the PID or container it started; and gives every boot a log of its own under
 `seqeron-service/build/system-test/<test>/`. `doc/building.md` lists the tests.
 
-`seqeron-service/src/test/scripts` holds what is left: three bash harnesses for the other client tiers —
-`csharp-client-test.sh`, `csharp-windows-test.sh` (Git Bash on Windows, with its member in WSL1) and
-`cpp-client-test.sh` — plus `start-three-node-cluster.sh`, the operator-facing local cluster.
+`seqeron-service/src/test/scripts` holds what is left: two bash harnesses for the C# client tier —
+`csharp-client-test.sh` and `csharp-windows-test.sh` (Git Bash on Windows, with its member in WSL1) — plus `start-three-node-cluster.sh`, the operator-facing local cluster.
 They still resolve paths relative to the repository root — they were written when this tree sat under `cluster/`, so
 check the depth of any `../..` you add.
 
@@ -33,18 +32,13 @@ relay's member). The probe attaches to a member's own embedded driver, or a gate
 standalone `aeronmd`. `SessionReplaceTest` drives `TestApplication` (below) through the loss of its cluster session,
 and fails if a replacement stops its duty cycle.
 
-**The C# and C++ harnesses.** `csharp-client-test.sh` drives the C# client tier: `Seqeron.ClusterProbe`
+**The C# harnesses.** `csharp-client-test.sh` drives the C# client tier: `Seqeron.ClusterProbe`
 (`seqeron-client/src/test/csharp-probe`), the C# twin of the probe's `confirm` and `follow`, then the C# examples, its
 gateway pair through a handover, `SnapshotApp` restored from a round it confirmed, and last a `follow` that must fail
 on a member restarted at a cut. It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`.
 `csharp-windows-test.sh` runs the same C# client on Windows, where it is deployed: one member in WSL1 (three elect
 without end there) and the C# clients beside a gateway host on Windows, on one `windows-latest` runner (CI's
-`windows.yml`). `cpp-client-test.sh` is `csharp-client-test.sh` for the C++ client tier: `cluster_probe`
-(`seqeron-client/src/test/cpp-probe`, a target beside `core_tests`, which the harness builds in the examples' tree so
-that Aeron is built once), then the C++ examples built as an outside consumer builds them, their gateway pair through
-a handover, `snapshot_app` restored from a round it confirmed, and `ClusterStreamClient` replaying a member restarted
-at a cut (`cluster_probe scan`), where a `follow` must fail. It needs CMake beside the uber jar, and CI runs it in
-`chaos.yml`.
+`windows.yml`). The C++ client is the hosted stub, driven by the `Hosted*Test` system tests through the probes in `seqeron-client/src/test/cpp-probe` when `HOSTED_PROBE` names `hosted_probe`.
 
 `ChaosTest` needs one more thing the probe cannot supply — a **gateway pair under the faults** — and `TestGateway` is
 it: an elected active/standby producer (`GW-T-A`/`GW-T-B`, `gatewaySourceId` 9, listening on 9200/9201) that speaks no
@@ -64,5 +58,5 @@ follow; rounds under member kills are `SnapshotTest`'s and `ClusterSnapshotTest`
 beside it adds **`TestApplication`** (`sourceId` 16, one replica per member), the reference consumer of
 `app/Application` with a `SnapshotListener`; `SnapshotTest` loads it and drives both through restores, a failover onto
 a restored instance, the killed instance's return, an operator-requested round and a cluster leader kill. The two
-other topology documents here are `seqeron-examples/topology.xml`, the pair the Java and C++ `GatewayApp` examples
+other topology documents here are `seqeron-examples/topology.xml`, the pair the Java `GatewayApp` example
 run, and `topology-csharp.xml` beside it, the C# example's own pair, which both C# harnesses load.

@@ -45,7 +45,8 @@ package ([`client-api.md`](client-api.md)). There is no C++ or C# server; the cl
 driver of the member or gateway host it sits beside; the design is `hosted-facade-draft.md` §17. It starts the
 façade when a stub's `Attach` names it and closes it when the client detaches or its heartbeat counter stops. It
 is configured by system properties and fails at start, exit 2 with one line, on a value that is missing,
-non-numeric or out of range.
+non-numeric or out of range. `start-client-proxy.sh` runs it with the JVM options a seqeron process needs and passes
+its `-Dproxy.*=` arguments through.
 
 | property | default | description |
 |---|---|---|
@@ -213,6 +214,7 @@ Prometheus and Grafana provisioning). `./gradlew operatorDistZip` archives it as
 |--------|---------|
 | `start-cluster.sh` | start a single-member cluster and a `ClusterProbe follow` consumer in the background; Ctrl-C stops both. `SEQERON_TOPOLOGY` names a topology document to load once the member runs; without one the consumer waits for a `load-topology`. `SEQERON_NO_CONSUMERS=1` leaves out the consumer, for a caller that runs its own |
 | `start-gateway-host.sh` | make a host that runs no member able to run clients: `ReplayerServer` in gateway-host mode, relaying a member's queues onto the host's own. `SEQERON_GROUPS` (required: the `groupId`s whose queues it relays, comma-separated), `SEQERON_NODE_ID` (3), `SEQERON_ARCHIVE_ENDPOINTS` (the three localhost members), `SEQERON_HOST` (`localhost`) |
+| `start-client-proxy.sh` | run the host of one hosted client, `ClientProxy`, beside a member or gateway host; the arguments are its `-Dproxy.*=` properties ([Client proxy](#client-proxy)) |
 | `stop-cluster.sh` | stop everything the start scripts launched, and any `SEQERON_EXTRA_PROCESSES="label\|pattern;…"` a caller adds |
 | `clusterctl.sh <command>` | the cluster's life cycle — see [Operating it](#operating-it) |
 | `sbe-log-printer.sh <archive-dir>` | print a recording as JSON ([`log-printer.md`](log-printer.md)) |
