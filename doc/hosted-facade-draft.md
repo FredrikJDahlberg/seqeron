@@ -453,7 +453,8 @@ client's driver connection.
    matched. The laptop's commit of about 250 µs hides the hop; a tuned cluster commits faster, and there the hop
    and the host's pauses weigh more. **The first stage waits on two results**: the proposed shape measured, a C++
    client process beside a separate host JVM, pinned, on Linux; and an allocation test that holds the host's
-   steady state to zero bytes a frame, as the C# suite does for its client.
+   steady state to zero bytes a frame, as the C# suite does for its client. The second is met by the
+   prototype host (§17.10.5); the first is open.
 3. **Throughput.** The rate at which the per-message offer, not the hop, is the limit is unmeasured (the one
    20,000 msg/s pass was noise-bound, §17.10). A multi-message `Payload` would save one IPC offer per frame, under
    a microsecond (§17.10), and would hold the first frame back until the last is encoded.
@@ -546,7 +547,22 @@ re-offer each message on a second stream. Receive path only.
   (§17.2.1), the stub's local checks (**H-4**), schema 218 and a hosted `Consumer`. Restore, the snapshot cut and
   SIGKILL are exercised in §17.11, not timed.
 - The proposed shape: a C++ client process beside a separate host JVM, pinned, on Linux (§17.10.2 separates only
-  the cluster), and the host's allocation in steady state (§17.9, question 2).
+  the cluster).
+- The host's allocation with a command queue, counters or a `Gateway`, which the prototype lacks (§17.10.5).
+
+### 17.10.5 Allocation in steady state
+
+`HostedAllocationTest` (systemTest) starts three members, the prototype host on the leader and its client, which
+publishes a marker every millisecond. The host counts the bytes its loop thread allocates
+(`ThreadMXBean.getThreadAllocatedBytes`) across 50,000 frames, delivered payloads, published markers and heartbeats,
+after a warm-up of 100,000, and the test asserts zero and that the gate epoch did not move in the window. The loop
+thread runs the real `Application` and the relay, so the count covers the façade's receive and publish paths.
+
+- **Result:** 0 bytes over 50,000 frames, in both runs made. A control with a warm-up of 20 frames allocates
+  195,856 bytes over the same window, so the count is not blind.
+- **Not in the window:** a snapshot cut, attach and restore (the topology has no snapshot policy), a leadership
+  change, and the command queue, window, counters and `Gateway`, none of which the prototype has. The payload is
+  20 bytes and the rate 1k msg/s; a larger payload or rate is not shown to stay at zero.
 
 ## 17.11 Prototype: restore, cut and SIGKILL
 

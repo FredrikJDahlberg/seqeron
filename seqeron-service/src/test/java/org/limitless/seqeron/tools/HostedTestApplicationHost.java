@@ -4,6 +4,8 @@ import io.aeron.Aeron;
 import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
+import com.sun.management.ThreadMXBean;
+import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -29,7 +31,8 @@ import org.limitless.seqeron.protocol.Publish;
  *
  * <p>Properties on top of {@link ClusterProbe}'s {@code probe.memberId} / {@code probe.aeronDir}:
  * {@code probe.sourceId} (16), {@code probe.clientId} (11), {@code probe.snapshotDir}, {@code host.clientTimeoutMs}
- * (2000).
+ * (2000), {@code host.allocWarmupFrames} (0: off) and {@code host.allocWindowFrames} (20000): once that many frames
+ * have crossed the loop, logs the bytes it allocated over the next window, for {@code HostedAllocationTest}.
  */
 public final class HostedTestApplicationHost implements Application.Listener, SnapshotListener {
     private static final int EXIT_FENCED = 70;
@@ -43,6 +46,9 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     private final UnsafeBuffer scratch = new UnsafeBuffer(new byte[16 * 1024]);
     private final List<byte[]> cutRecords = new ArrayList<>();
     private final FragmentHandler onCommand = this::onCommand;
+    private final long allocWarmupFrames = Long.getLong("host.allocWarmupFrames", 0);
+    private final long allocWindowFrames = Long.getLong("host.allocWindowFrames", 20_000);
+    private final ThreadMXBean threads = (ThreadMXBean)ManagementFactory.getThreadMXBean();
 
     private Aeron aeron;
     private Publication events;
@@ -55,6 +61,13 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     private long cutNo;
     private long lastClientNs;
     private long lastHeartbeatNs;
+    private long frames;
+    private long windowFrames;
+    private long windowBytes;
+    private long windowReadCost;
+    private long windowEpoch;
+    private boolean windowOpen;
+    private boolean windowDone;
     private boolean leading;
     private boolean lastCanPublish;
     private boolean collecting;
@@ -90,6 +103,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
                 work += app.doWork();
                 if (!fenced) {
                     afterDoWork();
+                    allocWindow();
                 }
             }
             idle.idle(work);
@@ -99,6 +113,27 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
         }
         aeron.close();
         return fenced ? EXIT_FENCED : 0;
+    }
+
+    /** Counts the allocation of this thread over a window of frames, after a warm-up for the JIT. */
+    private void allocWindow() {
+        if (allocWarmupFrames == 0 || windowDone) {
+            return;
+        }
+        final long id = Thread.currentThread().threadId();
+        if (!windowOpen && frames >= allocWarmupFrames) {
+            final long first = threads.getThreadAllocatedBytes(id);
+            windowBytes = threads.getThreadAllocatedBytes(id);
+            windowReadCost = windowBytes - first;
+            windowFrames = frames;
+            windowEpoch = epoch;
+            windowOpen = true;
+        } else if (windowOpen && frames - windowFrames >= allocWindowFrames) {
+            final long bytes = threads.getThreadAllocatedBytes(id) - windowBytes - windowReadCost;
+            windowDone = true;
+            log("alloc window: %d bytes over %d frames, gate epoch %d to %d", bytes, frames - windowFrames,
+                windowEpoch, epoch);
+        }
     }
 
     private void afterDoWork() {
@@ -196,6 +231,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
     }
 
     private void onPublish(final DirectBuffer buffer, final int offset) {
+        frames++;
         final long correlationId = buffer.getLong(offset + 16);
         final long gateEpoch = buffer.getLong(offset + 24);
         if (gateEpoch != epoch) {
@@ -234,6 +270,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
 
     @Override
     public void onSequenced(final Payload payload) {
+        frames++;
         HostedWire.header(out, HostedWire.PAYLOAD, attachId);
         out.putLong(16, payload.clusterSeqNo());
         out.putInt(24, payload.sourceId());
@@ -347,6 +384,7 @@ public final class HostedTestApplicationHost implements Application.Listener, Sn
 
     private void sendHeartbeat(final long now) {
         lastHeartbeatNs = now;
+        frames++;
         HostedWire.header(out, HostedWire.HEARTBEAT, attachId);
         out.putLong(16, now);
         send(24);
