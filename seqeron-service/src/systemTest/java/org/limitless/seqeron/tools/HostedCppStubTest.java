@@ -201,6 +201,30 @@ class HostedCppStubTest {
     }
 
     /**
+     * The host closes the attachment and stays up: the stub, paused past the host's 2 s client timeout, is dropped
+     * ({@code CLIENT_LOST}) and, resumed, finds the host's heartbeat fresh but its events image gone, and exits
+     * {@code HOST_LOST} (§17.6).
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCppStubWhoseAttachmentTheHostClosedExits() {
+        startHost("proxy.spin=true");
+        startClient("--interval-ms", "10");
+        check("the gate opened", poll(() -> client.lastLine("now leading") != null));
+        try {
+            client.pause();
+            sleep(3500);
+        } finally {
+            client.resume();
+        }
+        check("the host closed the attachment", poll(() -> host.lastLine("CLIENT_LOST") != null));
+        check("the stub exited HOST_LOST", poll(() -> client.lastLine("HOST_LOST") != null) &&
+                                               client.awaitDead(Duration.ofSeconds(10)) && client.exitValue() == 70);
+        check("the host stayed up", host.isAlive());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
      * The façade's cluster connect fails: the host runs on a follower, whose {@code aeron:ipc} ingress never answers,
      * and its UDP ingress names the ports of members this cluster does not have. The host says why and exits 70; the
      * stub loses it.

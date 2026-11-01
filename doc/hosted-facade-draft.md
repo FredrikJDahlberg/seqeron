@@ -342,7 +342,7 @@ Where they differ:
 
 | failure | effect |
 | --- | --- |
-| client crashes or hangs | its heartbeat counter is stale for `clientTimeoutMs` or its stream 304 image goes away: host closes the façade (`CLIENT_LOST`), session released; standby takes over. |
+| client crashes or hangs | its heartbeat counter is stale for `clientTimeoutMs` or its stream 304 image goes away: host closes the façade (`CLIENT_LOST`), session released; standby takes over. A hung client that resumes finds its stream 303 image gone and exits 70 (`HOST_LOST`) |
 | host crashes or hangs | its heartbeat counter is stale for `hostTimeoutMs` or its stream 303 image goes away: the client exits 70 (`HOST_LOST`); the cluster times out the host's session within `sequencer.sessionTimeoutMs` regardless |
 | member leader changes | host emits `Gate(leading=false)` with a new epoch in stream order and drops every command of an earlier epoch (**H-3**); the client's unanswered leader work is redispatched at the next open (**A-2**) |
 | client slower than the queue | host back-pressured and the client reads nothing of stream 303 for half the queue-stall timeout: `CLIENT_STALLED`; a slow client that keeps reading is not fenced |
@@ -767,7 +767,9 @@ Five system tests drive the stubs against the Java host, with `HOSTED_PROBE` nam
   cluster connect for more than the stub's 3 s host timeout; the stub keeps the host, whose idle strategy beats
   through the wait (**H-10**). Before it did, the stub gave the host up. In a sixth the host's façade cannot reach the
   cluster (the host on a follower, its UDP ingress naming absent members): the host logs `CLUSTER_UNREACHABLE` and
-  exits 70, and the stub exits `HOST_LOST`. Before, the connect's exception escaped the host's main thread.
+  exits 70, and the stub exits `HOST_LOST`. Before, the connect's exception escaped the host's main thread. In a
+  seventh the stub is paused past the host's 2 s client timeout: the host closes the attachment (`CLIENT_LOST`) and
+  stays up, and the resumed stub finds its events image gone and exits `HOST_LOST`. Before, it ran on unattached.
 - `HostedSnapshotTest` with `HOSTED_CLIENT=cpp` runs its clients as the probe: restore, cuts, a client `kill -9`
   with an immediate successor, a host `kill -9`, an abandoned cut, the 8 s cut, the leading hosted replica, and the
   corrupt record fenced with `SNAPSHOT_DIVERGED`, each check as with the Java client and the direct replicas
