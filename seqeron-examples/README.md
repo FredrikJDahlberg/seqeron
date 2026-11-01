@@ -3,7 +3,7 @@
 **C++.** The C++ examples are `ColocatedApp` and `GatewayApp`, written against the hosted stubs
 (`hosted::Application`, `hosted::Gateway`). A stub does no cluster work: it attaches over `aeron:ipc` to a host
 process, `org.limitless.seqeron.proxy.ClientProxy`, which runs the cluster session and the fences
-(`doc/hosted-facade-draft.md`). Start one host per example, with `start-client-proxy.sh`, before the example (see
+(`doc/seqeron-protocol-spec.md` §17). Start one host per example, with `start-client-proxy.sh`, before the example (see
 "Run them"). The earlier direct C++ examples (`FollowStream`, `SnapshotApp`, and the direct `ColocatedApp` and
 `GatewayApp`) live on the `cpp-direct-client` branch; passages below that describe them, or `cpp-client-test.sh`,
 describe that branch.

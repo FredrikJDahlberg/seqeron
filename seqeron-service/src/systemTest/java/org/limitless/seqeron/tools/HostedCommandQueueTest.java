@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The hosted-façade prototype's command queue and window (doc/hosted-facade-draft.md, H-3 to H-5). One hosted pair
+ * The hosted-façade prototype's command queue and window (doc/seqeron-protocol-spec.md, H-3 to H-5). One hosted pair
  * on the leader of a cluster with no snapshot policy. The client floods markers; the host's tracker holds four, so
  * the façade declines at the head of the queue, and its window holds about seventeen, so the stub declines too.
  */

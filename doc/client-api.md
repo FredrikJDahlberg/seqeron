@@ -12,8 +12,8 @@ The sections before [Façades](#façades-app) define the model and the contract;
 
 **C++ is the hosted stubs.** The direct C++ client is retired and kept on the `cpp-direct-client` branch (tag
 `cpp-direct-client-final`). C++ here means `hosted::Application`, `hosted::Gateway` and `hosted::Consumer`, which keep the
-façades' operation names and listener concepts and differ as [`hosted-facade-draft.md`](hosted-facade-draft.md) §17.5
-says. The C++ columns and notes below that name `ClusterStreamClient`, `ClusterStreamSender`, `PortLayout`, `offerFrame`,
+façades' operation names and listener concepts and differ as
+[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md) §17.5 says. The C++ columns and notes below that name `ClusterStreamClient`, `ClusterStreamSender`, `PortLayout`, `offerFrame`,
 the producer components or `sequencer::client` describe that branch, not this tree.
 
 ## Application types

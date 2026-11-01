@@ -12,7 +12,7 @@
 namespace org::limitless::seqeron::hosted {
 
 /**
- * The client stub of a hosted Application (doc/hosted-facade-draft.md §17): the surface of app::Application, with the
+ * The client stub of a hosted Application (doc/seqeron-protocol-spec.md §17): the surface of app::Application, with the
  * façade itself running in a host process that this talks to over schema 218. Its listener is the direct
  * Application's, and a Payload reaches it as it would there.
  *

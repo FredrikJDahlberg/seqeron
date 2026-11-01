@@ -3,7 +3,7 @@ package org.limitless.seqeron.proxy;
 import org.limitless.seqeron.protocol.Publish;
 
 /**
- * The accounting of a client's commands in a ClientProxy's queue (doc/hosted-facade-draft.md §17.4): H-5's window,
+ * The accounting of a client's commands in a ClientProxy's queue (doc/seqeron-protocol-spec.md §17.4): H-5's window,
  * counted in the encoded length of the windowed commands not yet placed, and H-3's epoch gate. Holds no Aeron
  * object; the proxy queues the bytes and publishes {@link #retired()} to its counter.
  *

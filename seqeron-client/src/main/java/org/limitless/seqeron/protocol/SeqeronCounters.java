@@ -114,7 +114,7 @@ public final class SeqeronCounters {
     /** Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not serve. */
     public static final int GATEWAY_CONNECTIONS_TYPE_ID = 5299;
 
-    // ClientProxy and the clients it serves (doc/hosted-facade-draft.md §17.2.1)
+    // ClientProxy and the clients it serves (doc/seqeron-protocol-spec.md §17.2.1)
     /** First type id of the proxy's block. */
     public static final int PROXY_TYPE_ID_MIN = 5300;
     /** Last type id of the proxy's block. */

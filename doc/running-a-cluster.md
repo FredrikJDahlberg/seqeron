@@ -42,7 +42,7 @@ package ([`client-api.md`](client-api.md)). There is no C++ or C# server; the cl
 ## Client proxy
 
 `org.limitless.seqeron.proxy.ClientProxy` (service jar) runs one façade for one hosted client, attached to the
-driver of the member or gateway host it sits beside; the design is `hosted-facade-draft.md` §17. It starts the
+driver of the member or gateway host it sits beside; the protocol is `seqeron-protocol-spec.md` §17. It starts the
 façade when a stub's `Attach` names it and closes it when the client detaches or its heartbeat counter stops. It
 is configured by system properties and fails at start, exit 2 with one line, on a value that is missing,
 non-numeric or out of range. `start-client-proxy.sh` runs it with the JVM options a seqeron process needs and passes
@@ -64,11 +64,21 @@ its `-Dproxy.*=` arguments through.
 | `proxy.commandWindow` | `65536` | bytes of encoded commands accepted and not yet placed (H-5) |
 | `proxy.placePerCycle` | `64` | commands placed per duty cycle |
 | `proxy.pendingCapacity` | `0` | the façade's pending-send tracker; `0` is its default |
-| `proxy.spin` | `false` | busy-spin the loop; a backing-off proxy adds tens of microseconds (§17.10.6) |
+| `proxy.spin` | `false` | busy-spin the loop; a backing-off proxy adds tens of microseconds (`hosted-facade.md` §3.6) |
+| `proxy.offCluster` | `false` | `true`: its `Application` is off the cluster, as on a gateway host |
+| `proxy.hosts` | unset | `a,b`: run several hosts in this process, below |
 | `proxy.allocWarmupFrames` | `0` | non-zero: log the bytes allocated over the next `proxy.allocWindowFrames` (default 20000) frames; a measurement, off by default |
 
 Under `proxy.spin` the proxy holds a core. It logs a `queue:` line of the command queue's counters, at most once a
 second, while commands are being dropped or declined, and when it closes an attachment.
+
+With `proxy.hosts=a,b` one process runs a host per name, each on its own thread and Aeron client. Host `a` reads
+`proxy.a.<key>` before `proxy.<key>`; its `hostName` defaults to `a` and its snapshot directory to
+`proxy.snapshotDir/a`, and no two hosts may share a `hostName`, `clientId` or snapshot directory. A host that would
+exit 70 is rebuilt in place and the process carries on (`seqeron-protocol-spec.md` §17.6). On a gateway host,
+`ReplayerServer` takes the same properties and runs the hosts beside its Replayer, with `proxy.memberId`,
+`proxy.aeronDir` and `proxy.egressHost` defaulting to its own and `proxy.offCluster` to `true`; a host that throws
+stops it.
 
 Three more processes serve the system tests ([`building.md`](building.md)):
 

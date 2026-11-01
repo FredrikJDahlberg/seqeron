@@ -2,6 +2,7 @@ package org.limitless.seqeron.tools;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -23,7 +24,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
- * The hosted-façade prototype (doc/hosted-facade-draft.md) through restore, the snapshot cut and SIGKILL. One
+ * The hosted-façade prototype (doc/hosted-facade.md) through restore, the snapshot cut and SIGKILL. One
  * {@code TestApplication} replica of source 16 is a host and a client; the other two members run the direct one. The
  * client writes {@code TestApplication}'s records byte for byte, so each side compares the other's rounds with the
  * sequenced {@code SnapshotEnd} and fences on a difference (spec A-7): a run with no FENCED line is the hosted state
@@ -172,6 +173,27 @@ class HostedSnapshotTest {
         startClientNoWait("client.slowCutMs=" + SLOW_CUT_MS);
         check("a round is confirmed though each cut outlasts the 5 s session timeout",
               poll(() -> round(hostedMember, hostClientId) > 0, 2 * TIMEOUT_SECS));
+        check("the host did not declare the client lost", host.lines("CLIENT_LOST").isEmpty());
+        check("the host did not abandon a round", host.lines("ABANDON round").isEmpty());
+        check("no instance fenced", noFence());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * The C++ stub alone for its source, on the leader, cuts six records of which each after the first takes 500 ms
+     * and none calls keepAlive(): the cut outlasts the host's 2 s client timeout, and the stub's heartbeat after each
+     * record keeps the client attached and the round confirmed.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCutOfManySlowRecordsKeepsTheClient() {
+        assumeTrue(CPP, "the record options are hosted_probe's");
+        cluster.loadTopology(Path.of(System.getProperty("seqeron.snapshotTopology"))
+                                 .resolveSibling("topology-test-hosted-slow.xml"));
+        hostedMember = cluster.awaitLeader();
+        startHost();
+        startClientNoWait("client.records=6", "client.recordMs=500");
+        check("a round is confirmed", poll(() -> round(hostedMember, hostClientId) > 0, 2 * TIMEOUT_SECS));
         check("the host did not declare the client lost", host.lines("CLIENT_LOST").isEmpty());
         check("the host did not abandon a round", host.lines("ABANDON round").isEmpty());
         check("no instance fenced", noFence());
@@ -489,6 +511,8 @@ class HostedSnapshotTest {
             case "client.noSnapshots" -> command.addAll(List.of("--no-snapshots", "1"));
             case "client.formatVersion" -> command.addAll(List.of("--format-version", keyValue[1]));
             case "client.supportedFormats" -> command.addAll(List.of("--supported-formats", keyValue[1]));
+            case "client.records" -> command.addAll(List.of("--records", keyValue[1]));
+            case "client.recordMs" -> command.addAll(List.of("--record-ms", keyValue[1]));
             default -> {
                 // client.ghost and client.staleEpoch publish from outside the stub's checks, which it has no option for.
             }

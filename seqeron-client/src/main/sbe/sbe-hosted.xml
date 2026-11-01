@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-    The hosted-façade protocol: schema 218, drafted in doc/hosted-facade-draft.md §17.3 (not normative).
+    The hosted-façade protocol: schema 218, specified in doc/seqeron-protocol-spec.md §17.3.
 
     Between a host that runs the real façade and a client stub, on node-local aeron:ipc streams 301 to 304. Never
     sequenced or recorded, and never leaves the node. Every message carries a messageHeader, since a reader checks

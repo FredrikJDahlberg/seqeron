@@ -26,6 +26,7 @@
 #include "org_limitless_seqeron_sbe_hosted/Attach.h"
 #include "org_limitless_seqeron_sbe_hosted/Attached.h"
 #include "org_limitless_seqeron_sbe_hosted/CaughtUp.h"
+#include "org_limitless_seqeron_sbe_hosted/ClusterTime.h"
 #include "org_limitless_seqeron_sbe_hosted/Detach.h"
 #include "org_limitless_seqeron_sbe_hosted/Fenced.h"
 #include "org_limitless_seqeron_sbe_hosted/Gate.h"
@@ -41,7 +42,7 @@ namespace org::limitless::seqeron::hosted {
 
 namespace wire = sbe::hosted;
 
-/** Why a stub stopped (doc/hosted-facade-draft.md §17.6): its own faults, which are not a fence. */
+/** Why a stub stopped (doc/seqeron-protocol-spec.md §17.6): its own faults, which are not a fence. */
 enum class Failure : std::uint8_t
 {
     None,
@@ -69,8 +70,8 @@ inline std::int64_t nowNs()
 }
 
 /**
- * What a hosted Application and a hosted Gateway share (doc/hosted-facade-draft.md §17): the attach, the counters, the
- * command window, the host's events and the snapshot cut. The derived class supplies the hooks
+ * What a hosted Application and a hosted Gateway share (doc/seqeron-protocol-spec.md §17): the attach, the counters,
+ * the command window, the host's events and the snapshot cut. The derived class supplies the hooks
  *
  *   onGate(bool leading), onOther(templateId, base, length, blockLength, version)
  *
@@ -496,6 +497,14 @@ class ClientLink
                 if constexpr (requires { m_listener.onCaughtUp(std::int64_t{}); })
                 {
                     m_listener.onCaughtUp(caughtUp.clusterSeqNo());
+                }
+                break;
+            }
+            case wire::ClusterTime::sbeTemplateId(): {
+                wire::ClusterTime time(base, HEADER, length, blockLength, version);
+                if constexpr (requires { m_listener.onClusterHeartbeat(std::int64_t{}, std::int64_t{}); })
+                {
+                    m_listener.onClusterHeartbeat(time.clusterTimeNs(), time.receiveTimeNs());
                 }
                 break;
             }

@@ -18,8 +18,8 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Two proxies on one media driver (doc/hosted-facade-draft.md §17.2): an Application's and a Consumer's, each named by
- * {@code proxy.hostName} and answering only an {@code Attach} that names it, though both read stream 301 and write
+ * Two proxies on one media driver (doc/seqeron-protocol-spec.md §17.2): an Application's and a Consumer's, each named
+ * by {@code proxy.hostName} and answering only an {@code Attach} that names it, though both read stream 301 and write
  * stream 302. Needs {@code HOSTED_PROBE} and the {@code hosted_consumer_probe} beside it.
  */
 class HostedTwoHostsTest {

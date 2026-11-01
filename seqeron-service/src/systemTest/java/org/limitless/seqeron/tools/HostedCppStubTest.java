@@ -3,6 +3,8 @@ package org.limitless.seqeron.tools;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.aeron.Aeron;
+import io.aeron.Publication;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -12,7 +14,9 @@ import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.protocol.ProxyProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -21,7 +25,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The C++ stub (hosted::Application, doc/hosted-facade-draft.md §17) against the prototype host, on the leader of a
+ * The C++ stub (hosted::Application, doc/seqeron-protocol-spec.md §17) against the prototype host, on the leader of a
  * cluster with no snapshot policy. The stub is {@code hosted_probe}, whose path is {@code HOSTED_PROBE} in the
  * environment of the Gradle run; without it the test is skipped.
  */
@@ -85,6 +89,7 @@ class HostedCppStubTest {
         startClient("--interval-ms", "1", "--max-markers", "2000", "--check-refusals", "1");
         check("the stub caught up", poll(() -> client.lastLine("Caught up") != null));
         check("the gate opened", poll(() -> client.lastLine("now leading") != null));
+        check("the stub heard the cluster clock", poll(() -> client.lastLine("cluster time") != null));
         check("the local checks refused a retired payloadId", poll(() -> client.lastLine("REFUSED retired payloadId") != null));
         check("the local checks refused an oversized payload", poll(() -> client.lastLine("REFUSED oversized payload") != null));
         check("2000 markers were offered", poll(() -> number(client, "state: ", PUBLISHED) == 2000));
@@ -244,9 +249,45 @@ class HostedCppStubTest {
             client.resume();
         }
         check("the host closed the attachment", poll(() -> host.lastLine("CLIENT_LOST") != null));
+        check("its lag series went with it", lag() == ClusterProcesses.NO_VALUE);
         check("the stub exited HOST_LOST", poll(() -> client.lastLine("HOST_LOST") != null) &&
                                                client.awaitDead(Duration.ofSeconds(10)) && client.exitValue() == 70);
         check("the host stayed up", host.isAlive());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * An orderly detach through back-pressure (H-9): with the host paused, stream 301 is filled from another
+     * publication until it back-pressures, and the stub is told to detach. Its Detach waits out the back-pressure until
+     * the host, resumed 300 ms later, drains the stream, and the host closes the attachment as detached, not lost.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCppStubDetachesThroughBackPressure() {
+        startHost("proxy.spin=true");
+        startClient("--interval-ms", "10");
+        check("the gate opened", poll(() -> client.lastLine("now leading") != null));
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(hostMember)));
+             Publication flood = aeron.addPublication(ProxyProtocol.ATTACH_REQUEST_CHANNEL,
+                                                      ProxyProtocol.ATTACH_REQUEST_STREAM)) {
+            check("the flood reaches the host", poll(flood::isConnected));
+            final UnsafeBuffer junk = new UnsafeBuffer(new byte[1024]);
+            host.pause();
+            try {
+                long result;
+                while ((result = flood.offer(junk)) > 0) {
+                    Thread.onSpinWait();
+                }
+                check("stream 301 is back-pressured (" + result + ")", result == Publication.BACK_PRESSURED);
+                client.signal("USR1");
+                sleep(300);
+            } finally {
+                host.resume();
+            }
+        }
+        check("the host closed the attachment as detached", poll(() -> host.lastLine("DETACHED") != null));
+        check("the stub exited 0", client.awaitDead(Duration.ofSeconds(10)) && client.exitValue() == 0);
+        check("the host did not take it for lost", host.lines("CLIENT_LOST").isEmpty());
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
@@ -297,6 +338,88 @@ class HostedCppStubTest {
         check("the host did not crash", host.lines("Exception in thread").isEmpty());
         check("the stub lost the host", poll(() -> client.lastLine("HOST_LOST") != null));
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * The client dies while the façade's cluster connect fails (the cluster unreachable, as above): the host, which
+     * finds the client's counter changed after its own 10 s wait, watches it for a client timeout, drops it
+     * ({@code CLIENT_LOST}) rather than connecting again for nobody, and stays up for the next client.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aHostWhoseClientDiesDuringAFailedConnectDropsIt() {
+        hostMember = (leader + 1) % ClusterProcesses.MEMBERS;
+        final String absent = "0=localhost:" + PortLayout.ingressPort(ClusterProcesses.MEMBERS) + ",1=localhost:" +
+                              PortLayout.ingressPort(ClusterProcesses.MEMBERS + 1);
+        startHost("proxy.spin=true", "proxy.ingressEndpoints=" + absent);
+        startClient("--interval-ms", "10", "--max-markers", "100");
+        sleep(3000);
+        client.stop();
+        check("the host dropped the client", poll(() -> host.lastLine("CLIENT_LOST") != null));
+        check("the host did not connect again", host.lines("attempt 2 of").isEmpty());
+        check("the host stayed up", host.isAlive() && host.lines("CLUSTER_UNREACHABLE").isEmpty());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * Two hosts in one process (proxy.hosts), on a follower: host a cannot reach the cluster, host b can. Host a is
+     * rebuilt in place after its third failed connect and its client exits HOST_LOST; host b's client keeps its host
+     * and catches up, and the process stays up.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void twoHostsInOneProcessServeTheirClientsApart() {
+        hostMember = (leader + 1) % ClusterProcesses.MEMBERS;
+        final String absent = "0=localhost:" + PortLayout.ingressPort(ClusterProcesses.MEMBERS) + ",1=localhost:" +
+                              PortLayout.ingressPort(ClusterProcesses.MEMBERS + 1);
+        host = cluster.proxy("hosts", hostMember, "proxy.hosts=a,b", "proxy.spin=true",
+                             "proxy.snapshotDir=" + baseDir.resolve("snap"), "proxy.a.sourceId=17",
+                             "proxy.a.clientId=31", "proxy.a.ingressEndpoints=" + absent, "proxy.b.sourceId=16",
+                             "proxy.b.clientId=32");
+        check("both hosts are ready", poll(() -> host.lines("host ready").size() == 2));
+        final ClusterProcesses.Child clientA = probe("client-a", cluster.aeronDir(hostMember), "a", 17);
+        final ClusterProcesses.Child clientB = probe("client-b", cluster.aeronDir(hostMember), "b", SOURCE_ID);
+        check("host b's client caught up", poll(() -> clientB.lastLine("Caught up") != null));
+        check("host a was rebuilt in place", poll(() -> host.lastLine("host a exited 70: rebuilding it") != null));
+        check("host a's client exited HOST_LOST", poll(() -> clientA.lastLine("HOST_LOST") != null));
+        check("host b's client kept its host", clientB.isAlive() && clientB.lines("HOST_LOST").isEmpty());
+        check("host b was not rebuilt", host.lines("host b exited").isEmpty());
+        check("the process stayed up", host.isAlive());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * A host inside a gateway host's ReplayerServer (proxy.hosts there): its Application is off the cluster, so the
+     * gate opens once caught up through the gateway host's relay and Replayer, and the stub's markers are sequenced.
+     * A lost client leaves the gateway host up.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aHostInsideAGatewayHostServesItsClient() {
+        final int gatewayHost = ClusterProcesses.MEMBERS;
+        final ClusterProcesses.Child gateway =
+            cluster.startGatewayHost("gateway-host", gatewayHost,
+                                     List.of("proxy.hosts=gw", "proxy.spin=true", "proxy.sourceId=" + SOURCE_ID,
+                                             "proxy.clientId=31", "proxy.snapshotDir=" + baseDir.resolve("snap")),
+                                     0, 1, 2);
+        check("the host is ready", poll(() -> gateway.lastLine("host ready") != null));
+        client = probe("client", cluster.aeronDir(gatewayHost), "gw", SOURCE_ID, "--max-markers", "100");
+        check("the gate opened off the cluster", poll(() -> client.lastLine("now leading") != null));
+        check("every marker was sequenced", poll(() -> number(client, "state: ", OWN) == 100));
+        client.stop();
+        check("the host dropped the client", poll(() -> gateway.lastLine("CLIENT_LOST") != null
+                                                    || gateway.lastLine("DETACHED") != null));
+        check("the gateway host stayed up", gateway.isAlive() && gateway.lines("FATAL").isEmpty());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    private ClusterProcesses.Child probe(final String name, final String aeronDir, final String hostName,
+                                         final int sourceId, final String... arguments) {
+        final List<String> command = new ArrayList<>(List.of(System.getProperty("seqeron.hostedProbe"), "--aeron-dir",
+                                                             aeronDir, "--host-name", hostName, "--source-id",
+                                                             "" + sourceId, "--interval-ms", "10"));
+        command.addAll(List.of(arguments));
+        return cluster.nativeProcess(name, command.toArray(new String[0]));
     }
 
     private static void sleep(final long ms) {

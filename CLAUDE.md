@@ -238,7 +238,9 @@ message, the failure model, the limits — keep it in step with the documents it
 release, so bump them when one changes the API they use), `running-a-cluster.md` (the processes, a node's
 ports, properties and restart, the operator scripts), `building.md` (each language's build, the unit
 suites, the harnesses, the examples), `releasing.md`, `log-printer.md`, `seqeron-protocol-spec.md` (normative — the frames, the families,
-the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
+the system vocabulary, the topology document, the hosted façade protocol in §17), `hosted-facade.md` (the hosted
+façades' design record: what they add to and retire from the tree, open questions, measurements, the prototype's
+results), `client-api.md` (what a client programs against, and what in
 the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), `snapshot.md`
 (application snapshots: local files the log confirms), `upgrades.md` (seqeron and application versions,
 and the proposed snapshot-and-upcaster upgrade model), and `versioning-prior-art.md` (how exchanges and

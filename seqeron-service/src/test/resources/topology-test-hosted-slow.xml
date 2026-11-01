@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The hosted-façade prototype's topology for a cut that outlasts the session timeout (doc/hosted-facade-draft.md):
+    The hosted-façade prototype's topology for a cut that outlasts the session timeout (doc/hosted-facade.md):
     rounds every 15 s, longer than the 8 s cut and the 5 s session timeout together would let one supersede another.
     HostedSnapshotTest loads it.
 -->

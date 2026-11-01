@@ -113,13 +113,23 @@ final class ClusterProcesses implements AutoCloseable {
      * members' archives, tried in order.
      */
     Child startGatewayHost(final String logName, final int id, final int... archiveMembers) {
+        return startGatewayHost(logName, id, List.of(), archiveMembers);
+    }
+
+    /** As above, with {@code key=value} system properties beyond the relay's, such as the hosted façades'. */
+    Child startGatewayHost(final String logName, final int id, final List<String> properties,
+                           final int... archiveMembers) {
         final StringBuilder endpoints = new StringBuilder();
         for (final int m : archiveMembers) {
             endpoints.append(endpoints.length() == 0 ? "" : ",").append(archiveEndpoint(m));
         }
-        return launch(logName, List.of("-Dreplayer.memberId=" + id, "-Dreplayer.baseDir=" + baseDir,
-                                       "-Dreplayer.aeronDir=" + aeronDir(id), "-Dreplayer.archiveEndpoints=" + endpoints,
-                                       "-Dreplayer.groups=1", "-cp", JAR, ReplayerServer.class.getName()));
+        final List<String> args = new ArrayList<>(List.of("-Dreplayer.memberId=" + id, "-Dreplayer.baseDir=" + baseDir,
+                                                          "-Dreplayer.aeronDir=" + aeronDir(id),
+                                                          "-Dreplayer.archiveEndpoints=" + endpoints,
+                                                          "-Dreplayer.groups=1"));
+        properties.forEach(property -> args.add("-D" + property));
+        args.addAll(List.of("-cp", JAR, ReplayerServer.class.getName()));
+        return launch(logName, args);
     }
 
     /** A member's archive as the relay names it. */

@@ -28,7 +28,7 @@ class SnapshotListener
      * Lists the formats onRestore reads. A restore stops on a snapshot of a format this omits (doc/snapshot.md §9),
      * so a build that changes formatVersion keeps the formats it replaces listed until no instance holds a file of
      * them. A list rather than Java's supportsFormatVersion predicate, since the hosted stub sends it in its Attach
-     * (doc/hosted-facade-draft.md H-7). Called once per attach.
+     * (doc/seqeron-protocol-spec.md H-7). Called once per attach.
      *
      * @return by default, this build's own alone
      */

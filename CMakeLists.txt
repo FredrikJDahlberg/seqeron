@@ -1,4 +1,4 @@
-# seqeron's C++ half — the hosted client stubs (doc/hosted-facade-draft.md section 17), the types they share with
+# seqeron's C++ half — the hosted client stubs (doc/seqeron-protocol-spec.md section 17), the types they share with
 # the Java client tier, and the codecs for the schemas they speak. It generates no application codecs. The direct
 # C++ client is retired; the cpp-direct-client branch keeps it.
 # 3.30: Aeron 1.53.2's own CMakeLists requires it, so an older CMake should stop here, not inside Aeron.
@@ -319,7 +319,7 @@ if(SEQERON_BUILD_TESTS)
     gtest_discover_tests(core_tests)
 
     # hosted_probe — a hosted::Application stub holding the probe's state, which HostedCppStubTest drives against the
-    # prototype host (doc/hosted-facade-draft.md §17).
+    # prototype host (doc/seqeron-protocol-spec.md §17).
     add_executable(hosted_probe seqeron-client/src/test/cpp-probe/HostedProbe.cpp)
     target_link_libraries(hosted_probe PRIVATE seqeron_core seqeron_flags)
 

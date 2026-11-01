@@ -39,7 +39,7 @@ import org.limitless.seqeron.sbe.hosted.SnapshotRecordEncoder;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
 
 /**
- * The client of the hosted-façade prototype (doc/hosted-facade-draft.md): {@code TestApplication}'s state and snapshot
+ * The client of the hosted-façade prototype (doc/hosted-facade.md): {@code TestApplication}'s state and snapshot
  * records, byte for byte, behind {@link ProxyProtocol}'s streams instead of an {@code Application}. Its state is the count
  * of markers sequenced under its {@code sourceId} and a digest of their {@code clusterSeqNo}s, so a direct replica
  * comparing a round against the one this client wrote fences if the two differ (spec A-7).

@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import io.aeron.Counter;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableRingBuffer;
@@ -26,6 +27,7 @@ import org.agrona.collections.IntArrayList;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.app.Application;
@@ -44,6 +46,7 @@ import org.limitless.seqeron.sbe.hosted.AttachDecoder;
 import org.limitless.seqeron.sbe.hosted.AttachedEncoder;
 import org.limitless.seqeron.sbe.hosted.CaughtUpEncoder;
 import org.limitless.seqeron.sbe.hosted.CloseConnectionDecoder;
+import org.limitless.seqeron.sbe.hosted.ClusterTimeEncoder;
 import org.limitless.seqeron.sbe.hosted.ConnectionEncoder;
 import org.limitless.seqeron.sbe.hosted.DetachDecoder;
 import org.limitless.seqeron.sbe.hosted.FencedEncoder;
@@ -65,7 +68,7 @@ import org.limitless.seqeron.sbe.hosted.SnapshotEndDecoder;
 import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
 
 /**
- * The proxy of the hosted façades (doc/hosted-facade-draft.md): the real {@link Application}, {@link Gateway} or
+ * The proxy of the hosted façades (doc/seqeron-protocol-spec.md §17): the real {@link Application}, {@link Gateway} or
  * {@link Consumer}, started when a client sends {@code Attach} and closed when it is lost, its callbacks relayed in
  * schema 218 over {@link ProxyProtocol}'s streams. Launched beside a member.
  *
@@ -76,27 +79,35 @@ import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
  * (required), {@code proxy.gatewayName} (set: the proxy serves a Gateway), {@code proxy.consumerGroup} (0: none),
  * {@code proxy.clientTimeoutMs} (2000), {@code proxy.commandWindow} (65536 bytes: H-5's window, here the encoded
  * length of the {@code Publish} messages not yet placed), {@code proxy.placePerCycle} (64),
- * {@code proxy.pendingCapacity} (the façade's tracker, 0: its default) and {@code proxy.spin} (busy-spin the loop
- * rather than back off). A value that is absent, unparsable or out of range stops the proxy before it attaches to
- * anything. {@code proxy.allocWarmupFrames} (0: off) and {@code proxy.allocWindowFrames} (20000): once that many
- * frames have crossed the loop, logs the bytes it allocated over the next window, for {@code HostedAllocationTest}.
+ * {@code proxy.pendingCapacity} (the façade's tracker, 0: its default), {@code proxy.spin} (busy-spin the loop
+ * rather than back off) and {@code proxy.offCluster} (an {@code Application} on a gateway host). A value that is
+ * absent, unparsable or out of range stops the proxy before it attaches to anything. {@code proxy.allocWarmupFrames}
+ * (0: off) and {@code proxy.allocWindowFrames} (20000): once that many frames have crossed the loop, logs the bytes it
+ * allocated over the next window, for {@code HostedAllocationTest}.
+ *
+ * <p>{@code proxy.hosts=a,b} runs several hosts in one process ({@link Hosts}): each reads {@code proxy.a.<key>}
+ * before {@code proxy.<key>}, its {@code hostName} defaults to its name and its {@code snapshotDir} to
+ * {@code proxy.snapshotDir/a}, and no two may share a {@code hostName}, {@code clientId} or {@code snapshotDir}.
  */
 public final class ClientProxy implements Application.Listener, Gateway.Listener, Consumer.Listener, SnapshotListener {
     /** Fenced, or the cluster unreachable: restart me. */
-    private static final int EXIT_RESTART = 70;
+    static final int EXIT_RESTART = 70;
     private static final int EXIT_CONFIG = 2;
     private static final long BACK_PRESSURE_NS = TimeUnit.SECONDS.toNanos(1);
     /** Of 10 s each: one whose request reached no leader times out after the election. */
     private static final int CONNECT_ATTEMPTS = 3;
 
-    private final int memberId = intProp("proxy.memberId", 0);
-    private final String aeronDir = System.getProperty("proxy.aeronDir", PortLayout.aeronDir(memberId));
-    private final String ingressEndpoints = System.getProperty("proxy.ingressEndpoints", PortLayout.ingressEndpoints());
-    private final String egressChannel = "aeron:udp?endpoint=" + System.getProperty("proxy.egressHost",
-        memberId < PortLayout.HOSTS.size() ? PortLayout.HOSTS.get(memberId) : PortLayout.DEFAULT_HOST) + ":0";
-    private final int sourceId = intProp("proxy.sourceId", 16);
-    private final int clientId = intProp("proxy.clientId", 11);
-    private final long clientTimeoutNs = TimeUnit.MILLISECONDS.toNanos(longProp("proxy.clientTimeoutMs", 2000));
+    private final HostProperties properties;
+    private final int memberId;
+    private final String aeronDir;
+    private final String ingressEndpoints;
+    private final String egressChannel;
+    private final int sourceId;
+    private final int clientId;
+    private final long clientTimeoutNs;
+    private final String snapshotDirName;
+    private final boolean spin;
+    private final boolean offCluster;
     private final UnsafeBuffer out = new UnsafeBuffer(new byte[128 * 1024]);
     private final UnsafeBuffer scratch = new UnsafeBuffer(new byte[16 * 1024]);
     private final List<byte[]> cutRecords = new ArrayList<>();
@@ -115,32 +126,31 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private final ActivatedDecoder activatedIn = new ActivatedDecoder();
     private final ConnectionEncoder connectionOut = new ConnectionEncoder();
     private final RoleEncoder roleOut = new RoleEncoder();
-    private final String hostName = System.getProperty("proxy.hostName", ProxyProtocol.DEFAULT_HOST_NAME);
-    private final String gatewayName = System.getProperty("proxy.gatewayName");
-    private final int consumerGroup = intProp("proxy.consumerGroup", 0);
-    private final AttachRules attachRules = new AttachRules(hostName, gatewayName != null, consumerGroup != 0);
+    private final String hostName;
+    private final String gatewayName;
+    private final int consumerGroup;
+    private final AttachRules attachRules;
     private final SnapshotRecordDecoder recordIn = new SnapshotRecordDecoder();
     private final SnapshotEndDecoder endIn = new SnapshotEndDecoder();
     private final AttachedEncoder attachedOut = new AttachedEncoder();
     private final PayloadEncoder payloadOut = new PayloadEncoder();
     private final GateEncoder gateOut = new GateEncoder();
     private final CaughtUpEncoder caughtUpOut = new CaughtUpEncoder();
+    private final ClusterTimeEncoder clusterTimeOut = new ClusterTimeEncoder();
     private final RestoreRecordEncoder restoreOut = new RestoreRecordEncoder();
     private final SnapshotCutEncoder cutOut = new SnapshotCutEncoder();
     private final FencedEncoder fencedOut = new FencedEncoder();
-    private final long commandWindow = longProp("proxy.commandWindow", 64 * 1024);
+    private final long commandWindow;
     private final ReplyAddresses replyAddresses = new ReplyAddresses();
-    private final CommandLedger ledger = new CommandLedger(commandWindow);
-    private final int placePerCycle = intProp("proxy.placePerCycle", 64);
-    private final int pendingCapacity = intProp("proxy.pendingCapacity", 0);
+    private final CommandLedger ledger;
+    private final int placePerCycle;
+    private final int pendingCapacity;
     /** Sized once to hold the window with its per-message framing, so it never grows. */
-    private final ExpandableRingBuffer queue = new ExpandableRingBuffer(
-        BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)),
-        BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)), false);
+    private final ExpandableRingBuffer queue;
     private final ExpandableRingBuffer.MessageConsumer place = this::place;
     private final ExpandableRingBuffer.MessageConsumer discard = (buffer, offset, length, head) -> true;
-    private final long allocWarmupFrames = longProp("proxy.allocWarmupFrames", 0);
-    private final long allocWindowFrames = longProp("proxy.allocWindowFrames", 20_000);
+    private final long allocWarmupFrames;
+    private final long allocWindowFrames;
     private final ThreadMXBean threads = (ThreadMXBean)ManagementFactory.getThreadMXBean();
     /** What the façade's blocking calls wait on: a yielding spin that writes the host heartbeat (H-10). */
     private final IdleStrategy facadeIdle = new IdleStrategy() {
@@ -173,13 +183,14 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private int appliedCounterId;
     private long appliedRegistrationId;
     private long dispatchedPosition;
+    private long firstDispatchedPosition;
     private Path snapshotDir;
     private Application app;
     private Gateway gateway;
     private Consumer consumer;
     private boolean consumerKind;
     private boolean live;
-    private int attachedSourceId = sourceId;
+    private int attachedSourceId;
     private boolean gatewayKind;
     private boolean activating;
     private String breach;
@@ -191,6 +202,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private long liveRequestId;
     private long connectDeadlineNs;
     private int connectFailures;
+    private long connectRetryNs;
     private boolean commandsSeen;
     private long cutNo;
     private long frames;
@@ -216,47 +228,120 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private volatile boolean fenced;
     private boolean unreachable;
 
+    ClientProxy(final HostProperties properties) {
+        this.properties = properties;
+        memberId = (int)properties.number("memberId", 0);
+        aeronDir = properties.get("aeronDir", PortLayout.aeronDir(memberId));
+        ingressEndpoints = properties.get("ingressEndpoints", PortLayout.ingressEndpoints());
+        egressChannel = "aeron:udp?endpoint=" + properties.get("egressHost",
+            memberId < PortLayout.HOSTS.size() ? PortLayout.HOSTS.get(memberId) : PortLayout.DEFAULT_HOST) + ":0";
+        sourceId = (int)properties.number("sourceId", 16);
+        attachedSourceId = sourceId;
+        clientId = (int)properties.number("clientId", 11);
+        clientTimeoutNs = TimeUnit.MILLISECONDS.toNanos(properties.number("clientTimeoutMs", 2000));
+        hostName = properties.get("hostName", properties.name() != null ? properties.name()
+                                                                        : ProxyProtocol.DEFAULT_HOST_NAME);
+        // Each of several hosts takes a directory of its own under the shared one unless it names its own.
+        final String ownSnapshotDir =
+            properties.name() == null ? null
+                                      : properties.source().getProperty("proxy." + properties.name() + ".snapshotDir");
+        final String sharedSnapshotDir = properties.source().getProperty("proxy.snapshotDir");
+        snapshotDirName = ownSnapshotDir != null || properties.name() == null || sharedSnapshotDir == null
+                              ? properties.get("snapshotDir")
+                              : Path.of(sharedSnapshotDir, properties.name()).toString();
+        spin = properties.flag("spin");
+        offCluster = properties.flag("offCluster");
+        gatewayName = properties.get("gatewayName");
+        consumerGroup = (int)properties.number("consumerGroup", 0);
+        attachRules = new AttachRules(hostName, gatewayName != null, consumerGroup != 0);
+        commandWindow = properties.number("commandWindow", 64 * 1024);
+        ledger = new CommandLedger(commandWindow);
+        placePerCycle = (int)properties.number("placePerCycle", 64);
+        pendingCapacity = (int)properties.number("pendingCapacity", 0);
+        queue = new ExpandableRingBuffer(BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)),
+                                         BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)), false);
+        allocWarmupFrames = properties.number("allocWarmupFrames", 0);
+        allocWindowFrames = properties.number("allocWindowFrames", 20_000);
+    }
+
+    /** One host, or with {@code proxy.hosts} several in this process ({@link Hosts}). */
     public static void main(final String[] args) {
+        if (System.getProperty("proxy.hosts") != null) {
+            runHosts();
+            return;
+        }
         final ClientProxy proxy;
         try {
-            proxy = new ClientProxy();
+            proxy = new ClientProxy(new HostProperties(null, System.getProperties()));
             proxy.validate();
         } catch (final IllegalArgumentException ex) {
             System.err.println("ClientProxy: " + ex.getMessage());
             System.exit(EXIT_CONFIG);
             return;
         }
+        final Thread main = Thread.currentThread();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            proxy.stop();
+            try {
+                main.join(TimeUnit.SECONDS.toMillis(5));
+            } catch (final InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }));
         System.exit(proxy.run());
     }
 
-    private void validate() {
-        require(!hostName.isBlank(), "proxy.hostName must not be blank");
-        require(sourceId > 0, "proxy.sourceId must be positive");
-        require(clientId > 0, "proxy.clientId must be positive");
-        require(clientTimeoutNs > 0, "proxy.clientTimeoutMs must be positive");
-        require(commandWindow > 0 && commandWindow <= Integer.MAX_VALUE / 2,
-                "proxy.commandWindow must be in 1.." + Integer.MAX_VALUE / 2);
-        require(placePerCycle > 0, "proxy.placePerCycle must be positive");
-        require(pendingCapacity >= 0, "proxy.pendingCapacity must not be negative");
-        require(consumerGroup >= 0, "proxy.consumerGroup must not be negative");
-        require(gatewayName == null || consumerGroup == 0, "proxy.gatewayName and proxy.consumerGroup are exclusive");
-        require(System.getProperty("proxy.snapshotDir") != null, "proxy.snapshotDir is required");
-    }
-
-    private static int intProp(final String name, final int fallback) {
-        return (int)longProp(name, fallback);
-    }
-
-    private static long longProp(final String name, final long fallback) {
-        final String value = System.getProperty(name);
-        if (value == null) {
-            return fallback;
-        }
+    private static void runHosts() {
+        final Hosts hosts;
         try {
-            return Long.parseLong(value.trim());
-        } catch (final NumberFormatException ex) {
-            throw new IllegalArgumentException(name + " is not a number: " + value);
+            hosts = Hosts.configure(System.getProperties());
+        } catch (final IllegalArgumentException ex) {
+            System.err.println("ClientProxy: " + ex.getMessage());
+            System.exit(EXIT_CONFIG);
+            return;
         }
+        final AtomicBoolean fault = new AtomicBoolean();
+        final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
+        hosts.start(() -> {
+            fault.set(true);
+            barrier.signalAll();
+        });
+        barrier.await();
+        hosts.close();
+        barrier.close();
+        System.exit(fault.get() ? EXIT_RESTART : 0);
+    }
+
+    void validate() {
+        require(!hostName.isBlank(), properties.qualified("hostName") + " must not be blank");
+        require(sourceId > 0, properties.qualified("sourceId") + " must be positive");
+        require(clientId > 0, properties.qualified("clientId") + " must be positive");
+        require(clientTimeoutNs > 0, properties.qualified("clientTimeoutMs") + " must be positive");
+        require(commandWindow > 0 && commandWindow <= Integer.MAX_VALUE / 2,
+                properties.qualified("commandWindow") + " must be in 1.." + Integer.MAX_VALUE / 2);
+        require(placePerCycle > 0, properties.qualified("placePerCycle") + " must be positive");
+        require(pendingCapacity >= 0, properties.qualified("pendingCapacity") + " must not be negative");
+        require(consumerGroup >= 0, properties.qualified("consumerGroup") + " must not be negative");
+        require(gatewayName == null || consumerGroup == 0,
+                properties.qualified("gatewayName") + " and consumerGroup are exclusive");
+        require(snapshotDirName != null, properties.qualified("snapshotDir") + " is required");
+    }
+
+    String hostName() {
+        return hostName;
+    }
+
+    int clientId() {
+        return clientId;
+    }
+
+    String snapshotDir() {
+        return snapshotDirName;
+    }
+
+    /** Ends {@link #run} at its next duty cycle, from any thread. */
+    void stop() {
+        running = false;
     }
 
     private static void require(final boolean condition, final String message) {
@@ -265,29 +350,17 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         }
     }
 
-    private int run() {
-        snapshotDir = Path.of(System.getProperty("proxy.snapshotDir"));
-        final Thread main = Thread.currentThread();
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            running = false;
-            try {
-                main.join(TimeUnit.SECONDS.toMillis(5));
-            } catch (final InterruptedException ex) {
-                Thread.currentThread().interrupt();
-            }
-        }));
+    int run() {
+        snapshotDir = Path.of(snapshotDirName);
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
         attachRequests = aeron.addSubscription(ProxyProtocol.ATTACH_REQUEST_CHANNEL + "|tether=false",
                                                ProxyProtocol.ATTACH_REQUEST_STREAM);
         attachReplies = aeron.addPublication(ProxyProtocol.ATTACH_REPLY_CHANNEL, ProxyProtocol.ATTACH_REPLY_STREAM);
         hostHeartbeat = aeron.addCounter(SeqeronCounters.PROXY_HEARTBEAT_TYPE_ID, "seqeron.host.heartbeat " + hostName);
         retiredCounter = aeron.addCounter(SeqeronCounters.PROXY_RETIRED_TYPE_ID, "seqeron.host.retired " + hostName);
-        lagCounter = SeqeronCounters.addAppCounter(aeron, SeqeronCounters.HOSTED_LAG_TYPE_ID,
-                                                   "seqeron.hosted.lag member=" + memberId + " client=" + clientId,
-                                                   memberId, clientId);
         clientLiveness = new Liveness(aeron.countersReader(), clientTimeoutNs);
         log("host ready: member %d, sourceId %d, clientId %d", memberId, sourceId, clientId);
-        final IdleStrategy idle = Boolean.getBoolean("proxy.spin") ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();
+        final IdleStrategy idle = spin ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();
         while (running && !fenced && !unreachable) {
             ProxyProtocol.beat(hostHeartbeat);
             int work = attachRequests.poll(onAttachRequest, 16);
@@ -361,12 +434,16 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         }
     }
 
-    /** H-14: what the client has yet to apply of what was dispatched, while its applied counter is the one it named. */
+    /**
+     * H-14: what the client has yet to apply of what was dispatched, while its applied counter is the one it named.
+     * Until it applies the attachment's first frame it is measured from that frame, not from 0.
+     */
     private void exportLag() {
         final CountersReader counters = aeron.countersReader();
-        if (counters.getCounterState(appliedCounterId) == CountersReader.RECORD_ALLOCATED &&
+        if (dispatchedPosition != 0 && counters.getCounterState(appliedCounterId) == CountersReader.RECORD_ALLOCATED &&
             counters.getCounterRegistrationId(appliedCounterId) == appliedRegistrationId) {
-            lagCounter.setOrdered(dispatchedPosition - counters.getCounterValue(appliedCounterId));
+            final long applied = Math.max(counters.getCounterValue(appliedCounterId), firstDispatchedPosition);
+            lagCounter.setOrdered(dispatchedPosition - applied);
         }
     }
 
@@ -444,6 +521,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         this.appliedCounterId = appliedCounterId;
         this.appliedRegistrationId = appliedRegistrationId;
         dispatchedPosition = 0;
+        firstDispatchedPosition = 0;
+        lagCounter = SeqeronCounters.addAppCounter(aeron, SeqeronCounters.HOSTED_LAG_TYPE_ID,
+                                                   "seqeron.hosted.lag member=" + memberId + " client=" + this.clientId,
+                                                   memberId, this.clientId);
         clientFormatVersion = formatVersion;
         clientFormats = formats;
         gatewayKind = kind == Kind.GATEWAY;
@@ -466,6 +547,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         clientLiveness.watch(heartbeatCounterId, heartbeatRegistrationId, now);
         connectDeadlineNs = now + clientTimeoutNs;
         connectFailures = 0;
+        connectRetryNs = 0;
         sendAttached(clientId, requestId, Refusal.NONE);
     }
 
@@ -482,6 +564,15 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private void connect() {
         final long now = System.nanoTime();
         if (events.isConnected()) {
+            // A host blocked in a failed connect finds the client's counter changed, so it retries only once it has
+            // watched the counter for a full timeout since, and drops a client silent through that watch.
+            if (connectFailures > 0 && clientLiveness.stale(now)) {
+                closeApp("CLIENT_LOST: heartbeat counter silent after the façade's failed cluster connect");
+                return;
+            }
+            if (now < connectRetryNs) {
+                return;
+            }
             try {
                 startApp();
             } catch (final AeronException ex) {
@@ -490,6 +581,9 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
                 if (++connectFailures < CONNECT_ATTEMPTS) {
                     log("the façade's cluster connect failed (attempt %d of %d), connecting again — %s",
                         connectFailures, CONNECT_ATTEMPTS, ex);
+                    final long failedNs = System.nanoTime();
+                    clientLiveness.stale(failedNs);
+                    connectRetryNs = failedNs + clientTimeoutNs + TimeUnit.MILLISECONDS.toNanos(1);
                 } else {
                     log("CLUSTER_UNREACHABLE: the façade's cluster connect failed %d times — %s", connectFailures, ex);
                     unreachable = true;
@@ -558,6 +652,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             return;
         }
         final Application.Builder builder = Application.builder()
+                                                .offCluster(offCluster)
                                                 .sourceId(sourceId)
                                                 .clientId(clientId)
                                                 .memberId(memberId)
@@ -772,7 +867,8 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         queue.consume(discard, Integer.MAX_VALUE);
         ledger.discarded();
         collecting = false;
-        lagCounter.setOrdered(0);
+        CloseHelper.quietClose(lagCounter);
+        lagCounter = null;
     }
 
     // ── Application.Listener ─────────────────────────────────────────────────────────────────────────────────
@@ -857,6 +953,9 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     public void onSequenced(final Payload payload) {
         frames++;
         dispatchedPosition = payload.position();
+        if (firstDispatchedPosition == 0) {
+            firstDispatchedPosition = dispatchedPosition;
+        }
         payloadOut.wrapAndApplyHeader(out, 0, headerOut)
             .clusterSeqNo(payload.clusterSeqNo())
             .groupSeqNo(payload.groupSeqNo())
@@ -872,9 +971,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         send(ProxyProtocol.HEADER + payloadOut.encodedLength());
     }
 
-    /** Both listeners default it, so the host must choose; ClusterTime is not sent by the prototype. */
     @Override
     public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
+        clusterTimeOut.wrapAndApplyHeader(out, 0, headerOut).clusterTimeNs(clusterTimeNs).receiveTimeNs(receiveTimeNs);
+        send(ProxyProtocol.HEADER + clusterTimeOut.encodedLength());
     }
 
     @Override
@@ -1003,8 +1103,9 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         }
     }
 
-    private static void log(final String format, final Object... args) {
-        System.out.printf("[host %tT.%<tL] %s%n", System.currentTimeMillis(), String.format(format, args));
+    private void log(final String format, final Object... args) {
+        System.out.printf("[host%s %tT.%<tL] %s%n", properties.name() == null ? "" : " " + properties.name(),
+                          System.currentTimeMillis(), String.format(format, args));
         System.out.flush();
     }
 }

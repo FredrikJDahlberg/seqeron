@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # start-client-proxy.sh — run the host of one hosted client: org.limitless.seqeron.proxy.ClientProxy, attached to the
-# driver of the member or gateway host it sits beside (doc/hosted-facade-draft.md section 17).
+# driver of the member or gateway host it sits beside (doc/seqeron-protocol-spec.md section 17).
 #
 # The host is configured by proxy.* system properties, which this passes through: the arguments are -Dname=value
 # pairs. doc/running-a-cluster.md, "Client proxy", lists them; proxy.snapshotDir is required, and proxy.memberId

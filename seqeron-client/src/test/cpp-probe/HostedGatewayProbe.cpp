@@ -1,4 +1,4 @@
-// A hosted::Gateway stub for HostedGatewayStubTest (doc/hosted-facade-draft.md §17.5): it opens connections under the
+// A hosted::Gateway stub for HostedGatewayStubTest (doc/seqeron-protocol-spec.md §17.5): it opens connections under the
 // ids the stub allocates (H-4), publishes markers on them, checks each comes back under its connection, closes them,
 // and with --rounds 2 closes the edge itself and does it again once the host reactivates it.
 //

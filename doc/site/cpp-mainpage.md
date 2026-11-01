@@ -2,7 +2,7 @@
 
 The C++ client of seqeron: header-only, linked as `seqeron::seqeron_core`. A C++ client is a thin stub that talks over
 IPC to a host process, the Java `ClientProxy`, which runs the cluster session, the queue and the fences
-(`doc/hosted-facade-draft.md`). The direct C++ client is retired.
+(`doc/seqeron-protocol-spec.md` §17). The direct C++ client is retired.
 
 ## Start here
 

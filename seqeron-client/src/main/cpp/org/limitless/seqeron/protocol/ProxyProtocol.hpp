@@ -1,6 +1,6 @@
 #pragma once
 
-// What a ClientProxy and its client share (doc/hosted-facade-draft.md §17.2, §17.7). The Java twin is
+// What a ClientProxy and its client share (doc/seqeron-protocol-spec.md §17.2, §17.7). The Java twin is
 // org.limitless.seqeron.protocol.ProxyProtocol, which also holds the channels; the stub builds its own.
 
 #include <cstdint>
