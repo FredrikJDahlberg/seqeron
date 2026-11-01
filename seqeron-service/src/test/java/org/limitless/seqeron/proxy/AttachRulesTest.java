@@ -8,13 +8,11 @@ import org.limitless.seqeron.proxy.AttachRules.Decision;
 import org.limitless.seqeron.sbe.hosted.Kind;
 
 class AttachRulesTest {
-    private static final String AERON = "1.53.2";
-
-    private final AttachRules rules = AttachRules.of(AERON, true, false);
+    private final AttachRules rules = AttachRules.of(true, false);
 
     private Decision decide(final boolean live, final long clientId, final long requestId, final Kind kind) {
         return rules.decide(live, 7, 70, ProxyProtocol.DEFAULT_HOST_NAME, clientId, requestId, kind,
-                            ProxyProtocol.PROTOCOL_VERSION, AERON);
+                            ProxyProtocol.PROTOCOL_VERSION);
     }
 
     @Test
@@ -36,29 +34,27 @@ class AttachRulesTest {
     @Test
     void anAttachNamedForAnotherHostIsNotAnswered() {
         assertEquals(Decision.IGNORE, rules.decide(false, 0, 0, "other", 1, 1, Kind.APPLICATION,
-                                                   ProxyProtocol.PROTOCOL_VERSION, AERON));
+                                                   ProxyProtocol.PROTOCOL_VERSION));
         assertEquals(Decision.IGNORE, rules.decide(true, 7, 70, "other", 7, 70, Kind.APPLICATION,
-                                                   ProxyProtocol.PROTOCOL_VERSION, AERON));
+                                                   ProxyProtocol.PROTOCOL_VERSION));
     }
 
     @Test
-    void aDifferentProtocolOrAeronVersionIsRefusedAsVersion() {
+    void aDifferentProtocolVersionIsRefusedAsVersion() {
         assertEquals(Decision.VERSION, rules.decide(false, 0, 0, ProxyProtocol.DEFAULT_HOST_NAME, 1, 1, Kind.APPLICATION,
-                                                    ProxyProtocol.PROTOCOL_VERSION + 1, AERON));
-        assertEquals(Decision.VERSION, rules.decide(false, 0, 0, ProxyProtocol.DEFAULT_HOST_NAME, 1, 1, Kind.APPLICATION,
-                                                    ProxyProtocol.PROTOCOL_VERSION, "1.53.1"));
+                                                    ProxyProtocol.PROTOCOL_VERSION + 1));
     }
 
     @Test
     void aKindThisProxyIsNotConfiguredForIsRefusedAsKind() {
         assertEquals(Decision.ACCEPT, decide(false, 1, 1, Kind.GATEWAY));
         assertEquals(Decision.KIND, decide(false, 1, 1, Kind.CONSUMER));
-        assertEquals(Decision.KIND, AttachRules.of(AERON, false, true).decide(false, 0, 0, ProxyProtocol.DEFAULT_HOST_NAME, 1, 1,
-                                                                             Kind.GATEWAY, ProxyProtocol.PROTOCOL_VERSION, AERON));
+        assertEquals(Decision.KIND, AttachRules.of(false, true).decide(false, 0, 0, ProxyProtocol.DEFAULT_HOST_NAME, 1, 1,
+                                                                       Kind.GATEWAY, ProxyProtocol.PROTOCOL_VERSION));
     }
 
     @Test
     void aBusyProxyAnswersBusyBeforeItChecksTheVersion() {
-        assertEquals(Decision.BUSY, rules.decide(true, 7, 70, ProxyProtocol.DEFAULT_HOST_NAME, 8, 1, Kind.CONSUMER, 99, "x"));
+        assertEquals(Decision.BUSY, rules.decide(true, 7, 70, ProxyProtocol.DEFAULT_HOST_NAME, 8, 1, Kind.CONSUMER, 99));
     }
 }

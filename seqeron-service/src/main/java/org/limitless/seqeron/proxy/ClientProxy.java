@@ -3,7 +3,6 @@ package org.limitless.seqeron.proxy;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.ProxyProtocol;
 import io.aeron.Aeron;
-import io.aeron.AeronVersion;
 import io.aeron.ExclusivePublication;
 import io.aeron.Publication;
 import io.aeron.Subscription;
@@ -119,7 +118,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private final String hostName = System.getProperty("proxy.hostName", ProxyProtocol.DEFAULT_HOST_NAME);
     private final String gatewayName = System.getProperty("proxy.gatewayName");
     private final int consumerGroup = intProp("proxy.consumerGroup", 0);
-    private final AttachRules attachRules = new AttachRules(hostName, AeronVersion.VERSION, gatewayName != null, consumerGroup != 0);
+    private final AttachRules attachRules = new AttachRules(hostName, gatewayName != null, consumerGroup != 0);
     private final SnapshotRecordDecoder recordIn = new SnapshotRecordDecoder();
     private final SnapshotEndDecoder endIn = new SnapshotEndDecoder();
     private final AttachedEncoder attachedOut = new AttachedEncoder();
@@ -418,7 +417,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         final String hostName = new String(hostNameBytes, StandardCharsets.UTF_8);
         final String aeronVersion = new String(aeronVersionBytes, StandardCharsets.UTF_8);
         switch (attachRules.decide(live, liveClientId, liveRequestId, hostName, clientId, requestId, kind,
-                                   protocolVersion, aeronVersion)) {
+                                   protocolVersion)) {
         case IGNORE -> {
             return;
         }
@@ -439,8 +438,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             sendAttached(clientId, requestId, Refusal.KIND);
             return;
         }
-        case ACCEPT -> {
-        }
+        case ACCEPT -> log("accepted Attach from client %d on Aeron %s", clientId, aeronVersion);
         }
         liveClientId = clientId;
         this.appliedCounterId = appliedCounterId;
