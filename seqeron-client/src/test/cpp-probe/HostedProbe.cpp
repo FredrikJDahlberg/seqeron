@@ -239,6 +239,10 @@ class Probe final : public app::SnapshotListener
             std::this_thread::sleep_for(std::chrono::hours(24));
         }
         const std::int64_t slowEndNs = nowNs() + m_slowCutMs * 1'000'000LL;
+        if (m_slowCutMs > 0)
+        {
+            log("IN SLOW CUT round %lld", static_cast<long long>(m_cuts));
+        }
         while (nowNs() < slowEndNs)
         {
             m_keepAlive();

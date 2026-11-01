@@ -339,6 +339,9 @@ public final class HostedTestApplicationClient {
             }
         }
         final long slowEndNs = System.nanoTime() + slowCutNs;
+        if (slowCutNs > 0) {
+            log("IN SLOW CUT round %d", cutNo);
+        }
         while (System.nanoTime() < slowEndNs) {
             ProxyProtocol.beat(heartbeat);
             LockSupport.parkNanos(CUT_BEAT_NS);
