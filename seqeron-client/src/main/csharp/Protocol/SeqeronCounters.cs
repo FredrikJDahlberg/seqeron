@@ -88,11 +88,12 @@ public static class SeqeronCounters
     /// archive is not serving replays.</summary>
     public const int ReplayerArchiveErrorsCountTypeId = 5111;
 
-    // Co-located application replicas (5200-5299). Core reserves 5200, 5298 and 5299; a consumer allocates its own
-    // in 5201-5297 (doc/ops.md, "Counter type ids").
+    // Co-located application replicas (5200-5299). Core reserves 5200 and 5297-5299; a consumer allocates its own
+    // in 5201-5296 (doc/ops.md, "Counter type ids").
 
     /// <summary>First type id of the app range: core reserves <see cref="AppRecoveryStalledTypeId"/>,
-    /// <see cref="AppSnapshotRoundTypeId"/> and <see cref="GatewayConnectionsTypeId"/> and no more.</summary>
+    /// <see cref="HostedLagTypeId"/>, <see cref="AppSnapshotRoundTypeId"/> and <see cref="GatewayConnectionsTypeId"/>
+    /// and no more.</summary>
     public const int AppTypeIdMin = 5200;
 
     /// <summary>Last type id of the app range.</summary>
@@ -101,6 +102,10 @@ public static class SeqeronCounters
     /// <summary>1 while a co-located replica's recovery has dispatched nothing while not caught up, else
     /// 0.</summary>
     public const int AppRecoveryStalledTypeId = 5200;
+
+    /// <summary>How far a hosted client trails its host: the host's last dispatched position less the client's
+    /// applied one.</summary>
+    public const int HostedLagTypeId = 5297;
 
     /// <summary>The last snapshot round a participating client confirmed (doc/snapshot.md §4), 0 for none
     /// yet.</summary>

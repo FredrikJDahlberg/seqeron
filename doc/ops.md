@@ -91,7 +91,8 @@ The exporter maps a counter to a metric by its Aeron type id. Aeron reserves 0�
 | 5000–5099 | `SequencerService` |
 | 5100–5199 | `ReplayerService` |
 | 5200 | `ReplayerStreamReceiver`, inside every client: `seqeron_app_recovery_stalled` |
-| 5201–5297 | an application's own counters, allocated by the deployment |
+| 5201–5296 | an application's own counters, allocated by the deployment |
+| 5297 | `ClientProxy`, inside every host: `seqeron_hosted_lag_bytes` |
 | 5298 | `Application` and `Gateway`, inside every instance with a `SnapshotListener`: `seqeron_app_snapshot_round` |
 | 5299 | `Gateway`, inside every gateway instance: `seqeron_gateway_connections` |
 | 5300–5303 | `ClientProxy` (5302, 5303) and the client stub it serves (5300, 5301); not exported. A proxy labels its counters with its `proxy.hostName`, a stub with the `hostName` it attaches to |
@@ -130,6 +131,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because the queue recording trailed the queue by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the queue |
 | `seqeron_replayer_archive_errors_total` | counter | local-archive calls that threw. A request one fails is answered `ReplayPending` and the client's resend is the retry; the Replayer's own call, its readiness check, waits a second before the next. Live delivery is unaffected, so a sustained rate means only that history is not being served. A replay its client does not subscribe to within the archive's 5 s connect timeout counts one too, logged as a refused replay with `no connection established`: a client paused that long between its request and the answer, by a GC pause for one, requests again 5 s after it resumes, so isolated counts are not an archive fault |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a Replayer that never answers and a gap this member's recording cannot cover; the client's own log line names which |
+| `seqeron_hosted_lag_bytes` | gauge | how far a hosted client trails its host: the bytes of the queue the host has dispatched and the client not yet applied (`hosted-facade-draft.md` **H-14**), 0 while none is attached; labelled `client` with the host's `proxy.clientId`. A lag that only grows is a client falling behind |
 | `seqeron_app_snapshot_round` | gauge | the last snapshot round this client confirmed against its source's sequenced `SnapshotEnd` and holds a durable file for ([`snapshot.md`](snapshot.md) §5), 0 until its process confirms one; also labelled `client`, and its label names the `source`. Every instance of a participating source should follow the latest round; one that lags is missing rounds |
 | `seqeron_gateway_connections` | gauge | connections this gateway instance holds open: taken with `openConnection` and not yet closed. 0 on a standby, and reset when the edge closes. Labelled `client` as well as `member`; `sum` over every instance gives a deployment's total |
 

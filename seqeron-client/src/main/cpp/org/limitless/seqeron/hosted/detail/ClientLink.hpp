@@ -127,10 +127,11 @@ class ClientLink
             return attach();
         }
         const int work = m_events->poll(m_assembler.handler(), 16);
-        // The image goes when the host closes the attachment, though it lives on (§17.6). A fenced host exits; its
-        // counter or image going is not a failure of its own.
+        // The image goes when the host closes the attachment, though it lives on (§17.6), and never comes when the
+        // host closed it first. A fenced host exits; its counter or image going is not a failure of its own.
         const bool connected = m_events->isConnected();
-        const bool imageGone = m_eventsConnected && !connected;
+        const bool imageGone =
+            m_eventsConnected ? !connected : !connected && nowNs() - m_attachedNs > m_hostTimeoutMs * 1'000'000LL;
         m_eventsConnected = m_eventsConnected || connected;
         if (!m_fenced && (imageGone || hostLost()))
         {
@@ -334,6 +335,7 @@ class ClientLink
             }
             m_replies.reset();
             m_attached = true;
+            m_attachedNs = nowNs();
             return work + 1;
         }
         if (m_failure != Failure::None)
@@ -640,8 +642,9 @@ class ClientLink
     bool m_accepted = false;
     bool m_caughtUp = false;
     bool m_fenced = false;
-    // Set once the events image has connected, so its absence before that is not taken for the host closing it.
+    // Set once the events image has connected; until then its absence is a lost host only after the host timeout.
     bool m_eventsConnected = false;
+    std::int64_t m_attachedNs = 0;
 };
 
 } // namespace detail

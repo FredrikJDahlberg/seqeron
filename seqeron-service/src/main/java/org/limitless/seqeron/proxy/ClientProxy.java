@@ -28,6 +28,7 @@ import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Consumer;
@@ -86,6 +87,8 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private static final int EXIT_RESTART = 70;
     private static final int EXIT_CONFIG = 2;
     private static final long BACK_PRESSURE_NS = TimeUnit.SECONDS.toNanos(1);
+    /** Of 10 s each: one whose request reached no leader times out after the election. */
+    private static final int CONNECT_ATTEMPTS = 3;
 
     private final int memberId = intProp("proxy.memberId", 0);
     private final String aeronDir = System.getProperty("proxy.aeronDir", PortLayout.aeronDir(memberId));
@@ -167,6 +170,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private Subscription commands;
     private Liveness clientLiveness;
     private Counter hostHeartbeat;
+    private Counter lagCounter;
+    private int appliedCounterId;
+    private long appliedRegistrationId;
+    private long dispatchedPosition;
     private Path snapshotDir;
     private Application app;
     private Gateway gateway;
@@ -184,6 +191,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private long liveClientId;
     private long liveRequestId;
     private long connectDeadlineNs;
+    private int connectFailures;
     private boolean commandsSeen;
     private long cutNo;
     private long frames;
@@ -275,6 +283,9 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         attachReplies = aeron.addPublication(ProxyProtocol.ATTACH_REPLY_CHANNEL, ProxyProtocol.ATTACH_REPLY_STREAM);
         hostHeartbeat = aeron.addCounter(SeqeronCounters.PROXY_HEARTBEAT_TYPE_ID, "seqeron.host.heartbeat " + hostName);
         retiredCounter = aeron.addCounter(SeqeronCounters.PROXY_RETIRED_TYPE_ID, "seqeron.host.retired " + hostName);
+        lagCounter = SeqeronCounters.addAppCounter(aeron, SeqeronCounters.HOSTED_LAG_TYPE_ID,
+                                                   "seqeron.hosted.lag member=" + memberId + " client=" + clientId,
+                                                   memberId, clientId);
         clientLiveness = new Liveness(aeron.countersReader(), clientTimeoutNs);
         log("host ready: member %d, sourceId %d, clientId %d", memberId, sourceId, clientId);
         final IdleStrategy idle = Boolean.getBoolean("proxy.spin") ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();
@@ -328,6 +339,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
 
     private void afterDoWork() {
         final long now = System.nanoTime();
+        exportLag();
         final boolean canPublish = app != null ? app.canPublish() : gateway != null && gateway.canAccept();
         if (canPublish != lastCanPublish) {
             lastCanPublish = canPublish;
@@ -347,6 +359,15 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             closeApp("CLIENT_LOST: heartbeat counter silent for " + clientLiveness.silentMs(now) + "ms");
         } else if (commandsSeen && commands != null && !commands.isConnected()) {
             closeApp("CLIENT_LOST: command stream gone");
+        }
+    }
+
+    /** H-14: what the client has yet to apply of what was dispatched, while its applied counter is the one it named. */
+    private void exportLag() {
+        final CountersReader counters = aeron.countersReader();
+        if (counters.getCounterState(appliedCounterId) == CountersReader.RECORD_ALLOCATED &&
+            counters.getCounterRegistrationId(appliedCounterId) == appliedRegistrationId) {
+            lagCounter.setOrdered(dispatchedPosition - counters.getCounterValue(appliedCounterId));
         }
     }
 
@@ -383,8 +404,8 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         final int commandSessionId = attachIn.commandSessionId();
         final int heartbeatCounterId = attachIn.heartbeatCounterId();
         final long heartbeatRegistrationId = attachIn.heartbeatRegistrationId();
-        attachIn.appliedCounterId();
-        attachIn.appliedRegistrationId();
+        final int appliedCounterId = attachIn.appliedCounterId();
+        final long appliedRegistrationId = attachIn.appliedRegistrationId();
         final int formatVersion = attachIn.formatVersion();
         final IntArrayList formats = new IntArrayList();
         for (final AttachDecoder.SupportedFormatsDecoder format : attachIn.supportedFormats()) {
@@ -422,6 +443,9 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         }
         }
         liveClientId = clientId;
+        this.appliedCounterId = appliedCounterId;
+        this.appliedRegistrationId = appliedRegistrationId;
+        dispatchedPosition = 0;
         clientFormatVersion = formatVersion;
         clientFormats = formats;
         gatewayKind = kind == Kind.GATEWAY;
@@ -443,6 +467,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         final long now = System.nanoTime();
         clientLiveness.watch(heartbeatCounterId, heartbeatRegistrationId, now);
         connectDeadlineNs = now + clientTimeoutNs;
+        connectFailures = 0;
         sendAttached(clientId, requestId, Refusal.NONE);
     }
 
@@ -453,7 +478,8 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
 
     /**
      * H-8: the façade is built only once the client's subscription has connected to the events publication, so every
-     * callback, the restore included, has a reader. A façade that cannot reach the cluster stops the host.
+     * callback, the restore included, has a reader. A façade that cannot reach the cluster in {@link #CONNECT_ATTEMPTS}
+     * attempts stops the host.
      */
     private void connect() {
         final long now = System.nanoTime();
@@ -461,9 +487,15 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             try {
                 startApp();
             } catch (final AeronException ex) {
-                log("CLUSTER_UNREACHABLE: the façade's cluster connect failed — %s", ex);
                 closeFacade();
-                unreachable = true;
+                attached = false;
+                if (++connectFailures < CONNECT_ATTEMPTS) {
+                    log("the façade's cluster connect failed (attempt %d of %d), connecting again — %s",
+                        connectFailures, CONNECT_ATTEMPTS, ex);
+                } else {
+                    log("CLUSTER_UNREACHABLE: the façade's cluster connect failed %d times — %s", connectFailures, ex);
+                    unreachable = true;
+                }
             }
         } else if (now > connectDeadlineNs || clientLiveness.stale(now)) {
             closeApp("CLIENT_LOST: subscription did not connect within " + clientTimeoutNs / 1_000_000 + "ms");
@@ -742,6 +774,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         queue.consume(discard, Integer.MAX_VALUE);
         ledger.discarded();
         collecting = false;
+        lagCounter.setOrdered(0);
     }
 
     // ── Application.Listener ─────────────────────────────────────────────────────────────────────────────────
@@ -825,6 +858,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     @Override
     public void onSequenced(final Payload payload) {
         frames++;
+        dispatchedPosition = payload.position();
         payloadOut.wrapAndApplyHeader(out, 0, headerOut)
             .clusterSeqNo(payload.clusterSeqNo())
             .groupSeqNo(payload.groupSeqNo())

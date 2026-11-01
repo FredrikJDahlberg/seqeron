@@ -342,12 +342,12 @@ Where they differ:
 
 | failure | effect |
 | --- | --- |
-| client crashes or hangs | its heartbeat counter is stale for `clientTimeoutMs` or its stream 304 image goes away: host closes the façade (`CLIENT_LOST`), session released; standby takes over. A hung client that resumes finds its stream 303 image gone and exits 70 (`HOST_LOST`) |
+| client crashes or hangs | its heartbeat counter is stale for `clientTimeoutMs` or its stream 304 image goes away: host closes the façade (`CLIENT_LOST`), session released; standby takes over. A hung client that resumes finds its stream 303 image gone, or never connected within `hostTimeoutMs` of `Attached`, and exits 70 (`HOST_LOST`) |
 | host crashes or hangs | its heartbeat counter is stale for `hostTimeoutMs` or its stream 303 image goes away: the client exits 70 (`HOST_LOST`); the cluster times out the host's session within `sequencer.sessionTimeoutMs` regardless |
 | member leader changes | host emits `Gate(leading=false)` with a new epoch in stream order and drops every command of an earlier epoch (**H-3**); the client's unanswered leader work is redispatched at the next open (**A-2**) |
 | client slower than the queue | host back-pressured and the client reads nothing of stream 303 for half the queue-stall timeout: `CLIENT_STALLED`; a slow client that keeps reading is not fenced |
 | host's cluster session lost | the façade's own rules (`client-api.md`, "Guarantees"); `Fenced` is forwarded |
-| façade cannot reach the cluster | its connect times out or is refused: the host logs `CLUSTER_UNREACHABLE` and exits 70, and the client exits 70 (`HOST_LOST`) |
+| façade cannot reach the cluster | its connect times out or is refused three times, 10 s each, so a connect that met an election is tried again: the host logs `CLUSTER_UNREACHABLE` and exits 70, and the client exits 70 (`HOST_LOST`) |
 | media driver lost | raises from the host's `doWork()` and from the client's, as for a direct façade |
 
 A hosted pair ends when either process does, so its availability is that of both; the cluster sees either loss
@@ -670,9 +670,9 @@ per-attachment images of **H-15**, and the counters of §17.2.1. It differs from
   host closes the attachment (`CLIENT_WINDOW`) rather than fencing. The windowed length is the encoded message, header
   included, which the stub counts and the host retires. `Publish` carries the `groupMask` and the host places it with that mask; `Reply` is queued through the same window
   and placed with the `ReplyAddress` it names (**H-11**). The host caches them (256 slots, keyed by the three fields), so a reply allocates nothing.
-- **Counters.** The client heartbeat, the host heartbeat and the host retired counters are as §17.2.1; the client
-  applied counter is written (the position of the last `Payload`) and not read, so **H-14**'s lag is not exported. A
-  heartbeat is written on every duty cycle, in a long cut and in a send's spin, and not in a stalled client.
+- **Counters.** As §17.2.1. The host exports **H-14**'s lag as `seqeron_hosted_lag_bytes` (type id 5297, labelled
+  with the host's `proxy.clientId`), 0 while no client is attached. A heartbeat is written on every duty cycle, in a
+  long cut and in a send's spin, and not in a stalled client.
 - **Attach.** By `clientId` and `requestId`, with `hostName`, `protocolVersion` and `aeronVersion` checked. A resend
   of the live request is answered again, any other client with `BUSY`. The façade is built once the events publication
   is connected, so the restore has a reader.
@@ -765,11 +765,16 @@ Five system tests drive the stubs against the Java host, with `HOSTED_PROBE` nam
   are each sequenced once under the sourceId, connectionId and groupMask of their request. In a fifth the stub attaches
   while the cluster has no leader (both followers paused, the leader stood down), and the host waits in the façade's
   cluster connect for more than the stub's 3 s host timeout; the stub keeps the host, whose idle strategy beats
-  through the wait (**H-10**). Before it did, the stub gave the host up. In a sixth the host's façade cannot reach the
-  cluster (the host on a follower, its UDP ingress naming absent members): the host logs `CLUSTER_UNREACHABLE` and
-  exits 70, and the stub exits `HOST_LOST`. Before, the connect's exception escaped the host's main thread. In a
-  seventh the stub is paused past the host's 2 s client timeout: the host closes the attachment (`CLIENT_LOST`) and
-  stays up, and the resumed stub finds its events image gone and exits `HOST_LOST`. Before, it ran on unattached.
+  through the wait (**H-10**); the connect that met the election times out, the host connects again, and the stub
+  catches up. Before the idle strategy beat, the stub gave the host up; before the host retried, it exited 70 at that
+  timeout. In a sixth the host's façade cannot reach the cluster (the host on a follower, its UDP ingress naming
+  absent members): after three attempts the host logs `CLUSTER_UNREACHABLE` and exits 70, and the stub exits
+  `HOST_LOST`. Before, the connect's exception escaped the host's main thread. In a seventh the stub is paused past
+  the host's 2 s client timeout: the host closes the attachment (`CLIENT_LOST`) and stays up, and the resumed stub
+  finds its events image gone and exits `HOST_LOST`. Before, it ran on unattached. In an eighth both are paused across
+  the attach, so the host drops the stub before its events subscription connects; the resumed stub finds no image
+  within its host timeout and exits `HOST_LOST`. Before, it waited on. In a ninth the stub floods and is paused: the
+  host's lag counter rises above 0, and is 0 once the resumed stub has applied every marker.
 - `HostedSnapshotTest` with `HOSTED_CLIENT=cpp` runs its clients as the probe: restore, cuts, a client `kill -9`
   with an immediate successor, a host `kill -9`, an abandoned cut, the 8 s cut, the leading hosted replica, and the
   corrupt record fenced with `SNAPSHOT_DIVERGED`, each check as with the Java client and the direct replicas

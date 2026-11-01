@@ -13,6 +13,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
@@ -149,6 +150,28 @@ class HostedCppStubTest {
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
+    /**
+     * The host exports its client's lag (H-14): the stub floods a 1 KiB window, and paused, falls behind what the host
+     * goes on dispatching from it; resumed, it applies everything and the lag is 0.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void theHostExportsTheCppStubsLag() {
+        startHost("proxy.spin=true", "proxy.clientTimeoutMs=10000", "proxy.commandWindow=" + WINDOW,
+                  "proxy.pendingCapacity=4", "proxy.placePerCycle=2");
+        startClient("--flood", "1", "--max-markers", "" + MARKERS);
+        check("the gate opened", poll(() -> client.lastLine("now leading") != null));
+        try {
+            client.pause();
+            check("the paused stub lags", poll(() -> lag() > 0));
+        } finally {
+            client.resume();
+        }
+        check("every marker was sequenced", poll(() -> number(client, "state: ", OWN) == MARKERS));
+        check("the stub caught up with the host", poll(() -> lag() == 0));
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
     /** GroupsResolved reaches the stub, its group-mask check is the direct one's, and a Reply returns under its request's ref. */
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
@@ -174,8 +197,8 @@ class HostedCppStubTest {
     /**
      * The host's façade connects while the cluster has no leader (both followers paused, the leader stood down for want
      * of a quorum), a wait of seconds in the cluster connect. The wait spins on the façade's idle strategy, which
-     * writes the host heartbeat (H-10), so the stub on its default 3 s host timeout keeps the host. How the connect
-     * ends is Aeron's: one whose request reached no leader may time out after the election, and the host then exits 70.
+     * writes the host heartbeat (H-10), so the stub on its default 3 s host timeout keeps the host. A connect whose
+     * request reached no leader times out after the election, and the host connects again.
      */
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
@@ -197,6 +220,9 @@ class HostedCppStubTest {
         } finally {
             followers.forEach(ClusterProcesses.Child::resume);
         }
+        check("the host attached", poll(() -> host.lastLine("ATTACHED") != null));
+        check("the stub caught up", poll(() -> client.lastLine("Caught up") != null));
+        check("the host stayed up", host.isAlive() && host.lines("CLUSTER_UNREACHABLE").isEmpty());
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
@@ -218,6 +244,34 @@ class HostedCppStubTest {
             client.resume();
         }
         check("the host closed the attachment", poll(() -> host.lastLine("CLIENT_LOST") != null));
+        check("the stub exited HOST_LOST", poll(() -> client.lastLine("HOST_LOST") != null) &&
+                                               client.awaitDead(Duration.ofSeconds(10)) && client.exitValue() == 70);
+        check("the host stayed up", host.isAlive());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * The host drops the stub before its events subscription connected: the host, paused, holds the stub's Attach;
+     * the stub, paused before it reads the Attached, misses the host's 2 s connect deadline ({@code CLIENT_LOST}) and,
+     * resumed, finds no events image within its host timeout and exits {@code HOST_LOST}.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCppStubDroppedBeforeItsEventsConnectedExits() {
+        startHost("proxy.spin=true");
+        try {
+            host.pause();
+            startClient("--interval-ms", "10");
+            sleep(1000);
+            client.pause();
+        } finally {
+            host.resume();
+        }
+        try {
+            check("the host closed the attachment", poll(() -> host.lastLine("CLIENT_LOST") != null));
+        } finally {
+            client.resume();
+        }
         check("the stub exited HOST_LOST", poll(() -> client.lastLine("HOST_LOST") != null) &&
                                                client.awaitDead(Duration.ofSeconds(10)) && client.exitValue() == 70);
         check("the host stayed up", host.isAlive());
@@ -267,6 +321,12 @@ class HostedCppStubTest {
                                                              "" + SOURCE_ID));
         command.addAll(List.of(arguments));
         client = cluster.nativeProcess("client", command.toArray(new String[0]));
+    }
+
+    /** The host's export of its client's lag in bytes, {@link ClusterProcesses#NO_VALUE} while it has none. */
+    private long lag() {
+        return cluster.counter(hostMember, SeqeronCounters.HOSTED_LAG_TYPE_ID,
+                               "seqeron.hosted.lag member=" + hostMember + " client=31");
     }
 
     private static long number(final ClusterProcesses.Child child, final String line, final Pattern pattern) {
