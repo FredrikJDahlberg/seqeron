@@ -543,11 +543,17 @@ class ClientLink
     void onCut(const std::int64_t roundId)
     {
         std::int32_t count = 0;
+        bool abandoned = false;
         if (m_snapshots != nullptr)
         {
             std::array<std::uint8_t, MAX_RECORD> record;
             for (std::int32_t length; (length = m_snapshots->onSnapshot(record, count)) > 0; count++)
             {
+                if (length > MAX_RECORD)
+                {
+                    abandoned = true;
+                    break;
+                }
                 wire::SnapshotRecord message;
                 message.wrapAndApplyHeader(out(), 0, m_out.size())
                     .roundId(roundId)
@@ -559,7 +565,7 @@ class ClientLink
         wire::SnapshotEnd end;
         end.wrapAndApplyHeader(out(), 0, m_out.size())
             .roundId(roundId)
-            .recordCount(m_snapshots != nullptr ? count : -1);
+            .recordCount(m_snapshots != nullptr && !abandoned ? count : -1);
         sendCommand(HEADER + end.encodedLength());
     }
 

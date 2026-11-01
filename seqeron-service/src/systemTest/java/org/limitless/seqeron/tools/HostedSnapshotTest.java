@@ -176,6 +176,27 @@ class HostedSnapshotTest {
     }
 
     /**
+     * SIGTERM to the host while the client is mid-cut and still heartbeating: the cut loop must end on the stop, the
+     * host must abandon the round and exit within its shutdown join, and the JVM must not crash.
+     */
+    @Test
+    @Timeout(value = 200, unit = TimeUnit.SECONDS)
+    void aHostStoppedMidCutAbandonsTheRoundAndExitsCleanly() {
+        bootstrap(false, "topology-test-hosted-slow.xml");
+        startHost();
+        startClientNoWait("client.slowCutMs=60000");
+        client.awaitLine("IN SLOW CUT", Duration.ofSeconds(2 * TIMEOUT_SECS));
+        sleep(500);
+        check("the client is still attached", client.isAlive() && host.lines("CLIENT_LOST").isEmpty());
+        check("SIGTERM ends the host within the shutdown join", host.terminate(Duration.ofSeconds(10)));
+        check("the host abandoned the round on the stop", !host.lines("ABANDON round: client lost or host stopping").isEmpty());
+        check("the JVM did not crash", host.lines("SIGSEGV").isEmpty() && host.lines("fatal error").isEmpty());
+        check("the host exited on the signal, not a crash",
+              !host.isAlive() && (host.exitValue() == 0 || host.exitValue() == 143));
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
      * The hosted pair is a follower. The leader is paused until the other two members elect, and again, until the
      * hosted member wins (no member is killed or restarted); then its own member is paused to depose it. At each
      * change the gate epoch must rise, a command under the previous epoch must be dropped by the host and never

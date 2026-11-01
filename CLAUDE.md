@@ -103,10 +103,10 @@ replay codecs and the cluster mirror's IR) and `seqeron-service` (the **service 
 fails its build if it names anything outside `app` beyond `protocol.Publish`, the way
 `FacadeSurfaceTest` checks the same from inside the client tier. Anything the service tier
 shares with a client — the queue's identity, the cluster clock, the port block, the replay protocol's
-addresses — goes in `protocol`, never in a service-tier class. C++ is the client tier alone, in the
-same directories and namespaces — plus a `detail/` directory and namespace beneath a package for what Java
-makes package-private (the façade blocks, the recovery and transport seams), since header-only C++ has no
-such thing. C# is the Java classes under the Java names in PascalCase namespaces
+addresses — goes in `protocol`, never in a service-tier class. C++ is the hosted client stubs (`hosted`) and the
+types they share with the Java client tier (`app`, `protocol`, `util`), under the same names, plus a `detail/`
+directory and namespace beneath a package for what Java makes package-private, since header-only C++ has no such
+thing. The direct C++ client is retired and kept on the `cpp-direct-client` branch (tag `cpp-direct-client-final`). C# is the Java classes under the Java names in PascalCase namespaces
 (`Org.Limitless.Seqeron.Sequencer.Client`), `internal` where Java is package-private, and the façades take an
 options class with `init` properties where Java takes a builder. Its `FacadeSurfaceTest` makes Java's check,
 and `seqeron-examples/src/csharp` its `checkFacadeOnly`, in `Directory.Build.targets`.
@@ -159,7 +159,7 @@ dotnet test --project seqeron-client/src/test/csharp/Seqeron.Client.Tests.csproj
 `run_tests` is `ctest --output-on-failure` with the build dependency wired, and also builds
 `core_headers`, which compiles each public header alone under `-Werror`. Plain `ctest` works too.
 Single suites:
-`./cmake-build-debug/core_tests --gtest_filter='ReplayerRecovery*'` and
+`./cmake-build-debug/core_tests --gtest_filter='OutstandingWork*'` and
 `./gradlew test --tests '*SequencerTest'`. The C# suite is the Java client tier's tests case for case, plus the
 spec §14 conformance rows `ConformanceTest.cpp` runs, and three of its own: the committed codecs' schema ids,
 the session timeouts read back from the context it connects with, and an allocation test that holds the queue
@@ -167,8 +167,8 @@ dispatch and the confirmed publish to zero bytes a frame.
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests`, by the integration suite, by the
-system tests in `seqeron-service/src/systemTest` and by the three client-tier scripts under `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
+mocks. Everything that needs an Aeron runtime is covered by the integration suite, by the
+system tests in `seqeron-service/src/systemTest` and by the client-tier scripts under `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
 ## Architecture
@@ -218,7 +218,7 @@ per language; the `systemEventType` table lives in `SystemFrame.java`, `Sequence
 
 `.claude/rules/operator-scripts.md` and `seqeron-service/src/test/scripts/CLAUDE.md` cover the
 scripts. `ports.sh` is
-mirrored by `PortLayout` in every language; change all four together.
+mirrored by `PortLayout` in Java and C#; change all three together.
 
 ## Known gaps
 
@@ -228,7 +228,7 @@ deployment that resets the archive between runs; with a policy they are bounded 
 `bytes`, and every consumer of a member's queue must then be able to restart from a snapshot file, which only an
 `Application` or `Gateway` writes).
 The cluster is bounded at seven members by the 70-port cluster block (`doc/ops.md`, "Ports"); three or five is usual.
-`SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by all three mirrors
+`SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by both mirrors
 — but does not widen it. `SEQERON_HOSTS` names the members' hosts, deployment-wide too, and is read by
 both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
 

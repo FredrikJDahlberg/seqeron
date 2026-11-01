@@ -6,7 +6,7 @@
 #   docker compose -f docker/compose.yml down -v
 #
 # Ports are the same PORT_BASE + memberId*10 + offset layout as a single-host run (ports.sh,
-# PortLayout.hpp): each container has its own network namespace so they need not differ, but
+# PortLayout.java): each container has its own network namespace so they need not differ, but
 # keeping them means one formula, not two. Nothing is published to the host — the harness reaches
 # the cluster with docker exec, and so does an operator: docker exec node-0 clusterctl describe.
 name: seqeron-failover

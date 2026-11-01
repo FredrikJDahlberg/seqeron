@@ -57,14 +57,9 @@ Aeron Cluster runs the election. On every new term, each member's sequencer synt
 member wins again. The frame is sequenced and recorded like any other, so every recording holds a complete
 history of leadership, and a client can tell the current leader from the log alone.
 
-**Producer sessions survive a failover**, in every language:
+**Producer sessions survive a failover**:
 
-- The C++ `ClusterStreamSender` handles a `NewLeaderEvent` by switching only its ingress publication to the
-  new leader's endpoint, updating the cluster session id and term in place. `send()` polls egress between
-  offer attempts, so the event can arrive, and switch the publication, while a send is retrying; an offer
-  loop that did not poll would spin on the dead leader's publication indefinitely. A co-located sender that
-  fell back from IPC to UDP returns to IPC if leadership returns to its own member.
-- The Java and C# senders get the same behaviour from `AeronCluster`, with one difference: a co-located
+- The Java and C# senders handle a `NewLeaderEvent` through `AeronCluster`, with one difference: a co-located
   sender whose leader moves away reconnects over UDP on a new session.
 
 **A failover can lose ingress without any error.** A send returns once the frame is in the producer's own
@@ -317,9 +312,6 @@ which is unit-tested directly, case for case across the languages.
   has delivered a frame, are retried by re-anchoring through `requestResume()`, so the anchor check above
   still applies.
 
-`ClusterStreamClient` (C++) reads an archive's recording directly where no Replayer is available: from its
-start and without a bound, so one image delivers history followed by live data.
-
 ### 3.3 Gateway host
 
 A gateway host runs clients but no member (`start-gateway-host.sh`). Its `ReplayerServer` runs its own media
@@ -434,7 +426,7 @@ nothing until the new term; `ClusterProbe`'s holds 4,096, and after a leader's d
 
 `FailoverProcessTest` runs two producers across a leader kill: the one using `PendingSends`
 must see every frame on the queue exactly once and in order, and the other reports what it lost.
-`cpp-client-test.sh` and `csharp-client-test.sh` run the same check with the C++ and C# clients.
+`csharp-client-test.sh` runs the same check with the C# client.
 
 ## 6. Operational tooling and verification
 
@@ -459,7 +451,6 @@ three client-tier harnesses are scripts under `seqeron-service/src/test/scripts`
 | `GatewayHostTest` | a gateway host whose relay reads the leader, which is then killed; a `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to another member. The host is then restarted, and a cold start there must catch up from its new recording (§3.3) |
 | `SnapshotTest` | the `TestGateway` pair on three members with snapshot rounds every 2 s. The standby restarts and restores, the active instance is killed and the restored one takes over, and the killed one returns as a hot standby, restoring from the file it confirmed while it served. Each restore must report the state the client traffic implies, and no instance may be fenced, so every round is also compared against the restored state (§3.4) |
 | `csharp-client-test.sh` | the C# client against three members: confirmed ingress across a leader kill (§5), a cold start from `clusterSeqNo` 1 (§3.2), a C# gateway pair handed over when its active instance is killed (§2.2, §2.3), an application replica restored from a snapshot it confirmed (§3.4), and a cold start with no snapshot file on a member restarted at a cut, which must fail from its poll (§3.2) |
-| `cpp-client-test.sh` | the C++ client against three members: confirmed ingress across a leader kill (§5), a cold start from `clusterSeqNo` 1 (§3.2), the C++ gateway pair handed over when its active instance is killed (§2.2, §2.3), an application replica restored from a snapshot it confirmed (§3.4), and `ClusterStreamClient` replaying a member's recording that starts at a cut, where a cold start with no snapshot file must fail from its poll (§3.2) |
 | `csharp-windows-test.sh` | the C# client on Windows beside a gateway host, against one member in WSL1: confirmed ingress (§5), a cold start through the gateway host (§3.2, §3.3), and the C# gateway pair handed over (§2.2, §2.3). One member, because three cannot hold Raft's heartbeats under WSL1; the leader kill is `csharp-client-test.sh`'s |
 | `DockerFailoverSoakTest` | `ROUNDS` (default 15) leader kills against `docker/compose.yml` under continuous `ProbeMarker` load, restoring each killed member before the next. Every round must change leadership and the killed member must rejoin; an observer on each surviving member must deliver in `clusterSeqNo` order throughout; and a cold start at the end must replay the whole multi-tenure history from one recording and reach live. Needs Docker and `./gradlew operatorDist` (`networkFaultTest`); CI runs it as `failover.yml`, and `ROUNDS=3` is a quick local run |
 | `ReplayColdStartTest` | times a cold `ClusterProbe follow` from launch to caught up against a preloaded archive, quiet and under load. `REPLAY_PRELOAD=400000` builds the case that used to hang, which must converge in well under a second; failing to catch up indicates a replay stall (§3.2), not a slow machine |

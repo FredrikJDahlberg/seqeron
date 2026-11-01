@@ -1,20 +1,20 @@
 # seqeron C++ client {#mainpage}
 
-The client tier of seqeron: header-only, linked as `seqeron::seqeron_core`. It speaks the same wire protocol
-as the Java client, `%org.limitless:seqeron`, and its namespaces mirror that jar's packages.
+The C++ client of seqeron: header-only, linked as `seqeron::seqeron_core`. A C++ client is a thin stub that talks over
+IPC to a host process, the Java `ClientProxy`, which runs the cluster session, the queue and the fences
+(`doc/hosted-facade-draft.md`). The direct C++ client is retired.
 
 ## Start here
 
 | To | Take |
 |---|---|
-| Run one instance of an elected active/standby gateway pair | \ref org::limitless::seqeron::app::Gateway "app::Gateway" |
-| Run a co-located application: one replica per node, publishing while its node leads | \ref org::limitless::seqeron::app::Application "app::Application" |
-| Follow the ordered stream, publishing nothing: history off the recording, then the live queue | \ref org::limitless::seqeron::app::Consumer "app::Consumer" |
-| The same, one level down | \ref org::limitless::seqeron::replayer::client::ReplayerStreamReceiver "replayer::client::ReplayerStreamReceiver" |
+| Run one instance of an elected active/standby gateway pair | \ref org::limitless::seqeron::hosted::Gateway "hosted::Gateway" |
+| Run a co-located application: one replica per node, publishing while its node leads | \ref org::limitless::seqeron::hosted::Application "hosted::Application" |
+| Follow the ordered stream, publishing nothing | \ref org::limitless::seqeron::hosted::Consumer "hosted::Consumer" |
 
-A façade assembles the whole duty cycle. Its listener sees \ref org::limitless::seqeron::app::Payload "Payload"
-and \ref org::limitless::seqeron::app::ClusterError "ClusterError", and a publish returns
-\ref org::limitless::seqeron::protocol::Publish "Publish".
+A stub's listener sees \ref org::limitless::seqeron::app::Payload "Payload" and
+\ref org::limitless::seqeron::app::ClusterError "ClusterError", and a publish returns
+\ref org::limitless::seqeron::protocol::Publish "Publish". The listener concepts are in `app/Listeners.hpp`.
 
 ## Namespaces
 
@@ -22,10 +22,9 @@ All under `org::limitless::seqeron`.
 
 | Namespace | Holds |
 |---|---|
-| \ref org::limitless::seqeron::app "app" | The front door: the two façades above and the blocks they are assembled from |
-| \ref org::limitless::seqeron::sequencer::client "sequencer::client" | Producing: the cluster session (\ref org::limitless::seqeron::sequencer::client::ClusterStreamSender "ClusterStreamSender"), the encode-and-offer (\ref IngressPublisher.hpp "IngressPublisher.hpp") and confirmed ingress (\ref org::limitless::seqeron::sequencer::client::PendingSends "PendingSends") |
-| \ref org::limitless::seqeron::replayer::client "replayer::client" | Consuming: \ref org::limitless::seqeron::replayer::client::ReplayerStreamReceiver "ReplayerStreamReceiver" |
-| \ref org::limitless::seqeron::protocol "protocol" | The wire contract: the frame envelope and `SequencedEvent`, the port layout, the replay protocol's addresses, the counter ids and `Publish` |
+| \ref org::limitless::seqeron::hosted "hosted" | The stubs above |
+| \ref org::limitless::seqeron::app "app" | The types the stubs share with the Java client tier: `Payload`, `ClusterError`, `GroupDirectory`, `OutstandingWork`, `SnapshotListener` and the listener concepts |
+| \ref org::limitless::seqeron::protocol "protocol" | The wire contract: the frame envelope and `SequencedEvent`, the counter ids, the host protocol's ids and `Publish` |
 | \ref org::limitless::seqeron::util "util" | Support code: infrastructure rather than API |
 
 The `detail` namespaces and the generated SBE codecs are not API and are left out.

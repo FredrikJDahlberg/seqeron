@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "org/limitless/seqeron/app/Consumer.hpp"
+#include "org/limitless/seqeron/app/Listeners.hpp"
 #include "org/limitless/seqeron/hosted/detail/ClientLink.hpp"
 
 namespace org::limitless::seqeron::hosted {
