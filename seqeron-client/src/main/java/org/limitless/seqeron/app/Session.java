@@ -9,6 +9,7 @@ import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.util.List;
 import org.agrona.DirectBuffer;
+import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.Publish;
@@ -95,7 +96,7 @@ final class Session implements AutoCloseable {
     private final Dispatch dispatch;
     private final PendingSends pending;
     private final IngressPublisher publisher;
-    private final ClusterStreamSender sender = new ClusterStreamSender();
+    private final ClusterStreamSender sender;
     private final ReplayerStreamReceiver receiver;
     private final QueueResolution queueResolution = new QueueResolution(new QueueResolutionActions());
     private final GroupResolution groups;
@@ -144,10 +145,12 @@ final class Session implements AutoCloseable {
      *                        ReplayProtocol#NO_SOURCE_ID} for a gateway instance
      * @param gatewayName     the gateway instance's row name, or null for an application
      * @param addressedGroups the names of the other groups the instance publishes to
+     * @param idle            what the sender waits on where it blocks, or null for its defaults
      */
     Session(final int clientId, final int pendingCapacity, final long queueStallTimeoutMs,
             final long recoveryStallTimeoutMs, final int sourceId, final String gatewayName,
-            final List<String> addressedGroups, final Dispatch dispatch) {
+            final List<String> addressedGroups, final IdleStrategy idle, final Dispatch dispatch) {
+        this.sender = new ClusterStreamSender(idle);
         this.dispatch = dispatch;
         this.groups = new GroupResolution(addressedGroups);
         this.queueSourceId = sourceId;

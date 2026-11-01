@@ -390,6 +390,12 @@ int main(const int argc, char** argv)
                         ids.clear();
                         round++;
                         gateway.gateClosed();
+                        if (gateway.publish(hosted::Gateway<Probe>::NO_CONNECTION, PROBE_PAYLOAD_ID,
+                                            probe.nextMarker(hosted::Gateway<Probe>::NO_CONNECTION),
+                                            MARKER_LENGTH) == protocol::Publish::Published)
+                        {
+                            log("PUBLISHED AFTER GATE CLOSED");
+                        }
                         phase = Phase::Reactivate;
                     }
                 }

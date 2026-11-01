@@ -236,7 +236,9 @@ concern the listener apply unchanged.
   `RestoreRecord` on stream 303 in call order, so the records precede every `Payload` and no handshake is needed. A
   client that receives no `RestoreRecord` starts empty; one that receives them resets its state at `recordIndex` 0.
   The host's `supportsFormatVersion` answers from the client's `supportedFormat` list, which the C++ stub takes from
-  its listener's `supportedFormatVersions()`; a format it lacks fences `SNAPSHOT_UNRESTORABLE`.
+  its listener's `supportedFormatVersions()`; a format it lacks fences `SNAPSHOT_UNRESTORABLE`. A client with no
+  listener lists none, and the host's façade then has none either: it takes part in no round and restores nothing,
+  as a direct façade given no listener.
 - **H-8. An attach starts a façade.** `Attach` follows the replayer's request rules: `clientId` is drawn once from
   the client's driver (`Aeron.nextCorrelationId`, **R-4**), and `requestId` rises with every new `Attach` and is
   kept on a resend (**R-1**). Before it attaches, the client allocates its counters and, unless it is a Consumer,
@@ -266,10 +268,9 @@ concern the listener apply unchanged.
   gateway's pair no longer to hand over than a hung direct gateway does. In return the host's duty cycle keeps the
   cluster session alive while a client callback runs, and so does its wait in a snapshot cut (**H-6**); a slow
   callback costs the cluster no more than a slow direct one. Liveness is read from a counter, so time the host
-  spends blocked in the façade, in a send that spins through an election, costs the client nothing. **Nor need it
-  cost the host**, once the façade's builder takes the `IdleStrategy` that send spins on, as `AeronCluster.Context`
-  takes one (§17.8; today it is a fixed `YieldingIdleStrategy`): the host's idle strategy writes the host heartbeat
-  on every spin. The client's `hostTimeoutMs`, the counterpart of `clientTimeoutMs`, is therefore not tied to the
+  spends blocked in the façade, in a send that spins through an election, costs the client nothing. **Nor does it
+  cost the host**: the façade's builder takes the `IdleStrategy` that send and the cluster connect spin on (§17.8),
+  and the host's writes the host heartbeat on every spin. The client's `hostTimeoutMs`, the counterpart of `clientTimeoutMs`, is therefore not tied to the
   send's 10 s stall bound. A hung host's session times out within `sequencer.sessionTimeoutMs` whatever the client
   does, so `hostTimeoutMs` decides only how soon the client restarts the pair.
 - **H-11. `Reply` names its request by value.** `Payload` carries the request's `sourceId`, `connectionId` and
@@ -341,7 +342,7 @@ Where they differ:
 
 | failure | effect |
 | --- | --- |
-| client crashes or hangs | its heartbeat counter is stale for `clientTimeoutMs` or its stream 304 image goes away: host closes the façade (`CLIENT_LOST`), session released; standby takes over |
+| client crashes or hangs | its heartbeat counter is stale for `clientTimeoutMs` or its stream 304 image goes away: host closes the façade (`CLIENT_LOST`), session released; standby takes over. |
 | host crashes or hangs | its heartbeat counter is stale for `hostTimeoutMs` or its stream 303 image goes away: the client exits 70 (`HOST_LOST`); the cluster times out the host's session within `sequencer.sessionTimeoutMs` regardless |
 | member leader changes | host emits `Gate(leading=false)` with a new epoch in stream order and drops every command of an earlier epoch (**H-3**); the client's unanswered leader work is redispatched at the next open (**A-2**) |
 | client slower than the queue | host back-pressured and the client reads nothing of stream 303 for half the queue-stall timeout: `CLIENT_STALLED`; a slow client that keeps reading is not fenced |
@@ -392,7 +393,7 @@ client's driver connection.
 - Java host: `org.limitless.seqeron.proxy.ClientProxy`, a `seqeron-service` class composing `Application`, `Gateway` or `Consumer` with a remote listener and
   the command queue. `seqeron-client` stays free of it, so the direction rule holds.
 - Java client tier: the `Application` and `Gateway` builders take the `IdleStrategy` that `ClusterStreamSender.send`
-  spins on, `YieldingIdleStrategy` by default as now (**H-10**). It is a change to the client tier's surface, so the
+  and the cluster connect spin on, a yielding spin and `AeronCluster`'s own connect wait by default (**H-10**). It is a change to the client tier's surface, so the
   C# façades' options and `client-api.md` follow it. The direct C++ façades, which it also covered, are retired.
 - Where the ids live. Streams 301–304, `NO_ATTACH`, the schema id and the protocol version (§17.7) are a
   `ProxyProtocol` class in `protocol`,
@@ -711,9 +712,10 @@ are **H-3** and **H-4** as specified: the client learns of no drop and counts wh
 | a new term with the same leader | the host saw `not leading` and `leading` in the same millisecond, the epoch rose by two, and the eight commands in flight were dropped by their epoch and not placed (observed before the queue, when the host answered each drop) |
 | control: the host does not check the epoch | the stale marker was placed and sequenced, and the test failed on the decline, on both stale-marker checks and on the exactly-once count |
 | control: the client writes a digest one off | the host fenced `SNAPSHOT_DIVERGED`, sent `Fenced`, the client exited 70, and no direct replica fenced |
-| the client abandons every cut (`SnapshotEnd(-1)`; the C++ stub with no `SnapshotListener`) | the host abandoned each round, the hosted replica confirmed none, and no instance fenced. Before the host read `recordCount` it took the records it held, none, for the client's state and fenced `SNAPSHOT_DIVERGED` |
+| the client abandons every cut (`SnapshotEnd(-1)`; the C++ stub, whose listener returns -1) | the host abandoned each round, the hosted replica confirmed none, and no instance fenced. Before the host read `recordCount` it took the records it held, none, for the client's state and fenced `SNAPSHOT_DIVERGED` |
 | the client is replaced by a build that reads format 2 alone, the confirmed round format 1 | the host fenced `SNAPSHOT_UNRESTORABLE` and the client was handed no record. Before the host read the `Attach`'s formats it wrote every round as format 1 and restored format 1 to any client |
 | the same, by a build that writes format 2 and still reads format 1 | the client was handed the round as format 1, its rounds went on agreeing with the direct replicas, and nothing fenced. Before the C++ stub sent its listener's `supportedFormatVersions()` it declared its own format alone and was fenced `SNAPSHOT_UNRESTORABLE` |
+| a client with no snapshot listener, which lists no format | the host's façade took part in no round and cut the client nothing, and the hosted member's cuts became restart-safe. Before, it joined every round and abandoned it, and the member's cuts never did |
 
 Four findings from it are in the rules above: the host could not hold the session while it waited in a cut, which
 `Application.keepAlive()` now allows (**H-6**); the façade offers no restore begin, end or count (**H-7**); a client
@@ -759,7 +761,10 @@ Five system tests drive the stubs against the Java host, with `HOSTED_PROBE` nam
   a gate edge (the leader paused 4.5 s) the stub stopped at the `Gate` and offered 3,582, the host dropped 18 by their
   epoch and 3,564 were sequenced. In a fourth scenario the stub is handed the directory, a mask naming an absent group
   is refused and one naming the own group is published, and of 2,000 markers every tenth is answered: the 200 replies
-  are each sequenced once under the sourceId, connectionId and groupMask of their request.
+  are each sequenced once under the sourceId, connectionId and groupMask of their request. In a fifth the stub attaches
+  while the cluster has no leader (both followers paused, the leader stood down), and the host waits in the façade's
+  cluster connect for more than the stub's 3 s host timeout; the stub keeps the host, whose idle strategy beats
+  through the wait (**H-10**). Before it did, the stub gave the host up.
 - `HostedSnapshotTest` with `HOSTED_CLIENT=cpp` runs its clients as the probe: restore, cuts, a client `kill -9`
   with an immediate successor, a host `kill -9`, an abandoned cut, the 8 s cut, the leading hosted replica, and the
   corrupt record fenced with `SNAPSHOT_DIVERGED`, each check as with the Java client and the direct replicas

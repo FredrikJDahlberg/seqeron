@@ -6,7 +6,7 @@
 //                [--host-timeout-ms 3000] [--host-name hosted] [--check-refusals 1] [--stall-cut-no N] [--slow-cut-ms
 //                N]
 //                [--corrupt-record 1] [--check-groups 1] [--reply-every N] [--format-version 1]
-//                [--supported-formats 1,2] [--no-snapshots 1]
+//                [--supported-formats 1,2] [--no-snapshots 1] [--abandon-cuts 1]
 //
 // Exits 70 when fenced or the host is lost, 78 when the attach is refused and 3 when it times out, as the Java client.
 
@@ -74,14 +74,15 @@ class Probe final : public app::SnapshotListener
   public:
     Probe(const std::int32_t sourceId, const std::int64_t stallCutNo, const std::int64_t slowCutMs,
           const bool corruptRecord, const std::int64_t replyEvery, const std::uint32_t formatVersion,
-          std::vector<std::uint32_t> supportedFormats) :
+          std::vector<std::uint32_t> supportedFormats, const bool abandonCuts) :
       m_sourceId{ sourceId },
       m_replyEvery{ replyEvery },
       m_stallCutNo{ stallCutNo },
       m_slowCutMs{ slowCutMs },
       m_corruptRecord{ corruptRecord },
       m_formatVersion{ formatVersion },
-      m_supportedFormats{ std::move(supportedFormats) }
+      m_supportedFormats{ std::move(supportedFormats) },
+      m_abandonCuts{ abandonCuts }
     {
         m_salt = ((nowNs() / 1'000'000'000LL) & 0xFFFF) << SALT_SHIFT;
         const std::array<std::uint16_t, 4> header{ 8, PROBE_MARKER_TEMPLATE_ID, PROBE_SCHEMA_ID, 0 };
@@ -238,6 +239,10 @@ class Probe final : public app::SnapshotListener
 
     std::int32_t onSnapshot(const std::span<std::uint8_t> buffer, const std::int32_t recordIndex) override
     {
+        if (m_abandonCuts)
+        {
+            return -1;
+        }
         if (recordIndex != 0)
         {
             return 0;
@@ -305,6 +310,7 @@ class Probe final : public app::SnapshotListener
     bool m_corruptRecord;
     std::uint32_t m_formatVersion;
     std::vector<std::uint32_t> m_supportedFormats;
+    bool m_abandonCuts;
     std::function<void()> m_keepAlive = [] {};
     std::int64_t m_cuts = 0;
     std::int64_t m_salt = 0;
@@ -382,11 +388,13 @@ int main(const int argc, char** argv)
                  options.integer("corrupt-record", 0) != 0,
                  options.integer("reply-every", 0),
                  static_cast<std::uint32_t>(options.integer("format-version", 1)),
-                 options.integers("supported-formats") };
+                 options.integers("supported-formats"),
+                 options.integer("abandon-cuts", 0) != 0 };
+    const std::int64_t hostTimeoutMs = options.integer("host-timeout-ms", 3000);
     hosted::Application<Probe> application{
         { .sourceId = sourceId,
           .snapshots = options.integer("no-snapshots", 0) != 0 ? nullptr : &probe,
-          .hostTimeoutMs = options.integer("host-timeout-ms", 3000),
+          .hostTimeoutMs = hostTimeoutMs,
           .hostName = options.string("host-name", org::limitless::seqeron::protocol::PROXY_DEFAULT_HOST_NAME) },
         probe
     };
@@ -442,6 +450,18 @@ int main(const int argc, char** argv)
             nextStateNs = now + 2'000'000'000LL;
         }
         idle.idle(work);
+    }
+    // The fenced host exits; the stub must not then call it lost.
+    for (const std::int64_t end = nowNs() + (hostTimeoutMs + 1000) * 1'000'000LL;
+         application.fenced() && nowNs() < end;)
+    {
+        application.doWork();
+        if (application.failure() == hosted::Failure::HostLost)
+        {
+            log("HOST_LOST AFTER FENCE");
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     application.close();
     switch (application.failure())

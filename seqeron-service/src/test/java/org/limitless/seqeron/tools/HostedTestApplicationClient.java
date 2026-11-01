@@ -50,7 +50,8 @@ import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
  * before the record), {@code client.staleEpoch} (once leading, send one marker under the previous gate epoch first),
  * {@code client.ghost} (send one marker from a second publication on stream 304, which the host does not read: H-15), {@code client.corruptRecord} (write a digest one off in every snapshot record), {@code client.abandonCuts} (answer
  * every cut with {@code SnapshotEnd(-1)} and no record), {@code client.formatVersion} (1: the format it writes), {@code
- * client.supportedFormats} (the formats it reads, comma-separated; its own by default), {@code
+ * client.supportedFormats} (the formats it reads, comma-separated; its own by default), {@code client.noSnapshots} (attach
+ * as a client with no snapshot listener, reading no format, and log any cut it is sent), {@code
  * client.hostTimeoutMs} (3000), {@code client.flood} (publish as fast as the window allows), {@code client.maxMarkers} (0: no limit; else
  * offer that many and go on counting), {@code
  * client.ignoreWindow} (a control: do not keep H-5's window, so the host must close the attachment).
@@ -76,8 +77,9 @@ public final class HostedTestApplicationClient {
     private final boolean ignoreWindow = Boolean.getBoolean("client.ignoreWindow");
     private final boolean corruptRecord = Boolean.getBoolean("client.corruptRecord");
     private final boolean abandonCuts = Boolean.getBoolean("client.abandonCuts");
-    private final int formatVersion = Integer.getInteger("client.formatVersion", 1);
-    private final int[] supportedFormats = Arrays.stream(
+    private final boolean noSnapshots = Boolean.getBoolean("client.noSnapshots");
+    private final int formatVersion = noSnapshots ? 0 : Integer.getInteger("client.formatVersion", 1);
+    private final int[] supportedFormats = noSnapshots ? new int[0] : Arrays.stream(
         System.getProperty("client.supportedFormats", "" + formatVersion).split(",")).mapToInt(Integer::parseInt).toArray();
     private final long hostTimeoutNs = TimeUnit.MILLISECONDS.toNanos(Long.getLong("client.hostTimeoutMs", 3000));
     private final UnsafeBuffer out = new UnsafeBuffer(new byte[64 * 1024]);
@@ -338,7 +340,10 @@ public final class HostedTestApplicationClient {
     /** One record: the marker count, then the digest. The state is as of the last payload applied. */
     private void onCut(final long cutNo) {
         cuts++;
-        if (abandonCuts) {
+        if (noSnapshots) {
+            log("CUT WITHOUT A LISTENER %d", cutNo);
+        }
+        if (abandonCuts || noSnapshots) {
             endOut.wrapAndApplyHeader(out, 0, headerOut).roundId(cutNo).recordCount(-1);
             send(commands, ProxyProtocol.HEADER + endOut.encodedLength());
             log("abandoned cut %d", cutNo);

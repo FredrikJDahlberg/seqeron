@@ -102,6 +102,7 @@ class HostedGatewayStubTest {
               poll(() -> client.lastLine("round 2 sequenced 120") != null));
         check("the stub finished", poll(() -> client.lastLine("DONE") != null));
         check("the host opened six connections", host.lines("opened connection").size() == 6);
+        check("the stub declined a publish after its own gateClosed", client.lines("PUBLISHED AFTER GATE CLOSED").isEmpty());
         verifyNoFaults();
         System.out.println(host.lastLine("queue:"));
         System.out.println(client.lastLine("state: "));

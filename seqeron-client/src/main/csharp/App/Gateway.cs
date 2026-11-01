@@ -123,7 +123,7 @@ public sealed class Gateway : IDisposable
         _snapshots = new SnapshotTaker(options.Snapshots?.Listener, store, KeepAlive);
         _session = new Session(options.ClientId, options.Tuning.PendingCapacity, options.Tuning.QueueStallTimeoutMs,
                                options.Tuning.RecoveryStallTimeoutMs, ReplayProtocol.NoSourceId, options.GatewayName,
-                               options.AddressedGroups, new SessionDispatch(this));
+                               options.AddressedGroups, options.IdleStrategy, new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _lifecycle.GatewaySourceId);
         _snapshotSignals = new SnapshotSignals(this);
         if (store != null)

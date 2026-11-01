@@ -138,6 +138,25 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private final long allocWarmupFrames = longProp("proxy.allocWarmupFrames", 0);
     private final long allocWindowFrames = longProp("proxy.allocWindowFrames", 20_000);
     private final ThreadMXBean threads = (ThreadMXBean)ManagementFactory.getThreadMXBean();
+    /** What the façade's blocking calls wait on: a yielding spin that writes the host heartbeat (H-10). */
+    private final IdleStrategy facadeIdle = new IdleStrategy() {
+        @Override
+        public void idle(final int workCount) {
+            if (workCount <= 0) {
+                idle();
+            }
+        }
+
+        @Override
+        public void idle() {
+            ProxyProtocol.beat(hostHeartbeat);
+            Thread.yield();
+        }
+
+        @Override
+        public void reset() {
+        }
+    };
 
     private Aeron aeron;
     private Subscription attachRequests;
@@ -483,35 +502,47 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             return;
         }
         if (gatewayKind) {
-            gateway = Gateway.builder()
-                          .gatewayName(gatewayName)
-                          .sourceId(sourceId)
-                          .clientId(clientId)
-                          .memberId(memberId)
-                          .egressChannel(egressChannel)
-                          .ingressEndpoints(ingressEndpoints)
-                          .listener(this)
-                          .tuning(pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity))
-                          .snapshots(this, snapshotDir)
-                          .build();
+            final Gateway.Builder builder = Gateway.builder()
+                                                .gatewayName(gatewayName)
+                                                .sourceId(sourceId)
+                                                .clientId(clientId)
+                                                .memberId(memberId)
+                                                .egressChannel(egressChannel)
+                                                .ingressEndpoints(ingressEndpoints)
+                                                .listener(this)
+                                                .tuning(tuning())
+                                                .idleStrategy(facadeIdle);
+            gateway = (takesSnapshots() ? builder.snapshots(this, snapshotDir) : builder).build();
             attached = true;
             gateway.start(aeron);
             log("ATTACHED clientId=%d (gateway %s)", liveClientId, gatewayName);
             return;
         }
-        app = Application.builder()
-                  .sourceId(sourceId)
-                  .clientId(clientId)
-                  .memberId(memberId)
-                  .egressChannel(egressChannel)
-                  .ingressEndpoints(ingressEndpoints)
-                  .listener(this)
-                  .tuning(pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity))
-                  .snapshots(this, snapshotDir)
-                  .build();
+        final Application.Builder builder = Application.builder()
+                                                .sourceId(sourceId)
+                                                .clientId(clientId)
+                                                .memberId(memberId)
+                                                .egressChannel(egressChannel)
+                                                .ingressEndpoints(ingressEndpoints)
+                                                .listener(this)
+                                                .tuning(tuning())
+                                                .idleStrategy(facadeIdle);
+        app = (takesSnapshots() ? builder.snapshots(this, snapshotDir) : builder).build();
         attached = true;
         app.start(aeron);
         log("ATTACHED clientId=%d", liveClientId);
+    }
+
+    private Tuning tuning() {
+        return pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity);
+    }
+
+    /**
+     * A client that reads no snapshot format has no listener: its façade takes part in no round and restores nothing,
+     * as a direct façade given none (H-7).
+     */
+    private boolean takesSnapshots() {
+        return !clientFormats.isEmpty();
     }
 
     private void sendAttached(final long clientId, final long requestId, final Refusal refusal) {

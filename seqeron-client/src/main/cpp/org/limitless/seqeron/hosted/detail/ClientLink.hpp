@@ -59,6 +59,7 @@ inline constexpr const char* COMMANDS_CHANNEL = "aeron:ipc?term-length=1m";
 inline constexpr std::size_t HEADER = 8;
 inline constexpr std::int64_t ATTACH_RETRY_NS = 500'000'000LL;
 inline constexpr std::int64_t SEND_BOUND_NS = 10'000'000'000LL;
+inline constexpr std::int64_t DETACH_BOUND_NS = 1'000'000'000LL;
 inline constexpr std::uint16_t MAX_RECORD = 65535;
 
 inline std::int64_t nowNs()
@@ -126,7 +127,8 @@ class ClientLink
             return attach();
         }
         const int work = m_events->poll(m_assembler.handler(), 16);
-        if (hostLost())
+        // A fenced host exits; its counter going is not a failure of its own.
+        if (!m_fenced && hostLost())
         {
             m_failure = Failure::HostLost;
         }
@@ -148,7 +150,15 @@ class ClientLink
         }
         wire::Detach detach;
         detach.wrapAndApplyHeader(out(), 0, m_out.size()).clientId(m_clientId);
-        m_requests->offer(buffer(), 0, static_cast<aeron::util::index_t>(HEADER + detach.encodedLength()));
+        const auto length = static_cast<aeron::util::index_t>(HEADER + detach.encodedLength());
+        // Not resent (H-9), so it waits out back-pressure, briefly: the host's liveness covers the rest.
+        const std::int64_t deadline = nowNs() + DETACH_BOUND_NS;
+        for (std::int64_t result = m_requests->offer(buffer(), 0, length);
+             (result == aeron::BACK_PRESSURED || result == aeron::ADMIN_ACTION) && nowNs() < deadline;
+             result = m_requests->offer(buffer(), 0, length))
+        {
+            std::this_thread::yield();
+        }
         m_attached = false;
     }
 
@@ -394,6 +404,7 @@ class ClientLink
             return;
         }
         m_retiredCounterId = attached.retiredCounterId();
+        m_retiredRegistrationId = attached.retiredRegistrationId();
         m_window = attached.commandWindow();
         m_hostHeartbeatId = attached.heartbeatCounterId();
         m_hostHeartbeatRegistrationId = attached.heartbeatRegistrationId();
@@ -404,12 +415,12 @@ class ClientLink
     }
 
     // §17.2.1: stale when the value has not changed for the timeout on this clock, or it is no longer the counter
-    // given.
+    // given; nor may the retired counter the window reads be another's.
     bool hostLost()
     {
         const auto& reader = m_aeron->countersReader();
-        if (reader.getCounterState(m_hostHeartbeatId) != aeron::concurrent::CountersReader::RECORD_ALLOCATED ||
-            reader.getCounterRegistrationId(m_hostHeartbeatId) != m_hostHeartbeatRegistrationId)
+        if (!isCounter(reader, m_hostHeartbeatId, m_hostHeartbeatRegistrationId) ||
+            !isCounter(reader, m_retiredCounterId, m_retiredRegistrationId))
         {
             return true;
         }
@@ -421,6 +432,13 @@ class ClientLink
             m_hostChangeNs = now;
         }
         return now - m_hostChangeNs > m_hostTimeoutMs * 1'000'000LL;
+    }
+
+    static bool isCounter(const aeron::concurrent::CountersReader& reader, const std::int32_t id,
+                          const std::int64_t registrationId)
+    {
+        return reader.getCounterState(id) == aeron::concurrent::CountersReader::RECORD_ALLOCATED &&
+               reader.getCounterRegistrationId(id) == registrationId;
     }
 
     void onGroupsResolved(wire::GroupsResolved message)
@@ -438,7 +456,10 @@ class ClientLink
         }
         // The own group id only sets the bit a direct frame adds to its mask; the stub reads the directory alone.
         m_groups.onSnapshotHeader(table);
-        m_groups.onCaughtUp(table.front().groupId);
+        if (m_groups.onCaughtUp(table.front().groupId) != app::detail::GroupResolution::Outcome::Resolved)
+        {
+            return;
+        }
         if constexpr (requires { m_listener.onGroupsResolved(*m_groups.directory()); })
         {
             m_listener.onGroupsResolved(*m_groups.directory());
@@ -551,13 +572,15 @@ class ClientLink
         if (m_snapshots != nullptr)
         {
             std::array<std::uint8_t, MAX_RECORD> record;
-            for (std::int32_t length; (length = m_snapshots->onSnapshot(record, count)) > 0; count++)
+            for (std::int32_t length; (length = m_snapshots->onSnapshot(record, count)) != 0; count++)
             {
-                if (length > MAX_RECORD)
+                // A length outside 0-65535 abandons the round, as for a direct façade.
+                if (length < 0 || length > MAX_RECORD)
                 {
                     abandoned = true;
                     break;
                 }
+                beat();
                 wire::SnapshotRecord message;
                 message.wrapAndApplyHeader(out(), 0, m_out.size())
                     .roundId(roundId)
@@ -600,6 +623,7 @@ class ClientLink
     std::int64_t m_nextAttachNs = 0;
     std::int32_t m_eventSessionId = -1;
     std::int32_t m_retiredCounterId = 0;
+    std::int64_t m_retiredRegistrationId = 0;
     std::int32_t m_hostHeartbeatId = 0;
     std::int64_t m_hostHeartbeatRegistrationId = 0;
     std::int64_t m_hostHeartbeatValue = 0;

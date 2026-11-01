@@ -168,6 +168,35 @@ class HostedCppStubTest {
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
+    /**
+     * The host's façade connects while the cluster has no leader (both followers paused, the leader stood down for want
+     * of a quorum), a wait of seconds in the cluster connect. The wait spins on the façade's idle strategy, which
+     * writes the host heartbeat (H-10), so the stub on its default 3 s host timeout keeps the host. How the connect
+     * ends is Aeron's: one whose request reached no leader may time out after the election, and the host with it.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCppStubKeepsAHostWhoseFacadeIsConnecting() {
+        startHost("proxy.spin=true");
+        final List<ClusterProcesses.Child> followers = new ArrayList<>();
+        for (int m = 0; m < ClusterProcesses.MEMBERS; m++) {
+            if (m != leader) {
+                followers.add(cluster.memberLog(m));
+            }
+        }
+        try {
+            followers.forEach(ClusterProcesses.Child::pause);
+            sleep(4000);
+            startClient("--interval-ms", "10", "--max-markers", "100");
+            sleep(5000);
+            check("the host is still connecting", host.lines("ATTACHED").isEmpty() && host.isAlive());
+            check("the stub kept the host through the wait", client.isAlive() && client.lines("HOST_LOST").isEmpty());
+        } finally {
+            followers.forEach(ClusterProcesses.Child::resume);
+        }
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
     private static void sleep(final long ms) {
         try {
             Thread.sleep(ms);

@@ -32,6 +32,17 @@ import org.limitless.seqeron.util.Logger;
 public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     /** A sender with no session; {@link #connectColocated} or {@link #connect} opens one. */
     public ClusterStreamSender() {
+        this(null);
+    }
+
+    /**
+     * The same, waiting on {@code idle} wherever it blocks: the {@link #send} spin and a session's connect.
+     *
+     * @param idle what to wait on, or null for a yielding send spin and {@code AeronCluster}'s own connect wait
+     */
+    public ClusterStreamSender(final IdleStrategy idle) {
+        this.idle = idle != null ? idle : new YieldingIdleStrategy();
+        this.connectIdle = idle;
     }
 
     /** Ingress channel of a client sharing its member's media driver. Only the leader subscribes to it. */
@@ -60,7 +71,8 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
 
     private static final long BACKPRESSURE_ALERT_INTERVAL_MS = TimeUnit.SECONDS.toMillis(1);
 
-    private final IdleStrategy idle = new YieldingIdleStrategy();
+    private final IdleStrategy idle;
+    private final IdleStrategy connectIdle;
     private final EgressListener listener = new SessionListener();
 
     /** Which offer results are terminal, held where a test can drive it. */
@@ -381,7 +393,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     /** The context every session opens with, apart from where it connects. */
     private AeronCluster.Context context(final String ingressChannel, final String ingressEndpoints,
                                          final long timeoutNs) {
-        return new AeronCluster.Context()
+        final AeronCluster.Context context = new AeronCluster.Context()
             .aeron(aeron)
             .ingressChannel(ingressChannel)
             .ingressEndpoints(ingressEndpoints)
@@ -389,6 +401,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             .egressListener(listener)
             .messageTimeoutNs(timeoutNs)
             .newLeaderTimeoutNs(NEW_LEADER_TIMEOUT_NS);
+        return connectIdle != null ? context.idleStrategy(connectIdle) : context;
     }
 
     /**

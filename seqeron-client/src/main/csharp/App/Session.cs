@@ -84,7 +84,7 @@ internal sealed class Session : IDisposable
     private readonly IDispatch _dispatch;
     private readonly PendingSends _pending;
     private readonly IngressPublisher _publisher;
-    private readonly ClusterStreamSender _sender = new ClusterStreamSender();
+    private readonly ClusterStreamSender _sender;
     private readonly ReplayerStreamReceiver _receiver;
     private readonly GroupResolution _groups;
     private readonly RecoveryStallFence _recoveryStall;
@@ -137,10 +137,13 @@ internal sealed class Session : IDisposable
     /// <see cref="ReplayProtocol.NoSourceId"/> for a gateway instance</param>
     /// <param name="gatewayName">the gateway instance's row name, or null for an application</param>
     /// <param name="addressedGroups">the names of the other groups the instance publishes to</param>
+    /// <param name="idle">what the sender waits on where it blocks, or null for its defaults</param>
     /// <param name="dispatch">what the façade does with what comes off the queue</param>
     internal Session(int clientId, int pendingCapacity, long queueStallTimeoutMs, long recoveryStallTimeoutMs,
-                     int sourceId, string gatewayName, IReadOnlyList<string> addressedGroups, IDispatch dispatch)
+                     int sourceId, string gatewayName, IReadOnlyList<string> addressedGroups, IIdleStrategy idle,
+                     IDispatch dispatch)
     {
+        _sender = new ClusterStreamSender(idle);
         _dispatch = dispatch;
         _groups = new GroupResolution(addressedGroups);
         _queueSourceId = sourceId;

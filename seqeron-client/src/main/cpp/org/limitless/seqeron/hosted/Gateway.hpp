@@ -24,7 +24,9 @@ namespace org::limitless::seqeron::hosted {
  *
  * What differs: connection ids are allocated here, from the host's last Role (H-4); a Published command can be lost
  * at a gate edge (H-3, H-4), and one on a connection whose ConnectionOpened is not yet placed is Published, not
- * Declined; the queries mirror the host's last Gate (H-16).
+ * Declined; the queries mirror the host's last Gate (H-16). The host waits in onActivated for the answer and drops a
+ * stub whose heartbeat is silent for its clientTimeoutMs, so a listener that dials for longer calls keepAlive() while
+ * it does (H-14).
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread.
  */
@@ -138,7 +140,9 @@ class Gateway : public detail::ClientLink<Gateway<Listener>, Listener>
         }
         this->template sendUndeclinable<wire::GateClosed>(
             [&](wire::GateClosed& closed) { closed.epoch(this->m_epoch); });
+        // The host drops whatever follows under this epoch, so publish declines until the next Gate (H-3).
         m_serving = false;
+        this->m_canPublish = false;
     }
 
     /**

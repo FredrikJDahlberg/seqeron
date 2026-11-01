@@ -104,7 +104,7 @@ public sealed class Application : IDisposable
         _snapshots = new SnapshotTaker(options.Snapshots?.Listener, store, KeepAlive);
         _session = new Session(options.ClientId, options.Tuning.PendingCapacity, options.Tuning.QueueStallTimeoutMs,
                                options.Tuning.RecoveryStallTimeoutMs, options.SourceId, null, options.AddressedGroups,
-                               new SessionDispatch(this));
+                               options.IdleStrategy, new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _sourceId);
         _snapshotSignals = new SnapshotSignals(this);
         if (store != null)

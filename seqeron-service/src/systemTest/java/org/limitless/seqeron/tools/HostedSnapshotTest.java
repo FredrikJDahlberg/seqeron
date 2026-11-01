@@ -3,6 +3,8 @@ package org.limitless.seqeron.tools;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -11,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -273,6 +276,7 @@ class HostedSnapshotTest {
         check("the client heard it and exited 70", client.awaitDead(Duration.ofSeconds(10))
                                                        && client.exitValue() == 70);
         check("the client logged FENCED", !client.lines("FENCED").isEmpty());
+        check("the client did not call the fenced host lost", client.lines("HOST_LOST AFTER FENCE").isEmpty());
         check("the host exited 70", host.awaitDead(Duration.ofSeconds(10)) && host.exitValue() == 70);
         check("no direct replica fenced", instances.stream().filter(c -> c != host && c != client)
                                               .allMatch(c -> c.lines("FENCED").isEmpty()));
@@ -280,8 +284,8 @@ class HostedSnapshotTest {
     }
 
     /**
-     * A client that abandons every cut, by SnapshotEnd(-1) (H-6) or, the C++ stub, by having no SnapshotListener: the
-     * host abandons the round too, rather than take the records it holds, none, for the client's state.
+     * A client that abandons every cut, by SnapshotEnd(-1) (H-6) or, the C++ stub, by a listener returning -1: the host
+     * abandons the round too, rather than take the records it holds, none, for the client's state.
      */
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
@@ -295,6 +299,35 @@ class HostedSnapshotTest {
         check("the hosted replica confirmed no round", round(hostedMember, hostClientId) == 0);
         check("no instance fenced", noFence());
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * A client with no snapshot listener reads no format, so the host's façade takes part in no round, as a direct one
+     * given none: it is cut nothing, and the member's cuts become restart-safe, which one that joined and abandoned
+     * every round would keep them from. Rounds every 15 s, so one outlasts the Replayer's 10 s join window.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aClientWithNoSnapshotListenerTakesPartInNoRound() {
+        final int direct = bootstrap(false, "topology-test-hosted-slow.xml");
+        startHost();
+        startClientNoWait("client.noSnapshots=true");
+        check("the hosted pair is caught up", poll(() -> client.lastLine("Caught up") != null));
+        check("a direct replica's member has a restart-safe cut", poll(() -> safeCuts(direct) >= 1, 2 * TIMEOUT_SECS));
+        check("the hosted member has one too", poll(() -> safeCuts(hostedMember) >= 1));
+        check("the host cut no round for the client",
+              host.lines("ABANDON").isEmpty() && client.lines("CUT WITHOUT A LISTENER").isEmpty());
+        check("no instance fenced", noFence());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /** The {@code safe} lines of a member's {@code restart-safe.log}. */
+    private long safeCuts(final int m) {
+        try (Stream<String> lines = Files.lines(baseDir.resolve("cluster-" + m).resolve("restart-safe.log"))) {
+            return lines.filter(line -> line.startsWith("safe ")).count();
+        } catch (final IOException ex) {
+            return 0;
+        }
     }
 
     /**
@@ -452,7 +485,8 @@ class HostedSnapshotTest {
             case "client.stallCutNo" -> command.addAll(List.of("--stall-cut-no", keyValue[1]));
             case "client.slowCutMs" -> command.addAll(List.of("--slow-cut-ms", keyValue[1]));
             case "client.corruptRecord" -> command.addAll(List.of("--corrupt-record", "1"));
-            case "client.abandonCuts" -> command.addAll(List.of("--no-snapshots", "1"));
+            case "client.abandonCuts" -> command.addAll(List.of("--abandon-cuts", "1"));
+            case "client.noSnapshots" -> command.addAll(List.of("--no-snapshots", "1"));
             case "client.formatVersion" -> command.addAll(List.of("--format-version", keyValue[1]));
             case "client.supportedFormats" -> command.addAll(List.of("--supported-formats", keyValue[1]));
             default -> {
