@@ -279,6 +279,69 @@ class HostedSnapshotTest {
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
+    /**
+     * A client that abandons every cut, by SnapshotEnd(-1) (H-6) or, the C++ stub, by having no SnapshotListener: the
+     * host abandons the round too, rather than take the records it holds, none, for the client's state.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCutTheClientAbandonsIsAbandonedByTheHost() {
+        final int direct = bootstrap(false);
+        startHost();
+        startClientNoWait("client.abandonCuts=true");
+        check("a direct replica's rounds complete", waitRounds(direct, 11, 2));
+        check("the host abandoned the rounds the client abandoned",
+              poll(() -> host.lines("ABANDON round: the client abandoned").size() >= 2));
+        check("the hosted replica confirmed no round", round(hostedMember, hostClientId) == 0);
+        check("no instance fenced", noFence());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * The client is replaced by a build that reads format 2 alone while the confirmed round is format 1: the host
+     * answers supportsFormatVersion from the client's Attach (H-7), so it fences rather than hand over the records.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aRestoreInAFormatTheClientDoesNotReadIsFenced() {
+        bootstrap(false);
+        startHost();
+        startClient();
+        check("a round is confirmed in format 1", waitRounds(hostedMember, hostClientId, 1));
+        client.kill();
+        check("the host dropped the client", poll(() -> !host.lines("CLIENT_LOST").isEmpty()));
+        startClientNoWait("client.formatVersion=2");
+        check("the host fenced the hosted replica with SNAPSHOT_UNRESTORABLE",
+              poll(() -> host.lines("FENCED: SNAPSHOT_UNRESTORABLE").size() == 1));
+        check("the client exited 70", client.awaitDead(Duration.ofSeconds(10)) && client.exitValue() == 70);
+        check("the client was handed no record", client.lines("restored record").isEmpty());
+        check("the host exited 70", host.awaitDead(Duration.ofSeconds(10)) && host.exitValue() == 70);
+        check("no direct replica fenced", instances.stream().filter(c -> c != host && c != client)
+                                              .allMatch(c -> c.lines("FENCED").isEmpty()));
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * The client is replaced by a build that writes format 2 and still reads format 1: it is handed the format-1 round,
+     * told which format it is, and its rounds go on agreeing with the direct replicas, since an end carries no format.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aRestoreInAnOlderFormatTheClientStillReadsSucceeds() {
+        bootstrap(false);
+        startHost();
+        startClient();
+        check("a round is confirmed in format 1", waitRounds(hostedMember, hostClientId, 1));
+        client.kill();
+        check("the host dropped the client", poll(() -> !host.lines("CLIENT_LOST").isEmpty()));
+        startClientNoWait("client.formatVersion=2", "client.supportedFormats=1,2");
+        client.awaitLine("Caught up", CATCHUP);
+        check("the client was handed the format-1 round", !client.lines("restored record 0 (format 1)").isEmpty());
+        check("rounds complete after the restore", waitRounds(hostedMember, hostClientId, 2));
+        check("no instance fenced", noFence());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void aHostedLeaderPublishesAndItsRoundsAgreeWithTheDirectReplicas() {
@@ -389,6 +452,9 @@ class HostedSnapshotTest {
             case "client.stallCutNo" -> command.addAll(List.of("--stall-cut-no", keyValue[1]));
             case "client.slowCutMs" -> command.addAll(List.of("--slow-cut-ms", keyValue[1]));
             case "client.corruptRecord" -> command.addAll(List.of("--corrupt-record", "1"));
+            case "client.abandonCuts" -> command.addAll(List.of("--no-snapshots", "1"));
+            case "client.formatVersion" -> command.addAll(List.of("--format-version", keyValue[1]));
+            case "client.supportedFormats" -> command.addAll(List.of("--supported-formats", keyValue[1]));
             default -> {
                 // client.ghost and client.staleEpoch publish from outside the stub's checks, which it has no option for.
             }

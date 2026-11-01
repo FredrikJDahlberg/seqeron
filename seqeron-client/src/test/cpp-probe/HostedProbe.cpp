@@ -5,10 +5,12 @@
 //   hosted_probe --aeron-dir D [--source-id 16] [--interval-ms 100] [--flood 1] [--max-markers N]
 //                [--host-timeout-ms 3000] [--host-name hosted] [--check-refusals 1] [--stall-cut-no N] [--slow-cut-ms
 //                N]
-//                [--corrupt-record 1] [--check-groups 1] [--reply-every N]
+//                [--corrupt-record 1] [--check-groups 1] [--reply-every N] [--format-version 1]
+//                [--supported-formats 1,2] [--no-snapshots 1]
 //
 // Exits 70 when fenced or the host is lost, 78 when the attach is refused and 3 when it times out, as the Java client.
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdarg>
@@ -71,12 +73,15 @@ class Probe final : public app::SnapshotListener
 {
   public:
     Probe(const std::int32_t sourceId, const std::int64_t stallCutNo, const std::int64_t slowCutMs,
-          const bool corruptRecord, const std::int64_t replyEvery) :
+          const bool corruptRecord, const std::int64_t replyEvery, const std::uint32_t formatVersion,
+          std::vector<std::uint32_t> supportedFormats) :
       m_sourceId{ sourceId },
       m_replyEvery{ replyEvery },
       m_stallCutNo{ stallCutNo },
       m_slowCutMs{ slowCutMs },
-      m_corruptRecord{ corruptRecord }
+      m_corruptRecord{ corruptRecord },
+      m_formatVersion{ formatVersion },
+      m_supportedFormats{ std::move(supportedFormats) }
     {
         m_salt = ((nowNs() / 1'000'000'000LL) & 0xFFFF) << SALT_SHIFT;
         const std::array<std::uint16_t, 4> header{ 8, PROBE_MARKER_TEMPLATE_ID, PROBE_SCHEMA_ID, 0 };
@@ -223,7 +228,12 @@ class Probe final : public app::SnapshotListener
     // One record: the marker count, then the digest (TestApplication's, byte for byte).
     [[nodiscard]] std::uint32_t formatVersion() const override
     {
-        return 1;
+        return m_formatVersion;
+    }
+
+    [[nodiscard]] std::vector<std::uint32_t> supportedFormatVersions() const override
+    {
+        return m_supportedFormats.empty() ? app::SnapshotListener::supportedFormatVersions() : m_supportedFormats;
     }
 
     std::int32_t onSnapshot(const std::span<std::uint8_t> buffer, const std::int32_t recordIndex) override
@@ -293,6 +303,8 @@ class Probe final : public app::SnapshotListener
     std::int64_t m_stallCutNo;
     std::int64_t m_slowCutMs;
     bool m_corruptRecord;
+    std::uint32_t m_formatVersion;
+    std::vector<std::uint32_t> m_supportedFormats;
     std::function<void()> m_keepAlive = [] {};
     std::int64_t m_cuts = 0;
     std::int64_t m_salt = 0;
@@ -329,6 +341,20 @@ class Options
         return it == m_values.end() ? fallback : it->second;
     }
 
+    // A comma-separated list, empty when absent.
+    [[nodiscard]] std::vector<std::uint32_t> integers(const std::string& name) const
+    {
+        std::vector<std::uint32_t> values;
+        const std::string list = string(name, "");
+        for (std::size_t start = 0; start < list.size();)
+        {
+            const std::size_t end = std::min(list.find(',', start), list.size());
+            values.push_back(static_cast<std::uint32_t>(std::stoul(list.substr(start, end - start))));
+            start = end + 1;
+        }
+        return values;
+    }
+
   private:
     std::map<std::string, std::string> m_values;
 };
@@ -350,11 +376,16 @@ int main(const int argc, char** argv)
     context.aeronDir(options.string("aeron-dir", ""));
     const auto aeron = aeron::Aeron::connect(context);
 
-    Probe probe{ sourceId, options.integer("stall-cut-no", 0), options.integer("slow-cut-ms", 0),
-                 options.integer("corrupt-record", 0) != 0, options.integer("reply-every", 0) };
+    Probe probe{ sourceId,
+                 options.integer("stall-cut-no", 0),
+                 options.integer("slow-cut-ms", 0),
+                 options.integer("corrupt-record", 0) != 0,
+                 options.integer("reply-every", 0),
+                 static_cast<std::uint32_t>(options.integer("format-version", 1)),
+                 options.integers("supported-formats") };
     hosted::Application<Probe> application{
         { .sourceId = sourceId,
-          .snapshots = &probe,
+          .snapshots = options.integer("no-snapshots", 0) != 0 ? nullptr : &probe,
           .hostTimeoutMs = options.integer("host-timeout-ms", 3000),
           .hostName = options.string("host-name", org::limitless::seqeron::protocol::PROXY_DEFAULT_HOST_NAME) },
         probe

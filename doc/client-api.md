@@ -348,7 +348,7 @@ outlive the process ([`snapshot.md`](snapshot.md) §4.1).
 | write next record | `onSnapshot(MutableDirectBuffer buffer, int recordIndex)` | `onSnapshot(std::span<std::uint8_t> buffer, std::int32_t recordIndex)` | `OnSnapshot(IMutableDirectBuffer, int)` |
 | read one record | `onRestore(DirectBuffer buffer, int length, int recordIndex, int formatVersion)` | `onRestore(std::span<const std::uint8_t> record, std::int32_t recordIndex, std::uint32_t formatVersion)` | `OnRestore(IDirectBuffer, int length, int recordIndex, int formatVersion)` |
 | record format | `formatVersion()` | `formatVersion()` | `FormatVersion` |
-| formats it reads (default: its own) | `supportsFormatVersion(int formatVersion)` | `supportsFormatVersion(std::uint32_t formatVersion) const` | `SupportsFormatVersion(int formatVersion)` |
+| formats it reads (default: its own) | `supportsFormatVersion(int formatVersion)` | `supportedFormatVersions() const`, a `std::vector<std::uint32_t>` | `SupportsFormatVersion(int formatVersion)` |
 
 1. **At the cut**, before the next message is dispatched, the façade calls `onSnapshot` from `recordIndex` 0
    until it returns 0. Each call encodes one record (at most 65,535 bytes) and returns its length;
@@ -358,10 +358,10 @@ outlive the process ([`snapshot.md`](snapshot.md) §4.1).
    match and fences with `SNAPSHOT_DIVERGED` on a mismatch.
 3. **On start**, the newest confirmed file whose cut the recording holds is restored before any dispatch:
    `onRestore` once per record in write order, `recordIndex` 0 meaning clear state, each with the file's
-   `formatVersion`. A build that changes its format overrides `supportsFormatVersion` to keep reading the
-   formats it replaces ([`snapshot.md`](snapshot.md) §9). Dispatch resumes after the cut; with no such file,
+   `formatVersion`. A build that changes its format overrides `supportsFormatVersion` (C++
+   `supportedFormatVersions`) to keep reading the formats it replaces ([`snapshot.md`](snapshot.md) §9). Dispatch resumes after the cut; with no such file,
    from the start of the queue.
-4. **An unreadable file** (a `formatVersion` that `supportsFormatVersion` refuses) fences with
+4. **An unreadable file** (a `formatVersion` that `supportsFormatVersion` refuses, or C++'s list omits) fences with
    `SNAPSHOT_UNRESTORABLE` (C++/C# `ClusterError::SnapshotUnrestorable`; divergence is
    `ClusterError::SnapshotDiverged`). Corrupt records give way to the older confirmed file the instance keeps,
    or with none to a replay from the start, before `onRestore` sees any of them.

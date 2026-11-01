@@ -341,21 +341,25 @@ class ClientLink
     void sendAttach()
     {
         const std::uint32_t format = m_snapshots != nullptr ? m_snapshots->formatVersion() : 0;
+        const std::vector<std::uint32_t> formats =
+            m_snapshots != nullptr ? m_snapshots->supportedFormatVersions() : std::vector<std::uint32_t>{};
         wire::Attach attach;
-        attach.wrapAndApplyHeader(out(), 0, m_out.size())
-            .clientId(m_clientId)
-            .requestId(m_requestId)
-            .kind(m_kind)
-            .protocolVersion(protocol::PROXY_PROTOCOL_VERSION)
-            .commandSessionId(m_hasCommands ? m_commands->sessionId() : -1)
-            .heartbeatCounterId(m_heartbeat->id())
-            .heartbeatRegistrationId(m_heartbeat->registrationId())
-            .appliedCounterId(m_applied->id())
-            .appliedRegistrationId(m_applied->registrationId())
-            .formatVersion(static_cast<std::int32_t>(format))
-            .supportedFormatsCount(1)
-            .next()
-            .formatVersion(static_cast<std::int32_t>(format));
+        auto& supported = attach.wrapAndApplyHeader(out(), 0, m_out.size())
+                              .clientId(m_clientId)
+                              .requestId(m_requestId)
+                              .kind(m_kind)
+                              .protocolVersion(protocol::PROXY_PROTOCOL_VERSION)
+                              .commandSessionId(m_hasCommands ? m_commands->sessionId() : -1)
+                              .heartbeatCounterId(m_heartbeat->id())
+                              .heartbeatRegistrationId(m_heartbeat->registrationId())
+                              .appliedCounterId(m_applied->id())
+                              .appliedRegistrationId(m_applied->registrationId())
+                              .formatVersion(static_cast<std::int32_t>(format))
+                              .supportedFormatsCount(static_cast<std::uint16_t>(formats.size()));
+        for (const std::uint32_t supportedFormat : formats)
+        {
+            supported.next().formatVersion(static_cast<std::int32_t>(supportedFormat));
+        }
         attach.putHostName(m_hostName).putAeronVersion(std::string{ aeron_version_text() });
         m_requests->offer(buffer(), 0, static_cast<aeron::util::index_t>(HEADER + attach.encodedLength()));
     }

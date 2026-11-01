@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <span>
+#include <vector>
 
 namespace org::limitless::seqeron::app {
 
@@ -24,16 +25,16 @@ class SnapshotListener
     virtual std::uint32_t formatVersion() const = 0;
 
     /**
-     * Says whether onRestore reads records of a format. A restore stops on a snapshot this refuses
-     * (doc/snapshot.md §9), so a build that changes formatVersion keeps the formats it replaces readable here
-     * until no instance holds a file of them.
+     * Lists the formats onRestore reads. A restore stops on a snapshot of a format this omits (doc/snapshot.md §9),
+     * so a build that changes formatVersion keeps the formats it replaces listed until no instance holds a file of
+     * them. A list rather than Java's supportsFormatVersion predicate, since the hosted stub sends it in its Attach
+     * (doc/hosted-facade-draft.md H-7). Called once per attach.
      *
-     * @param formatVersion the snapshot's, as its writer's formatVersion returned it
-     * @return by default, whether it is this build's own
+     * @return by default, this build's own alone
      */
-    virtual bool supportsFormatVersion(const std::uint32_t formatVersion) const
+    virtual std::vector<std::uint32_t> supportedFormatVersions() const
     {
-        return formatVersion == this->formatVersion();
+        return { formatVersion() };
     }
 
     /**
@@ -57,7 +58,7 @@ class SnapshotListener
      * @param record        the record, valid only during this call
      * @param recordIndex   0 on the first record, which is where the state is cleared: a restore that starts
      *                      over begins again at 0
-     * @param formatVersion the snapshot's, one supportsFormatVersion accepted
+     * @param formatVersion the snapshot's, one supportedFormatVersions lists
      */
     virtual void onRestore(std::span<const std::uint8_t> record, std::int32_t recordIndex,
                            std::uint32_t formatVersion) = 0;

@@ -22,6 +22,7 @@ import org.agrona.ExpandableRingBuffer;
 import org.agrona.BitUtil;
 import org.agrona.CloseHelper;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.collections.IntArrayList;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
@@ -178,7 +179,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private boolean lastCanPublish;
     private boolean collecting;
     private boolean endSeen;
+    private int endRecordCount;
     private boolean cutLost;
+    private int clientFormatVersion;
+    private IntArrayList clientFormats = new IntArrayList();
     private boolean stalled;
     private volatile boolean running = true;
     private volatile boolean fenced;
@@ -359,10 +363,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         final long heartbeatRegistrationId = attachIn.heartbeatRegistrationId();
         attachIn.appliedCounterId();
         attachIn.appliedRegistrationId();
-        attachIn.formatVersion();
-        final AttachDecoder.SupportedFormatsDecoder formats = attachIn.supportedFormats();
-        while (formats.hasNext()) {
-            formats.next();
+        final int formatVersion = attachIn.formatVersion();
+        final IntArrayList formats = new IntArrayList();
+        for (final AttachDecoder.SupportedFormatsDecoder format : attachIn.supportedFormats()) {
+            formats.addInt(format.formatVersion());
         }
         final byte[] hostNameBytes = new byte[attachIn.hostNameLength()];
         attachIn.getHostName(hostNameBytes, 0, hostNameBytes.length);
@@ -396,6 +400,8 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         }
         }
         liveClientId = clientId;
+        clientFormatVersion = formatVersion;
+        clientFormats = formats;
         gatewayKind = kind == Kind.GATEWAY;
         consumerKind = kind == Kind.CONSUMER;
         attachedSourceId = consumerKind ? -1 : sourceId;
@@ -486,6 +492,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
                           .ingressEndpoints(ingressEndpoints)
                           .listener(this)
                           .tuning(pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity))
+                          .snapshots(this, snapshotDir)
                           .build();
             attached = true;
             gateway.start(aeron);
@@ -559,6 +566,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         case SnapshotEndDecoder.TEMPLATE_ID -> {
             endIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
             if (collecting && endIn.roundId() == cutNo) {
+                endRecordCount = endIn.recordCount();
                 endSeen = true;
             }
         }
@@ -815,15 +823,23 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
 
     // ── SnapshotListener ─────────────────────────────────────────────────────────────────────────────────────
 
+    /** The attached client's, from its Attach. */
     @Override
     public int formatVersion() {
-        return 1;
+        return clientFormatVersion;
+    }
+
+    /** H-7: from the attached client's supportedFormats. */
+    @Override
+    public boolean supportsFormatVersion(final int formatVersion) {
+        return clientFormats.containsInt(formatVersion);
     }
 
     /**
      * The first call of a round sends the cut and waits for the client's records and end, then each call serves one.
      * Waiting, the host polls the command stream and keeps the cluster session alive; a client silent for
-     * {@code proxy.clientTimeoutMs}, or a host told to stop, abandons the round.
+     * {@code proxy.clientTimeoutMs}, a host told to stop, or an end that does not count the records sent (the client's
+     * -1 among them) abandons the round.
      */
     @Override
     public int onSnapshot(final MutableDirectBuffer buffer, final int recordIndex) {
@@ -849,6 +865,12 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             collecting = false;
             if (cutLost) {
                 log("ABANDON round: client lost or host stopping in cut %d after %d record(s)", cutNo, cutRecords.size());
+                return -1;
+            }
+            if (endRecordCount != cutRecords.size()) {
+                cutLost = true;
+                log("ABANDON round: the client abandoned cut %d: its end counts %d record(s), %d arrived", cutNo,
+                    endRecordCount, cutRecords.size());
                 return -1;
             }
         }

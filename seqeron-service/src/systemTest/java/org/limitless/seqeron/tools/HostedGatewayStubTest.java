@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
  * The C++ stub of a hosted Gateway (hosted::Gateway, doc/hosted-facade-draft.md §17.5) against the prototype host.
@@ -44,8 +45,10 @@ class HostedGatewayStubTest {
                                                         test.getTestClass().orElseThrow().getSimpleName(),
                                                         test.getTestMethod().orElseThrow().getName()));
         cluster.startAll();
-        cluster.loadTopology(Path.of(System.getProperty("seqeron.snapshotTopology"))
-                                 .resolveSibling("topology-test-hosted-gateway.xml"));
+    }
+
+    private void load(final String topology) {
+        cluster.loadTopology(Path.of(System.getProperty("seqeron.snapshotTopology")).resolveSibling(topology));
         leader = cluster.awaitLeader();
     }
 
@@ -69,6 +72,7 @@ class HostedGatewayStubTest {
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void aCppGatewayOpensConnectionsUnderItsOwnIds() {
+        load("topology-test-hosted-gateway.xml");
         startHost();
         startClient("--connections", "3", "--per-connection", "20", "--rounds", "1");
         check("the designation reached the stub", poll(() -> client.lastLine("activated 1 first 0") != null));
@@ -88,6 +92,7 @@ class HostedGatewayStubTest {
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void aCppGatewayResumesItsIdsAfterItsEdgeClosed() {
+        load("topology-test-hosted-gateway.xml");
         startHost();
         startClient("--connections", "3", "--per-connection", "20", "--rounds", "2");
         check("the first round finished", poll(() -> client.lastLine("round 1 closed") != null));
@@ -101,6 +106,37 @@ class HostedGatewayStubTest {
         System.out.println(host.lastLine("queue:"));
         System.out.println(client.lastLine("state: "));
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * The gateway's rounds reach the stub as cuts and are confirmed, and a successor stub is handed the last confirmed
+     * round before anything else (H-6, H-7).
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCppGatewayTakesPartInRoundsAndIsRestored() {
+        load("topology-test-hosted-gateway-snapshot.xml");
+        startHost();
+        final String[] holding = {"--connections", "1", "--per-connection", "5", "--hold", "1", "--snapshots", "1"};
+        startNamedClient("client", holding);
+        check("the stub answered a cut", poll(() -> client.lastLine("cut: sequenced") != null));
+        check("the gateway's rounds are confirmed", poll(() -> round() >= 2));
+        client.kill();
+        check("the host dropped the stub", poll(() -> !host.lines("CLIENT_LOST").isEmpty()));
+        startNamedClient("successor", holding);
+        check("the successor was handed the confirmed round", poll(() -> client.lastLine("restored record 0") != null));
+        check("the successor was designated", poll(() -> client.lastLine("activated 1") != null));
+        check("its rounds go on", poll(() -> client.lines("cut: sequenced").size() >= 2));
+        check("the host did not fence", host.lines("FENCED").isEmpty());
+        check("the stub was not fenced", client.lines("FENCED").isEmpty());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /** The gateway's last confirmed round on the host's member, 0 before its first. */
+    private long round() {
+        final long value = cluster.counter(leader, SeqeronCounters.APP_SNAPSHOT_ROUND_TYPE_ID,
+                                           "snapshotRound source=" + SOURCE_ID + " member=" + leader + " client=31");
+        return value == ClusterProcesses.NO_VALUE ? 0 : value;
     }
 
     private void verifyNoFaults() {
@@ -123,10 +159,14 @@ class HostedGatewayStubTest {
     }
 
     private void startClient(final String... arguments) {
+        startNamedClient("client", arguments);
+    }
+
+    private void startNamedClient(final String name, final String... arguments) {
         final List<String> command = new ArrayList<>(List.of(probe().toString(), "--aeron-dir", cluster.aeronDir(leader),
                                                              "--source-id", "" + SOURCE_ID));
         command.addAll(List.of(arguments));
-        client = cluster.nativeProcess("client", command.toArray(new String[0]));
+        client = cluster.nativeProcess(name, command.toArray(new String[0]));
     }
 
     private void check(final String what, final boolean ok) {

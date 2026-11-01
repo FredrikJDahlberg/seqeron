@@ -3,9 +3,10 @@
 // and with --rounds 2 closes the edge itself and does it again once the host reactivates it.
 //
 //   hosted_gateway_probe --aeron-dir D [--source-id 9] [--connections 3] [--per-connection 20] [--rounds 1]
-//                        [--hold 0] [--host-timeout-ms 3000] [--host-name hosted]
+//                        [--hold 0] [--host-timeout-ms 3000] [--host-name hosted] [--snapshots 0]
 //
 // With --hold 1 the connections stay open after the first round and a marker follows every 20 ms until it is stopped.
+// With --snapshots 1 it answers the host's cuts with one record, the count of its markers sequenced, and restores it.
 //
 // Exits 70 when fenced or the host is lost, 78 when the attach is refused and 3 when it times out.
 
@@ -16,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -62,7 +64,7 @@ __attribute__((format(printf, 1, 2))) void log(const char* format, ...)
     std::fflush(stdout);
 }
 
-class Probe
+class Probe final : public app::SnapshotListener
 {
   public:
     explicit Probe(const std::int32_t sourceId) : m_sourceId{ sourceId }
@@ -125,6 +127,33 @@ class Probe
     void onFenced(const app::ClusterError fence, const std::string& detail)
     {
         log("FENCED: %s - %s", app::clusterErrorName(fence), detail.c_str());
+    }
+
+    [[nodiscard]] std::uint32_t formatVersion() const override
+    {
+        return 1;
+    }
+
+    std::int32_t onSnapshot(const std::span<std::uint8_t> buffer, const std::int32_t recordIndex) override
+    {
+        if (recordIndex != 0)
+        {
+            return 0;
+        }
+        std::memcpy(buffer.data(), &m_sequenced, sizeof m_sequenced);
+        log("cut: sequenced %lld", static_cast<long long>(m_sequenced));
+        return sizeof m_sequenced;
+    }
+
+    void onRestore(const std::span<const std::uint8_t> record, const std::int32_t recordIndex,
+                   const std::uint32_t formatVersion) override
+    {
+        if (recordIndex == 0 && record.size() >= sizeof m_sequenced)
+        {
+            std::memcpy(&m_sequenced, record.data(), sizeof m_sequenced);
+        }
+        log("restored record %d (format %u): sequenced %lld", recordIndex, formatVersion,
+            static_cast<long long>(m_sequenced));
     }
 
     std::int32_t activations() const
@@ -258,6 +287,7 @@ int main(const int argc, char** argv)
 
     Probe probe{ sourceId };
     hosted::Gateway<Probe> gateway{ { .sourceId = sourceId,
+                                      .snapshots = options.integer("snapshots", 0) != 0 ? &probe : nullptr,
                                       .hostTimeoutMs = options.integer("host-timeout-ms", 3000),
                                       .hostName = options.string(
                                           "host-name", org::limitless::seqeron::protocol::PROXY_DEFAULT_HOST_NAME) },

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The hosted-façade prototype's gateway (doc/hosted-facade-draft.md §17.5) taking part in snapshot rounds every 2 s:
+    one row, no pair. HostedGatewayStubTest loads it for the gateway's cut and restore.
+-->
+<topology xmlns="http://limitless.org/seqeron/topology/1">
+    <groups>
+        <group name="test" id="1"/>
+    </groups>
+
+    <gateways>
+        <gateway name="GW-H-A" id="10" sourceId="9" rank="0" group="test" snapshot="true"
+                 description="A hosted gateway, with no standby, in rounds"/>
+    </gateways>
+
+    <snapshots interval="2"/>
+</topology>

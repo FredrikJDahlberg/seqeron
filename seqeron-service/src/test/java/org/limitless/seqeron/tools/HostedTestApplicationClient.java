@@ -13,6 +13,7 @@ import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import org.agrona.DirectBuffer;
@@ -47,7 +48,9 @@ import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
  * {@code probe.sourceId} (16), {@code probe.intervalMs} (100), {@code client.stallCutNo} (0: stall in that cut, after
  * printing {@code IN CUT}, until killed), {@code client.slowCutMs} (0: spend that long in every cut, heartbeating,
  * before the record), {@code client.staleEpoch} (once leading, send one marker under the previous gate epoch first),
- * {@code client.ghost} (send one marker from a second publication on stream 304, which the host does not read: H-15), {@code client.corruptRecord} (write a digest one off in every snapshot record), {@code
+ * {@code client.ghost} (send one marker from a second publication on stream 304, which the host does not read: H-15), {@code client.corruptRecord} (write a digest one off in every snapshot record), {@code client.abandonCuts} (answer
+ * every cut with {@code SnapshotEnd(-1)} and no record), {@code client.formatVersion} (1: the format it writes), {@code
+ * client.supportedFormats} (the formats it reads, comma-separated; its own by default), {@code
  * client.hostTimeoutMs} (3000), {@code client.flood} (publish as fast as the window allows), {@code client.maxMarkers} (0: no limit; else
  * offer that many and go on counting), {@code
  * client.ignoreWindow} (a control: do not keep H-5's window, so the host must close the attachment).
@@ -72,6 +75,10 @@ public final class HostedTestApplicationClient {
     private final boolean flood = Boolean.getBoolean("client.flood");
     private final boolean ignoreWindow = Boolean.getBoolean("client.ignoreWindow");
     private final boolean corruptRecord = Boolean.getBoolean("client.corruptRecord");
+    private final boolean abandonCuts = Boolean.getBoolean("client.abandonCuts");
+    private final int formatVersion = Integer.getInteger("client.formatVersion", 1);
+    private final int[] supportedFormats = Arrays.stream(
+        System.getProperty("client.supportedFormats", "" + formatVersion).split(",")).mapToInt(Integer::parseInt).toArray();
     private final long hostTimeoutNs = TimeUnit.MILLISECONDS.toNanos(Long.getLong("client.hostTimeoutMs", 3000));
     private final UnsafeBuffer out = new UnsafeBuffer(new byte[64 * 1024]);
     private final ClusterProbe.MarkerEncoder marker = new ClusterProbe.MarkerEncoder();
@@ -191,7 +198,7 @@ public final class HostedTestApplicationClient {
             replies.poll(onReply, 16);
             final long now = System.nanoTime();
             if (now >= nextAttachNs) {
-                attachOut.wrapAndApplyHeader(out, 0, headerOut)
+                final AttachEncoder.SupportedFormatsEncoder formats = attachOut.wrapAndApplyHeader(out, 0, headerOut)
                     .clientId(clientId)
                     .requestId(requestId)
                     .kind(Kind.APPLICATION)
@@ -201,10 +208,11 @@ public final class HostedTestApplicationClient {
                     .heartbeatRegistrationId(heartbeat.registrationId())
                     .appliedCounterId(applied.id())
                     .appliedRegistrationId(applied.registrationId())
-                    .formatVersion(1)
-                    .supportedFormatsCount(1)
-                    .next()
-                    .formatVersion(1);
+                    .formatVersion(formatVersion)
+                    .supportedFormatsCount(supportedFormats.length);
+                for (final int supported : supportedFormats) {
+                    formats.next().formatVersion(supported);
+                }
                 final byte[] hostName = System.getProperty("client.hostName", ProxyProtocol.DEFAULT_HOST_NAME).getBytes(StandardCharsets.UTF_8);
                 final byte[] aeronVersion = AeronVersion.VERSION.getBytes(StandardCharsets.UTF_8);
                 attachOut.putHostName(hostName, 0, hostName.length).putAeronVersion(aeronVersion, 0, aeronVersion.length);
@@ -330,6 +338,12 @@ public final class HostedTestApplicationClient {
     /** One record: the marker count, then the digest. The state is as of the last payload applied. */
     private void onCut(final long cutNo) {
         cuts++;
+        if (abandonCuts) {
+            endOut.wrapAndApplyHeader(out, 0, headerOut).roundId(cutNo).recordCount(-1);
+            send(commands, ProxyProtocol.HEADER + endOut.encodedLength());
+            log("abandoned cut %d", cutNo);
+            return;
+        }
         if (cuts == stallCutNo) {
             log("IN CUT round %d", cutNo);
             try {

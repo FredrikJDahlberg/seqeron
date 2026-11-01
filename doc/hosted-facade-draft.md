@@ -235,8 +235,8 @@ concern the listener apply unchanged.
   anything, calling `onRestore` once per record with no begin, end or count. The host forwards each call as a
   `RestoreRecord` on stream 303 in call order, so the records precede every `Payload` and no handshake is needed. A
   client that receives no `RestoreRecord` starts empty; one that receives them resets its state at `recordIndex` 0.
-  The host's `supportsFormatVersion` answers from the client's `supportedFormat` list; a format it lacks fences
-  `SNAPSHOT_UNRESTORABLE`.
+  The host's `supportsFormatVersion` answers from the client's `supportedFormat` list, which the C++ stub takes from
+  its listener's `supportedFormatVersions()`; a format it lacks fences `SNAPSHOT_UNRESTORABLE`.
 - **H-8. An attach starts a façade.** `Attach` follows the replayer's request rules: `clientId` is drawn once from
   the client's driver (`Aeron.nextCorrelationId`, **R-4**), and `requestId` rises with every new `Attach` and is
   kept on a resend (**R-1**). Before it attaches, the client allocates its counters and, unless it is a Consumer,
@@ -711,6 +711,9 @@ are **H-3** and **H-4** as specified: the client learns of no drop and counts wh
 | a new term with the same leader | the host saw `not leading` and `leading` in the same millisecond, the epoch rose by two, and the eight commands in flight were dropped by their epoch and not placed (observed before the queue, when the host answered each drop) |
 | control: the host does not check the epoch | the stale marker was placed and sequenced, and the test failed on the decline, on both stale-marker checks and on the exactly-once count |
 | control: the client writes a digest one off | the host fenced `SNAPSHOT_DIVERGED`, sent `Fenced`, the client exited 70, and no direct replica fenced |
+| the client abandons every cut (`SnapshotEnd(-1)`; the C++ stub with no `SnapshotListener`) | the host abandoned each round, the hosted replica confirmed none, and no instance fenced. Before the host read `recordCount` it took the records it held, none, for the client's state and fenced `SNAPSHOT_DIVERGED` |
+| the client is replaced by a build that reads format 2 alone, the confirmed round format 1 | the host fenced `SNAPSHOT_UNRESTORABLE` and the client was handed no record. Before the host read the `Attach`'s formats it wrote every round as format 1 and restored format 1 to any client |
+| the same, by a build that writes format 2 and still reads format 1 | the client was handed the round as format 1, its rounds went on agreeing with the direct replicas, and nothing fenced. Before the C++ stub sent its listener's `supportedFormatVersions()` it declared its own format alone and was fenced `SNAPSHOT_UNRESTORABLE` |
 
 Four findings from it are in the rules above: the host could not hold the session while it waited in a cut, which
 `Application.keepAlive()` now allows (**H-6**); the façade offers no restore begin, end or count (**H-7**); a client
@@ -727,7 +730,7 @@ The command queue and window have their own scenarios (`HostedCommandQueueTest`)
 and a window of 1,024 bytes, a stub that ignores the window, and a gate edge across a paused leader (17 queued
 commands dropped, 4,197 offered, 4,180 sequenced, none out of order).
 
-Not covered: a held ingress of seconds, a hosted `Gateway` pair's snapshots, a
+Not covered: a held ingress of seconds, the snapshots of a hosted `Gateway` pair (a single gateway's are), a
 host killed in a cut, a leader killed and not paused, state of more than one record or a record near the 65,535-byte
 limit, and a C# stub. Liveness by counter, the attach of **H-8**, the stub's other local checks and a C++ stub of an
 `Application` are covered by §17.11.1.
@@ -762,13 +765,15 @@ Five system tests drive the stubs against the Java host, with `HOSTED_PROBE` nam
   corrupt record fenced with `SNAPSHOT_DIVERGED`, each check as with the Java client and the direct replicas
   comparing the stub's rounds (**A-7**). Not run with it: the stale-epoch scenario and the ghost command, which need
   a client that sends what the stub never would.
-- `HostedGatewayStubTest` (`hosted_gateway_probe`, beside `hosted_probe`; one gateway row, no standby, no snapshot
-  policy): the stub opens three connections under the ids the first `Role` named (0, 1, 2), publishes 20 markers on each,
+- `HostedGatewayStubTest` (`hosted_gateway_probe`, beside `hosted_probe`; one gateway row, no standby): with no
+  snapshot policy, the stub opens three connections under the ids the first `Role` named (0, 1, 2), publishes 20 markers on each,
   and every one is sequenced under its own `connectionId`; the three `ConnectionOpened` and three `ConnectionClosed`
   reach the listener. A `Publish` that reached the host before its `ConnectionOpened` was placed stayed at the head
   (`headDeclines` 1), and nothing fenced. In a second scenario the stub then calls `gateClosed()`: the host takes the
   edge down and asks again with a second `Role` whose `firstConnectionId` is 3, past the highest id issued, and three
-  more connections run the same way.
+  more connections run the same way. In a third, on a row with `snapshot="true"` and rounds every 2 s, the stub answers
+  each cut with one record, rounds are confirmed, and a successor stub attached after a `kill -9` is handed the last
+  confirmed round before its `Role`.
 - `HostedGatewayFailoverTest` (a pair, `GW-H-A` and `GW-H-B`, each a host and a stub on its own member, no snapshot
   policy): the active holds three connections and publishes steadily. With its stub killed, its host logs `CLIENT_LOST`
   and the standby's `Role` carries `firstConnectionId` 3, past the active's ids; its three connections and 60 markers
