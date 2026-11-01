@@ -12,6 +12,7 @@ import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
@@ -46,6 +47,7 @@ class HostedCppStubTest {
     private ClusterProcesses.Child host;
     private ClusterProcesses.Child client;
     private int leader;
+    private int hostMember;
     private final List<String> failures = new ArrayList<>();
 
     @BeforeEach
@@ -58,6 +60,7 @@ class HostedCppStubTest {
         cluster.loadTopology(Path.of(System.getProperty("seqeron.snapshotTopology"))
                                  .resolveSibling("topology-test-hosted-quiet.xml"));
         leader = cluster.awaitLeader();
+        hostMember = leader;
     }
 
     @AfterEach
@@ -172,7 +175,7 @@ class HostedCppStubTest {
      * The host's façade connects while the cluster has no leader (both followers paused, the leader stood down for want
      * of a quorum), a wait of seconds in the cluster connect. The wait spins on the façade's idle strategy, which
      * writes the host heartbeat (H-10), so the stub on its default 3 s host timeout keeps the host. How the connect
-     * ends is Aeron's: one whose request reached no leader may time out after the election, and the host with it.
+     * ends is Aeron's: one whose request reached no leader may time out after the election, and the host then exits 70.
      */
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
@@ -197,6 +200,27 @@ class HostedCppStubTest {
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
+    /**
+     * The façade's cluster connect fails: the host runs on a follower, whose {@code aeron:ipc} ingress never answers,
+     * and its UDP ingress names the ports of members this cluster does not have. The host says why and exits 70; the
+     * stub loses it.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aHostWhoseFacadeCannotReachTheClusterExits70() {
+        hostMember = (leader + 1) % ClusterProcesses.MEMBERS;
+        final String absent = "0=localhost:" + PortLayout.ingressPort(ClusterProcesses.MEMBERS) + ",1=localhost:" +
+                              PortLayout.ingressPort(ClusterProcesses.MEMBERS + 1);
+        startHost("proxy.spin=true", "proxy.ingressEndpoints=" + absent);
+        startClient("--interval-ms", "10", "--max-markers", "100");
+        final int status = host.awaitExit(Duration.ofSeconds(60));
+        check("the host exited 70 (exited " + status + ")", status == 70);
+        check("the host said why", host.lastLine("CLUSTER_UNREACHABLE") != null);
+        check("the host did not crash", host.lines("Exception in thread").isEmpty());
+        check("the stub lost the host", poll(() -> client.lastLine("HOST_LOST") != null));
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
     private static void sleep(final long ms) {
         try {
             Thread.sleep(ms);
@@ -209,13 +233,13 @@ class HostedCppStubTest {
         final List<String> all = new ArrayList<>(List.of("proxy.sourceId=" + SOURCE_ID, "proxy.clientId=31",
                                                          "proxy.snapshotDir=" + baseDir.resolve("snap")));
         all.addAll(List.of(properties));
-        host = cluster.proxy("host", leader, all.toArray(new String[0]));
+        host = cluster.proxy("host", hostMember, all.toArray(new String[0]));
         host.awaitLine("host ready", Duration.ofSeconds(30));
     }
 
     private void startClient(final String... arguments) {
         final List<String> command = new ArrayList<>(List.of(System.getProperty("seqeron.hostedProbe"), "--aeron-dir",
-                                                             cluster.aeronDir(leader), "--source-id",
+                                                             cluster.aeronDir(hostMember), "--source-id",
                                                              "" + SOURCE_ID));
         command.addAll(List.of(arguments));
         client = cluster.nativeProcess("client", command.toArray(new String[0]));

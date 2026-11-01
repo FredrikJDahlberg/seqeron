@@ -347,6 +347,7 @@ Where they differ:
 | member leader changes | host emits `Gate(leading=false)` with a new epoch in stream order and drops every command of an earlier epoch (**H-3**); the client's unanswered leader work is redispatched at the next open (**A-2**) |
 | client slower than the queue | host back-pressured and the client reads nothing of stream 303 for half the queue-stall timeout: `CLIENT_STALLED`; a slow client that keeps reading is not fenced |
 | host's cluster session lost | the façade's own rules (`client-api.md`, "Guarantees"); `Fenced` is forwarded |
+| façade cannot reach the cluster | its connect times out or is refused: the host logs `CLUSTER_UNREACHABLE` and exits 70, and the client exits 70 (`HOST_LOST`) |
 | media driver lost | raises from the host's `doWork()` and from the client's, as for a direct façade |
 
 A hosted pair ends when either process does, so its availability is that of both; the cluster sees either loss
@@ -364,7 +365,7 @@ its unit does not restart on 78 (systemd's `RestartPreventExitStatus=78`).
 - **Either may start first.** A client resends `Attach` until it is answered (**H-8**); a host waits for one.
 - **A host fault restarts the client too, without the supervisor linking them.** A host that dies or goes silent
   makes the client exit 70 (`HOST_LOST`), so its own unit restarts it. A host that fences sends `Fenced` and
-  exits 70.
+  exits 70, and so does one whose façade cannot reach the cluster (`CLUSTER_UNREACHABLE`), without sending anything.
 - **A client that crashes or hangs does not restart the host.** On `CLIENT_LOST` the host closes the façade,
   releasing the cluster session, and waits for a new `Attach` (**H-9**); the restarted client attaches to the
   running host. A client that breaks the protocol, by exceeding the command window (**H-5**) or opening a
@@ -764,7 +765,9 @@ Five system tests drive the stubs against the Java host, with `HOSTED_PROBE` nam
   are each sequenced once under the sourceId, connectionId and groupMask of their request. In a fifth the stub attaches
   while the cluster has no leader (both followers paused, the leader stood down), and the host waits in the façade's
   cluster connect for more than the stub's 3 s host timeout; the stub keeps the host, whose idle strategy beats
-  through the wait (**H-10**). Before it did, the stub gave the host up.
+  through the wait (**H-10**). Before it did, the stub gave the host up. In a sixth the host's façade cannot reach the
+  cluster (the host on a follower, its UDP ingress naming absent members): the host logs `CLUSTER_UNREACHABLE` and
+  exits 70, and the stub exits `HOST_LOST`. Before, the connect's exception escaped the host's main thread.
 - `HostedSnapshotTest` with `HOSTED_CLIENT=cpp` runs its clients as the probe: restore, cuts, a client `kill -9`
   with an immediate successor, a host `kill -9`, an abandoned cut, the 8 s cut, the leading hosted replica, and the
   corrupt record fenced with `SNAPSHOT_DIVERGED`, each check as with the Java client and the direct replicas

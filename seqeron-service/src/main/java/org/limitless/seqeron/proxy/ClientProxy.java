@@ -7,6 +7,7 @@ import io.aeron.AeronVersion;
 import io.aeron.ExclusivePublication;
 import io.aeron.Publication;
 import io.aeron.Subscription;
+import io.aeron.exceptions.AeronException;
 import io.aeron.FragmentAssembler;
 import io.aeron.logbuffer.FragmentHandler;
 import com.sun.management.ThreadMXBean;
@@ -81,7 +82,8 @@ import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
  * frames have crossed the loop, logs the bytes it allocated over the next window, for {@code HostedAllocationTest}.
  */
 public final class ClientProxy implements Application.Listener, Gateway.Listener, Consumer.Listener, SnapshotListener {
-    private static final int EXIT_FENCED = 70;
+    /** Fenced, or the cluster unreachable: restart me. */
+    private static final int EXIT_RESTART = 70;
     private static final int EXIT_CONFIG = 2;
     private static final long BACK_PRESSURE_NS = TimeUnit.SECONDS.toNanos(1);
 
@@ -205,6 +207,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private boolean stalled;
     private volatile boolean running = true;
     private volatile boolean fenced;
+    private boolean unreachable;
 
     public static void main(final String[] args) {
         final ClientProxy proxy;
@@ -275,7 +278,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         clientLiveness = new Liveness(aeron.countersReader(), clientTimeoutNs);
         log("host ready: member %d, sourceId %d, clientId %d", memberId, sourceId, clientId);
         final IdleStrategy idle = Boolean.getBoolean("proxy.spin") ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();
-        while (running && !fenced) {
+        while (running && !fenced && !unreachable) {
             ProxyProtocol.beat(hostHeartbeat);
             int work = attachRequests.poll(onAttachRequest, 16);
             if (live) {
@@ -298,7 +301,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         }
         closeFacade();
         aeron.close();
-        return fenced ? EXIT_FENCED : 0;
+        return fenced || unreachable ? EXIT_RESTART : 0;
     }
 
     /** Counts the allocation of this thread over a window of frames, after a warm-up for the JIT. */
@@ -450,12 +453,18 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
 
     /**
      * H-8: the façade is built only once the client's subscription has connected to the events publication, so every
-     * callback, the restore included, has a reader.
+     * callback, the restore included, has a reader. A façade that cannot reach the cluster stops the host.
      */
     private void connect() {
         final long now = System.nanoTime();
         if (events.isConnected()) {
-            startApp();
+            try {
+                startApp();
+            } catch (final AeronException ex) {
+                log("CLUSTER_UNREACHABLE: the façade's cluster connect failed — %s", ex);
+                closeFacade();
+                unreachable = true;
+            }
         } else if (now > connectDeadlineNs || clientLiveness.stale(now)) {
             closeApp("CLIENT_LOST: subscription did not connect within " + clientTimeoutNs / 1_000_000 + "ms");
         }
