@@ -54,7 +54,8 @@ import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
  * as a client with no snapshot listener, reading no format, and log any cut it is sent), {@code
  * client.hostTimeoutMs} (3000), {@code client.flood} (publish as fast as the window allows), {@code client.maxMarkers} (0: no limit; else
  * offer that many and go on counting), {@code
- * client.ignoreWindow} (a control: do not keep H-5's window, so the host must close the attachment).
+ * client.ignoreWindow} (a control: do not keep H-5's window, so the host must close the attachment), {@code
+ * client.badSeq} (0: the sixth marker's {@code commandSeq} is the next one plus this, which the host must fence: H-17).
  */
 public final class HostedTestApplicationClient {
     private static final int EXIT_FENCED = 70;
@@ -75,6 +76,7 @@ public final class HostedTestApplicationClient {
     private final long maxMarkers = Long.getLong("client.maxMarkers", 0);
     private final boolean flood = Boolean.getBoolean("client.flood");
     private final boolean ignoreWindow = Boolean.getBoolean("client.ignoreWindow");
+    private final long badSeq = Long.getLong("client.badSeq", 0);
     private final boolean corruptRecord = Boolean.getBoolean("client.corruptRecord");
     private final boolean abandonCuts = Boolean.getBoolean("client.abandonCuts");
     private final boolean noSnapshots = Boolean.getBoolean("client.noSnapshots");
@@ -395,7 +397,8 @@ public final class HostedTestApplicationClient {
             declined++;
             return false;
         }
-        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).commandSeq(nextCommandSeq).connectionId(0)
+        final long commandSeq = badSeq != 0 && markerSeqNo == 5 ? nextCommandSeq + badSeq : nextCommandSeq;
+        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).commandSeq(commandSeq).connectionId(0)
             .groupMask(0).payloadId(ClusterProbe.PROBE_PAYLOAD_ID).putBody(marker.payload(), 0, length);
         if (commands.offer(out, 0, messageLength) < 0) {
             declined++;
