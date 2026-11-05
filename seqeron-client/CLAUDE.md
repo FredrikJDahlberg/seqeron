@@ -1,17 +1,17 @@
 # Client tier
 
-**The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
-the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
+**The producer side is a Java/C# port pair.** Java's `ClusterStreamSender`/`IngressPublisher` carry
+the names and semantics of the retired C++ files (branch `cpp-direct-client`) — `connectColocated` (IPC ingress on the co-located member, UDP
 endpoints when it is not leading), a `send` that spins through back-pressure and an election rather than
 dropping the frame — unless a new leader arrives mid-spin while its `IngressTracker` holds, when it places
 nothing and returns false — a self-throttling `keepAlive`, and the three-valued `Publish`. They are far smaller
-than their twins because `AeronCluster` already is the cluster protocol that `ClusterStreamSender.hpp`
-implements by hand; what the Java side adds is only what that client does not do. Two divergences are
+than their twins because `AeronCluster` already is the cluster protocol that the retired
+`ClusterStreamSender.hpp` implemented by hand; what the Java side adds is only what that client does not do. Two divergences are
 deliberate and documented in the class: the payload arrives pre-encoded rather than through a `Fill` over an
 encoder (Java's SBE codecs share no interface), and leadership moving off the co-located member costs a
 session rather than a publication swap (`AeronCluster` owns its publication). `IngressSender` exists so
-`IngressPublisher` has a seam the Java suite can drive without an Aeron runtime — the C++ transport seam
-has no Java equivalent, so the state machine those 868 C++ test lines cover is Aeron's here, not ours.
+`IngressPublisher` has a seam the Java suite can drive without an Aeron runtime — the retired C++ transport seam
+had no Java equivalent, so the state machine its 868 test lines covered is Aeron's here, not ours.
 What is left of ours that is easy to get wrong is split off and unit-tested: **`IngressStallPolicy`**
 (which offer results are terminal — `CLOSED` is not, it is an election in progress). `ClusterStreamSender`
 itself is then the Aeron adapter, whose one other decision — replacing an IPC session whose leader moved
@@ -24,15 +24,15 @@ failover silently loses whatever the old leader had not committed — the sessio
 `sequencer/client/PendingSends` is the confirm-on-queue tracker (spec §16 A-4, A-5): a producer gives it to
 `IngressPublisher` as its `IngressTracker` (which tracks what it places and declines while it holds or is
 full) and to the sender with `setIngressHold`, feeds it its own queue and each `LeadershipChanged`'s term, and
-resends what a term change or a closed session lost. Every language,
+resends what a term change or a closed session lost. Java and C#,
 case for case, with a property test asserting exactly-once, in-order delivery across random failovers;
-`FailoverProcessTest` proves the same across a real leader kill, `cpp-client-test.sh` for C++ and
-`csharp-client-test.sh` for C#.
+`FailoverProcessTest` proves the same across a real leader kill, `csharp-client-test.sh` for C#.
 
-**The C++ half is a client library, not a program.** `seqeron_core` is a header-only INTERFACE
-target and the only binaries the build produces are `core_tests` and `cluster_probe`, the tool
-`cpp-client-test.sh` drives. There is **no C++ replay server** —
-the server side of the replay protocol is Java only.
+**The C++ half is the hosted client stubs (`hosted/`), a library and not a program.** `seqeron_core` is a
+header-only INTERFACE target and the only binaries the build produces are `core_tests` and the probes
+(`hosted_probe`, `hosted_gateway_probe`, `hosted_consumer_probe`) that the `Hosted*Test` system tests drive when
+`HOSTED_PROBE` names `hosted_probe`. The direct C++ client is retired: branch `cpp-direct-client`, tag
+`cpp-direct-client-final`. There is **no C++ replay server** — the server side of the replay protocol is Java only.
 
 `seqeron-service/src/main/ops/` holds the Prometheus and Grafana provisioning the metrics scripts feed
 (`doc/ops.md`); it is deployment configuration, not code.
@@ -81,11 +81,11 @@ ones.
 decision it makes about them lives in **`ReplayerRecovery`**, which holds none of them and is where the
 unit suite drives the walk/resume/gap state machine — `ReplayerRecoveryTest` names one situation per case,
 `ReplayerRecoveryPropertyTest` drives seeded fault sequences against a model of the archive/queue/Replayer and
-asserts gap-freedom and convergence over whatever comes out; both tests exist in every language. What the model
+asserts gap-freedom and convergence over whatever comes out; both tests exist in Java and C#. What the model
 assumes of the Replayer is held to `ReplayerService` itself by `seqeron-service`'s `ReplaySeamTest`, Java only, as
-the server is, through the test-side `ReplayerRecoveryBridge`, since neither the class nor its transport is public. The Java,
-C++ and C# classes are faithful ports of each other: same protocol, same state machine, same adapter/seam
-split. Keep all six files and all six tests in step — the three `ReplayerRecoveryTest`s are case for
+the server is, through the test-side `ReplayerRecoveryBridge`, since neither the class nor its transport is public. The Java
+and C# classes are faithful ports of each other: same protocol, same state machine, same adapter/seam
+split. Keep all four files and all four tests in step — the two `ReplayerRecoveryTest`s are case for
 case in the same order precisely so a divergence is visible as a missing case rather than as a
-runtime decode failure on a live queue, and the three property tests draw from `SplitMix64` in the same order, so
+runtime decode failure on a live queue, and the two property tests draw from `SplitMix64` in the same order, so
 a seed makes the same fault sequence in each.

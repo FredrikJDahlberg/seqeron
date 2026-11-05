@@ -11,8 +11,8 @@ part of the protocol.
 
 **Conventions.** MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. Rules carry stable
 identifiers that code and tests cite: **F** frame, **T** transport, **S** sequencer, **P** payload,
-**C** registration, **R** replay, **V** versioning, **E** encoding, **A** application. Section numbers
-are stable too, which is why §15 is unassigned. All SBE schemas here are little-endian.
+**C** registration, **R** replay, **V** versioning, **E** encoding, **A** application, **H** hosted façade. Section
+numbers are stable too, which is why §15 is unassigned. All SBE schemas here are little-endian.
 
 ---
 
@@ -74,6 +74,8 @@ Where each kind of message travels, and which of those streams is the durable re
 | replay | stream 201 | archive bytes, identical to the queue replayed | no |
 | replay request | stream 202 | schema 212, client → replayer | no |
 | replay control | stream 203 | schema 212, replayer → client | no |
+| hosted attach | streams 301 and 302, `aeron:ipc` | schema 218, client → host and host → client (§17.2) | no |
+| hosted events and commands | streams 303 and 304, `aeron:ipc`, one image each per attachment | schema 218, host → client and client → host (§17.2) | no |
 
 - **F-1. The queues are the record.** Without a `<snapshots>` policy the cluster takes no snapshots and recovers
   by replaying the full log from `clusterSeqNo` 1, so the queues' bytes are the only durable copy of a frame; with
@@ -775,12 +777,14 @@ Adding groups to a running cluster is proposed, not implemented; the rules above
 
 ## 8. Schemas
 
-seqeron owns two SBE schemas: the frames on the log and the replay control protocol beside it.
+seqeron owns three SBE schemas: the frames on the log, the replay control protocol beside it, and the hosted façade
+protocol between a host and its client (§17).
 
 | file | schema id | contains | change policy (§11) |
 | --- | --- | --- | --- |
 | `sbe-frame.xml` | 210 | the nine top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the thirteen submitted system payloads | envelopes frozen; system events changeable under **V-3** |
 | `sbe-replay.xml` | 212 | the eight replay control messages (§10) | changed in place, no version bump |
+| `sbe-hosted.xml` | 218 | the hosted façade's messages (§17.3) | changed in place, `protocolVersion` raised (§17.7) |
 
 The envelopes and system messages are one schema because they have one owner, ship in one artifact and
 follow the same change rule. `version` stays 0 for the life of schema 210, including system message
@@ -1079,6 +1083,8 @@ so there is nothing to stay compatible with.
   which passes between the consensus module and the service container and never reaches a client.
   `csharp-client-test.sh` is the evidence, against a live cluster. It is rerun on every Aeron upgrade
   before the release is tagged, and `aeronDotnet` names the version it passed with.
+
+  A hosted stub (§17) is held to its driver's CnC version alone, not to the Aeron version (§17.7).
 - **V-2. Payload versioning is the application's.** A payload has exactly one encoder, its producer
   (**E-1**), so no two implementations need to agree; only an application's own old and new builds do.
   How it signals versions and what compatibility it guarantees are not specified here.
@@ -1301,3 +1307,426 @@ A-4 and A-5 apply within one producer process. A restarted producer, or a standb
 place, starts with nothing pending; and a frame lost with neither a leader change nor a session close
 (an ingress image that drops and rejoins within the session timeout) has no boundary to be counted
 against.
+
+---
+
+## 17. Hosted façade protocol
+
+Its rules carry the prefix **H**. Its ids are schema 218 (§8), streams 301–304 (§3) and counter type ids
+5300–5303 and 5297 (`ops.md`, "Counter type ids"). [`hosted-facade.md`](hosted-facade.md) is its design record: what
+it adds to and retires from the tree, its open questions, its measurements and the prototype's results.
+
+A **hosted façade** splits an `Application`, `Gateway` or `Consumer` across two processes on one host. The
+**host** is a Java process that runs the real façade (`app`) and owns everything of §16 that concerns the
+cluster: the session, confirmed ingress (**A-4**, **A-5**), the leader gate (**A-1**), group resolution
+(**A-8**, **A-9**), fencing, the replay and recovery path, and the snapshot files and rounds (**A-7**). The
+**client** is the application, in any language, whose only seqeron code is a thin stub with the façade's
+operation names. The host calls the client's listener over a stream rather than in-process; the client
+calls `publish`, `reply` and the connection operations over a second.
+
+**The aim is that no client re-implements an Aeron API or ports a seqeron state machine.** Today the C++
+client hand-writes the Aeron Cluster client protocol (`ClusterStreamSender`; Aeron's C++ client has no
+cluster API), and both the C++ and C# clients port `PendingSends`, `ReplayerRecovery`, `SnapshotStore` and
+the façades from Java, case for case. Hosted, they carry none of it, at the cost of one IPC hop per message.
+The motivation is a smaller code base, and with it less maintenance and complexity;
+[`hosted-facade.md`](hosted-facade.md) §1 sets what is added against what is retired.
+**The first stage is C++ alone**: the direct C++ façades are retired and the hosted stub is the only C++ client.
+The C# client stays direct. Java's direct façades stay, since the host is built on them.
+
+The client keeps what is the application's: its state, a deterministic reply (**A-3**), deterministic
+snapshot records (**A-6**) and `OutstandingWork` (**A-2**). The host's façade is built with no tracker.
+
+**The protocol reuses Aeron's and the replayer's patterns rather than inventing its own.** The host and client
+stand in the relation of Aeron Cluster's consensus module and its clustered service, which Aeron also runs as
+two processes over IPC:
+
+| here | precedent |
+| --- | --- |
+| stream 303: the façade's callbacks, in order | the log stream a clustered service follows |
+| stream 304: commands and snapshot records, always read, commands queued on the host (**H-5**) | the service-to-consensus-module stream, read in full, service messages queued in `PendingServiceMessageTracker` |
+| a command carries the gate epoch and is dropped once it has passed (**H-3**) | ingress carries `leadershipTermId`, and `ConsensusModuleAgent.onIngressMessage` drops a message of another term |
+| `Published` is an offer, which an epoch change can lose without notice (**H-4**) | `MOCKED_OFFER`: a clustered service's offer on a follower succeeds and sends nothing |
+| liveness and lag in counters, not messages (§17.2.1) | the driver's client heartbeat-timestamp counter, Aeron's position counters |
+| `Attach` with `clientId` and `requestId`, a resend answered again, `AttachPending` (**H-8**) | the replayer's `ReplayRequest`: **R-1**, **R-4**, `ReplayPending` |
+| shared streams to attach, then a session's own image (**H-15**) | streams 202/203, then `Replaying.replaySessionId` on stream 201 |
+| `SnapshotCut` answered by records and `SnapshotEnd` (**H-6**) | a snapshot in log order answered by `ServiceAck` |
+
+### 17.1 Scope
+
+- Host and client share a host and a media driver: the member's, or a gateway host's. The streams are
+  `aeron:ipc`; there is no UDP binding. A client on a host with no driver and no JVM is out of scope.
+- Trust is the Aeron directory's: streams 301 and 304 are writable and streams 302 and 303 readable by any process
+  that can open the host's directory, so the first process to attach wins (**H-8**). That is the boundary which
+  guards the queue and cluster ingress today. Restrict the directory to the application's user; `clientId`
+  (**H-15**) separates clients and is not a secret.
+- One client per host instance. A host runs one façade, for one `sourceId` (or gateway pair instance, or
+  consumer), configured through the host's own properties, and is named by a `hostName` unique on its driver; the
+  protocol carries no façade configuration. One process may run several hosts, each on its own thread with its own
+  Aeron client, and on a gateway host `ReplayerServer` runs them beside its Replayer (§17.6).
+- A hosted `Consumer` is the same protocol with fewer messages, as the direct `Consumer` has fewer callbacks: it
+  receives `Payload`, `CaughtUp`, `ClusterTime` and `Fenced`, and sends only `Attach` and `Detach`. It has no
+  stream 304, no `Gate`, `Role`, `GroupsResolved`, restore or `SnapshotCut`, and the host opens no cluster session
+  for it. Its read path (`ReplayerRecovery`, `ReplayerStreamReceiver`) is most of what a client would otherwise
+  port, so a consumer that is not hosted is the exception.
+
+### 17.2 Transport
+
+| stream | channel / stream id | direction | publication | carries |
+| --- | --- | --- | --- | --- |
+| attach requests | `aeron:ipc?term-length=64k`, stream 301 | client → host | shared by every client on the driver | `Attach`, `Detach` |
+| attach replies | `aeron:ipc?term-length=64k`, stream 302 | host → client | shared by every host on the driver | `Attached`, `AttachPending` |
+| events | `aeron:ipc`, stream 303 | host → client | one exclusive publication per attachment | the façade's callbacks |
+| commands | `aeron:ipc?term-length=1m`, stream 304 | client → host | one exclusive publication per attachment | commands, `Activated`, snapshot records |
+
+All four are unrecorded, carry schema 218, and never leave the node. Streams 303 and 304 are reliable. A host
+subscribes to 301, and a client to 302, untethered (`tether=false`), as a client subscribes to the replayer's 203: a
+reader that stops polling is left behind rather than holding back every other attach on the driver, and attach is
+resend-driven (**H-8**), so an `Attach` or reply it missed is sent again. A `Detach` is not resent: a host that
+misses one ends the attachment by **H-9** instead. **T-1** applies:
+a reader MUST check `MessageHeader.schemaId` is 218. A message above one MTU is fragmented by Aeron, up to an
+eighth of its stream's term. Stream 303 takes the driver's 16 MiB IPC default (`ops.md`), since its window is what
+absorbs a client that falls behind. Stream 304 takes 1 MiB: the host reads it every duty cycle (**H-5**), so it
+needs no depth, and its 128 KiB message limit holds a snapshot record (at most 65,535 bytes) and the largest
+command; at the default it would hold 48 MiB of the driver's shared memory per attachment. Streams 301 and 302
+carry a few small messages per attachment, so they take Aeron's minimum term, 64 KiB, whose 8 KiB message limit an
+`Attach` is far below; at the default they would hold 96 MiB between them.
+
+Streams 301 and 302 are the replayer's 202 and 203 for attachment: every host reads 301, and a client reads 302
+only until it is attached; untethered, neither back-pressures another's attach. Streams 303 and 304 are
+an attachment's own, as a replay is on stream 201: each side subscribes with the other's session id in the
+channel (`aeron:ipc?session-id=`), so a reader sees only its attachment's image and a reliable publication is
+held back only by its own peer.
+
+Neither end batches beyond what the transport does: one `Payload` per queue frame, so a cut, a `Gate` edge or a
+`Connection` falls between messages and needs no rule about a batch boundary, and each end polls with a fragment
+limit per duty cycle.
+
+#### 17.2.1 Counters
+
+Liveness and lag travel outside the streams, in the driver's counters, as the driver tracks each Aeron client by a
+heartbeat-timestamp counter (`DRIVER_HEARTBEAT_TYPE_ID`). Nothing a stream holds or back-pressures can delay them.
+
+| counter | written by | value | read by |
+| --- | --- | --- | --- |
+| client heartbeat | client | its monotonic clock in ms, every duty cycle, every spin of a retry (**H-5**) and every `keepAlive()` | host: `CLIENT_LOST` (**H-9**) |
+| client applied | client | `position` of the last `Payload` applied | host: lag (**H-14**) |
+| host heartbeat | host | its monotonic clock in ms, every duty cycle, every spin of a wait and every spin of the façade's ingress send (**H-10**) | client: `HOST_LOST` (§17.6) |
+| host retired | host | total SBE length of the windowed commands that have left the host's queue, placed or dropped | stub: the command window (**H-5**) |
+
+Each side allocates its own two counters with Aeron's `addCounter`, labelled with its `clientId`, before it
+attaches; `Attach` and `Attached` carry their ids and registration ids. **A heartbeat is stale when its value has
+not changed for the timeout, measured on the reader's own monotonic clock**, so no clock is compared across
+processes, and a reader that was itself blocked finds the counter changed and judges the writer alive. A counter its
+owner's driver has freed is stale. The driver may reuse a freed id, so a reader also takes a counter as stale once
+its state is no longer allocated or its registration id differs from the one it was given.
+
+### 17.3 Messages
+
+Attach, streams 301 and 302:
+
+| message | stream | fields | meaning |
+| --- | --- | --- | --- |
+| `Attach` | 301 | `clientId`, `requestId`, `hostName`, `kind` (Gateway, Application, Consumer), `protocolVersion`, `aeronVersion`, `commandSessionId`, `heartbeatCounterId` and `appliedCounterId` with their registration ids, `formatVersion`, repeating `supportedFormat` | starts a façade (**H-8**); `commandSessionId` is the client's stream 304 publication, absent for a Consumer |
+| `Detach` | 301 | `clientId` | orderly shutdown (**H-9**) |
+| `Attached` | 302 | `clientId`, `requestId`, `eventSessionId`, `heartbeatCounterId` and `retiredCounterId` with their registration ids, `commandWindow`, `sourceId` | accepts an `Attach`, or refuses it with `eventSessionId` `NO_ATTACH` (−1) and a `reason` (`BUSY`, `VERSION`, `KIND`), as `Replaying` refuses with `NO_REPLAY_NEEDED` (**R-2**) |
+| `AttachPending` | 302 | `clientId`, `requestId` | not now: the host is still closing a previous attachment's façade; resend, as for `ReplayPending` |
+
+Host → client, stream 303:
+
+| message | fields | meaning |
+| --- | --- | --- |
+| `GroupsResolved` | repeating `name`, `groupId`, `mask` | the `GroupDirectory`, once, before the first `Gate` or `Role` |
+| `RestoreRecord` | `recordIndex`, `formatVersion`, `data` | one `onRestore` call, in call order; `recordIndex` 0 means clear state. No records means start empty (**H-7**) |
+| `Payload` | `clusterSeqNo`, `groupSeqNo`, `sourceId`, `connectionId`, `groupMask`, `sourceSessionId`, `clusterTimestampNs`, `receiveTimeNs`, `position`, `payloadId`, then the payload bytes with their own `MessageHeader` | `onSequenced`: one application payload, with what the façade's `Payload` exposes |
+| `Connection` | `connectionId`, `opened`, `data` | Gateway only: `onConnectionOpened` / `onConnectionClosed` |
+| `ClusterTime` | `clusterTimeNs`, `receiveTimeNs` | `onClusterHeartbeat` |
+| `Gate` | `epoch`, `leading`, `canPublish`, `caughtUp` | every change of the façade's gate state, in event order: `leading` is `isLeading()` (Application) or `isServing()` (Gateway) and drives `onLeadershipChanged` and `OutstandingWork.onNotLeader()`; `canPublish` is `canPublish()` (Application) or `canAccept()` (Gateway), `leading` and ingress not held (**A-5**), and is what the stub's `canPublish()` returns (**H-16**); `epoch` is the host's (**H-3**) |
+| `Role` | `active`, `firstConnectionId` | Gateway only: `onActivated` / `onStandby`, sent before the `Gate` that follows it; the stub allocates connection ids from `firstConnectionId` (**H-4**) |
+| `CaughtUp` | `clusterSeqNo` | `onCaughtUp` |
+| `SnapshotCut` | `roundId` | write the records for this cut (**H-6**); `roundId` only pairs the cut with its records and end, numbered by the host within the attachment, and the cluster's round is the host's `seqeron_app_snapshot_round` (`ops.md`) |
+| `Dropped` | `firstSeq`, `lastSeq`, `reason` (`EPOCH`, `REFUSED`) | the host did not place the `Publish` commands `firstSeq` to `lastSeq` (**H-17**) |
+| `Resolved` | `through` | every `Publish` up to `commandSeq` `through` is decided; those not placed were named by a `Dropped` before it (**H-17**) |
+| `Fenced` | `error`, `detail` | `onFenced`: terminal |
+
+Client → host, stream 304. The host queues a command and places it later (**H-3**, **H-5**); it handles the
+rest as it reads them:
+
+| message | fields | handled | meaning |
+| --- | --- | --- | --- |
+| `Publish` | `epoch`, `commandSeq`, `connectionId`, `groupMask`, `payloadId`, `payload` | queued | `publish` (**H-4**) |
+| `Reply` | `epoch`, `sourceId`, `connectionId`, `groupMask`, `payloadId`, `payload` | queued | `reply`; the three ids are the request's `ReplyAddress` (**H-11**) |
+| `OpenConnection` | `epoch`, `connectionId`, `data` | queued | Gateway only: `openConnection`, with the id the stub allocated (**H-4**) |
+| `CloseConnection` | `epoch`, `connectionId` | queued | Gateway only: `closeConnection` |
+| `GateClosed` | `epoch` | queued | Gateway only: the edge closed on its own (`gateClosed()`) |
+| `Activated` | `opened` | on read | Gateway only: the result of `onActivated`, answering `Role` (§17.5) |
+| `SnapshotRecord` | `roundId`, `recordIndex`, `data` | on read | one `onSnapshot` result (**H-6**) |
+| `SnapshotEnd` | `roundId`, `recordCount` | on read | no more records; `recordCount` −1 abandons the round |
+
+The façade consumes seqeron's system frames on the host (topology rows, leadership, snapshot rounds,
+`SessionClosed`, the connection lifecycle) and calls its listener with what a direct listener receives, so no
+system frame crosses to the client and the client needs no frame decoder (`unwrapFrame`,
+`SequencedFrameDecoder`). A payload is not re-encoded: the host copies its bytes, and the stub supplies the
+`Payload` accessors over the received message. The delivery rules of `client-api.md` ("Message delivery") that
+concern the listener apply unchanged.
+
+### 17.4 Rules
+
+- **H-1. The host runs the real façade.** Every rule of §16 that the façade enforces holds for the hosted
+  pair as for a direct one, except **A-2**, **A-3** and **A-6**, which are the client's. The host adds two of its
+  own: it queues the client's commands (**H-5**), and it drops a command whose epoch has passed (**H-3**), which a
+  direct `Gateway` would place, since `Gateway.publish` checks no gate.
+- **H-2. Events are the façade's callbacks, in order, once, applied in stream order.** `Payload`, `Connection`,
+  `ClusterTime`, `Gate`, `Role` and `CaughtUp` share stream 303 and are the façade's callbacks in the order it made
+  them. A client that sees `Gate` has applied every `Payload` before it, which is what **A-1**'s "caught up"
+  requires of state the host cannot see.
+- **H-3. A command is placed only in the epoch it was decided in.** The host's epoch rises at every edge of
+  `leading`, opening or closing, the close and reopen of a new term with the same leader included; a change of
+  `canPublish` or `caughtUp` alone leaves it. `Gate` carries it, and the stub stamps every queued command with the
+  epoch of the last `Gate` it applied, or the one above it once it has answered `Activated(true)` (§17.5). The host
+  places the command at the head of its queue when that epoch is current and `leading` is true, and drops it,
+  counted, otherwise, as the consensus module acts on ingress only in its current term and drops the rest without a
+  reply. A command is therefore never placed under a gate other than the one its client decided it under: one in
+  flight over an edge is dropped, never placed late. What a client does not get placed at an edge is exactly what it stamped with
+  an earlier epoch that the host had not yet placed, and the host reports each such `Publish` (**H-17**). The client runs `OutstandingWork.onNotLeader()` when it applies
+  `Gate` with `leading=false`, before anything else it does on that event, and **A-2** redispatches the tracked work
+  at the next open.
+- **H-4. A command is an offer, as in a direct façade.** `publish` and `reply` return at once with the result of an
+  offer (`protocol.Publish`), `openConnection` with an id or `NO_CONNECTION`, and the host sends nothing back.
+  `Published` means the stub offered the command to stream 304, which the host places if its epoch is still current
+  when it reaches the head of the queue (**H-3**); the host's confirmed ingress (**A-4**, **A-5**) carries it on
+  from there. The stub retains the command until the host reports its fate and resends one that was dropped at an edge (**H-17**), so a `Published` `Publish` is lost only with the client or the host process.
+  `Declined` is retryable: the stub's mirror says the gate is shut or ingress held (**H-16**), the command window is
+  full (**H-5**), or stream 304 is back-pressured or not yet connected. `Refused` is final and is the stub's own
+  check, the direct façade's local ones: a payload above `MAX_PAYLOAD_LENGTH`, a retired `payloadId`, a `groupMask`
+  naming a group `GroupsResolved` lacks. The caller retries as against a direct façade, and a `Declined` `Reply`
+  releases its dispatch (**A-2**) as a failed reply offer does there.
+  `openConnection` takes its id from the stub: ids start at the last `Role`'s `firstConnectionId` and count up, as
+  the façade allocates them. The stub returns `NO_CONNECTION` when its mirror says it is not serving, the command
+  window is full, or stream 304 is back-pressured or not yet connected, and takes the id only once the offer lands,
+  so a `NO_CONNECTION` uses none up. While `canAccept()` is true, `NO_CONNECTION` is retryable, as `Declined` is.
+  The host opens the connection through the façade when it places the `OpenConnection`, and fences if the façade
+  allocates a different id.
+- **H-5. The host reads stream 304 every duty cycle, and queues the commands.** As the consensus module reads a
+  service's messages and acks from one stream and appends the messages from its own tracker, the host never stops
+  reading at a command it cannot place yet. It moves each queued message (§17.3) into a FIFO of its own and handles
+  the others as it reads them, including while it waits in `onActivated` or in a cut. The one stretch it reads
+  neither 301 nor 304 is a façade send that spins through an election, up to the send's 10 s stall bound (**H-10**).
+  Each duty cycle it places commands from the head of the queue by **H-3**, up to a per-cycle limit, until the queue
+  is empty or the façade declines one (ingress held, its tracker full, the transport back-pressured, or a `Publish`
+  whose connection's `ConnectionOpened` is not yet placed); that one stays at the head for the next cycle. The host
+  places commands only from its own duty cycle, never inside a façade callback, so a `reply` made inside
+  `onSequenced` is placed on a later cycle, in the order the commands were offered.
+  **The command window bounds the queue.** It covers `Publish`, `Reply` and `OpenConnection`, the three calls the
+  stub can decline (`Declined`, or `NO_CONNECTION` from `openConnection`, **H-4**), and counts each by its SBE
+  length: its `MessageHeader` and body, the length the stub encodes and the host reads, not the Aeron frame. The
+  host retired counter rises by that length as each leaves the queue, placed or dropped. The stub keeps the same sum
+  for the windowed commands it has offered and declines one that would put more than `commandWindow` bytes (from
+  `Attached`) between the two. `commandWindow` is at least the length of a `Reply` carrying a payload of
+  `MAX_PAYLOAD_LENGTH`, so every command fits it, and at most stream 304's publication window, half its 1 MiB term
+  or the driver's `aeron.ipc.publication.term.window.length` if that is smaller, so the window rather than the
+  stream's back-pressure declines a command. The window bounds the host's queue and the time a command waits in it,
+  and the host fences a client that exceeds it.
+  **What cannot be declined is outside the window.** `closeConnection()` and `gateClosed()` return nothing, and
+  `Activated`, `SnapshotRecord` and `SnapshotEnd` answer the host, so the stub retries each offer within the call
+  until it lands, writing the client heartbeat on every spin, as a direct `closeConnection` puts its work in a
+  backlog rather than fail. The retry is bounded by the host's duty cycle, or by the send spin when the host is in
+  one, and the heartbeat keeps a host that returns from that spin from judging the client lost. The host's queue
+  holds at most the window, one `CloseConnection` per open connection and one `GateClosed`.
+- **H-6. A snapshot cut is a barrier.** The host sends `SnapshotCut` at the point the façade calls `onSnapshot` for
+  the round: after the last `Payload` the façade dispatched before the cut and before any later one, and sends
+  nothing more on stream 303 until the round's `SnapshotEnd`. The client serializes its state as of the cut
+  (**A-6**), one `SnapshotRecord` per `onSnapshot` call, then sends `SnapshotEnd`. The host ends its poll of stream
+  304 after each `SnapshotRecord`, so it holds at most one, and returns it from the `onSnapshot` call it waits in,
+  0 for `SnapshotEnd` and −1 for one that abandons; commands it reads meanwhile are queued, not placed. **The host
+  keeps the cluster session alive while it waits**, by calling the façade's `keepAlive()` on every spin, so the
+  round is not bounded by `sequencer.sessionTimeoutMs`. It is bounded by the client: when the client heartbeat
+  counter is stale for `clientTimeoutMs`, the host returns −1 from `onSnapshot` (the façade abandons the round,
+  deleting its partial file) and closes the façade (`CLIENT_LOST`). A client that serializes for longer than
+  `clientTimeoutMs` calls `keepAlive()` from the callback (**H-14**). The host writes the file, computes the length
+  and `crc32c`, and compares them with the sequenced `SnapshotEnd` (**A-7**); a mismatch fences `SNAPSHOT_DIVERGED`,
+  and the client's records are what diverged.
+- **H-7. Restore precedes every `Payload`, by stream order alone.** The façade restores before it dispatches
+  anything, calling `onRestore` once per record with no begin, end or count. The host forwards each call as a
+  `RestoreRecord` on stream 303 in call order, so the records precede every `Payload` and no handshake is needed. A
+  client that receives no `RestoreRecord` starts empty; one that receives them resets its state at `recordIndex` 0.
+  The host's `supportsFormatVersion` answers from the client's `supportedFormat` list, which the C++ stub takes from
+  its listener's `supportedFormatVersions()`; a format it lacks fences `SNAPSHOT_UNRESTORABLE`. A client with no
+  listener lists none, and the host's façade then has none either: it takes part in no round and restores nothing,
+  as a direct façade given no listener.
+- **H-8. An attach starts a façade.** `Attach` follows the replayer's request rules: `clientId` is drawn once from
+  the client's driver (`Aeron.nextCorrelationId`, **R-4**), and `requestId` rises with every new `Attach` and is
+  kept on a resend (**R-1**). Before it attaches, the client allocates its counters and, unless it is a Consumer,
+  creates its exclusive publication on stream 304. A host answers only an `Attach` naming its own `hostName`. It
+  refuses a `protocolVersion` other than its own with `VERSION` (§17.7), and a `kind` other than its own with `KIND`,
+  and answers `AttachPending` while it is still closing a previous attachment's façade.
+  Otherwise it creates its stream 303 publication, subscribes to the client's stream 304 image and answers
+  `Attached` at once. It builds the façade only once that publication is connected, which only the attached client's
+  subscription makes it, so every callback has a reader, restore included, which the façade runs in its constructor;
+  it loses a client whose subscription does not connect within `clientTimeoutMs`. An attachment begins at the
+  `Attached` that accepts it; until it ends, the host answers a resend of that request with the same `Attached`, any
+  other `Attach` with `Attached(NO_ATTACH, BUSY)`, and acts on a `Detach` only from that `clientId`. A client
+  resends `Attach` until it hears `Attached` or a refusal, then closes its stream 302 subscription and subscribes to
+  stream 303; it retries on `BUSY`, exits 78 on `VERSION` or `KIND` (§17.6), and exits 70 after its attach timeout,
+  or when its stream 303 image has not connected within `hostTimeoutMs` of the `Attached` (`HOST_LOST`), since the
+  host has then closed the attachment.
+- **H-9. A loss ends it.** The host closes the façade, releasing the cluster session (so a standby takes over): on
+  `Detach`, discarding the commands it has not placed, as a direct `close()` discards what it has not placed; when
+  the client heartbeat counter is stale for `clientTimeoutMs` or the client's stream 304 image goes away
+  (`CLIENT_LOST`; a Consumer, which has no stream 304, by its counter alone); and when an offer to stream 303 stays
+  back-pressured while the publication's limit has not advanced for half the queue-stall timeout (`CLIENT_STALLED`).
+  The limit advances with whatever the client reads, so a client that is slow but reading is not stalled, as **R-3**
+  judges a replay by its publication's limit (`AeronReplayer.replayProgress`). Half the timeout puts
+  `CLIENT_STALLED` ahead of the façade's own `QUEUE_STALLED`: the façade checks that fence only in `doWork()`, which
+  cannot run during the spin, and counts from a `ClusterHeartbeat` dispatched at most a heartbeat period before the
+  spin began. The host then waits for a new `Attach`, which restores and replays from scratch: a restarted client
+  has no state, so the façade never resumes mid-stream.
+- **H-10. `clientTimeoutMs` MUST NOT exceed `sequencer.sessionTimeoutMs`** (default 5 s), so a hung client costs a
+  gateway's pair no longer to hand over than a hung direct gateway does. In return the host's duty cycle keeps the
+  cluster session alive while a client callback runs, and so does its wait in a snapshot cut (**H-6**); a slow
+  callback costs the cluster no more than a slow direct one. Liveness is read from a counter, so time the host
+  spends blocked in the façade, in a send that spins through an election, costs the client nothing. **Nor does it
+  cost the host**: the façade's builder takes the `IdleStrategy` that send and the cluster connect spin on
+  (`hosted-facade.md` §1), and the host's writes the host heartbeat on every spin. The client's `hostTimeoutMs`, the counterpart of `clientTimeoutMs`, is therefore not tied to the
+  send's 10 s stall bound. A hung host's session times out within `sequencer.sessionTimeoutMs` whatever the client
+  does, so `hostTimeoutMs` decides only how soon the client restarts the pair.
+- **H-11. `Reply` names its request by value.** `Payload` carries the request's `sourceId`, `connectionId` and
+  `groupMask`, which are its `ReplyAddress`, and `Reply` carries the same three, as the direct `reply` takes a
+  `ReplyAddress` the application kept. The host retains nothing per request.
+- **H-12. After `Fenced` the host sends nothing.** The host releases the cluster session before sending it,
+  as the façade does, and the client exits with 70.
+- **H-13. A payload is copied once.** The host never decodes a payload: it copies the queue's payload bytes into
+  `Payload`, and the stub reads them in place (§17.3).
+- **H-14. Liveness and lag are counters** (§17.2.1). A callback that spins calls `keepAlive()`, as for the direct
+  façades. The client writes its applied counter after each `Payload` it applies, and the host exports the
+  difference between its latest dispatched `position` and that counter, labelled with the client's `clientId`
+  (`ops.md`).
+- **H-15. An attachment is a pair of images.** Events and commands travel on exclusive publications made for the
+  attachment and read by session id, so a message a dead attachment left in a stream is on an image the next
+  attachment never reads, and no message on streams 303 and 304 carries an attachment id. On streams 301 and 302 a
+  client ignores a reply carrying another `clientId` (**R-4**) or a `requestId` other than its current one
+  (**R-1**).
+- **H-16. The stub's queries are mirrors.** `canPublish()`, `isLeading()`, `isServing()`, `canAccept()`,
+  `isCaughtUp()` and `lastClusterSeqNo()` return what the stub last applied from `Gate`, `CaughtUp` and `Payload`,
+  and from its own `Activated(true)` (§17.5). They lag the host by a hop and the client's polling, so a `publish`
+  that passes the stub's check can reach the host after the gate has closed, where its epoch has passed and it is
+  dropped (**H-3**). The `Gate` that closed it reaches the client in stream order, the host reports the drop and the
+  stub resends the `Publish` (**H-17**); `OutstandingWork` redispatches a `Reply` (**A-2**) as it does for work the
+  cluster lost at a failover.
+- **H-17. A `Publish` the host does not place is reported, and the stub resends it.** An Application stub numbers its
+  `Publish` commands `commandSeq` 1, 2, … within an attachment, stamps each with it, and keeps the encoded command
+  until the host has decided its fate; the retained bytes are bounded by twice `commandWindow` plus one command, and a `publish` that finds no room declines. The
+  host decides a `Publish` when it leaves the queue: placed, or not placed. For each run of consecutive `Publish`
+  commands not placed it sends `Dropped(firstSeq, lastSeq, reason)` on stream 303 and, once it has placed or
+  dropped what it takes in a duty cycle, `Resolved(through)` for the highest `commandSeq` decided. Stream order puts
+  every `Dropped` below `through` before the `Resolved`, so a stub that applies the events in order has the
+  complete fate of every `Publish` up to `through`: one that no `Dropped` names was placed, and the stub frees it.
+  `EPOCH` is a command whose epoch had passed (**H-3**). After the `Gate` that opens the new epoch, and once
+  `Resolved` covers every `Publish` stamped with an earlier epoch, the stub resends the `EPOCH` ones in
+  their original order and before any new `Publish`, each under a fresh `commandSeq` and the new epoch; until then
+  `publish` returns `Declined`. A resend the window or stream 304 declines is retried on the next duty cycle. The
+  `Publish` commands keep their order among themselves across any number of edges.
+  `REFUSED` is a command the host's façade refused (an unaddressable `groupMask`, a frame the sequencer would
+  reject), which the stub's own checks (**H-4**) should have caught. It is final: the stub does not resend it, and
+  raises the fault from its duty cycle as `ClusterError.CLIENT_PROTOCOL`, as for any breach of this protocol. A
+  group change cannot cause it, since the stub and the host resolve the same table, which is fixed (**S-8**). A
+  `Publish` the façade declines stays at the head of the queue (**H-5**) and is neither. A Gateway stub's `Publish`,
+  `Reply`, `OpenConnection`, `CloseConnection` and `GateClosed` carry `commandSeq` 0 (or none) and are not retained: a `Reply` is
+  tracked by **A-2**, and the others belong to a connection or an edge that the same edge ends. Nothing is retained
+  across an attachment: a client or host that is lost loses what it had not placed, as a direct producer that
+  dies does.
+
+### 17.5 Where a hosted façade differs from a direct one
+
+What `client-api.md` states for the hosted column. Every callback maps one to one: `onGroupsResolved` to
+`GroupsResolved`, `onLeadershipChanged` to `Gate`, `onActivated` and `onStandby` to `Role`, `onSequenced` to
+`Payload`, `onConnectionOpened` and `onConnectionClosed` to `Connection`, `onCaughtUp` to `CaughtUp`,
+`onClusterHeartbeat` to `ClusterTime`, `onFenced` to `Fenced`; and the calls to `Publish`, `Reply`,
+`OpenConnection`, `CloseConnection` and `GateClosed`. The pair, the election and `GatewayStarted`/`GatewayActive`
+are the cluster's and are unchanged: each gateway instance is a host and a client, and the cluster designates one.
+Where they differ:
+
+- **`Published` survives a gate edge (H-17).** Where the direct call that would have reached a shut gate returns
+  `Declined`, the hosted `publish` returns `Published` and the stub resends the command after the edge, so an
+  Application tracks its publishes in `OutstandingWork` (A-2) exactly as it does against a direct façade: a reply by
+  the request it answers, and nothing more. The one new rule is for a `Publish` the host refuses, which is a
+  protocol fault and not a retry (**H-17**). A Gateway's commands lost at an edge belong to connections the same
+  edge dropped.
+- **`onActivated` returns a boolean.** The host's listener sends `Role(active, firstConnectionId)` and waits for
+  the client's `Activated(opened)`, calling `keepAlive()` as it spins, then returns that value; `false` is retried
+  on the next `doWork()`, as in a direct gateway. It blocks the host's duty cycle for as long as the client's dial
+  takes, as a direct gateway's `onActivated` blocks its own. A direct gateway serves as soon as `onActivated`
+  returns true, so a stub that answers `Activated(true)` mirrors `leading` and `canPublish` as true at once and
+  stamps with the epoch one above its last `Gate`'s, the one the host's open edge takes (**H-3**); the `Gate` that
+  follows confirms it. An initiator can therefore open the connection it dialled without waiting for that `Gate`.
+- **`openConnection` returns an id the stub allocated** (**H-4**). `canAccept()` is the last `Gate`'s `canPublish`,
+  or true from the stub's own `Activated(true)`, so a client that checks it before accepting, as the contract asks,
+  rarely sees `NO_CONNECTION`. A direct gateway returns it only when not serving; the stub also returns it for a
+  full window or a back-pressured stream 304, which the caller retries (**H-4**). A connection accepted while an
+  edge is in flight is dropped by the host by its epoch and followed by the `Role` or `Gate` that closes the edge,
+  which drops every connection. `closeConnection` returns nothing.
+- **`publish` on a connection whose `ConnectionOpened` is unplaced is `Published`**, where the direct call returns
+  `Declined`: the command waits in the host's queue behind its `OpenConnection` (**H-5**).
+- **`onStandby` runs after the façade has stood down,** not before it moves on. A connection accepted in that
+  window is dropped by the standby, and its commands by their epoch.
+- **The queries lag** by a hop (**H-16**).
+- **A host fault ends the client.** A client that loses its host exits (§17.6), so a host crash drops a gateway's
+  edge where a direct gateway's equivalent was the process; a client crash costs the same as a direct one, and the
+  cluster hands over within `clientTimeoutMs`, which is no longer than the session timeout.
+
+### 17.6 Failure model and supervision
+
+| failure | effect |
+| --- | --- |
+| client crashes or hangs | its heartbeat counter is stale for `clientTimeoutMs` or its stream 304 image goes away: host closes the façade (`CLIENT_LOST`), session released; standby takes over. A hung client that resumes finds its stream 303 image gone, or never connected within `hostTimeoutMs` of `Attached`, and exits 70 (`HOST_LOST`) |
+| host crashes or hangs | its heartbeat counter is stale for `hostTimeoutMs` or its stream 303 image goes away: the client exits 70 (`HOST_LOST`); the cluster times out the host's session within `sequencer.sessionTimeoutMs` regardless |
+| member leader changes | host emits `Gate(leading=false)` with a new epoch in stream order and drops every command of an earlier epoch (**H-3**); the client's unanswered leader work is redispatched at the next open (**A-2**) |
+| client slower than the queue | host back-pressured and the client reads nothing of stream 303 for half the queue-stall timeout: `CLIENT_STALLED`; a slow client that keeps reading is not fenced |
+| host's cluster session lost | the façade's own rules (`client-api.md`, "Guarantees"); `Fenced` is forwarded |
+| façade cannot reach the cluster | its connect times out or is refused three times, 10 s each, so a connect that met an election is tried again; before each retry the host watches the client's heartbeat for `clientTimeoutMs`, since its own wait makes the counter look changed, and drops a client silent through it (`CLIENT_LOST`). Then the host logs `CLUSTER_UNREACHABLE` and exits 70, and the client exits 70 (`HOST_LOST`) |
+| media driver lost | raises from the host's `doWork()` and from the client's, as for a direct façade |
+
+A hosted pair ends when either process does, so its availability is that of both; the cluster sees either loss
+as a direct façade's fence, within the same `sequencer.sessionTimeoutMs`. The one failure a direct client does not
+have is the loss of the host process itself, which costs the client a restart. Nothing in the cluster tier
+changes, and no frame of schema 210 differs.
+
+**Supervision is the deployment's**, as for every other seqeron process: its supervisor (systemd or similar)
+starts and restarts them, and the repository ships no unit files for any. The host and the client are two units,
+and the protocol makes their order and their restarts independent of each other, so no unit names the other. The
+exit codes are the repository's: 70 for "fenced or lost, restart me", 0 for an orderly stop (`ops.md`). The client
+adds 78 for an attach the host refused with `VERSION` or `KIND`: a configuration error a restart does not cure, so
+its unit does not restart on 78 (systemd's `RestartPreventExitStatus=78`).
+
+- **Either may start first.** A client resends `Attach` until it is answered (**H-8**); a host waits for one.
+- **A host fault restarts the client too, without the supervisor linking them.** A host that dies or goes silent
+  makes the client exit 70 (`HOST_LOST`), so its own unit restarts it. A host that fences sends `Fenced` and
+  exits 70, and so does one whose façade cannot reach the cluster (`CLUSTER_UNREACHABLE`), without sending anything.
+- **A process that runs several hosts rebuilds one rather than exit** (`proxy.hosts`). A host that would exit 70 is
+  closed, which frees its counters and closes its images, so its client exits 70 as it would for a host process, and
+  is built afresh a second later; the process and its other hosts carry on. A host that throws is the process's fault:
+  a standalone process exits 70, and `ReplayerServer` takes its fatal path, so on a gateway host a host fault takes
+  down the Replayer and every consumer it serves.
+- **A client that crashes or hangs does not restart the host.** On `CLIENT_LOST` the host closes the façade,
+  releasing the cluster session, and waits for a new `Attach` (**H-9**); the restarted client attaches to the
+  running host. A client that breaks the protocol, by exceeding the command window (**H-5**) or opening a
+  connection under an id the façade did not allocate (**H-4**), or whose records diverge (**H-6**), fences the
+  façade, and the host exits 70 with it.
+- **A restart is the usual one.** Whatever restarts replays or restores from the newest confirmed snapshot, and a
+  gateway returns as a standby, active only when the cluster names it.
+
+What this adds to an operator's list is a second unit per hosted instance and the host's counters (**H-14**); the
+two units' restart rates need alerts, since a loop of `HOST_LOST` is a host fault.
+
+### 17.7 Versioning
+
+Schema 218 is exempt from **V-3**, as 212 is: it is unrecorded and never leaves the node. It changes in place with
+no version bump, as 212 does: `version` stays 0 and the schema has no `sinceVersion` fields. `Attach` carries
+`protocolVersion`, a constant of `HostedProtocol` raised with every change to schema 218 or to a rule of §17, and a
+host refuses a client of another with `Attached(NO_ATTACH, VERSION)`. A host and its client therefore agree on the
+protocol, not on the release, so a release that leaves §17 alone does not make them upgrade together. That is the
+one check beyond **T-1**: the replayer's clients are restarted with it and need none, but a mismatch here would
+otherwise surface as a decode failure at runtime. `Attach` also carries `aeronVersion`, which the host logs and does
+not check. A stub and its host share only the media driver, whose formats (the log buffers, the driver's commands, the
+counters) are versioned by its CnC version, and Aeron refuses a client of another CnC major version when it connects,
+before it can attach. A stub may therefore run another Aeron than its host: Aeron.NET, which trails Java (**V-1**), or
+an installed Aeron above the one the C++ build pins.

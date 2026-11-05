@@ -32,5 +32,9 @@ public enum ClusterError
     SnapshotUnrestorable,
 
     /// <summary>A group this instance addresses is not in the log's group table (A-9).</summary>
-    GroupUnknown
+    GroupUnknown,
+
+    /// <summary>A hosted client broke the host protocol, for instance by opening a connection under an id the façade
+    /// did not allocate.</summary>
+    ClientProtocol
 }

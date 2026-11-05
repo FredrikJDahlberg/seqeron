@@ -10,6 +10,7 @@ import java.util.Objects;
 import java.util.Set;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
+import org.agrona.concurrent.IdleStrategy;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.ReplayProtocol;
@@ -200,7 +201,7 @@ public final class Gateway implements AutoCloseable {
         this.session = new Session(builder.clientId, builder.tuning.pendingCapacity(),
                                    builder.tuning.queueStallTimeoutMs(),
                                    builder.tuning.recoveryStallTimeoutMs(), ReplayProtocol.NO_SOURCE_ID, builder.gatewayName,
-                                   builder.addressedGroups, new SessionDispatch());
+                                   builder.addressedGroups, builder.idleStrategy, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, lifecycle::gatewaySourceId);
         if (store != null) {
             session.restoreFrom(store, new Restore());
@@ -648,6 +649,7 @@ public final class Gateway implements AutoCloseable {
         private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
         private Tuning tuning = Tuning.DEFAULT;
+        private IdleStrategy idleStrategy;
 
         /** The {@code GatewayRegistered} row name this instance joins on. */
         public Builder gatewayName(final String gatewayName) {
@@ -726,6 +728,17 @@ public final class Gateway implements AutoCloseable {
         /** The stall and capacity policy, {@link Tuning#DEFAULT} by default. */
         public Builder tuning(final Tuning tuning) {
             this.tuning = Objects.requireNonNull(tuning, "tuning");
+            return this;
+        }
+
+        /**
+         * What a call that blocks waits on between attempts: a {@code publish} or a lifecycle frame that spins through
+         * an election, up to 10 s, and the cluster connect in {@code start}. A yielding spin and Aeron's own connect
+         * wait by default. One that also does the caller's periodic work, such as writing a heartbeat, keeps it going
+         * while the call blocks.
+         */
+        public Builder idleStrategy(final IdleStrategy idleStrategy) {
+            this.idleStrategy = Objects.requireNonNull(idleStrategy, "idleStrategy");
             return this;
         }
 

@@ -28,6 +28,9 @@ enum class ClusterError : std::uint8_t
     SnapshotUnrestorable,
     // A group this instance addresses is not in the log's group table (A-9).
     GroupUnknown,
+    // A hosted client broke the host protocol, for instance by opening a connection under an id the façade did not
+    // allocate.
+    ClientProtocol,
 };
 
 /**
@@ -54,6 +57,8 @@ inline const char* clusterErrorName(const ClusterError error)
             return "SNAPSHOT_UNRESTORABLE";
         case ClusterError::GroupUnknown:
             return "GROUP_UNKNOWN";
+        case ClusterError::ClientProtocol:
+            return "CLIENT_PROTOCOL";
     }
     return "UNKNOWN";
 }

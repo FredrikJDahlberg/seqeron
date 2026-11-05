@@ -1,0 +1,1158 @@
+package org.limitless.seqeron.proxy;
+
+import org.limitless.seqeron.protocol.SeqeronCounters;
+import org.limitless.seqeron.protocol.ProxyProtocol;
+import io.aeron.Aeron;
+import io.aeron.ExclusivePublication;
+import io.aeron.Publication;
+import io.aeron.Subscription;
+import io.aeron.exceptions.AeronException;
+import io.aeron.FragmentAssembler;
+import io.aeron.logbuffer.FragmentHandler;
+import com.sun.management.ThreadMXBean;
+import java.lang.management.ManagementFactory;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import io.aeron.Counter;
+import org.agrona.DirectBuffer;
+import org.agrona.ExpandableRingBuffer;
+import org.agrona.BitUtil;
+import org.agrona.CloseHelper;
+import org.agrona.MutableDirectBuffer;
+import org.agrona.collections.IntArrayList;
+import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.ShutdownSignalBarrier;
+import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.status.CountersReader;
+import org.limitless.seqeron.app.Application;
+import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.Consumer;
+import org.limitless.seqeron.app.Gateway;
+import org.limitless.seqeron.app.GroupDirectory;
+import org.limitless.seqeron.app.Payload;
+import org.limitless.seqeron.app.SnapshotListener;
+import org.limitless.seqeron.app.Tuning;
+import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.sbe.hosted.ActivatedDecoder;
+import org.limitless.seqeron.sbe.hosted.AttachDecoder;
+import org.limitless.seqeron.sbe.hosted.AttachedEncoder;
+import org.limitless.seqeron.sbe.hosted.CaughtUpEncoder;
+import org.limitless.seqeron.sbe.hosted.CloseConnectionDecoder;
+import org.limitless.seqeron.sbe.hosted.ClusterTimeEncoder;
+import org.limitless.seqeron.sbe.hosted.ConnectionEncoder;
+import org.limitless.seqeron.sbe.hosted.DetachDecoder;
+import org.limitless.seqeron.sbe.hosted.DropReason;
+import org.limitless.seqeron.sbe.hosted.DroppedEncoder;
+import org.limitless.seqeron.sbe.hosted.FencedEncoder;
+import org.limitless.seqeron.sbe.hosted.GateClosedDecoder;
+import org.limitless.seqeron.sbe.hosted.GateEncoder;
+import org.limitless.seqeron.sbe.hosted.GroupsResolvedEncoder;
+import org.limitless.seqeron.sbe.hosted.Kind;
+import org.limitless.seqeron.sbe.hosted.MessageHeaderDecoder;
+import org.limitless.seqeron.sbe.hosted.MessageHeaderEncoder;
+import org.limitless.seqeron.sbe.hosted.OpenConnectionDecoder;
+import org.limitless.seqeron.sbe.hosted.PayloadEncoder;
+import org.limitless.seqeron.sbe.hosted.PublishDecoder;
+import org.limitless.seqeron.sbe.hosted.Refusal;
+import org.limitless.seqeron.sbe.hosted.ReplyDecoder;
+import org.limitless.seqeron.sbe.hosted.ResolvedEncoder;
+import org.limitless.seqeron.sbe.hosted.RestoreRecordEncoder;
+import org.limitless.seqeron.sbe.hosted.RoleEncoder;
+import org.limitless.seqeron.sbe.hosted.SnapshotCutEncoder;
+import org.limitless.seqeron.sbe.hosted.SnapshotEndDecoder;
+import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
+
+/**
+ * The proxy of the hosted façades (doc/seqeron-protocol-spec.md §17): the real {@link Application}, {@link Gateway} or
+ * {@link Consumer}, started when a client sends {@code Attach} and closed when it is lost, its callbacks relayed in
+ * schema 218 over {@link ProxyProtocol}'s streams. Launched beside a member.
+ *
+ * <p>Properties, each defaulting as {@code ClusterProbe} did: {@code proxy.memberId} (0), {@code proxy.aeronDir},
+ * {@code proxy.hostName} ("hosted": the name an {@code Attach} must carry, unique on its driver),
+ * {@code proxy.ingressEndpoints} and {@code proxy.egressHost} (from {@code PortLayout}, so {@code SEQERON_HOSTS} and
+ * {@code SEQERON_PORT_BASE} apply), {@code proxy.sourceId} (16), {@code proxy.clientId} (11), {@code proxy.snapshotDir}
+ * (required), {@code proxy.gatewayName} (set: the proxy serves a Gateway), {@code proxy.consumerGroup} (0: none),
+ * {@code proxy.clientTimeoutMs} (2000), {@code proxy.commandWindow} (65536 bytes: H-5's window, here the encoded
+ * length of the {@code Publish} messages not yet placed), {@code proxy.placePerCycle} (64),
+ * {@code proxy.pendingCapacity} (the façade's tracker, 0: its default), {@code proxy.spin} (busy-spin the loop
+ * rather than back off) and {@code proxy.offCluster} (an {@code Application} on a gateway host). A value that is
+ * absent, unparsable or out of range stops the proxy before it attaches to anything. {@code proxy.allocWarmupFrames}
+ * (0: off) and {@code proxy.allocWindowFrames} (20000): once that many frames have crossed the loop, logs the bytes it
+ * allocated over the next window, for {@code HostedAllocationTest}.
+ *
+ * <p>{@code proxy.hosts=a,b} runs several hosts in one process ({@link Hosts}): each reads {@code proxy.a.<key>}
+ * before {@code proxy.<key>}, its {@code hostName} defaults to its name and its {@code snapshotDir} to
+ * {@code proxy.snapshotDir/a}, and no two may share a {@code hostName}, {@code clientId} or {@code snapshotDir}.
+ */
+public final class ClientProxy implements Application.Listener, Gateway.Listener, Consumer.Listener, SnapshotListener {
+    /** Fenced, or the cluster unreachable: restart me. */
+    static final int EXIT_RESTART = 70;
+    private static final int EXIT_CONFIG = 2;
+    private static final long BACK_PRESSURE_NS = TimeUnit.SECONDS.toNanos(1);
+    /** Of 10 s each: one whose request reached no leader times out after the election. */
+    private static final int CONNECT_ATTEMPTS = 3;
+
+    private final HostProperties properties;
+    private final int memberId;
+    private final String aeronDir;
+    private final String ingressEndpoints;
+    private final String egressChannel;
+    private final int sourceId;
+    private final int clientId;
+    private final long clientTimeoutNs;
+    private final String snapshotDirName;
+    private final boolean spin;
+    private final boolean offCluster;
+    private final UnsafeBuffer out = new UnsafeBuffer(new byte[128 * 1024]);
+    private final UnsafeBuffer scratch = new UnsafeBuffer(new byte[16 * 1024]);
+    private final List<byte[]> cutRecords = new ArrayList<>();
+    private final FragmentHandler onAttachRequest = this::onAttachRequest;
+    private final FragmentAssembler onCommand = new FragmentAssembler(this::onCommand);
+    private final MessageHeaderDecoder headerIn = new MessageHeaderDecoder();
+    private final MessageHeaderEncoder headerOut = new MessageHeaderEncoder();
+    private final AttachDecoder attachIn = new AttachDecoder();
+    private final DetachDecoder detachIn = new DetachDecoder();
+    private final PublishDecoder publishIn = new PublishDecoder();
+    private final ReplyDecoder replyIn = new ReplyDecoder();
+    private final GroupsResolvedEncoder groupsOut = new GroupsResolvedEncoder();
+    private final OpenConnectionDecoder openIn = new OpenConnectionDecoder();
+    private final CloseConnectionDecoder closeIn = new CloseConnectionDecoder();
+    private final GateClosedDecoder gateClosedIn = new GateClosedDecoder();
+    private final ActivatedDecoder activatedIn = new ActivatedDecoder();
+    private final ConnectionEncoder connectionOut = new ConnectionEncoder();
+    private final RoleEncoder roleOut = new RoleEncoder();
+    private final String hostName;
+    private final String gatewayName;
+    private final int consumerGroup;
+    private final AttachRules attachRules;
+    private final SnapshotRecordDecoder recordIn = new SnapshotRecordDecoder();
+    private final SnapshotEndDecoder endIn = new SnapshotEndDecoder();
+    private final AttachedEncoder attachedOut = new AttachedEncoder();
+    private final PayloadEncoder payloadOut = new PayloadEncoder();
+    private final GateEncoder gateOut = new GateEncoder();
+    private final CaughtUpEncoder caughtUpOut = new CaughtUpEncoder();
+    private final ClusterTimeEncoder clusterTimeOut = new ClusterTimeEncoder();
+    private final RestoreRecordEncoder restoreOut = new RestoreRecordEncoder();
+    private final SnapshotCutEncoder cutOut = new SnapshotCutEncoder();
+    private final DroppedEncoder droppedOut = new DroppedEncoder();
+    private final ResolvedEncoder resolvedOut = new ResolvedEncoder();
+    private final FencedEncoder fencedOut = new FencedEncoder();
+    private final long commandWindow;
+    private final ReplyAddresses replyAddresses = new ReplyAddresses();
+    private final CommandLedger ledger;
+    private final int placePerCycle;
+    private final int pendingCapacity;
+    /** Sized once to hold the window with its per-message framing, so it never grows. */
+    private final ExpandableRingBuffer queue;
+    private final ExpandableRingBuffer.MessageConsumer place = this::place;
+    private final ExpandableRingBuffer.MessageConsumer discard = (buffer, offset, length, head) -> true;
+    private final long allocWarmupFrames;
+    private final long allocWindowFrames;
+    private final ThreadMXBean threads = (ThreadMXBean)ManagementFactory.getThreadMXBean();
+    /** What the façade's blocking calls wait on: a yielding spin that writes the host heartbeat (H-10). */
+    private final IdleStrategy facadeIdle = new IdleStrategy() {
+        @Override
+        public void idle(final int workCount) {
+            if (workCount <= 0) {
+                idle();
+            }
+        }
+
+        @Override
+        public void idle() {
+            ProxyProtocol.beat(hostHeartbeat);
+            Thread.yield();
+        }
+
+        @Override
+        public void reset() {
+        }
+    };
+
+    private Aeron aeron;
+    private Subscription attachRequests;
+    private Publication attachReplies;
+    private ExclusivePublication events;
+    private Subscription commands;
+    private Liveness clientLiveness;
+    private Counter hostHeartbeat;
+    private Counter lagCounter;
+    private int appliedCounterId;
+    private long appliedRegistrationId;
+    private long dispatchedPosition;
+    private long firstDispatchedPosition;
+    private Path snapshotDir;
+    private Application app;
+    private Gateway gateway;
+    private Consumer consumer;
+    private boolean consumerKind;
+    private boolean live;
+    private int attachedSourceId;
+    private boolean gatewayKind;
+    private boolean activating;
+    private String breach;
+    private boolean activatedSeen;
+    private boolean activatedOpened;
+    private long connectionsOpened;
+    private boolean attached;
+    private long liveClientId;
+    private long liveRequestId;
+    private long connectDeadlineNs;
+    private int connectFailures;
+    private long connectRetryNs;
+    private boolean commandsSeen;
+    private long cutNo;
+    private long frames;
+    private Counter retiredCounter;
+    private long lastCommandSeq;
+    private long resolvedSent;
+    private long loggedDropsAndDeclines;
+    private long loggedPlaced;
+    private long lastQueueLogNs;
+    private long windowFrames;
+    private long windowBytes;
+    private long windowReadCost;
+    private long windowEpoch;
+    private boolean windowOpen;
+    private boolean windowDone;
+    private boolean lastCanPublish;
+    private boolean collecting;
+    private boolean endSeen;
+    private int endRecordCount;
+    private boolean cutLost;
+    private int clientFormatVersion;
+    private IntArrayList clientFormats = new IntArrayList();
+    private boolean stalled;
+    private volatile boolean running = true;
+    private volatile boolean fenced;
+    private boolean unreachable;
+
+    ClientProxy(final HostProperties properties) {
+        this.properties = properties;
+        memberId = (int)properties.number("memberId", 0);
+        aeronDir = properties.get("aeronDir", PortLayout.aeronDir(memberId));
+        ingressEndpoints = properties.get("ingressEndpoints", PortLayout.ingressEndpoints());
+        egressChannel = "aeron:udp?endpoint=" + properties.get("egressHost",
+            memberId < PortLayout.HOSTS.size() ? PortLayout.HOSTS.get(memberId) : PortLayout.DEFAULT_HOST) + ":0";
+        sourceId = (int)properties.number("sourceId", 16);
+        attachedSourceId = sourceId;
+        clientId = (int)properties.number("clientId", 11);
+        clientTimeoutNs = TimeUnit.MILLISECONDS.toNanos(properties.number("clientTimeoutMs", 2000));
+        hostName = properties.get("hostName", properties.name() != null ? properties.name()
+                                                                        : ProxyProtocol.DEFAULT_HOST_NAME);
+        // Each of several hosts takes a directory of its own under the shared one unless it names its own.
+        final String ownSnapshotDir =
+            properties.name() == null ? null
+                                      : properties.source().getProperty("proxy." + properties.name() + ".snapshotDir");
+        final String sharedSnapshotDir = properties.source().getProperty("proxy.snapshotDir");
+        snapshotDirName = ownSnapshotDir != null || properties.name() == null || sharedSnapshotDir == null
+                              ? properties.get("snapshotDir")
+                              : Path.of(sharedSnapshotDir, properties.name()).toString();
+        spin = properties.flag("spin");
+        offCluster = properties.flag("offCluster");
+        gatewayName = properties.get("gatewayName");
+        consumerGroup = (int)properties.number("consumerGroup", 0);
+        attachRules = new AttachRules(hostName, gatewayName != null, consumerGroup != 0);
+        commandWindow = properties.number("commandWindow", 64 * 1024);
+        ledger = new CommandLedger(commandWindow, this::sendDropped);
+        placePerCycle = (int)properties.number("placePerCycle", 64);
+        pendingCapacity = (int)properties.number("pendingCapacity", 0);
+        queue = new ExpandableRingBuffer(BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)),
+                                         BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)), false);
+        allocWarmupFrames = properties.number("allocWarmupFrames", 0);
+        allocWindowFrames = properties.number("allocWindowFrames", 20_000);
+    }
+
+    /** One host, or with {@code proxy.hosts} several in this process ({@link Hosts}). */
+    public static void main(final String[] args) {
+        if (System.getProperty("proxy.hosts") != null) {
+            runHosts();
+            return;
+        }
+        final ClientProxy proxy;
+        try {
+            proxy = new ClientProxy(new HostProperties(null, System.getProperties()));
+            proxy.validate();
+        } catch (final IllegalArgumentException ex) {
+            System.err.println("ClientProxy: " + ex.getMessage());
+            System.exit(EXIT_CONFIG);
+            return;
+        }
+        final Thread main = Thread.currentThread();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            proxy.stop();
+            try {
+                main.join(TimeUnit.SECONDS.toMillis(5));
+            } catch (final InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        System.exit(proxy.run());
+    }
+
+    private static void runHosts() {
+        final Hosts hosts;
+        try {
+            hosts = Hosts.configure(System.getProperties());
+        } catch (final IllegalArgumentException ex) {
+            System.err.println("ClientProxy: " + ex.getMessage());
+            System.exit(EXIT_CONFIG);
+            return;
+        }
+        final AtomicBoolean fault = new AtomicBoolean();
+        final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
+        hosts.start(() -> {
+            fault.set(true);
+            barrier.signalAll();
+        });
+        barrier.await();
+        hosts.close();
+        barrier.close();
+        System.exit(fault.get() ? EXIT_RESTART : 0);
+    }
+
+    void validate() {
+        require(!hostName.isBlank(), properties.qualified("hostName") + " must not be blank");
+        require(sourceId > 0, properties.qualified("sourceId") + " must be positive");
+        require(clientId > 0, properties.qualified("clientId") + " must be positive");
+        require(clientTimeoutNs > 0, properties.qualified("clientTimeoutMs") + " must be positive");
+        require(commandWindow > 0 && commandWindow <= Integer.MAX_VALUE / 2,
+                properties.qualified("commandWindow") + " must be in 1.." + Integer.MAX_VALUE / 2);
+        require(placePerCycle > 0, properties.qualified("placePerCycle") + " must be positive");
+        require(pendingCapacity >= 0, properties.qualified("pendingCapacity") + " must not be negative");
+        require(consumerGroup >= 0, properties.qualified("consumerGroup") + " must not be negative");
+        require(gatewayName == null || consumerGroup == 0,
+                properties.qualified("gatewayName") + " and consumerGroup are exclusive");
+        require(snapshotDirName != null, properties.qualified("snapshotDir") + " is required");
+    }
+
+    String hostName() {
+        return hostName;
+    }
+
+    int clientId() {
+        return clientId;
+    }
+
+    String snapshotDir() {
+        return snapshotDirName;
+    }
+
+    String aeronDir() {
+        return aeronDir;
+    }
+
+    /** Ends {@link #run} at its next duty cycle, from any thread. */
+    void stop() {
+        running = false;
+    }
+
+    private static void require(final boolean condition, final String message) {
+        if (!condition) {
+            throw new IllegalArgumentException(message);
+        }
+    }
+
+    int run() {
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir))) {
+            return run(aeron);
+        }
+    }
+
+    /** Runs on {@code aeron}, which may be shared with other hosts, and frees on it only what this host opened. */
+    int run(final Aeron aeron) {
+        this.aeron = aeron;
+        snapshotDir = Path.of(snapshotDirName);
+        attachRequests = aeron.addSubscription(ProxyProtocol.ATTACH_REQUEST_CHANNEL + "|tether=false",
+                                               ProxyProtocol.ATTACH_REQUEST_STREAM);
+        attachReplies = aeron.addPublication(ProxyProtocol.ATTACH_REPLY_CHANNEL, ProxyProtocol.ATTACH_REPLY_STREAM);
+        hostHeartbeat = aeron.addCounter(SeqeronCounters.PROXY_HEARTBEAT_TYPE_ID, "seqeron.host.heartbeat " + hostName);
+        retiredCounter = aeron.addCounter(SeqeronCounters.PROXY_RETIRED_TYPE_ID, "seqeron.host.retired " + hostName);
+        clientLiveness = new Liveness(aeron.countersReader(), clientTimeoutNs);
+        log("host ready: member %d, sourceId %d, clientId %d", memberId, sourceId, clientId);
+        final IdleStrategy idle = spin ? new BusySpinIdleStrategy() : new BackoffIdleStrategy();
+        while (running && !fenced && !unreachable) {
+            ProxyProtocol.beat(hostHeartbeat);
+            int work = attachRequests.poll(onAttachRequest, 16);
+            if (live) {
+                work += commands != null ? commands.poll(onCommand, 16) : 0;
+                if (!attached) {
+                    connect();
+                }
+            }
+            if (facade()) {
+                work += app != null ? app.doWork() : gateway != null ? gateway.doWork() : consumer.doWork();
+                if (!fenced && facade()) {
+                    placeCommands();
+                    if (!fenced) {
+                        afterDoWork();
+                        allocWindow();
+                    }
+                }
+            }
+            idle.idle(work);
+        }
+        closeFacade();
+        CloseHelper.quietCloseAll(commands, events, lagCounter, attachRequests, attachReplies, hostHeartbeat,
+                                  retiredCounter);
+        return fenced || unreachable ? EXIT_RESTART : 0;
+    }
+
+    /** Counts the allocation of this thread over a window of frames, after a warm-up for the JIT. */
+    private void allocWindow() {
+        if (allocWarmupFrames == 0 || windowDone) {
+            return;
+        }
+        final long id = Thread.currentThread().threadId();
+        if (!windowOpen && frames >= allocWarmupFrames) {
+            log("measuring from here");
+            final long first = threads.getThreadAllocatedBytes(id);
+            windowBytes = threads.getThreadAllocatedBytes(id);
+            windowReadCost = windowBytes - first;
+            windowFrames = frames;
+            windowEpoch = ledger.epoch();
+            windowOpen = true;
+        } else if (windowOpen && frames - windowFrames >= allocWindowFrames) {
+            final long bytes = threads.getThreadAllocatedBytes(id) - windowBytes - windowReadCost;
+            windowDone = true;
+            log("alloc window: %d bytes over %d frames, gate epoch %d to %d", bytes, frames - windowFrames,
+                windowEpoch, ledger.epoch());
+        }
+    }
+
+    private void afterDoWork() {
+        final long now = System.nanoTime();
+        exportLag();
+        final boolean canPublish = app != null ? app.canPublish() : gateway != null && gateway.canAccept();
+        if (canPublish != lastCanPublish) {
+            lastCanPublish = canPublish;
+            sendGate();
+        }
+        final long dropsAndDeclines = ledger.epochDrops() + ledger.refusedDrops() + ledger.headDeclines();
+        if (dropsAndDeclines != 0 && (dropsAndDeclines != loggedDropsAndDeclines || ledger.placed() != loggedPlaced) &&
+            now - lastQueueLogNs >= 1_000_000_000L) {
+            logQueue();
+            loggedDropsAndDeclines = dropsAndDeclines;
+            loggedPlaced = ledger.placed();
+            lastQueueLogNs = now;
+        }
+        if (stalled) {
+            closeApp("CLIENT_STALLED: events stream back-pressured for " + BACK_PRESSURE_NS / 1_000_000 + "ms");
+        } else if (clientLiveness.stale(now)) {
+            closeApp("CLIENT_LOST: heartbeat counter silent for " + clientLiveness.silentMs(now) + "ms");
+        } else if (commandsSeen && commands != null && !commands.isConnected()) {
+            closeApp("CLIENT_LOST: command stream gone");
+        }
+    }
+
+    /**
+     * H-14: what the client has yet to apply of what was dispatched, while its applied counter is the one it named.
+     * Until it applies the attachment's first frame it is measured from that frame, not from 0.
+     */
+    private void exportLag() {
+        final CountersReader counters = aeron.countersReader();
+        if (dispatchedPosition != 0 && counters.getCounterState(appliedCounterId) == CountersReader.RECORD_ALLOCATED &&
+            counters.getCounterRegistrationId(appliedCounterId) == appliedRegistrationId) {
+            final long applied = Math.max(counters.getCounterValue(appliedCounterId), firstDispatchedPosition);
+            lagCounter.setOrdered(dispatchedPosition - applied);
+        }
+    }
+
+    // ── Attach, streams 301 and 302 ─────────────────────────────────────────────────────────────────────────
+
+    private void onAttachRequest(final DirectBuffer buffer, final int offset, final int length,
+                                 final io.aeron.logbuffer.Header header) {
+        headerIn.wrap(buffer, offset);
+        if (headerIn.schemaId() != 218) {
+            return;
+        }
+        if (headerIn.templateId() == AttachDecoder.TEMPLATE_ID) {
+            attachIn.wrap(buffer, offset + ProxyProtocol.HEADER, headerIn.blockLength(), headerIn.version());
+            onAttach();
+        } else if (headerIn.templateId() == DetachDecoder.TEMPLATE_ID) {
+            detachIn.wrap(buffer, offset + ProxyProtocol.HEADER, headerIn.blockLength(), headerIn.version());
+            if (facade() && detachIn.clientId() == liveClientId) {
+                if (collecting) {
+                    cutLost = true;
+                    endSeen = true;
+                } else {
+                    closeApp("DETACHED");
+                }
+            }
+        }
+    }
+
+    /** H-8: a resend of the live request is answered again, any other client is refused as busy. */
+    private void onAttach() {
+        final long clientId = attachIn.clientId();
+        final long requestId = attachIn.requestId();
+        final Kind kind = attachIn.kind();
+        final int protocolVersion = attachIn.protocolVersion();
+        final int commandSessionId = attachIn.commandSessionId();
+        final int heartbeatCounterId = attachIn.heartbeatCounterId();
+        final long heartbeatRegistrationId = attachIn.heartbeatRegistrationId();
+        final int appliedCounterId = attachIn.appliedCounterId();
+        final long appliedRegistrationId = attachIn.appliedRegistrationId();
+        final int formatVersion = attachIn.formatVersion();
+        final IntArrayList formats = new IntArrayList();
+        for (final AttachDecoder.SupportedFormatsDecoder format : attachIn.supportedFormats()) {
+            formats.addInt(format.formatVersion());
+        }
+        final byte[] hostNameBytes = new byte[attachIn.hostNameLength()];
+        attachIn.getHostName(hostNameBytes, 0, hostNameBytes.length);
+        final byte[] aeronVersionBytes = new byte[attachIn.aeronVersionLength()];
+        attachIn.getAeronVersion(aeronVersionBytes, 0, aeronVersionBytes.length);
+        final String hostName = new String(hostNameBytes, StandardCharsets.UTF_8);
+        final String aeronVersion = new String(aeronVersionBytes, StandardCharsets.UTF_8);
+        switch (attachRules.decide(live, liveClientId, liveRequestId, hostName, clientId, requestId, kind,
+                                   protocolVersion)) {
+        case IGNORE -> {
+            return;
+        }
+        case RESEND -> {
+            sendAttached(clientId, requestId, Refusal.NONE);
+            return;
+        }
+        case BUSY -> {
+            log("refused Attach from another client: attachment of client %d is live", liveClientId);
+            sendAttached(clientId, requestId, Refusal.BUSY);
+            return;
+        }
+        case VERSION -> {
+            sendAttached(clientId, requestId, Refusal.VERSION);
+            return;
+        }
+        case KIND -> {
+            sendAttached(clientId, requestId, Refusal.KIND);
+            return;
+        }
+        case ACCEPT -> log("accepted Attach from client %d on Aeron %s", clientId, aeronVersion);
+        }
+        liveClientId = clientId;
+        this.appliedCounterId = appliedCounterId;
+        this.appliedRegistrationId = appliedRegistrationId;
+        dispatchedPosition = 0;
+        firstDispatchedPosition = 0;
+        lagCounter = SeqeronCounters.addAppCounter(aeron, SeqeronCounters.HOSTED_LAG_TYPE_ID,
+                                                   "seqeron.hosted.lag member=" + memberId + " client=" + this.clientId,
+                                                   memberId, this.clientId);
+        clientFormatVersion = formatVersion;
+        clientFormats = formats;
+        gatewayKind = kind == Kind.GATEWAY;
+        consumerKind = kind == Kind.CONSUMER;
+        attachedSourceId = consumerKind ? -1 : sourceId;
+        live = true;
+        liveRequestId = requestId;
+        ledger.reset();
+        lastCommandSeq = 0;
+        resolvedSent = 0;
+        retiredCounter.setOrdered(0);
+        cutNo = 0;
+        lastCanPublish = false;
+        cutLost = false;
+        stalled = false;
+        commandsSeen = false;
+        events = aeron.addExclusivePublication(ProxyProtocol.EVENTS_CHANNEL, ProxyProtocol.EVENTS_STREAM);
+        commands = consumerKind
+                       ? null
+                       : aeron.addSubscription(ProxyProtocol.sessionChannel(commandSessionId), ProxyProtocol.COMMANDS_STREAM);
+        final long now = System.nanoTime();
+        clientLiveness.watch(heartbeatCounterId, heartbeatRegistrationId, now);
+        connectDeadlineNs = now + clientTimeoutNs;
+        connectFailures = 0;
+        connectRetryNs = 0;
+        sendAttached(clientId, requestId, Refusal.NONE);
+    }
+
+    /** True from the Attached that accepted a client until its attachment ends. */
+    private boolean connectionOrLive() {
+        return live;
+    }
+
+    /**
+     * H-8: the façade is built only once the client's subscription has connected to the events publication, so every
+     * callback, the restore included, has a reader. A façade that cannot reach the cluster in {@link #CONNECT_ATTEMPTS}
+     * attempts stops the host.
+     */
+    private void connect() {
+        final long now = System.nanoTime();
+        if (events.isConnected()) {
+            // A host blocked in a failed connect finds the client's counter changed, so it retries only once it has
+            // watched the counter for a full timeout since, and drops a client silent through that watch.
+            if (connectFailures > 0 && clientLiveness.stale(now)) {
+                closeApp("CLIENT_LOST: heartbeat counter silent after the façade's failed cluster connect");
+                return;
+            }
+            if (now < connectRetryNs) {
+                return;
+            }
+            try {
+                startApp();
+            } catch (final AeronException ex) {
+                closeFacade();
+                attached = false;
+                if (++connectFailures < CONNECT_ATTEMPTS) {
+                    log("the façade's cluster connect failed (attempt %d of %d), connecting again — %s",
+                        connectFailures, CONNECT_ATTEMPTS, ex);
+                    final long failedNs = System.nanoTime();
+                    clientLiveness.stale(failedNs);
+                    connectRetryNs = failedNs + clientTimeoutNs + TimeUnit.MILLISECONDS.toNanos(1);
+                } else {
+                    log("CLUSTER_UNREACHABLE: the façade's cluster connect failed %d times — %s", connectFailures, ex);
+                    unreachable = true;
+                }
+            }
+        } else if (now > connectDeadlineNs || clientLiveness.stale(now)) {
+            closeApp("CLIENT_LOST: subscription did not connect within " + clientTimeoutNs / 1_000_000 + "ms");
+        }
+    }
+
+    private boolean facade() {
+        return app != null || gateway != null || consumer != null;
+    }
+
+    private void keepFacadeAlive() {
+        if (app != null) {
+            app.keepAlive();
+        } else {
+            gateway.keepAlive();
+        }
+    }
+
+    private void closeFacade() {
+        if (app != null) {
+            app.close();
+            app = null;
+        }
+        if (gateway != null) {
+            gateway.close();
+            gateway = null;
+        }
+        if (consumer != null) {
+            consumer.close();
+            consumer = null;
+        }
+    }
+
+    private void startApp() {
+        if (consumerKind) {
+            consumer = Consumer.builder()
+                           .clientId(clientId)
+                           .memberId(memberId)
+                           .groupId(consumerGroup)
+                           .listener(this)
+                           .build();
+            attached = true;
+            consumer.start(aeron);
+            log("ATTACHED clientId=%d (consumer of group %d)", liveClientId, consumerGroup);
+            return;
+        }
+        if (gatewayKind) {
+            final Gateway.Builder builder = Gateway.builder()
+                                                .gatewayName(gatewayName)
+                                                .sourceId(sourceId)
+                                                .clientId(clientId)
+                                                .memberId(memberId)
+                                                .egressChannel(egressChannel)
+                                                .ingressEndpoints(ingressEndpoints)
+                                                .listener(this)
+                                                .tuning(tuning())
+                                                .idleStrategy(facadeIdle);
+            gateway = (takesSnapshots() ? builder.snapshots(this, snapshotDir) : builder).build();
+            attached = true;
+            gateway.start(aeron);
+            log("ATTACHED clientId=%d (gateway %s)", liveClientId, gatewayName);
+            return;
+        }
+        final Application.Builder builder = Application.builder()
+                                                .offCluster(offCluster)
+                                                .sourceId(sourceId)
+                                                .clientId(clientId)
+                                                .memberId(memberId)
+                                                .egressChannel(egressChannel)
+                                                .ingressEndpoints(ingressEndpoints)
+                                                .listener(this)
+                                                .tuning(tuning())
+                                                .idleStrategy(facadeIdle);
+        app = (takesSnapshots() ? builder.snapshots(this, snapshotDir) : builder).build();
+        attached = true;
+        app.start(aeron);
+        log("ATTACHED clientId=%d", liveClientId);
+    }
+
+    private Tuning tuning() {
+        return pendingCapacity == 0 ? Tuning.DEFAULT : Tuning.DEFAULT.withPendingCapacity(pendingCapacity);
+    }
+
+    /**
+     * A client that reads no snapshot format has no listener: its façade takes part in no round and restores nothing,
+     * as a direct façade given none (H-7).
+     */
+    private boolean takesSnapshots() {
+        return !clientFormats.isEmpty();
+    }
+
+    private void sendAttached(final long clientId, final long requestId, final Refusal refusal) {
+        final boolean accepted = refusal == Refusal.NONE;
+        attachedOut.wrapAndApplyHeader(out, 0, headerOut)
+            .clientId(clientId)
+            .requestId(requestId)
+            .eventSessionId(accepted ? events.sessionId() : ProxyProtocol.NO_ATTACH)
+            .refusal(refusal)
+            .heartbeatCounterId(hostHeartbeat.id())
+            .heartbeatRegistrationId(hostHeartbeat.registrationId())
+            .retiredCounterId(retiredCounter.id())
+            .retiredRegistrationId(retiredCounter.registrationId())
+            .commandWindow(commandWindow)
+            .sourceId(attachedSourceId);
+        final int length = ProxyProtocol.HEADER + attachedOut.encodedLength();
+        final long deadline = System.nanoTime() + BACK_PRESSURE_NS;
+        while (attachReplies.offer(out, 0, length) < 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+    }
+
+    // ── Commands, stream 304 ─────────────────────────────────────────────────────────────────────────────────
+
+    private void onCommand(final DirectBuffer buffer, final int offset, final int length,
+                           final io.aeron.logbuffer.Header header) {
+        if (!facade()) {
+            return;
+        }
+        commandsSeen = true;
+        headerIn.wrap(buffer, offset);
+        final int body = offset + ProxyProtocol.HEADER;
+        switch (headerIn.templateId()) {
+        case PublishDecoder.TEMPLATE_ID -> {
+            publishIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            final long expected = gatewayKind ? CommandLedger.NO_SEQ : lastCommandSeq + 1;
+            if (publishIn.commandSeq() != expected) {
+                breach = "Publish commandSeq " + publishIn.commandSeq() + " but " + expected + " was expected";
+            } else {
+                lastCommandSeq = publishIn.commandSeq();
+                onPublish(buffer, offset, length, true);
+            }
+        }
+        case ReplyDecoder.TEMPLATE_ID, OpenConnectionDecoder.TEMPLATE_ID -> onPublish(buffer, offset, length, true);
+        case CloseConnectionDecoder.TEMPLATE_ID, GateClosedDecoder.TEMPLATE_ID -> onPublish(buffer, offset, length, false);
+        case ActivatedDecoder.TEMPLATE_ID -> {
+            if (activating) {
+                activatedIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+                activatedOpened = activatedIn.opened() != 0;
+                activatedSeen = true;
+            }
+        }
+        case SnapshotRecordDecoder.TEMPLATE_ID -> {
+            recordIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            if (collecting && recordIn.roundId() == cutNo) {
+                final byte[] record = new byte[recordIn.dataLength()];
+                recordIn.getData(record, 0, record.length);
+                cutRecords.add(record);
+            }
+        }
+        case SnapshotEndDecoder.TEMPLATE_ID -> {
+            endIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            if (collecting && endIn.roundId() == cutNo) {
+                endRecordCount = endIn.recordCount();
+                endSeen = true;
+            }
+        }
+        default -> {
+        }
+        }
+    }
+
+    /** Queues the message whole; H-5's window decides whether the client may have sent it, and does not count a close. */
+    private void onPublish(final DirectBuffer buffer, final int offset, final int length, final boolean windowed) {
+        if (ledger.exceedsWindow(length, windowed) || !queue.append(buffer, offset, length)) {
+            closeApp("CLIENT_WINDOW: " + ledger.queuedBytes() + " bytes queued, window " + commandWindow);
+            return;
+        }
+        ledger.enqueued(length, windowed);
+    }
+
+    private void placeCommands() {
+        if (!queue.isEmpty()) {
+            queue.consume(place, placePerCycle);
+            ledger.flush();
+            if (ledger.resolved() != resolvedSent) {
+                resolvedSent = ledger.resolved();
+                resolvedOut.wrapAndApplyHeader(out, 0, headerOut).through(resolvedSent);
+                send(ProxyProtocol.HEADER + resolvedOut.encodedLength());
+            }
+        }
+        if (breach != null) {
+            final String detail = breach;
+            breach = null;
+            onFenced(ClusterError.CLIENT_PROTOCOL, detail);
+        }
+    }
+
+    /** H-3 and H-5: the head is placed in the epoch it was decided in, dropped otherwise, kept if the façade declines. */
+    private boolean place(final MutableDirectBuffer buffer, final int offset, final int length, final int head) {
+        headerIn.wrap(buffer, offset);
+        final int templateId = headerIn.templateId();
+        final boolean windowed =
+            templateId != CloseConnectionDecoder.TEMPLATE_ID && templateId != GateClosedDecoder.TEMPLATE_ID;
+        final int body = offset + ProxyProtocol.HEADER;
+        final long commandEpoch;
+        long commandSeq = CommandLedger.NO_SEQ;
+        switch (templateId) {
+        case ReplyDecoder.TEMPLATE_ID -> {
+            replyIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            commandEpoch = replyIn.epoch();
+        }
+        case OpenConnectionDecoder.TEMPLATE_ID -> {
+            openIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            commandEpoch = openIn.epoch();
+        }
+        case CloseConnectionDecoder.TEMPLATE_ID -> {
+            closeIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            commandEpoch = closeIn.epoch();
+        }
+        case GateClosedDecoder.TEMPLATE_ID -> {
+            gateClosedIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            commandEpoch = gateClosedIn.epoch();
+        }
+        default -> {
+            publishIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            commandEpoch = publishIn.epoch();
+            commandSeq = publishIn.commandSeq();
+        }
+        }
+        if (ledger.stale(commandEpoch)) {
+            ledger.dropStale(length, windowed, commandSeq);
+            retiredCounter.setOrdered(ledger.retired());
+            return true;
+        }
+        final Publish result;
+        switch (templateId) {
+        case ReplyDecoder.TEMPLATE_ID -> {
+            final int payloadLength = replyIn.bodyLength();
+            replyIn.getBody(scratch, 0, payloadLength);
+            result = app.reply(replyAddresses.of(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
+                replyIn.payloadId(), scratch, payloadLength);
+        }
+        case OpenConnectionDecoder.TEMPLATE_ID -> {
+            final int dataLength = openIn.dataLength();
+            openIn.getData(scratch, 0, dataLength);
+            final int id = gateway.openConnection(scratch, dataLength);
+            if (id == Gateway.NO_CONNECTION) {
+                result = Publish.Refused;
+            } else if (id != openIn.connectionId()) {
+                breach = "connection id " + openIn.connectionId() + " but the façade allocated " + id;
+                result = Publish.Refused;
+            } else {
+                connectionsOpened++;
+                log("opened connection %d", id);
+                result = Publish.Published;
+            }
+        }
+        case CloseConnectionDecoder.TEMPLATE_ID -> {
+            gateway.closeConnection((int)closeIn.connectionId());
+            result = Publish.Published;
+        }
+        case GateClosedDecoder.TEMPLATE_ID -> {
+            gateway.gateClosed();
+            ledger.edge(false);
+            lastCanPublish = false;
+            log("gate closed by the client — gate epoch %d", ledger.epoch());
+            sendGate();
+            result = Publish.Published;
+        }
+        default -> {
+            final int payloadLength = publishIn.bodyLength();
+            publishIn.getBody(scratch, 0, payloadLength);
+            result = gateway != null ? gateway.publish((int)publishIn.connectionId(), (int)publishIn.groupMask(),
+                                                       publishIn.payloadId(), scratch, payloadLength)
+                                     : app.publish((int)publishIn.groupMask(), publishIn.payloadId(), scratch,
+                                                   payloadLength);
+        }
+        }
+        if (!ledger.settle(result, length, windowed, commandSeq)) {
+            return false;
+        }
+        frames++;
+        retiredCounter.setOrdered(ledger.retired());
+        return true;
+    }
+
+    private void logQueue() {
+        log("queue: placed %d, epochDrops %d, refused %d, headDeclines %d, queued %d, peakQueued %d, window %d, connections %d",
+            ledger.placed(), ledger.epochDrops(), ledger.refusedDrops(), ledger.headDeclines(), ledger.queuedBytes(),
+            ledger.peakQueuedBytes(), commandWindow,
+            connectionsOpened);
+    }
+
+    private void closeApp(final String reason) {
+        log("%s", reason);
+        logQueue();
+        closeFacade();
+        attached = false;
+        live = false;
+        CloseHelper.quietClose(commands);
+        CloseHelper.quietClose(events);
+        commands = null;
+        events = null;
+        queue.consume(discard, Integer.MAX_VALUE);
+        ledger.discarded();
+        collecting = false;
+        CloseHelper.quietClose(lagCounter);
+        lagCounter = null;
+    }
+
+    // ── Application.Listener ─────────────────────────────────────────────────────────────────────────────────
+
+    @Override
+    public void onGroupsResolved(final GroupDirectory directory) {
+        int count = 0;
+        for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+            count += directory.name(groupId) == null ? 0 : 1;
+        }
+        groupsOut.wrapAndApplyHeader(out, 0, headerOut);
+        final GroupsResolvedEncoder.GroupsEncoder groups = groupsOut.groupsCount(count);
+        for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+            final String name = directory.name(groupId);
+            if (name != null) {
+                groups.next().groupId(groupId).mask(directory.mask(name)).putName(name.getBytes(StandardCharsets.UTF_8), 0,
+                    name.length());
+            }
+        }
+        send(ProxyProtocol.HEADER + groupsOut.encodedLength());
+    }
+
+    @Override
+    public void onLeadershipChanged(final boolean nowLeading) {
+        ledger.edge(nowLeading);
+        log(nowLeading ? "now leading — gate epoch %d, epochDrops %d" : "not leading — gate epoch %d, epochDrops %d",
+            ledger.epoch(), ledger.epochDrops());
+        sendGate();
+    }
+
+    @Override
+    public boolean onActivated(final int firstConnectionId) {
+        roleOut.wrapAndApplyHeader(out, 0, headerOut).active((short)1).firstConnectionId(firstConnectionId);
+        send(ProxyProtocol.HEADER + roleOut.encodedLength());
+        activatedSeen = false;
+        activatedOpened = false;
+        activating = true;
+        while (!activatedSeen) {
+            commands.poll(onCommand, 16);
+            gateway.keepAlive();
+            ProxyProtocol.beat(hostHeartbeat);
+            if (stalled || clientLiveness.stale(System.nanoTime())) {
+                activating = false;
+                return false;
+            }
+            Thread.onSpinWait();
+        }
+        if (activatedOpened) {
+            ledger.edge(true);
+            lastCanPublish = true;
+            log("now serving — gate epoch %d, first connection id %d", ledger.epoch(), firstConnectionId);
+            sendGate();
+        }
+        activating = false;
+        return activatedOpened;
+    }
+
+    @Override
+    public void onStandby() {
+        roleOut.wrapAndApplyHeader(out, 0, headerOut).active((short)0).firstConnectionId(0);
+        send(ProxyProtocol.HEADER + roleOut.encodedLength());
+        ledger.edge(false);
+        lastCanPublish = false;
+        log("standby — gate epoch %d", ledger.epoch());
+        sendGate();
+    }
+
+    @Override
+    public void onConnectionOpened(final int connectionId, final DirectBuffer data, final int offset, final int length) {
+        connectionOut.wrapAndApplyHeader(out, 0, headerOut).connectionId(connectionId).opened((short)1).putData(data, offset,
+            length);
+        send(ProxyProtocol.HEADER + connectionOut.encodedLength());
+    }
+
+    @Override
+    public void onConnectionClosed(final int connectionId) {
+        connectionOut.wrapAndApplyHeader(out, 0, headerOut).connectionId(connectionId).opened((short)0).putData(scratch, 0, 0);
+        send(ProxyProtocol.HEADER + connectionOut.encodedLength());
+    }
+
+    @Override
+    public void onSequenced(final Payload payload) {
+        frames++;
+        dispatchedPosition = payload.position();
+        if (firstDispatchedPosition == 0) {
+            firstDispatchedPosition = dispatchedPosition;
+        }
+        payloadOut.wrapAndApplyHeader(out, 0, headerOut)
+            .clusterSeqNo(payload.clusterSeqNo())
+            .groupSeqNo(payload.groupSeqNo())
+            .sourceId(payload.sourceId())
+            .connectionId(payload.connectionId())
+            .groupMask(payload.groupMask())
+            .sourceSessionId(payload.sourceSessionId())
+            .clusterTimestampNs(payload.clusterTimestampNs())
+            .receiveTimeNs(payload.receiveTimeNs())
+            .position(payload.position())
+            .payloadId(payload.payloadId())
+            .putBody(payload.buffer(), payload.payloadOffset(), payload.payloadLength());
+        send(ProxyProtocol.HEADER + payloadOut.encodedLength());
+    }
+
+    @Override
+    public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
+        clusterTimeOut.wrapAndApplyHeader(out, 0, headerOut).clusterTimeNs(clusterTimeNs).receiveTimeNs(receiveTimeNs);
+        send(ProxyProtocol.HEADER + clusterTimeOut.encodedLength());
+    }
+
+    @Override
+    public void onCaughtUp(final long clusterSeqNo) {
+        caughtUpOut.wrapAndApplyHeader(out, 0, headerOut).clusterSeqNo(clusterSeqNo);
+        send(ProxyProtocol.HEADER + caughtUpOut.encodedLength());
+        log("host caught up at clusterSeqNo %d", clusterSeqNo);
+    }
+
+    @Override
+    public void onFenced(final ClusterError fence, final String detail) {
+        log("FENCED: %s — %s", fence, detail);
+        final byte[] text = (fence + ": " + detail).getBytes(StandardCharsets.UTF_8);
+        fencedOut.wrapAndApplyHeader(out, 0, headerOut).errorCode(fence.ordinal()).putDetail(text, 0, text.length);
+        send(ProxyProtocol.HEADER + fencedOut.encodedLength());
+        fenced = true;
+    }
+
+    // ── SnapshotListener ─────────────────────────────────────────────────────────────────────────────────────
+
+    /** The attached client's, from its Attach. */
+    @Override
+    public int formatVersion() {
+        return clientFormatVersion;
+    }
+
+    /** H-7: from the attached client's supportedFormats. */
+    @Override
+    public boolean supportsFormatVersion(final int formatVersion) {
+        return clientFormats.containsInt(formatVersion);
+    }
+
+    /**
+     * The first call of a round sends the cut and waits for the client's records and end, then each call serves one.
+     * Waiting, the host polls the command stream and keeps the cluster session alive; a client silent for
+     * {@code proxy.clientTimeoutMs}, a host told to stop, or an end that does not count the records sent (the client's
+     * -1 among them) abandons the round.
+     */
+    @Override
+    public int onSnapshot(final MutableDirectBuffer buffer, final int recordIndex) {
+        if (recordIndex == 0) {
+            cutNo++;
+            cutRecords.clear();
+            endSeen = false;
+            cutLost = false;
+            collecting = true;
+            cutOut.wrapAndApplyHeader(out, 0, headerOut).roundId(cutNo);
+            send(ProxyProtocol.HEADER + cutOut.encodedLength());
+            while (!endSeen) {
+                commands.poll(onCommand, 16);
+                attachRequests.poll(onAttachRequest, 16);
+                keepFacadeAlive();
+                ProxyProtocol.beat(hostHeartbeat);
+                if (!running || clientLiveness.stale(System.nanoTime())) {
+                    cutLost = true;
+                    break;
+                }
+                Thread.onSpinWait();
+            }
+            collecting = false;
+            if (cutLost) {
+                log("ABANDON round: client lost or host stopping in cut %d after %d record(s)", cutNo, cutRecords.size());
+                return -1;
+            }
+            if (endRecordCount != cutRecords.size()) {
+                cutLost = true;
+                log("ABANDON round: the client abandoned cut %d: its end counts %d record(s), %d arrived", cutNo,
+                    endRecordCount, cutRecords.size());
+                return -1;
+            }
+        }
+        if (cutLost) {
+            return -1;
+        }
+        if (recordIndex < cutRecords.size()) {
+            final byte[] record = cutRecords.get(recordIndex);
+            if (record.length > buffer.capacity()) {
+                log("ABANDON round: record %d of cut %d is %d bytes, the most is %d", recordIndex, cutNo, record.length,
+                    buffer.capacity());
+                return -1;
+            }
+            buffer.putBytes(0, record);
+            return record.length;
+        }
+        return 0;
+    }
+
+    @Override
+    public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex, final int formatVersion) {
+        restoreOut.wrapAndApplyHeader(out, 0, headerOut)
+            .recordIndex(recordIndex)
+            .formatVersion(formatVersion)
+            .putData(buffer, 0, length);
+        send(ProxyProtocol.HEADER + restoreOut.encodedLength());
+    }
+
+    // ── Sends ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    private boolean canPublishNow() {
+        return app != null ? app.canPublish() : gateway != null && (gateway.canAccept() || activating);
+    }
+
+    private void sendGate() {
+        gateOut.wrapAndApplyHeader(out, 0, headerOut)
+            .epoch(ledger.epoch())
+            .leading((short)(ledger.leading() ? 1 : 0))
+            .canPublish((short)(canPublishNow() ? 1 : 0))
+            .caughtUp((short)0);
+        send(ProxyProtocol.HEADER + gateOut.encodedLength());
+    }
+
+    /** H-17: the ledger's report of a run of {@code Publish} commands it did not place. */
+    private void sendDropped(final long firstSeq, final long lastSeq, final CommandLedger.Reason reason) {
+        droppedOut.wrapAndApplyHeader(out, 0, headerOut)
+            .firstSeq(firstSeq)
+            .lastSeq(lastSeq)
+            .reason(reason == CommandLedger.Reason.EPOCH ? DropReason.EPOCH : DropReason.REFUSED);
+        send(ProxyProtocol.HEADER + droppedOut.encodedLength());
+    }
+
+    /** Offers {@code out}; no subscriber means no client, which is not worth spinning on. */
+    private void send(final int length) {
+        final long deadline = System.nanoTime() + BACK_PRESSURE_NS;
+        while (true) {
+            ProxyProtocol.beat(hostHeartbeat);
+            final long result = events.offer(out, 0, length);
+            if (result >= 0 || result == Publication.NOT_CONNECTED || result == Publication.CLOSED) {
+                return;
+            }
+            if (System.nanoTime() > deadline) {
+                stalled = true;
+                return;
+            }
+            Thread.onSpinWait();
+        }
+    }
+
+    private void log(final String format, final Object... args) {
+        System.out.printf("[host%s %tT.%<tL] %s%n", properties.name() == null ? "" : " " + properties.name(),
+                          System.currentTimeMillis(), String.format(format, args));
+        System.out.flush();
+    }
+}

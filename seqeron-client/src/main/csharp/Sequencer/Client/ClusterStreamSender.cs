@@ -48,7 +48,8 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
 
     private const long BackpressureAlertIntervalMs = 1_000;
 
-    private readonly YieldingIdleStrategy _idle = new YieldingIdleStrategy();
+    private readonly IIdleStrategy _idle;
+    private readonly IIdleStrategy _connectIdle;
     private readonly SessionListener _listener;
 
     // Which offer results are terminal, held where a test can drive it.
@@ -86,8 +87,18 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
 
     /// <summary>A sender with no session; <see cref="ConnectColocated"/> or <see cref="Connect"/> opens
     /// one.</summary>
-    public ClusterStreamSender()
+    public ClusterStreamSender() : this(null)
     {
+    }
+
+    /// <summary>The same, waiting on <paramref name="idle"/> wherever it blocks: the <see cref="Send"/> spin and a
+    /// session's connect.</summary>
+    /// <param name="idle">what to wait on, or null for a yielding send spin and <c>AeronCluster</c>'s own connect
+    /// wait</param>
+    public ClusterStreamSender(IIdleStrategy idle)
+    {
+        _idle = idle ?? new YieldingIdleStrategy();
+        _connectIdle = idle;
         _listener = new SessionListener(this);
     }
 
@@ -354,22 +365,24 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
 
     // The context every session opens with, apart from where it connects.
     internal static AeronCluster.Context NewContext(Aeron aeron, string ingressChannel, string ingressEndpoints,
-                                                    string egressChannel, IEgressListener listener, long timeoutNs)
+                                                    string egressChannel, IEgressListener listener, long timeoutNs,
+                                                    IIdleStrategy connectIdle = null)
     {
-        return new AeronCluster.Context()
-            .AeronClient(aeron)
-            .IngressChannel(ingressChannel)
-            .IngressEndpoints(ingressEndpoints)
-            .EgressChannel(egressChannel)
-            .EgressListener(listener)
-            .MessageTimeoutNs(timeoutNs)
-            .NewLeaderTimeoutNs(NewLeaderTimeoutNs);
+        AeronCluster.Context context = new AeronCluster.Context()
+                                           .AeronClient(aeron)
+                                           .IngressChannel(ingressChannel)
+                                           .IngressEndpoints(ingressEndpoints)
+                                           .EgressChannel(egressChannel)
+                                           .EgressListener(listener)
+                                           .MessageTimeoutNs(timeoutNs)
+                                           .NewLeaderTimeoutNs(NewLeaderTimeoutNs);
+        return connectIdle != null ? context.IdleStrategy(connectIdle) : context;
     }
 
     private AeronCluster OpenSession(string ingressChannel, string ingressEndpoints, long timeoutNs)
     {
         AeronCluster session = AeronCluster.Connect(
-            NewContext(_aeron, ingressChannel, ingressEndpoints, _egressChannel, _listener, timeoutNs));
+            NewContext(_aeron, ingressChannel, ingressEndpoints, _egressChannel, _listener, timeoutNs, _connectIdle));
         _overIpc = ingressChannel == IngressChannelIpc;
         _reconnectDue = false;
         return session;
@@ -380,11 +393,11 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     {
         try
         {
-            _connecting =
-                AeronCluster.ConnectAsync(overIpc ? NewContext(_aeron, IngressChannelIpc, null, _egressChannel,
-                                                               _listener, _ipcConnectTimeoutMs * 1_000_000)
-                                                  : NewContext(_aeron, IngressChannelUdp, _ingressEndpoints,
-                                                               _egressChannel, _listener, ConnectTimeoutNs));
+            _connecting = AeronCluster.ConnectAsync(
+                overIpc ? NewContext(_aeron, IngressChannelIpc, null, _egressChannel, _listener,
+                                     _ipcConnectTimeoutMs * 1_000_000, _connectIdle)
+                        : NewContext(_aeron, IngressChannelUdp, _ingressEndpoints, _egressChannel, _listener,
+                                     ConnectTimeoutNs, _connectIdle));
         }
         catch (AeronException ex)
         {

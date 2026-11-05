@@ -70,6 +70,16 @@ testing {
                     dependsOn tasks.named('compileTestJava')
                     systemProperty 'seqeron.snapshotTopology',
                                    file('src/test/resources/topology-test-snapshot.xml').absolutePath
+                    // The C++ stub's probe (hosted_probe), built by CMake; HostedCppStubTest is skipped without it.
+                    if (System.getenv('HOSTED_PROBE')) {
+                        systemProperty 'seqeron.hostedProbe', System.getenv('HOSTED_PROBE')
+                        inputs.property('hostedProbe', System.getenv('HOSTED_PROBE'))
+                        // HOSTED_CLIENT=cpp runs HostedSnapshotTest's clients as that probe instead of the Java client.
+                        if (System.getenv('HOSTED_CLIENT')) {
+                            systemProperty 'seqeron.hostedClient', System.getenv('HOSTED_CLIENT')
+                            inputs.property('hostedClient', System.getenv('HOSTED_CLIENT'))
+                        }
+                    }
                     systemProperty 'seqeron.gatewayTopology',
                                    file('src/test/resources/topology-test-gateway.xml').absolutePath
                     doFirst {

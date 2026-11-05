@@ -23,7 +23,7 @@ import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
 
 /**
- * Prototype of the hosted-façade hop (doc/hosted-facade-draft.md), not a test and not wired into any suite. The
+ * Prototype of the hosted-façade hop (doc/hosted-facade.md), not a test and not wired into any suite. The
  * host runs the real {@link Application} on the leader member's driver and relays it over two IPC streams to a client
  * thread; the other phase runs the same {@link Application} directly. A direct {@link Consumer} beside each phase
  * gives a per-{@code clusterSeqNo} reference for the receive path. The wire format here is bench-only, not schema

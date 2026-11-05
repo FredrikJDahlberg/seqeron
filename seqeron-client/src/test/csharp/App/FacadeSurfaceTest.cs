@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using Adaptive.Aeron;
 using Adaptive.Agrona;
+using Adaptive.Agrona.Concurrent;
 using Org.Limitless.Seqeron.Protocol;
 using Xunit;
 
@@ -10,10 +11,10 @@ namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
 /// The façades' surface is closed: a consumer that takes one names <c>App</c>, <c>Protocol.Publish</c>,
-/// <c>Aeron</c>, <c>IDirectBuffer</c> and <c>IMutableDirectBuffer</c>, and nothing else beyond <c>System</c>. A
-/// public signature that reaches into <c>Sequencer.Client</c>, <c>Replayer.Client</c>, the generated codecs or one of
-/// this namespace's own internal blocks is the leak it catches. <c>FacadeSurfaceTest.java</c> is its twin; Java's
-/// nested builders and listeners are the options classes and listener interfaces here.
+/// <c>Aeron</c>, <c>IDirectBuffer</c>, <c>IMutableDirectBuffer</c> and <c>IIdleStrategy</c>, and nothing else beyond
+/// <c>System</c>. A public signature that reaches into <c>Sequencer.Client</c>, <c>Replayer.Client</c>, the generated
+/// codecs or one of this namespace's own internal blocks is the leak it catches. <c>FacadeSurfaceTest.java</c> is its
+/// twin; Java's nested builders and listeners are the options classes and listener interfaces here.
 /// </summary>
 public class FacadeSurfaceTest
 {
@@ -22,7 +23,7 @@ public class FacadeSurfaceTest
         typeof(Gateway),       typeof(GatewayOptions),     typeof(IGatewayListener),
         typeof(Application),   typeof(ApplicationOptions), typeof(IApplicationListener),
         typeof(Payload),       typeof(ClusterError),       typeof(ISnapshotListener),
-        typeof(GroupDirectory),    typeof(SnapshotOptions),    typeof(RequestRef),
+        typeof(GroupDirectory),    typeof(SnapshotOptions),    typeof(ReplyAddress),
         typeof(Tuning),            typeof(Consumer),           typeof(ConsumerOptions),
         typeof(IConsumerListener)
     };
@@ -151,8 +152,8 @@ public class FacadeSurfaceTest
         {
             return true;
         }
-        if (type == typeof(IDirectBuffer) || type == typeof(IMutableDirectBuffer) || type == typeof(Aeron) ||
-            type == typeof(Publish))
+        if (type == typeof(IDirectBuffer) || type == typeof(IMutableDirectBuffer) || type == typeof(IIdleStrategy) ||
+            type == typeof(Aeron) || type == typeof(Publish))
         {
             return true;
         }

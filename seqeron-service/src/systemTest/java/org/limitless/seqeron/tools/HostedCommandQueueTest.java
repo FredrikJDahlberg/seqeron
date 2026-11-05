@@ -18,12 +18,12 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The hosted-façade prototype's command queue and window (doc/hosted-facade-draft.md, H-3 to H-5). One hosted pair
+ * The hosted-façade prototype's command queue and window (doc/seqeron-protocol-spec.md, H-3 to H-5). One hosted pair
  * on the leader of a cluster with no snapshot policy. The client floods markers; the host's tracker holds four, so
  * the façade declines at the head of the queue, and its window holds about seventeen, so the stub declines too.
  */
 class HostedCommandQueueTest {
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
     private static final String CLIENT = "org.limitless.seqeron.tools.HostedTestApplicationClient";
     private static final int SOURCE_ID = 16;
     private static final int WINDOW = 1024;
@@ -102,6 +102,19 @@ class HostedCommandQueueTest {
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
+    /** H-17: a Publish whose commandSeq is not the next one skips or repeats a command, and the host fences the client. */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aPublishThatSkipsACommandSeqFencesTheClient() {
+        assertFencedForCommandSeq("3");
+    }
+
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aPublishThatRepeatsACommandSeqFencesTheClient() {
+        assertFencedForCommandSeq("-1");
+    }
+
     /**
      * A gate edge drops what the queue holds, counted and never placed late. The hosted member leads, is flooded and
      * paused until deposed; its commands queued at the edge are dropped by their epoch.
@@ -137,10 +150,23 @@ class HostedCommandQueueTest {
     }
 
     private void startHost() {
-        host = cluster.harness("host", leader, HOST, null, "probe.sourceId=" + SOURCE_ID, "probe.clientId=31",
-                               "probe.snapshotDir=" + baseDir.resolve("snap"), "host.commandWindow=" + WINDOW,
-                               "host.pendingCapacity=4", "host.placePerCycle=2", "host.spin=true");
+        host = cluster.proxy("host", leader, "proxy.sourceId=" + SOURCE_ID, "proxy.clientId=31",
+                               "proxy.snapshotDir=" + baseDir.resolve("snap"), "proxy.commandWindow=" + WINDOW,
+                               "proxy.pendingCapacity=4", "proxy.placePerCycle=2", "proxy.spin=true");
         host.awaitLine("host ready", Duration.ofSeconds(30));
+    }
+
+    private void assertFencedForCommandSeq(final String badSeq) {
+        startHost();
+        startClient("probe.intervalMs=1", "client.badSeq=" + badSeq);
+        check("the host fenced the client for its commandSeq",
+              poll(() -> host.lastLine("FENCED: CLIENT_PROTOCOL") != null
+                         && host.lastLine("FENCED: CLIENT_PROTOCOL").contains("commandSeq")));
+        check("the client heard the fence and exited 70", poll(() -> client.lastLine("FENCED") != null)
+                                                           && client.awaitDead(Duration.ofSeconds(10))
+                                                           && client.exitValue() == 70);
+        check("only the commands before it were sequenced", number(client, "state: ", OWN) <= 5);
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
     private void startClient(final String... properties) {

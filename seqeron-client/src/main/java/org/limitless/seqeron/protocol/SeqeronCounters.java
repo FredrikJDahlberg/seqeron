@@ -89,11 +89,11 @@ public final class SeqeronCounters {
     public static final int REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
 
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
-    // Core reserves 5200, 5298 and 5299; a consumer allocates its own in 5201-5297 (doc/ops.md, "Counter type ids").
+    // Core reserves 5200 and 5297-5299; a consumer allocates its own in 5201-5296 (doc/ops.md, "Counter type ids").
     // Published by the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.
     /**
-     * First type id of the app range: core reserves {@link #APP_RECOVERY_STALLED_TYPE_ID}, {@link
-     * #APP_SNAPSHOT_ROUND_TYPE_ID} and {@link #GATEWAY_CONNECTIONS_TYPE_ID} and no more.
+     * First type id of the app range: core reserves {@link #APP_RECOVERY_STALLED_TYPE_ID}, {@link #HOSTED_LAG_TYPE_ID},
+     * {@link #APP_SNAPSHOT_ROUND_TYPE_ID} and {@link #GATEWAY_CONNECTIONS_TYPE_ID} and no more.
      */
     public static final int APP_TYPE_ID_MIN = 5200;
     /** Last type id of the app range; which replica holds which sub-block is the deployment's to record. */
@@ -101,6 +101,9 @@ public final class SeqeronCounters {
 
     /** 1 while a co-located replica's recovery has dispatched nothing while not caught up, else 0. */
     public static final int APP_RECOVERY_STALLED_TYPE_ID = 5200;
+
+    /** How far a hosted client trails its host: the host's last dispatched position less the client's applied one. */
+    public static final int HOSTED_LAG_TYPE_ID = 5297;
 
     /**
      * The last snapshot round a participating client confirmed (doc/snapshot.md §4), 0 for none yet. A client whose
@@ -111,10 +114,28 @@ public final class SeqeronCounters {
     /** Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not serve. */
     public static final int GATEWAY_CONNECTIONS_TYPE_ID = 5299;
 
+    // ClientProxy and the clients it serves (doc/seqeron-protocol-spec.md §17.2.1)
+    /** First type id of the proxy's block. */
+    public static final int PROXY_TYPE_ID_MIN = 5300;
+    /** Last type id of the proxy's block. */
+    public static final int PROXY_TYPE_ID_MAX = 5399;
+
+    /** A client's monotonic clock in ms, written by the client every duty cycle; the proxy judges the client by it. */
+    public static final int PROXY_CLIENT_HEARTBEAT_TYPE_ID = 5300;
+
+    /** The position of the last payload a client applied, written by the client. */
+    public static final int PROXY_CLIENT_APPLIED_TYPE_ID = 5301;
+
+    /** A proxy's monotonic clock in ms, written by the proxy every duty cycle; the client judges the proxy by it. */
+    public static final int PROXY_HEARTBEAT_TYPE_ID = 5302;
+
+    /** Total encoded length of the windowed commands that have left the proxy's queue, placed or dropped. */
+    public static final int PROXY_RETIRED_TYPE_ID = 5303;
+
     /** First type id this class owns, for a typeId-range scan (see {@code clusterctl counters}). */
     public static final int MIN_TYPE_ID = SEQUENCER_TYPE_ID_MIN;
     /** Last type id it owns; nothing outside {@link #MIN_TYPE_ID}..here is seqeron's. */
-    public static final int MAX_TYPE_ID = APP_TYPE_ID_MAX;
+    public static final int MAX_TYPE_ID = PROXY_TYPE_ID_MAX;
 
     /** Offset of the memberId int within a counter's key buffer (see {@link #addCounter}). */
     public static final int KEY_MEMBER_ID_OFFSET = 0;

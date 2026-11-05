@@ -113,13 +113,23 @@ final class ClusterProcesses implements AutoCloseable {
      * members' archives, tried in order.
      */
     Child startGatewayHost(final String logName, final int id, final int... archiveMembers) {
+        return startGatewayHost(logName, id, List.of(), archiveMembers);
+    }
+
+    /** As above, with {@code key=value} system properties beyond the relay's, such as the hosted façades'. */
+    Child startGatewayHost(final String logName, final int id, final List<String> properties,
+                           final int... archiveMembers) {
         final StringBuilder endpoints = new StringBuilder();
         for (final int m : archiveMembers) {
             endpoints.append(endpoints.length() == 0 ? "" : ",").append(archiveEndpoint(m));
         }
-        return launch(logName, List.of("-Dreplayer.memberId=" + id, "-Dreplayer.baseDir=" + baseDir,
-                                       "-Dreplayer.aeronDir=" + aeronDir(id), "-Dreplayer.archiveEndpoints=" + endpoints,
-                                       "-Dreplayer.groups=1", "-cp", JAR, ReplayerServer.class.getName()));
+        final List<String> args = new ArrayList<>(List.of("-Dreplayer.memberId=" + id, "-Dreplayer.baseDir=" + baseDir,
+                                                          "-Dreplayer.aeronDir=" + aeronDir(id),
+                                                          "-Dreplayer.archiveEndpoints=" + endpoints,
+                                                          "-Dreplayer.groups=1"));
+        properties.forEach(property -> args.add("-D" + property));
+        args.addAll(List.of("-cp", JAR, ReplayerServer.class.getName()));
+        return launch(logName, args);
     }
 
     /** A member's archive as the relay names it. */
@@ -193,6 +203,38 @@ final class ClusterProcesses implements AutoCloseable {
             args.add(argument);
         }
         return launch(name, args);
+    }
+
+    /**
+     * Starts a {@code ClientProxy} beside member {@code m}, from the uber jar alone.
+     *
+     * @param name       the process's log name
+     * @param m          the member whose driver it attaches to
+     * @param properties {@code key=value} {@code proxy.*} system properties beyond its member and Aeron directory
+     * @return the running process
+     */
+    Child proxy(final String name, final int m, final String... properties) {
+        final List<String> args = new ArrayList<>(List.of("-Dproxy.memberId=" + m, "-Dproxy.aeronDir=" + aeronDir(m)));
+        for (final String property : properties) {
+            args.add("-D" + property);
+        }
+        args.addAll(List.of("-cp", JAR, "org.limitless.seqeron.proxy.ClientProxy"));
+        return launch(name, args);
+    }
+
+    /** Starts a native program, one that is not a JVM, with its output in the log as a harness's is. */
+    Child nativeProcess(final String name, final String... command) {
+        final Path log = logDir.resolve(name + ".log");
+        try {
+            Files.createDirectories(logDir);
+            final Process process = new ProcessBuilder(command).redirectErrorStream(true)
+                                        .redirectOutput(log.toFile()).start();
+            final Child child = new Child(process, log);
+            children.add(child);
+            return child;
+        } catch (final IOException ex) {
+            throw new UncheckedIOException(ex);
+        }
     }
 
     /** Runs clusterctl against member {@code m} to completion and returns its process, for its output and status. */
@@ -364,7 +406,7 @@ final class ClusterProcesses implements AutoCloseable {
         }
     }
 
-    private String aeronDir(final int m) {
+    String aeronDir(final int m) {
         return baseDir.resolve("aeron-" + m).toString();
     }
 

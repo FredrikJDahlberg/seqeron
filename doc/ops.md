@@ -91,9 +91,11 @@ The exporter maps a counter to a metric by its Aeron type id. Aeron reserves 0�
 | 5000–5099 | `SequencerService` |
 | 5100–5199 | `ReplayerService` |
 | 5200 | `ReplayerStreamReceiver`, inside every client: `seqeron_app_recovery_stalled` |
-| 5201–5297 | an application's own counters, allocated by the deployment |
+| 5201–5296 | an application's own counters, allocated by the deployment |
+| 5297 | `ClientProxy`, inside every host: `seqeron_hosted_lag_bytes` |
 | 5298 | `Application` and `Gateway`, inside every instance with a `SnapshotListener`: `seqeron_app_snapshot_round` |
 | 5299 | `Gateway`, inside every gateway instance: `seqeron_gateway_connections` |
+| 5300–5303 | `ClientProxy` (5302, 5303) and the client stub it serves (5300, 5301); not exported. A proxy labels its counters with its `proxy.hostName`, a stub with the `hostName` it attaches to |
 
 The ids are defined in `SeqeronCounters` in each language, and the copies must stay in step. Of the
 counters outside these ranges, only Aeron Cluster's below are exported ([Aeron Cluster's metrics](#aeron-clusters-metrics)).
@@ -129,6 +131,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because the queue recording trailed the queue by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the queue |
 | `seqeron_replayer_archive_errors_total` | counter | local-archive calls that threw. A request one fails is answered `ReplayPending` and the client's resend is the retry; the Replayer's own call, its readiness check, waits a second before the next. Live delivery is unaffected, so a sustained rate means only that history is not being served. A replay its client does not subscribe to within the archive's 5 s connect timeout counts one too, logged as a refused replay with `no connection established`: a client paused that long between its request and the answer, by a GC pause for one, requests again 5 s after it resumes, so isolated counts are not an archive fault |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a Replayer that never answers and a gap this member's recording cannot cover; the client's own log line names which |
+| `seqeron_hosted_lag_bytes` | gauge | how far a hosted client trails its host: the bytes of the queue the host has dispatched and the client not yet applied (`seqeron-protocol-spec.md` **H-14**). The counter exists only while a client is attached, so no client is no series rather than 0. Labelled `client` with the host's `proxy.clientId`, its façade's, which is unique on the node as every client's is ([Client ids](#client-ids)). A lag that only grows is a client falling behind |
 | `seqeron_app_snapshot_round` | gauge | the last snapshot round this client confirmed against its source's sequenced `SnapshotEnd` and holds a durable file for ([`snapshot.md`](snapshot.md) §5), 0 until its process confirms one; also labelled `client`, and its label names the `source`. Every instance of a participating source should follow the latest round; one that lags is missing rounds |
 | `seqeron_gateway_connections` | gauge | connections this gateway instance holds open: taken with `openConnection` and not yet closed. 0 on a standby, and reset when the edge closes. Labelled `client` as well as `member`; `sum` over every instance gives a deployment's total |
 
@@ -158,7 +161,6 @@ each stream. An alias changes no matching: IPC publications and subscriptions ma
 | `seqeron-replay` | the replay protocol, 201–203, and the Replayer's own replays, 204 and 207 |
 | `seqeron-archive` | archive control, 100, and its responses: 120–122 in a member or gateway host |
 | `seqeron-ingress` | a co-located producer's cluster ingress, 101 |
-| `seqeron-scan` | a C++ `ClusterStreamClient` replay, 110 |
 
 ## Ports
 
@@ -174,9 +176,6 @@ seqeron's processes bind these ports, and an application's own must stay clear o
 | `9400 + memberId` | `metrics-exporter.sh`'s `/metrics` (TCP) |
 | 9200, 9201 | `TestGateway`'s TCP listeners (test harnesses only) |
 | `9202 + memberId` | `seqeron-examples`' cluster egress (UDP) |
-| 9205, 9206 | `seqeron-examples`' C++ gateway pair's cluster egress (UDP) |
-| `9207 + memberId` | `seqeron-examples`' C++ `SnapshotApp` cluster egress (UDP) |
-| 9220–9224 | `cpp-client-test.sh`'s C++ probes' cluster egress (UDP, test harnesses only) |
 | 9500–9569 | `:seqeron-service:integrationTest`'s cluster block (`SEQERON_PORT_BASE=9500`, test runs only) |
 
 - **`base`** is 9300 unless `SEQERON_PORT_BASE` sets it, to a value from 1024 to 65466; a process given an
@@ -241,7 +240,7 @@ This repository's processes use the ids below. An application's should start at 
 | 20 | `seqeron-examples` `ColocatedApp` (C#) |
 | 21, 22 | `seqeron-examples` `GatewayApp` (C#), GW-EX-CS-A, GW-EX-CS-B |
 | 23 | `seqeron-examples` `SnapshotApp` (C#) |
-| 31–38 | `csharp-client-test.sh` C# probes 31–37; `cpp-client-test.sh` C++ probes 31–36, its scan 37 and its walk 38 |
+| 31–37 | `csharp-client-test.sh` C# probes |
 | 41–43 | `csharp-windows-test.sh` C# probes |
 
 ## Consensus timeouts
@@ -350,7 +349,7 @@ bytes whole everywhere, and suits a deployment whose payloads stay below that.
 
 Larger payloads, up to `MAX_PAYLOAD_LENGTH` (8,874 bytes), stay whole on the queue with
 `-Daeron.ipc.mtu.length=8960`, passed as the term length is. A replay carries its recording's MTU, so every
-UDP replay of the queue — a gateway host's relay, a `ClusterStreamClient` following a member on another host
+UDP replay of the queue — a gateway host's relay, a client following a member on another host
 — then sends datagrams of up to 8,960 bytes, with small frames batched into them. The network between them
 needs a 9000-byte MTU; otherwise the kernel fragments each datagram, and a lost piece loses all of it.
 

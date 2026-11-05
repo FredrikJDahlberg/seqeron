@@ -13,7 +13,7 @@ class Payload;
  * What a reply needs of the request it answers: the requester's sourceId, connectionId and groupMask. Unlike the
  * Payload it comes from, it outlives the callback, so keep it for a reply dispatched later.
  */
-struct RequestRef
+struct ReplyAddress
 {
     std::int32_t sourceId;
     std::int32_t connectionId;
@@ -75,8 +75,8 @@ class Payload
         return m_event.groupMask;
     }
 
-    // The reference a later Application::reply takes; unlike this payload, it outlives the callback.
-    [[nodiscard]] RequestRef requestRef() const noexcept
+    // The address a later Application::reply takes; unlike this payload, it outlives the callback.
+    [[nodiscard]] ReplyAddress replyAddress() const noexcept
     {
         return { m_event.sourceId, m_event.connectionId, m_event.groupMask };
     }

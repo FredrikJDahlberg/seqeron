@@ -1,7 +1,11 @@
 package org.limitless.seqeron.tools;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -10,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,7 +24,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
- * The hosted-façade prototype (doc/hosted-facade-draft.md) through restore, the snapshot cut and SIGKILL. One
+ * The hosted-façade prototype (doc/hosted-facade.md) through restore, the snapshot cut and SIGKILL. One
  * {@code TestApplication} replica of source 16 is a host and a client; the other two members run the direct one. The
  * client writes {@code TestApplication}'s records byte for byte, so each side compares the other's rounds with the
  * sequenced {@code SnapshotEnd} and fences on a difference (spec A-7): a run with no FENCED line is the hosted state
@@ -27,7 +32,9 @@ import org.limitless.seqeron.protocol.SeqeronCounters;
  */
 class HostedSnapshotTest {
     private static final String TEST_APPLICATION = "org.limitless.seqeron.tools.TestApplication";
-    private static final String HOST = "org.limitless.seqeron.tools.HostedTestApplicationHost";
+    private static final String HOST = "org.limitless.seqeron.proxy.ClientProxy";
+    /** HOSTED_CLIENT=cpp in the Gradle run: the clients are hosted_probe (HOSTED_PROBE), the C++ stub. */
+    private static final boolean CPP = "cpp".equals(System.getProperty("seqeron.hostedClient"));
     private static final String CLIENT = "org.limitless.seqeron.tools.HostedTestApplicationClient";
     private static final int SOURCE_ID = 16;
     private static final int CLIENT_TIMEOUT_MS = 2000;
@@ -130,8 +137,11 @@ class HostedSnapshotTest {
         check("rounds resume", waitRounds(hostedMember, hostClientId, 2));
         System.out.printf("cut-to-kill %d ms%n", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - cutAt));
 
-        // 5. A command under another attachment's id is dropped.
-        check("the host dropped the ghost command", !host.lines("dropped stale command").isEmpty());
+        // 5. A command from a publication that is not the attachment's is never read (H-15).
+        if (!CPP) {
+            check("the client sent a command from a second publication", !client.lines("sent one command").isEmpty());
+            check("the host never read it: no ghost marker was sequenced", client.lines("GHOST MARKER SEQUENCED").isEmpty());
+        }
         check("no instance fenced", noFence());
 
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
@@ -170,6 +180,48 @@ class HostedSnapshotTest {
     }
 
     /**
+     * The C++ stub alone for its source, on the leader, cuts six records of which each after the first takes 500 ms
+     * and none calls keepAlive(): the cut outlasts the host's 2 s client timeout, and the stub's heartbeat after each
+     * record keeps the client attached and the round confirmed.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCutOfManySlowRecordsKeepsTheClient() {
+        assumeTrue(CPP, "the record options are hosted_probe's");
+        cluster.loadTopology(Path.of(System.getProperty("seqeron.snapshotTopology"))
+                                 .resolveSibling("topology-test-hosted-slow.xml"));
+        hostedMember = cluster.awaitLeader();
+        startHost();
+        startClientNoWait("client.records=6", "client.recordMs=500");
+        check("a round is confirmed", poll(() -> round(hostedMember, hostClientId) > 0, 2 * TIMEOUT_SECS));
+        check("the host did not declare the client lost", host.lines("CLIENT_LOST").isEmpty());
+        check("the host did not abandon a round", host.lines("ABANDON round").isEmpty());
+        check("no instance fenced", noFence());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * SIGTERM to the host while the client is mid-cut and still heartbeating: the cut loop must end on the stop, the
+     * host must abandon the round and exit within its shutdown join, and the JVM must not crash.
+     */
+    @Test
+    @Timeout(value = 200, unit = TimeUnit.SECONDS)
+    void aHostStoppedMidCutAbandonsTheRoundAndExitsCleanly() {
+        bootstrap(false, "topology-test-hosted-slow.xml");
+        startHost();
+        startClientNoWait("client.slowCutMs=60000");
+        client.awaitLine("IN SLOW CUT", Duration.ofSeconds(2 * TIMEOUT_SECS));
+        sleep(500);
+        check("the client is still attached", client.isAlive() && host.lines("CLIENT_LOST").isEmpty());
+        check("SIGTERM ends the host within the shutdown join", host.terminate(Duration.ofSeconds(10)));
+        check("the host abandoned the round on the stop", !host.lines("ABANDON round: client lost or host stopping").isEmpty());
+        check("the JVM did not crash", host.lines("SIGSEGV").isEmpty() && host.lines("fatal error").isEmpty());
+        check("the host exited on the signal, not a crash",
+              !host.isAlive() && (host.exitValue() == 0 || host.exitValue() == 143));
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
      * The hosted pair is a follower. The leader is paused until the other two members elect, and again, until the
      * hosted member wins (no member is killed or restarted); then its own member is paused to depose it. At each
      * change the gate epoch must rise, a command under the previous epoch must be dropped by the host and never
@@ -178,6 +230,7 @@ class HostedSnapshotTest {
     @Test
     @Timeout(value = 400, unit = TimeUnit.SECONDS)
     void aHostedReplicaGainsAndLosesLeadershipUnderGateEpochs() {
+        assumeFalse(CPP, "the stub's own checks send no stale epoch");
         final int other = bootstrap(false);
         startHost();
         startClientNoWait("client.staleEpoch=true");
@@ -245,9 +298,102 @@ class HostedSnapshotTest {
         check("the client heard it and exited 70", client.awaitDead(Duration.ofSeconds(10))
                                                        && client.exitValue() == 70);
         check("the client logged FENCED", !client.lines("FENCED").isEmpty());
+        check("the client did not call the fenced host lost", client.lines("HOST_LOST AFTER FENCE").isEmpty());
         check("the host exited 70", host.awaitDead(Duration.ofSeconds(10)) && host.exitValue() == 70);
         check("no direct replica fenced", instances.stream().filter(c -> c != host && c != client)
                                               .allMatch(c -> c.lines("FENCED").isEmpty()));
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * A client that abandons every cut, by SnapshotEnd(-1) (H-6) or, the C++ stub, by a listener returning -1: the host
+     * abandons the round too, rather than take the records it holds, none, for the client's state.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCutTheClientAbandonsIsAbandonedByTheHost() {
+        final int direct = bootstrap(false);
+        startHost();
+        startClientNoWait("client.abandonCuts=true");
+        check("a direct replica's rounds complete", waitRounds(direct, 11, 2));
+        check("the host abandoned the rounds the client abandoned",
+              poll(() -> host.lines("ABANDON round: the client abandoned").size() >= 2));
+        check("the hosted replica confirmed no round", round(hostedMember, hostClientId) == 0);
+        check("no instance fenced", noFence());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * A client with no snapshot listener reads no format, so the host's façade takes part in no round, as a direct one
+     * given none: it is cut nothing, and the member's cuts become restart-safe, which one that joined and abandoned
+     * every round would keep them from. Rounds every 15 s, so one outlasts the Replayer's 10 s join window.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aClientWithNoSnapshotListenerTakesPartInNoRound() {
+        final int direct = bootstrap(false, "topology-test-hosted-slow.xml");
+        startHost();
+        startClientNoWait("client.noSnapshots=true");
+        check("the hosted pair is caught up", poll(() -> client.lastLine("Caught up") != null));
+        check("a direct replica's member has a restart-safe cut", poll(() -> safeCuts(direct) >= 1, 2 * TIMEOUT_SECS));
+        check("the hosted member has one too", poll(() -> safeCuts(hostedMember) >= 1));
+        check("the host cut no round for the client",
+              host.lines("ABANDON").isEmpty() && client.lines("CUT WITHOUT A LISTENER").isEmpty());
+        check("no instance fenced", noFence());
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /** The {@code safe} lines of a member's {@code restart-safe.log}. */
+    private long safeCuts(final int m) {
+        try (Stream<String> lines = Files.lines(baseDir.resolve("cluster-" + m).resolve("restart-safe.log"))) {
+            return lines.filter(line -> line.startsWith("safe ")).count();
+        } catch (final IOException ex) {
+            return 0;
+        }
+    }
+
+    /**
+     * The client is replaced by a build that reads format 2 alone while the confirmed round is format 1: the host
+     * answers supportsFormatVersion from the client's Attach (H-7), so it fences rather than hand over the records.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aRestoreInAFormatTheClientDoesNotReadIsFenced() {
+        bootstrap(false);
+        startHost();
+        startClient();
+        check("a round is confirmed in format 1", waitRounds(hostedMember, hostClientId, 1));
+        client.kill();
+        check("the host dropped the client", poll(() -> !host.lines("CLIENT_LOST").isEmpty()));
+        startClientNoWait("client.formatVersion=2");
+        check("the host fenced the hosted replica with SNAPSHOT_UNRESTORABLE",
+              poll(() -> host.lines("FENCED: SNAPSHOT_UNRESTORABLE").size() == 1));
+        check("the client exited 70", client.awaitDead(Duration.ofSeconds(10)) && client.exitValue() == 70);
+        check("the client was handed no record", client.lines("restored record").isEmpty());
+        check("the host exited 70", host.awaitDead(Duration.ofSeconds(10)) && host.exitValue() == 70);
+        check("no direct replica fenced", instances.stream().filter(c -> c != host && c != client)
+                                              .allMatch(c -> c.lines("FENCED").isEmpty()));
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * The client is replaced by a build that writes format 2 and still reads format 1: it is handed the format-1 round,
+     * told which format it is, and its rounds go on agreeing with the direct replicas, since an end carries no format.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aRestoreInAnOlderFormatTheClientStillReadsSucceeds() {
+        bootstrap(false);
+        startHost();
+        startClient();
+        check("a round is confirmed in format 1", waitRounds(hostedMember, hostClientId, 1));
+        client.kill();
+        check("the host dropped the client", poll(() -> !host.lines("CLIENT_LOST").isEmpty()));
+        startClientNoWait("client.formatVersion=2", "client.supportedFormats=1,2");
+        client.awaitLine("Caught up", CATCHUP);
+        check("the client was handed the format-1 round", !client.lines("restored record 0 (format 1)").isEmpty());
+        check("rounds complete after the restore", waitRounds(hostedMember, hostClientId, 2));
+        check("no instance fenced", noFence());
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
     }
 
@@ -327,9 +473,9 @@ class HostedSnapshotTest {
     private void startHost() {
         hostRuns++;
         hostClientId = 30 + hostRuns;
-        host = cluster.harness("host-" + hostRuns, hostedMember, HOST, null, "probe.sourceId=" + SOURCE_ID,
-                               "probe.clientId=" + hostClientId, "host.clientTimeoutMs=" + CLIENT_TIMEOUT_MS,
-                               "probe.snapshotDir=" + baseDir.resolve("snap").resolve("host"));
+        host = cluster.proxy("host-" + hostRuns, hostedMember, "proxy.sourceId=" + SOURCE_ID,
+                               "proxy.clientId=" + hostClientId, "proxy.clientTimeoutMs=" + CLIENT_TIMEOUT_MS,
+                               "proxy.snapshotDir=" + baseDir.resolve("snap").resolve("host"));
         instances.add(host);
         host.awaitLine("host ready", Duration.ofSeconds(30));
     }
@@ -340,9 +486,39 @@ class HostedSnapshotTest {
     }
 
     private void startClientNoWait(final String... properties) {
+        if (CPP) {
+            startCppClient(properties);
+            return;
+        }
         final List<String> all = new ArrayList<>(List.of("probe.sourceId=" + SOURCE_ID));
         all.addAll(List.of(properties));
         client = cluster.harness("client-" + ++clientRuns, hostedMember, CLIENT, null, all.toArray(new String[0]));
+        instances.add(client);
+    }
+
+    /** The same client as the C++ stub's probe, for the properties it has an option for. */
+    private void startCppClient(final String... properties) {
+        final List<String> command = new ArrayList<>(List.of(System.getProperty("seqeron.hostedProbe"), "--aeron-dir",
+                                                             cluster.aeronDir(hostedMember), "--source-id",
+                                                             "" + SOURCE_ID));
+        for (final String property : properties) {
+            final String[] keyValue = property.split("=", 2);
+            switch (keyValue[0]) {
+            case "client.stallCutNo" -> command.addAll(List.of("--stall-cut-no", keyValue[1]));
+            case "client.slowCutMs" -> command.addAll(List.of("--slow-cut-ms", keyValue[1]));
+            case "client.corruptRecord" -> command.addAll(List.of("--corrupt-record", "1"));
+            case "client.abandonCuts" -> command.addAll(List.of("--abandon-cuts", "1"));
+            case "client.noSnapshots" -> command.addAll(List.of("--no-snapshots", "1"));
+            case "client.formatVersion" -> command.addAll(List.of("--format-version", keyValue[1]));
+            case "client.supportedFormats" -> command.addAll(List.of("--supported-formats", keyValue[1]));
+            case "client.records" -> command.addAll(List.of("--records", keyValue[1]));
+            case "client.recordMs" -> command.addAll(List.of("--record-ms", keyValue[1]));
+            default -> {
+                // client.ghost and client.staleEpoch publish from outside the stub's checks, which it has no option for.
+            }
+            }
+        }
+        client = cluster.nativeProcess("client-" + ++clientRuns, command.toArray(new String[0]));
         instances.add(client);
     }
 

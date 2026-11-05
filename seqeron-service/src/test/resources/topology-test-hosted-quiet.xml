@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The hosted-façade prototype's topology without a snapshot policy (doc/hosted-facade-draft.md): the TestApplication
+    The hosted-façade prototype's topology without a snapshot policy (doc/hosted-facade.md): the TestApplication
     row and no rounds, so a host's steady state has no cut in it. HostedAllocationTest loads it.
 -->
 <topology xmlns="http://limitless.org/seqeron/topology/1">

@@ -28,6 +28,7 @@ sourceSets.main.java.srcDir sbeGeneratedSrcDir
 [
     generateReplaySbe: ['replay', 'sbe-replay.xml (the node-local replay control protocol)'],
     generateFrameSbe : ['frame',  'sbe-frame.xml (the Unsequenced/Sequenced envelope pair)'],
+    generateHostedSbe: ['hosted', 'sbe-hosted.xml (the hosted-façade protocol, draft)'],
 ].each { taskName, spec ->
     def (schema, about) = spec
     def schemaFile = new File(sbeSchemaDir, "sbe-${schema}.xml")
@@ -60,7 +61,7 @@ sourceSets.main.java.srcDir sbeGeneratedSrcDir
 }
 
 tasks.named('compileJava') {
-    dependsOn 'generateReplaySbe', 'generateFrameSbe'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateHostedSbe'
 }
 
 // IR only, no stubs: the Java side speaks the cluster protocol through io.aeron.cluster.codecs, so the
@@ -160,7 +161,7 @@ def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
 
 tasks.register('collectSbeIr', Copy) {
     description = 'Stage this module\'s SBE IR files as jar resources for SbeLogPrinter'
-    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateClusterSbeIr'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateHostedSbe', 'generateClusterSbeIr'
     doFirst { delete sbeIrResourceDir }
     from(sbeGeneratedSrcDir) {
         include '*.sbeir'

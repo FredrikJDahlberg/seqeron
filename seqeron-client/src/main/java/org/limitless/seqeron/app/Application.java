@@ -6,6 +6,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
+import org.agrona.concurrent.IdleStrategy;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SeqeronCounters;
@@ -145,7 +146,7 @@ public final class Application implements AutoCloseable {
         this.session = new Session(builder.clientId, builder.tuning.pendingCapacity(),
                                    builder.tuning.queueStallTimeoutMs(),
                                    builder.tuning.recoveryStallTimeoutMs(), builder.sourceId, null, builder.addressedGroups,
-                                   new SessionDispatch());
+                                   builder.idleStrategy, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, () -> sourceId);
         if (store != null) {
             session.restoreFrom(store, snapshots);
@@ -229,10 +230,10 @@ public final class Application implements AutoCloseable {
      * The same on behalf of the producer that asked for it: a reply carries the <b>requester's</b>
      * {@code sourceId}, {@code connectionId} and {@code groupMask}, which is how the gateway that took the request
      * routes the answer back out of it, and how every group that saw the request sees the answer. Keep the {@link
-     * RequestRef} ({@link Payload#requestRef()}) rather than the request itself — a {@link Payload} is valid only
+     * ReplyAddress} ({@link Payload#replyAddress()}) rather than the request itself — a {@link Payload} is valid only
      * during its callback, and a reply is usually dispatched later.
      */
-    public Publish reply(final RequestRef request, final int payloadId, final DirectBuffer payload, final int length) {
+    public Publish reply(final ReplyAddress request, final int payloadId, final DirectBuffer payload, final int length) {
         return submit(request.sourceId(), request.connectionId(), request.groupMask(), payloadId, payload, length);
     }
 
@@ -408,6 +409,7 @@ public final class Application implements AutoCloseable {
         private SnapshotListener snapshotListener;
         private Path snapshotDirectory;
         private Tuning tuning = Tuning.DEFAULT;
+        private IdleStrategy idleStrategy;
 
     /**
      * This application's {@code sourceId}, the one its {@code <applications>} row declares — required,
@@ -490,6 +492,16 @@ public final class Application implements AutoCloseable {
     /** The stall and capacity policy, {@link Tuning#DEFAULT} by default. */
     public Builder tuning(final Tuning tuning) {
         this.tuning = Objects.requireNonNull(tuning, "tuning");
+        return this;
+    }
+
+    /**
+     * What a call that blocks waits on between attempts: a {@code publish} that spins through an election, up to
+     * 10 s, and the cluster connect in {@code start}. A yielding spin and Aeron's own connect wait by default. One
+     * that also does the caller's periodic work, such as writing a heartbeat, keeps it going while the call blocks.
+     */
+    public Builder idleStrategy(final IdleStrategy idleStrategy) {
+        this.idleStrategy = Objects.requireNonNull(idleStrategy, "idleStrategy");
         return this;
     }
 
