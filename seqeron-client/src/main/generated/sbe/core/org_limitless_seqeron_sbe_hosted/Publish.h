@@ -93,6 +93,7 @@
 
 
 #include "Refusal.h"
+#include "DropReason.h"
 #include "MessageHeader.h"
 #include "Kind.h"
 #include "GroupSizeEncoding.h"
@@ -120,7 +121,7 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(26);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(34);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(30);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(218);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
@@ -178,7 +179,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(26);
+        return static_cast<std::uint16_t>(34);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -382,6 +383,69 @@ public:
         return *this;
     }
 
+    SBE_NODISCARD static const char *commandSeqMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t commandSeqId() SBE_NOEXCEPT
+    {
+        return 6;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t commandSeqSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool commandSeqInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t commandSeqEncodingOffset() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    static SBE_CONSTEXPR std::int64_t commandSeqNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_INT64;
+    }
+
+    static SBE_CONSTEXPR std::int64_t commandSeqMinValue() SBE_NOEXCEPT
+    {
+        return INT64_C(-9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::int64_t commandSeqMaxValue() SBE_NOEXCEPT
+    {
+        return INT64_C(9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::size_t commandSeqEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD std::int64_t commandSeq() const SBE_NOEXCEPT
+    {
+        std::int64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(std::int64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+    }
+
+    Publish &commandSeq(const std::int64_t value) SBE_NOEXCEPT
+    {
+        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(std::int64_t));
+        return *this;
+    }
+
     SBE_NODISCARD static const char *connectionIdMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
     {
         switch (metaAttribute)
@@ -408,7 +472,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t connectionIdEncodingOffset() SBE_NOEXCEPT
     {
-        return 8;
+        return 16;
     }
 
     static SBE_CONSTEXPR std::int64_t connectionIdNullValue() SBE_NOEXCEPT
@@ -434,14 +498,14 @@ public:
     SBE_NODISCARD std::int64_t connectionId() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 16, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     Publish &connectionId(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 16, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -471,7 +535,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t groupMaskEncodingOffset() SBE_NOEXCEPT
     {
-        return 16;
+        return 24;
     }
 
     static SBE_CONSTEXPR std::int64_t groupMaskNullValue() SBE_NOEXCEPT
@@ -497,14 +561,14 @@ public:
     SBE_NODISCARD std::int64_t groupMask() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 16, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 24, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     Publish &groupMask(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 16, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 24, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -534,7 +598,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t payloadIdEncodingOffset() SBE_NOEXCEPT
     {
-        return 24;
+        return 32;
     }
 
     static SBE_CONSTEXPR std::uint16_t payloadIdNullValue() SBE_NOEXCEPT
@@ -560,14 +624,14 @@ public:
     SBE_NODISCARD std::uint16_t payloadId() const SBE_NOEXCEPT
     {
         std::uint16_t val;
-        std::memcpy(&val, m_buffer + m_offset + 24, sizeof(std::uint16_t));
+        std::memcpy(&val, m_buffer + m_offset + 32, sizeof(std::uint16_t));
         return SBE_LITTLE_ENDIAN_ENCODE_16(val);
     }
 
     Publish &payloadId(const std::uint16_t value) SBE_NOEXCEPT
     {
         std::uint16_t val = SBE_LITTLE_ENDIAN_ENCODE_16(value);
-        std::memcpy(m_buffer + m_offset + 24, &val, sizeof(std::uint16_t));
+        std::memcpy(m_buffer + m_offset + 32, &val, sizeof(std::uint16_t));
         return *this;
     }
 
@@ -765,6 +829,10 @@ friend std::basic_ostream<CharT, Traits> & operator << (
 
     builder << R"("epoch": )";
     builder << +writer.epoch();
+
+    builder << ", ";
+    builder << R"("commandSeq": )";
+    builder << +writer.commandSeq();
 
     builder << ", ";
     builder << R"("connectionId": )";

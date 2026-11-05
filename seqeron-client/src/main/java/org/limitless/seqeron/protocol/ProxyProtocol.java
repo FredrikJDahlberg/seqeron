@@ -13,7 +13,7 @@ public final class ProxyProtocol {
     public static final String DEFAULT_HOST_NAME = "hosted";
 
     /** {@code Attach.protocolVersion}. */
-    public static final int PROTOCOL_VERSION = 1;
+    public static final int PROTOCOL_VERSION = 2;
 
     /** The schema id of the {@code MessageHeader} on all four streams. */
     public static final int SCHEMA_ID = 218;

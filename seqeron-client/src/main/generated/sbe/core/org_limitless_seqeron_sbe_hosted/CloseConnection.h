@@ -93,6 +93,7 @@
 
 
 #include "Refusal.h"
+#include "DropReason.h"
 #include "MessageHeader.h"
 #include "Kind.h"
 #include "GroupSizeEncoding.h"

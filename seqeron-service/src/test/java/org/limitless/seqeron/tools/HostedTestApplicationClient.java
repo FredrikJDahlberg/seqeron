@@ -115,6 +115,7 @@ public final class HostedTestApplicationClient {
     private int retiredCounterId;
     private long commandWindow;
     private long offeredBytes;
+    private long nextCommandSeq = 1;
     private long markers;
     private long digest;
     private long lastAppliedSeqNo;
@@ -150,7 +151,7 @@ public final class HostedTestApplicationClient {
                                                               ProxyProtocol.EVENTS_STREAM);
             log("attached, clientId=%d", clientId);
             if (ghost) {
-                publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).connectionId(0).groupMask(0)
+                publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).commandSeq(0).connectionId(0).groupMask(0)
                     .payloadId(ClusterProbe.PROBE_PAYLOAD_ID);
                 final int length = marker.encodePayload(GHOST_MARKER, ClusterProbe.NO_FILLER);
                 publishOut.putBody(marker.payload(), 0, length);
@@ -377,7 +378,7 @@ public final class HostedTestApplicationClient {
     private void publishStaleMarker() {
         staleSent = true;
         final int length = marker.encodePayload(STALE_MARKER, ClusterProbe.NO_FILLER);
-        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch - 1).connectionId(0).groupMask(0)
+        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch - 1).commandSeq(nextCommandSeq++).connectionId(0).groupMask(0)
             .payloadId(ClusterProbe.PROBE_PAYLOAD_ID).putBody(marker.payload(), 0, length);
         send(commands, ProxyProtocol.HEADER + publishOut.encodedLength());
         log("sent one marker under stale gate epoch %d", epoch - 1);
@@ -394,13 +395,14 @@ public final class HostedTestApplicationClient {
             declined++;
             return false;
         }
-        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).connectionId(0).groupMask(0)
-            .payloadId(ClusterProbe.PROBE_PAYLOAD_ID).putBody(marker.payload(), 0, length);
+        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).commandSeq(nextCommandSeq).connectionId(0)
+            .groupMask(0).payloadId(ClusterProbe.PROBE_PAYLOAD_ID).putBody(marker.payload(), 0, length);
         if (commands.offer(out, 0, messageLength) < 0) {
             declined++;
             return false;
         }
         markerSeqNo++;
+        nextCommandSeq++;
         offeredBytes += messageLength;
         return true;
     }

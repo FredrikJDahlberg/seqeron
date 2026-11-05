@@ -15,6 +15,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.ProxyProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
@@ -39,6 +40,7 @@ class HostedCppStubTest {
     private static final Pattern PEAK_QUEUED = Pattern.compile("peakQueued (\\d+)");
     private static final Pattern OWN = Pattern.compile("own (\\d+)");
     private static final Pattern PUBLISHED = Pattern.compile("published (\\d+)");
+    private static final Pattern RETAINED = Pattern.compile("retained (\\d+)");
     private static final Pattern EPOCH_DROPS = Pattern.compile("epochDrops (\\d+)");
     private static final Pattern REPLIED = Pattern.compile("replied (\\d+)");
     private static final Pattern REPLIES = Pattern.compile("replies (\\d+)");
@@ -123,7 +125,8 @@ class HostedCppStubTest {
     /**
      * A gate edge: the hosted member leads, is flooded and is paused until deposed. The stub stops publishing at the
      * Gate that closes, and what the host held at the edge is dropped by its epoch, so what was sequenced is what was
-     * offered less what was dropped (H-3).
+     * offered less what was dropped (H-3). The host reports each drop and the stub keeps the command to resend when
+     * the gate reopens, so the stub retains exactly what the host dropped (H-17); this node does not lead again.
      */
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
@@ -149,6 +152,9 @@ class HostedCppStubTest {
         check("nothing was sequenced beyond what was placed (offered " + published + ", dropped " + drops
               + ", sequenced " + own + ")", own <= published - drops);
         check("none was sequenced out of order or twice", client.lines("OUT OF ORDER").isEmpty());
+        final long retained = number(client, "state: ", RETAINED);
+        check("the stub kept every command the host dropped (retained " + retained + ", dropped " + drops + ")",
+              retained == drops);
         check("the stub published nothing once the gate closed", number(client, "state: ", PUBLISHED) == published);
         System.out.println(host.lastLine("queue:"));
         System.out.println(client.lastLine("state: "));
@@ -362,9 +368,9 @@ class HostedCppStubTest {
     }
 
     /**
-     * Two hosts in one process (proxy.hosts), on a follower: host a cannot reach the cluster, host b can. Host a is
-     * rebuilt in place after its third failed connect and its client exits HOST_LOST; host b's client keeps its host
-     * and catches up, and the process stays up.
+     * Two hosts in one process (proxy.hosts), on one Aeron client, on a follower: host a cannot reach the cluster, host
+     * b can. Host a is rebuilt in place on the same client after its third failed connect, freeing what it held there,
+     * and its client exits HOST_LOST; host b's client keeps its host and catches up, and the process stays up.
      */
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
@@ -377,12 +383,25 @@ class HostedCppStubTest {
                              "proxy.a.clientId=31", "proxy.a.ingressEndpoints=" + absent, "proxy.b.sourceId=16",
                              "proxy.b.clientId=32");
         check("both hosts are ready", poll(() -> host.lines("host ready").size() == 2));
-        final ClusterProcesses.Child clientA = probe("client-a", cluster.aeronDir(hostMember), "a", 17);
-        final ClusterProcesses.Child clientB = probe("client-b", cluster.aeronDir(hostMember), "b", SOURCE_ID);
-        check("host b's client caught up", poll(() -> clientB.lastLine("Caught up") != null));
-        check("host a was rebuilt in place", poll(() -> host.lastLine("host a exited 70: rebuilding it") != null));
-        check("host a's client exited HOST_LOST", poll(() -> clientA.lastLine("HOST_LOST") != null));
-        check("host b's client kept its host", clientB.isAlive() && clientB.lines("HOST_LOST").isEmpty());
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(hostMember)))) {
+            final CountersReader counters = aeron.countersReader();
+            final List<Long> owners =
+                owners(counters, SeqeronCounters.PROXY_HEARTBEAT_TYPE_ID, "seqeron.host.heartbeat ");
+            check("both hosts are on one Aeron client " + owners,
+                  owners.size() == 2 && owners.get(0).equals(owners.get(1)));
+            final ClusterProcesses.Child clientA = probe("client-a", cluster.aeronDir(hostMember), "a", 17);
+            final ClusterProcesses.Child clientB = probe("client-b", cluster.aeronDir(hostMember), "b", SOURCE_ID);
+            check("host b's client caught up", poll(() -> clientB.lastLine("Caught up") != null));
+            check("host a was rebuilt in place", poll(() -> host.lastLine("host a exited 70: rebuilding it") != null));
+            check("host a's client exited HOST_LOST", poll(() -> clientA.lastLine("HOST_LOST") != null));
+            check("host a was rebuilt on that client, leaving no counter behind",
+                  poll(() -> owners(counters, SeqeronCounters.PROXY_HEARTBEAT_TYPE_ID, "seqeron.host.heartbeat ")
+                                 .equals(owners)));
+            check("nor its client's lag series",
+                  owners(counters, SeqeronCounters.HOSTED_LAG_TYPE_ID,
+                         "seqeron.hosted.lag member=" + hostMember + " client=31").isEmpty());
+            check("host b's client kept its host", clientB.isAlive() && clientB.lines("HOST_LOST").isEmpty());
+        }
         check("host b was not rebuilt", host.lines("host b exited").isEmpty());
         check("the process stayed up", host.isAlive());
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
@@ -411,6 +430,59 @@ class HostedCppStubTest {
                                                     || gateway.lastLine("DETACHED") != null));
         check("the gateway host stayed up", gateway.isAlive() && gateway.lines("FATAL").isEmpty());
         assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /**
+     * H-17 end to end. A host on a gateway host is off the cluster, so its gate closes at a leadership change and
+     * opens again when it is caught up, whoever leads. The stub floods, the leader is paused until deposed, and the
+     * commands the host held at the edge are dropped by their epoch; the stub resends them once the gate reopens, so
+     * every marker is sequenced exactly once and in order, and the stub retains nothing at the end.
+     */
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void aCppStubResendsWhatTheHostDroppedAtAnEdge() {
+        final int gatewayHost = ClusterProcesses.MEMBERS;
+        final ClusterProcesses.Child gateway =
+            cluster.startGatewayHost("gateway-host", gatewayHost,
+                                     List.of("proxy.hosts=gw", "proxy.spin=true", "proxy.sourceId=" + SOURCE_ID,
+                                             "proxy.clientId=31", "proxy.snapshotDir=" + baseDir.resolve("snap"),
+                                             "proxy.commandWindow=" + WINDOW, "proxy.pendingCapacity=4",
+                                             "proxy.placePerCycle=2"),
+                                     0, 1, 2);
+        check("the host is ready", poll(() -> gateway.lastLine("host ready") != null));
+        client = probe("client", cluster.aeronDir(gatewayHost), "gw", SOURCE_ID, "--flood", "1", "--max-markers",
+                       "" + MARKERS);
+        check("the gate opened off the cluster", poll(() -> client.lastLine("now leading") != null));
+        check("the stub offered markers", poll(() -> number(client, "state: ", PUBLISHED) >= 2000));
+        final ClusterProcesses.Child member = cluster.memberLog(leader);
+        try {
+            member.pause();
+            sleep(4500);
+        } finally {
+            member.resume();
+        }
+        check("another member leads", poll(() -> cluster.awaitLeader() != leader));
+        check("the host dropped commands queued at the edge", poll(() -> number(gateway, "queue:", EPOCH_DROPS) > 0));
+        check("every marker was offered", poll(() -> number(client, "state: ", PUBLISHED) == MARKERS));
+        check("every marker was sequenced, the dropped ones after the gate reopened",
+              poll(() -> number(client, "state: ", OWN) == MARKERS));
+        check("none was sequenced out of order or twice", client.lines("OUT OF ORDER").isEmpty());
+        check("the stub retains nothing", poll(() -> number(client, "state: ", RETAINED) == 0));
+        check("the host did not fence", gateway.lines("FENCED").isEmpty());
+        System.out.println(gateway.lastLine("queue:"));
+        System.out.println(client.lastLine("state: "));
+        assertTrue(failures.isEmpty(), failures.size() + " check(s) failed: " + failures);
+    }
+
+    /** The owning Aeron client of each allocated counter of {@code typeId} whose label starts with {@code prefix}. */
+    private static List<Long> owners(final CountersReader counters, final int typeId, final String prefix) {
+        final List<Long> owners = new ArrayList<>();
+        counters.forEach((counterId, type, key, label) -> {
+            if (type == typeId && label.startsWith(prefix)) {
+                owners.add(counters.getCounterOwnerId(counterId));
+            }
+        });
+        return owners;
     }
 
     private ClusterProcesses.Child probe(final String name, final String aeronDir, final String hostName,

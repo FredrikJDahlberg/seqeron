@@ -48,6 +48,7 @@ class Application : public detail::ClientLink<Application<Listener>, Listener>
       m_config{ config }
     {
         static_assert(app::ApplicationListener<Listener>);
+        this->retainPublishes();
     }
 
     /** What the last Gate said (H-16); lags the host by a hop. */
@@ -63,7 +64,7 @@ class Application : public detail::ClientLink<Application<Listener>, Listener>
 
     /**
      * Offers one payload of this application's own to its own group (H-4). The result is an offer's, not the
-     * cluster's: Published means the host may place it, and a gate edge in flight drops it without notice (H-3).
+     * cluster's: Published means the host may place it. A gate edge in flight drops it, and the stub resends it when the gate reopens (H-17).
      *
      * @return Published; Declined while the gate is shut, the window is full or stream 304 is back-pressured, to
      *         retry; Refused, permanently, for the local checks of a direct Application

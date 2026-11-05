@@ -49,6 +49,8 @@ import org.limitless.seqeron.sbe.hosted.CloseConnectionDecoder;
 import org.limitless.seqeron.sbe.hosted.ClusterTimeEncoder;
 import org.limitless.seqeron.sbe.hosted.ConnectionEncoder;
 import org.limitless.seqeron.sbe.hosted.DetachDecoder;
+import org.limitless.seqeron.sbe.hosted.DropReason;
+import org.limitless.seqeron.sbe.hosted.DroppedEncoder;
 import org.limitless.seqeron.sbe.hosted.FencedEncoder;
 import org.limitless.seqeron.sbe.hosted.GateClosedDecoder;
 import org.limitless.seqeron.sbe.hosted.GateEncoder;
@@ -61,6 +63,7 @@ import org.limitless.seqeron.sbe.hosted.PayloadEncoder;
 import org.limitless.seqeron.sbe.hosted.PublishDecoder;
 import org.limitless.seqeron.sbe.hosted.Refusal;
 import org.limitless.seqeron.sbe.hosted.ReplyDecoder;
+import org.limitless.seqeron.sbe.hosted.ResolvedEncoder;
 import org.limitless.seqeron.sbe.hosted.RestoreRecordEncoder;
 import org.limitless.seqeron.sbe.hosted.RoleEncoder;
 import org.limitless.seqeron.sbe.hosted.SnapshotCutEncoder;
@@ -139,6 +142,8 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private final ClusterTimeEncoder clusterTimeOut = new ClusterTimeEncoder();
     private final RestoreRecordEncoder restoreOut = new RestoreRecordEncoder();
     private final SnapshotCutEncoder cutOut = new SnapshotCutEncoder();
+    private final DroppedEncoder droppedOut = new DroppedEncoder();
+    private final ResolvedEncoder resolvedOut = new ResolvedEncoder();
     private final FencedEncoder fencedOut = new FencedEncoder();
     private final long commandWindow;
     private final ReplyAddresses replyAddresses = new ReplyAddresses();
@@ -207,6 +212,8 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private long cutNo;
     private long frames;
     private Counter retiredCounter;
+    private long lastCommandSeq;
+    private long resolvedSent;
     private long loggedDropsAndDeclines;
     private long loggedPlaced;
     private long lastQueueLogNs;
@@ -255,7 +262,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         consumerGroup = (int)properties.number("consumerGroup", 0);
         attachRules = new AttachRules(hostName, gatewayName != null, consumerGroup != 0);
         commandWindow = properties.number("commandWindow", 64 * 1024);
-        ledger = new CommandLedger(commandWindow);
+        ledger = new CommandLedger(commandWindow, this::sendDropped);
         placePerCycle = (int)properties.number("placePerCycle", 64);
         pendingCapacity = (int)properties.number("pendingCapacity", 0);
         queue = new ExpandableRingBuffer(BitUtil.findNextPositivePowerOfTwo((int)(2 * commandWindow)),
@@ -339,6 +346,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         return snapshotDirName;
     }
 
+    String aeronDir() {
+        return aeronDir;
+    }
+
     /** Ends {@link #run} at its next duty cycle, from any thread. */
     void stop() {
         running = false;
@@ -351,8 +362,15 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     }
 
     int run() {
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir))) {
+            return run(aeron);
+        }
+    }
+
+    /** Runs on {@code aeron}, which may be shared with other hosts, and frees on it only what this host opened. */
+    int run(final Aeron aeron) {
+        this.aeron = aeron;
         snapshotDir = Path.of(snapshotDirName);
-        aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
         attachRequests = aeron.addSubscription(ProxyProtocol.ATTACH_REQUEST_CHANNEL + "|tether=false",
                                                ProxyProtocol.ATTACH_REQUEST_STREAM);
         attachReplies = aeron.addPublication(ProxyProtocol.ATTACH_REPLY_CHANNEL, ProxyProtocol.ATTACH_REPLY_STREAM);
@@ -383,7 +401,8 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             idle.idle(work);
         }
         closeFacade();
-        aeron.close();
+        CloseHelper.quietCloseAll(commands, events, lagCounter, attachRequests, attachReplies, hostHeartbeat,
+                                  retiredCounter);
         return fenced || unreachable ? EXIT_RESTART : 0;
     }
 
@@ -533,6 +552,8 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         live = true;
         liveRequestId = requestId;
         ledger.reset();
+        lastCommandSeq = 0;
+        resolvedSent = 0;
         retiredCounter.setOrdered(0);
         cutNo = 0;
         lastCanPublish = false;
@@ -710,8 +731,17 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         headerIn.wrap(buffer, offset);
         final int body = offset + ProxyProtocol.HEADER;
         switch (headerIn.templateId()) {
-        case PublishDecoder.TEMPLATE_ID, ReplyDecoder.TEMPLATE_ID, OpenConnectionDecoder.TEMPLATE_ID ->
-            onPublish(buffer, offset, length, true);
+        case PublishDecoder.TEMPLATE_ID -> {
+            publishIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
+            final long expected = gatewayKind ? CommandLedger.NO_SEQ : lastCommandSeq + 1;
+            if (publishIn.commandSeq() != expected) {
+                breach = "Publish commandSeq " + publishIn.commandSeq() + " but " + expected + " was expected";
+            } else {
+                lastCommandSeq = publishIn.commandSeq();
+                onPublish(buffer, offset, length, true);
+            }
+        }
+        case ReplyDecoder.TEMPLATE_ID, OpenConnectionDecoder.TEMPLATE_ID -> onPublish(buffer, offset, length, true);
         case CloseConnectionDecoder.TEMPLATE_ID, GateClosedDecoder.TEMPLATE_ID -> onPublish(buffer, offset, length, false);
         case ActivatedDecoder.TEMPLATE_ID -> {
             if (activating) {
@@ -752,6 +782,12 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private void placeCommands() {
         if (!queue.isEmpty()) {
             queue.consume(place, placePerCycle);
+            ledger.flush();
+            if (ledger.resolved() != resolvedSent) {
+                resolvedSent = ledger.resolved();
+                resolvedOut.wrapAndApplyHeader(out, 0, headerOut).through(resolvedSent);
+                send(ProxyProtocol.HEADER + resolvedOut.encodedLength());
+            }
         }
         if (breach != null) {
             final String detail = breach;
@@ -768,6 +804,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             templateId != CloseConnectionDecoder.TEMPLATE_ID && templateId != GateClosedDecoder.TEMPLATE_ID;
         final int body = offset + ProxyProtocol.HEADER;
         final long commandEpoch;
+        long commandSeq = CommandLedger.NO_SEQ;
         switch (templateId) {
         case ReplyDecoder.TEMPLATE_ID -> {
             replyIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
@@ -788,10 +825,11 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         default -> {
             publishIn.wrap(buffer, body, headerIn.blockLength(), headerIn.version());
             commandEpoch = publishIn.epoch();
+            commandSeq = publishIn.commandSeq();
         }
         }
         if (ledger.stale(commandEpoch)) {
-            ledger.dropStale(length, windowed);
+            ledger.dropStale(length, windowed, commandSeq);
             retiredCounter.setOrdered(ledger.retired());
             return true;
         }
@@ -839,7 +877,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
                                                    payloadLength);
         }
         }
-        if (!ledger.settle(result, length, windowed)) {
+        if (!ledger.settle(result, length, windowed, commandSeq)) {
             return false;
         }
         frames++;
@@ -1084,6 +1122,15 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             .canPublish((short)(canPublishNow() ? 1 : 0))
             .caughtUp((short)0);
         send(ProxyProtocol.HEADER + gateOut.encodedLength());
+    }
+
+    /** H-17: the ledger's report of a run of {@code Publish} commands it did not place. */
+    private void sendDropped(final long firstSeq, final long lastSeq, final CommandLedger.Reason reason) {
+        droppedOut.wrapAndApplyHeader(out, 0, headerOut)
+            .firstSeq(firstSeq)
+            .lastSeq(lastSeq)
+            .reason(reason == CommandLedger.Reason.EPOCH ? DropReason.EPOCH : DropReason.REFUSED);
+        send(ProxyProtocol.HEADER + droppedOut.encodedLength());
     }
 
     /** Offers {@code out}; no subscriber means no client, which is not worth spinning on. */

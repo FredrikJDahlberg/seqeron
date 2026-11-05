@@ -94,13 +94,17 @@ it, what the prototype host and the C++ stubs were shown to do, and the plan for
    fault takes down recovery for every consumer that Replayer serves (spec §17.6). Its `Application` is off the cluster,
    the one instance whose gate opens once caught up.
 5. **Retiring the direct clients.** The direct C++ façades are retired (§1; branch `cpp-direct-client`), so a
-   C++ application moves to the stub with no release carrying both. Before it moves, it must track its publishes as
-   spec §17.5 requires; one that retries a `Declined` publish instead loses that publish when hosted. C# is not in the
+   C++ application moves to the stub with no release carrying both. A `Published` publish survives a gate edge, the
+   stub retaining and resending it (spec H-17), so the application's contract is the direct façade's. Built: the host
+   reports each unplaced `Publish` (`Dropped`) and how far it has decided (`Resolved`), and the C++ `Application`
+   keeps the command in `RetainedCommands` until then, resending in offer order once the gate reopens. The ring is
+   tested alone and against a model of the host with seeded edges (`RetainedCommandsTest`), and end to end by
+   `HostedCppStubTest` (§4.1). C# is not in the
    first stage, and stays direct until the measurements of §3.4; §5 is the plan for moving it.
 6. **Several façades in one host.** Decided: one process runs several hosts (`proxy.hosts`), each with its own
-   `hostName`, `clientId` and snapshot directory, on a thread and Aeron client of its own. That saves the JVMs and
-   their heaps, not the cores: each host still spins, and a blocking connect or a long cut stalls only its own
-   client. A single thread serving every façade would save the cores too, but the façade's connect would first have
+   `hostName`, `clientId` and snapshot directory, on a thread of its own, all on one Aeron client. That saves the
+   JVMs, their heaps and all but one client conductor, not the cores: each host still spins, and a blocking connect
+   or a long cut stalls only its own client. A single thread serving every façade would save the cores too, but the façade's connect would first have
    to be made asynchronous.
 
 ## 3. Measured hop
@@ -397,8 +401,12 @@ Five system tests drive the stubs against the Java host, with `HOSTED_PROBE` nam
   attempt; with stream 301 back-pressured from another publication and the host paused, the stub's `Detach` lands once
   the host resumes, and the host closes the attachment as detached, not lost; two hosts in one process, one unable to
   reach the cluster, are rebuilt apart, the other's client catching up undisturbed; and a host inside a gateway host's
-  `ReplayerServer` serves its stub off the cluster, every marker sequenced, and outlives the stub. Each failed
-  before its fix except the last two, which test what did not exist.
+  `ReplayerServer` serves its stub off the cluster, every marker sequenced, and outlives the stub. In the first
+  scenario's gate edge the stub also retains exactly the 16 commands the host dropped (H-17). On a gateway host,
+  whose host is off the cluster and so reopens its gate after a leadership change, a flooding stub with the leader
+  paused until deposed loses nothing: the host dropped 16 by their epoch, and all 20,000 markers were sequenced once
+  and in order, the stub ending with nothing retained. Each failed before its fix except the last three, which test
+  what did not exist.
 - `HostedSnapshotTest` with `HOSTED_CLIENT=cpp` runs its clients as the probe: restore, cuts, a client `kill -9`
   with an immediate successor, a host `kill -9`, an abandoned cut, the 8 s cut, the leading hosted replica, and the
   corrupt record fenced with `SNAPSHOT_DIVERGED`, each check as with the Java client and the direct replicas

@@ -72,13 +72,13 @@ its `-Dproxy.*=` arguments through.
 Under `proxy.spin` the proxy holds a core. It logs a `queue:` line of the command queue's counters, at most once a
 second, while commands are being dropped or declined, and when it closes an attachment.
 
-With `proxy.hosts=a,b` one process runs a host per name, each on its own thread and Aeron client. Host `a` reads
-`proxy.a.<key>` before `proxy.<key>`; its `hostName` defaults to `a` and its snapshot directory to
-`proxy.snapshotDir/a`, and no two hosts may share a `hostName`, `clientId` or snapshot directory. A host that would
-exit 70 is rebuilt in place and the process carries on (`seqeron-protocol-spec.md` §17.6). On a gateway host,
-`ReplayerServer` takes the same properties and runs the hosts beside its Replayer, with `proxy.memberId`,
-`proxy.aeronDir` and `proxy.egressHost` defaulting to its own and `proxy.offCluster` to `true`; a host that throws
-stops it.
+With `proxy.hosts=a,b` one process runs a host per name, each on its own thread, all on one Aeron client, so all
+name one `aeronDir`. Host `a` reads `proxy.a.<key>` before `proxy.<key>`; its `hostName` defaults to `a` and its
+snapshot directory to `proxy.snapshotDir/a`, and no two hosts may share a `hostName`, `clientId` or snapshot
+directory. A host that would exit 70 is rebuilt in place and the process carries on (`seqeron-protocol-spec.md`
+§17.6). On a gateway host, `ReplayerServer` takes the same properties and runs the hosts beside its Replayer, with
+`proxy.memberId`, `proxy.aeronDir` and `proxy.egressHost` defaulting to its own and `proxy.offCluster` to `true`; a
+host that throws stops it.
 
 Three more processes serve the system tests ([`building.md`](building.md)):
 

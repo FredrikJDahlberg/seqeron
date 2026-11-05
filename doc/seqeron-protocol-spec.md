@@ -1444,6 +1444,8 @@ Host → client, stream 303:
 | `Role` | `active`, `firstConnectionId` | Gateway only: `onActivated` / `onStandby`, sent before the `Gate` that follows it; the stub allocates connection ids from `firstConnectionId` (**H-4**) |
 | `CaughtUp` | `clusterSeqNo` | `onCaughtUp` |
 | `SnapshotCut` | `roundId` | write the records for this cut (**H-6**); `roundId` only pairs the cut with its records and end, numbered by the host within the attachment, and the cluster's round is the host's `seqeron_app_snapshot_round` (`ops.md`) |
+| `Dropped` | `firstSeq`, `lastSeq`, `reason` (`EPOCH`, `REFUSED`) | the host did not place the `Publish` commands `firstSeq` to `lastSeq` (**H-17**) |
+| `Resolved` | `through` | every `Publish` up to `commandSeq` `through` is decided; those not placed were named by a `Dropped` before it (**H-17**) |
 | `Fenced` | `error`, `detail` | `onFenced`: terminal |
 
 Client → host, stream 304. The host queues a command and places it later (**H-3**, **H-5**); it handles the
@@ -1451,7 +1453,7 @@ rest as it reads them:
 
 | message | fields | handled | meaning |
 | --- | --- | --- | --- |
-| `Publish` | `epoch`, `connectionId`, `groupMask`, `payloadId`, `payload` | queued | `publish` (**H-4**) |
+| `Publish` | `epoch`, `commandSeq`, `connectionId`, `groupMask`, `payloadId`, `payload` | queued | `publish` (**H-4**) |
 | `Reply` | `epoch`, `sourceId`, `connectionId`, `groupMask`, `payloadId`, `payload` | queued | `reply`; the three ids are the request's `ReplyAddress` (**H-11**) |
 | `OpenConnection` | `epoch`, `connectionId`, `data` | queued | Gateway only: `openConnection`, with the id the stub allocated (**H-4**) |
 | `CloseConnection` | `epoch`, `connectionId` | queued | Gateway only: `closeConnection` |
@@ -1484,15 +1486,15 @@ concern the listener apply unchanged.
   places the command at the head of its queue when that epoch is current and `leading` is true, and drops it,
   counted, otherwise, as the consensus module acts on ingress only in its current term and drops the rest without a
   reply. A command is therefore never placed under a gate other than the one its client decided it under: one in
-  flight over an edge is dropped, never placed late. What a client loses at an edge is exactly what it stamped with
-  an earlier epoch that the host had not yet placed. The client runs `OutstandingWork.onNotLeader()` when it applies
+  flight over an edge is dropped, never placed late. What a client does not get placed at an edge is exactly what it stamped with
+  an earlier epoch that the host had not yet placed, and the host reports each such `Publish` (**H-17**). The client runs `OutstandingWork.onNotLeader()` when it applies
   `Gate` with `leading=false`, before anything else it does on that event, and **A-2** redispatches the tracked work
   at the next open.
 - **H-4. A command is an offer, as in a direct façade.** `publish` and `reply` return at once with the result of an
   offer (`protocol.Publish`), `openConnection` with an id or `NO_CONNECTION`, and the host sends nothing back.
   `Published` means the stub offered the command to stream 304, which the host places if its epoch is still current
   when it reaches the head of the queue (**H-3**); the host's confirmed ingress (**A-4**, **A-5**) carries it on
-  from there. It is what an Aeron Cluster offer means: an epoch change can lose it without notice (§17.5).
+  from there. The stub retains the command until the host reports its fate and resends one that was dropped at an edge (**H-17**), so a `Published` `Publish` is lost only with the client or the host process.
   `Declined` is retryable: the stub's mirror says the gate is shut or ingress held (**H-16**), the command window is
   full (**H-5**), or stream 304 is back-pressured or not yet connected. `Refused` is final and is the stub's own
   check, the direct façade's local ones: a payload above `MAX_PAYLOAD_LENGTH`, a retired `payloadId`, a `groupMask`
@@ -1607,8 +1609,31 @@ concern the listener apply unchanged.
   `isCaughtUp()` and `lastClusterSeqNo()` return what the stub last applied from `Gate`, `CaughtUp` and `Payload`,
   and from its own `Activated(true)` (§17.5). They lag the host by a hop and the client's polling, so a `publish`
   that passes the stub's check can reach the host after the gate has closed, where its epoch has passed and it is
-  dropped (**H-3**). The `Gate` that closed it reaches the client in stream order, and `OutstandingWork`
-  redispatches (**A-2**) as it does for work the cluster lost at a failover.
+  dropped (**H-3**). The `Gate` that closed it reaches the client in stream order, the host reports the drop and the
+  stub resends the `Publish` (**H-17**); `OutstandingWork` redispatches a `Reply` (**A-2**) as it does for work the
+  cluster lost at a failover.
+- **H-17. A `Publish` the host does not place is reported, and the stub resends it.** An Application stub numbers its
+  `Publish` commands `commandSeq` 1, 2, … within an attachment, stamps each with it, and keeps the encoded command
+  until the host has decided its fate; the retained bytes are bounded by twice `commandWindow` plus one command, and a `publish` that finds no room declines. The
+  host decides a `Publish` when it leaves the queue: placed, or not placed. For each run of consecutive `Publish`
+  commands not placed it sends `Dropped(firstSeq, lastSeq, reason)` on stream 303 and, once it has placed or
+  dropped what it takes in a duty cycle, `Resolved(through)` for the highest `commandSeq` decided. Stream order puts
+  every `Dropped` below `through` before the `Resolved`, so a stub that applies the events in order has the
+  complete fate of every `Publish` up to `through`: one that no `Dropped` names was placed, and the stub frees it.
+  `EPOCH` is a command whose epoch had passed (**H-3**). After the `Gate` that opens the new epoch, and once
+  `Resolved` covers every `Publish` stamped with an earlier epoch, the stub resends the `EPOCH` ones in
+  their original order and before any new `Publish`, each under a fresh `commandSeq` and the new epoch; until then
+  `publish` returns `Declined`. A resend the window or stream 304 declines is retried on the next duty cycle. The
+  `Publish` commands keep their order among themselves across any number of edges.
+  `REFUSED` is a command the host's façade refused (an unaddressable `groupMask`, a frame the sequencer would
+  reject), which the stub's own checks (**H-4**) should have caught. It is final: the stub does not resend it, and
+  raises the fault from its duty cycle as `ClusterError.CLIENT_PROTOCOL`, as for any breach of this protocol. A
+  group change cannot cause it, since the stub and the host resolve the same table, which is fixed (**S-8**). A
+  `Publish` the façade declines stays at the head of the queue (**H-5**) and is neither. A Gateway stub's `Publish`,
+  `Reply`, `OpenConnection`, `CloseConnection` and `GateClosed` carry `commandSeq` 0 (or none) and are not retained: a `Reply` is
+  tracked by **A-2**, and the others belong to a connection or an edge that the same edge ends. Nothing is retained
+  across an attachment: a client or host that is lost loses what it had not placed, as a direct producer that
+  dies does.
 
 ### 17.5 Where a hosted façade differs from a direct one
 
@@ -1620,16 +1645,12 @@ What `client-api.md` states for the hosted column. Every callback maps one to on
 are the cluster's and are unchanged: each gateway instance is a host and a client, and the cluster designates one.
 Where they differ:
 
-- **`Published` can be lost at a gate edge without notice** (**H-3**, **H-4**), where the direct call that would
-  have reached a shut gate returns `Declined`. **An Application MUST track in `OutstandingWork` (A-2) every
-  publish whose loss it cannot accept, keyed on the sequenced event that caused it**: the request a reply answers,
-  or the `ClusterTime` tick a timer fires on. Every publish of an Application is leader-only, and its only input is
-  the sequenced stream, so every such publish has a sequenced cause; `OutstandingWork` holds it on every replica
-  from that event (`onRequest`) until its sequenced result (`onReply`), and the next open redispatches it. For a
-  reply this is **A-2** already. What hosting adds is that a publish answering no request, a timer's, must be
-  tracked too, where a direct Application can leave a `Published` one to confirmed ingress (**A-4**, **A-5**).
-  `Published` keeps its name but not that guarantee, so moving a C++ Application to the stub changes its contract
-  (`hosted-facade.md` §2, question 5). A Gateway's commands lost at an edge belong to connections the same edge dropped.
+- **`Published` survives a gate edge (H-17).** Where the direct call that would have reached a shut gate returns
+  `Declined`, the hosted `publish` returns `Published` and the stub resends the command after the edge, so an
+  Application tracks its publishes in `OutstandingWork` (A-2) exactly as it does against a direct façade: a reply by
+  the request it answers, and nothing more. The one new rule is for a `Publish` the host refuses, which is a
+  protocol fault and not a retry (**H-17**). A Gateway's commands lost at an edge belong to connections the same
+  edge dropped.
 - **`onActivated` returns a boolean.** The host's listener sends `Role(active, firstConnectionId)` and waits for
   the client's `Activated(opened)`, calling `keepAlive()` as it spins, then returns that value; `false` is retried
   on the next `doWork()`, as in a direct gateway. It blocks the host's duty cycle for as long as the client's dial

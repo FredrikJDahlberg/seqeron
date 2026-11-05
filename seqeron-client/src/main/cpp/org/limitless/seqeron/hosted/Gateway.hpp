@@ -178,7 +178,8 @@ class Gateway : public detail::ClientLink<Gateway<Listener>, Listener>
     {
         return this->template offerPayload<wire::Publish>(
             groupMask, payloadId, payloadLength, [&](wire::Publish& command) {
-                command.connectionId(connectionId)
+                command.commandSeq(0)
+                    .connectionId(connectionId)
                     .groupMask(groupMask)
                     .payloadId(payloadId)
                     .putBody(reinterpret_cast<const char*>(payload), payloadLength);

@@ -193,15 +193,15 @@ class Probe final : public app::SnapshotListener
         m_published++;
     }
 
-    void state(const std::int64_t declined) const
+    void state(const std::int64_t declined, const std::size_t retained) const
     {
         log("state: %llu marker(s), digest %016llx, published %lld, declined %lld, own %lld, replied %lld, "
-            "replies %lld, bad %lld, dropped %lld",
+            "replies %lld, bad %lld, dropped %lld, retained %zu",
             static_cast<unsigned long long>(m_markers), static_cast<unsigned long long>(m_digest),
             static_cast<long long>(m_published), static_cast<long long>(declined),
             static_cast<long long>(m_ownSequenced), static_cast<long long>(m_replied),
             static_cast<long long>(m_repliesSequenced), static_cast<long long>(m_badReplies),
-            static_cast<long long>(m_replyDropped));
+            static_cast<long long>(m_replyDropped), retained);
     }
 
     // Answers the sequenced markers waiting for a reply, each with the ReplyAddress it was sequenced under.
@@ -477,7 +477,7 @@ int main(const int argc, char** argv)
         }
         if (now >= nextStateNs)
         {
-            probe.state(application.windowDeclines());
+            probe.state(application.windowDeclines(), application.retainedCount());
             nextStateNs = now + 2'000'000'000LL;
         }
         idle.idle(work);

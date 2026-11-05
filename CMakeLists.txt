@@ -291,6 +291,7 @@ if(SEQERON_BUILD_TESTS)
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/GroupResolutionTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkPropertyTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/hosted/RetainedCommandsTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/ConformanceTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/FrameStartPositionTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/SequencedEventTest.cpp
