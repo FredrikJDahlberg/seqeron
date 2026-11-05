@@ -12,16 +12,79 @@ them before a session.
 
 ### Test 1: the hosted-façade hop on a tuned cluster
 
-[`hosted-facade-draft.md`](hosted-facade-draft.md) §17.9 question 2 waits on it. The hop has been measured only on a
-laptop (§17.10.2) and in an aarch64 VM (§17.10.6), where a whole loop of 233–389 µs at p50 hides it. A pinned,
-busy-spinning cluster on three hosts should commit in about 100 µs (Aeron's own three-node result on c6in.16xlarge is
-95 µs p50 at 100k msg/s), so the same comparison shows more of the hop and of the host's pauses.
+[`hosted-facade.md`](hosted-facade.md) §2 question 2 and the unmeasured items of §3.4 wait on it, and its result decides
+whether the hosted C++ client stays. The hop has been measured on a laptop (§3.1, §3.2) and in an aarch64 VM (§3.6,
+§3.7) with a bench client on the prototype wire, where a whole loop of 233–389 µs at p50 hides it. No figure comes from the
+real stub, schema 218 at protocol version 2, bare metal or a cloud instance. A pinned, busy-spinning cluster on three
+hosts should commit in about 100 µs (Aeron's own three-node result on c6in.16xlarge is 95 µs p50 at 100k msg/s), so the
+same comparison shows more of the hop and of the host's pauses.
 
-`hop-matrix.sh` runs `hop_bench` on the leader's host in three modes: `direct` (the C++ `Application`),
-`hosted-spin` (`HostedTestApplicationHost` with `host.spin`) and `hosted-backoff`. It runs every mode at each rate,
-alternating within a rate, against a fresh cluster per rate. One line per run, with p50/p99/p99.9/max, goes to
-`build/multihost/hop-<stamp>.txt`. The same script with `MULTIHOST_MEMBER_OPTS` set runs the disk-sync comparison of
-test 3.
+**The question.** On a quiet machine of the deployment's kind, with the host spinning on a core of its own, how much do the
+hosted C++ `Application` and `ClientProxy` add to the whole loop (`publish` until the application sees its own frame
+sequenced), how many cores do they take, and what do they do at a gate edge?
+
+**The rule.** A hosted arm passes at a rate when, over at least five interleaved runs, each percentile of the whole loop
+(p50, p99, p99.9) is within the range the direct arm's own runs span plus a margin; when no command is lost at a gate edge
+(spec H-17); and when the host takes no more than the two cores of §4. The margins are **p50 25 µs, p99 250 µs, p99.9 2 ms:
+placeholders that the owner sets before the first run**. A difference smaller than the direct arm's own run-to-run spread is
+not a difference, as in `hosted-facade.md` §3. The rule is applied to each environment on its own.
+
+**Arms.** All publish the same open-loop stream against the same cluster on the leader's host, interleaved within a rate,
+against a fresh cluster per rate. The cluster protocol is unchanged, so one jar serves them all.
+
+| arm | client | host |
+| --- | --- | --- |
+| `direct` | C++ `app::Application` built from the tag `cpp-direct-client-final` | none |
+| `hosted-spin` | `hosted::Application` of this tree | `ClientProxy`, `proxy.spin=true` |
+| `hosted-backoff` | as `hosted-spin` | `ClientProxy`, default idle strategy (5k and 20k msg/s only) |
+| `java-direct` | Java `Application`, optional | none; separates the language from the hosting |
+
+**Two sets.** Test 1a is the short matrix: 3 rates × 3 modes × 3 repeats of 30 s, to prove the scripts and the instances and
+to see the size of the effect. Test 1b is the decision matrix, timed from the intended send time so that a stall counts
+against the arm, each run with a 30 s warm-up that is discarded and 120 s measured:
+
+| set | payload | rate (msg/s) | arms | runs |
+| --- | --- | --- | --- | --- |
+| rate sweep | 18 B | 5k, 20k, 50k, 100k, 200k | `direct`, `hosted-spin` | 5 |
+| idle strategy | 18 B | 5k, 20k | `hosted-backoff` | 5 |
+| payload sweep | 256 B, 1 KiB, 8 KiB | 20k; 1 KiB also 100k | `direct`, `hosted-spin` | 5 |
+| knee | 18 B, 1 KiB | ramp to saturation | `direct`, `hosted-spin` | 2 |
+| soak | 256 B | 20k for 1 h | `direct`, `hosted-spin` | 1 |
+| gate edge | 18 B | flood, leader paused 4.5 s | `direct`, `hosted-spin` | 5 |
+
+The gate-edge set records, per run, the commands dropped, the time from the new leader's `LeadershipChanged` until every
+offered command is sequenced, and the number lost; the hosted arm must show 0. It follows `HostedCppStubTest`'s resend
+scenario. Run order within a rate is randomised.
+
+**What a run records.** The whole-loop histogram (HdrHistogram, 1 µs resolution), the achieved rate and the stub's window
+declines; the host's `queue:` line (placed, `epochDrops`, `headDeclines`, `peakQueued`), its hosted-lag counter once a second and
+the stub's retained count; CPU per process (`pidstat 1`), `mpstat -P ALL` and context switches; the GC and safepoint logs of the
+host and the members (`-Xlog:gc,safepoint`, `-Xms` equal to `-Xmx`, `-XX:+AlwaysPreTouch`, the default collector first, and
+`-XX:+UseZGC` on the host only if its pauses appear in the p99.9); `lscpu`, `uname -a`, the git sha, the Aeron version and the instance
+and image ids. **The stub's allocation in the measured window** is counted by hooking `operator new` and `malloc` in the bench: the
+host's is shown to be zero (`hosted-facade.md` §3.5), the stub's is not.
+
+**What exists and what changes.** `hop-matrix.sh` and `node.sh` launch `hop_bench` and a test-class host that this tree no
+longer has. `hop_bench` lives on the tag, in its `cpp-bench` directory, and its hosted arm drives the prototype wire at
+protocol version 1, which the host now fences. Before Test 1 runs:
+
+1. `hosted_hop_bench`: the open-loop generator over the real `hosted::Application`, writing the histogram and counting allocations.
+2. The `direct` arm: `hop_bench` built from the tag against the same Aeron version, in a separate checkout.
+3. `hop-matrix.sh` and `node.sh` start `ClientProxy` with `proxy.*` properties, as the runner of the tag did, take the arms,
+   sets and modes above, and write a manifest per run.
+4. An analysis script: per arm and rate, the percentiles of every run and their range, the hosted-minus-direct difference against the
+   rule, and a pass or fail line.
+
+Steps 1 and 2 are validated on localhost first (`MULTIHOST_MEMBERS=localhost,localhost,localhost`): the direct arm and the
+hosted arm must reproduce `hosted-facade.md` §3.6 within its spread before an instance is launched. A one-instance variant
+of the matrix (all members, the host and the client on one instance, cores apart) takes the network out; a difference from the
+three-instance run is the network.
+
+**Threats.** Steal, frequency scaling and noisy neighbours on the virtualised instance: record the clock source and the `steal`
+column of `/proc/stat` per run, and repeat a run with steal above 1%. No burstable (`t`) families. The first run after a cluster start is
+the worst (JIT, warm-up), so each run discards a warm-up and each rate gets a fresh cluster. A faster commit than the laptop's 250 µs
+makes the hop a larger share of the loop; that is the question, so the cluster is not slowed to match. Time is slewed by `chrony`, never
+stepped: a step back of more than 10 s terminates a member (`ops.md`).
 
 ### Test 2: the network-fault suite without CPU steal
 
@@ -82,8 +145,8 @@ per rate adds about 3 s.
 | --- | --- | --- | --- |
 | Image build, beforehand | about 1 h, unattended | c6in.large | 0.11 |
 | Launch from the image, check `cluster.sh up` | 10 min | 3 × c6in.8xlarge + c6in.4xlarge | 1.05 |
-| Test 1: 3 rates × 3 modes × 3 repeats of 30 s | 25 min | the same | 2.65 |
-| Sync comparison: test 1 at one rate, sync on and off | 10 min | the same | 1.05 |
+| Test 1a: 3 rates × 3 modes × 3 repeats of 30 s | 25 min | the same | 2.65 |
+| Sync comparison: test 1a at one rate, sync on and off | 10 min | the same | 1.05 |
 | Test 3: preloads of 400,000 and 4,000,000, quiet and under load | 15 min | the same | 1.60 |
 | Test 2: the fault suite, three copies in parallel | 15 min, alongside | 3 × c7i.4xlarge | 0.55 |
 | Test 2: the failover soak, 200 rounds of about 35 s | 2 h, alongside, unattended | c7i.4xlarge spot | 0.50 |
@@ -95,8 +158,13 @@ Budget twice the session for a first attempt.
 
 With the members on c6id.metal the four hosts cost $20.26/hr. Allow about 10 minutes more for a metal launch, so the
 launch and check take 20 minutes: tests 1 and 3 cost about $23.60, the session about $24.80, and every hour past the
-plan $20.26. Test 1 alone on metal, after the session above, takes 45 minutes and costs about $15.20, for a direct
+plan $20.26. Test 1a alone on metal, after the session above, takes 45 minutes and costs about $15.20, for a direct
 comparison of the same CPU with and without the hypervisor.
+
+Test 1b is a session of its own. Its runs come to about 100 of 150 s (4.2 h), the knee ramps (0.7 h), the soak and its warm-up
+(2.1 h), the gate-edge runs (0.3 h) and setup (0.3 h): about 7.5 h on the four Test 1 hosts. That costs about $48 on
+c6in.8xlarge ($6.35/hr) and about $152 on c6id.metal ($20.26/hr), from the instance prices above. Neither includes the
+rehearsals, so allow the first attempt twice the figure; the soak and the knee ramps run unattended.
 
 ## 4. Image
 
@@ -107,7 +175,8 @@ sudo apt-get install -y openjdk-21-jdk-headless cmake g++ git perl docker.io
 git clone <this repository> ~/seqeron && cd ~/seqeron && git checkout <branch>
 ./gradlew uberJar :seqeron-service:compileTestJava
 cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
-cmake --build cmake-build-release --target hop_bench
+cmake --build cmake-build-release --target hosted_hop_bench   # to be built (Test 1)
+git worktree add ../seqeron-direct cpp-direct-client-final    # the direct arm: build its hop_bench there
 ```
 
 Tuning, all of it applied at boot so the image carries it:
@@ -165,9 +234,30 @@ ROUNDS=200 ./gradlew :seqeron-service:networkFaultTest --tests '*DockerFailoverS
 
 | Test | Carries | Does not |
 | --- | --- | --- |
-| 1 | The hop is IPC inside one host. With pinned, spinning threads it is CPU and memory, which Nitro passes through nearly unchanged, so the direct-against-hosted comparison carries. | The commit: a UDP round trip in a placement group (about 20 µs in Aeron's c6in result) is slower than a tuned bare-metal LAN with kernel sockets, so EC2 hides the hop a little more than bare metal would. Tails are worse: hypervisor interrupts, and on c6in.8xlarge a neighbour on the same socket. BIOS settings are out of reach. |
+| 1 | The hop is IPC inside one host. With pinned, spinning threads it is CPU and memory, which Nitro passes through nearly unchanged, so the direct-against-hosted comparison carries; the rule of Test 1 is applied to each environment on its own. | The commit: a UDP round trip in a placement group (about 20 µs in Aeron's c6in result) is slower than a tuned bare-metal LAN with kernel sockets, so EC2 hides the hop a little more than bare metal would. Tails are worse: hypervisor interrupts, and on c6in.8xlarge a neighbour on the same socket. BIOS settings are out of reach. |
 | 2 | Its faults are timed against the 200 ms heartbeat and the 2 s election timeout, far above anything virtualization adds. | — |
 | 3 | The relay's flow control and NAK repair over a real network card. | A single flow is capped at about 10 Gbps in a placement group, and one replay is one flow. EBS is network storage: a forced write costs about 0.5–1 ms, against tens of µs on local NVMe. For local disk, run the sync comparison on an instance with instance storage (c6id, i4i). |
 
 c6id.metal (§2) removes the hypervisor from test 1's CPU path and puts the sync comparison on local NVMe; its network
 is still ENA. Its CPU is c6in's, so its results compare with the c6in.8xlarge run's.
+
+## 7. Order of work
+
+| step | done when |
+| --- | --- |
+| decisions (§8) | the open decisions are answered and the rule's margins are set |
+| tooling | the four items of Test 1 built; localhost reproduces `hosted-facade.md` §3.6 within its spread; the stub's allocation is known |
+| smoke | one virtualised instance, one rate, two runs: scripts, teardown and cost confirmed |
+| Test 1a, then 1b | c6in.8xlarge first (cheaper), then c6id.metal |
+| report | `hosted-facade.md` gains the tables in a §3.8; §2 question 2 is answered; keep or reverse is decided |
+| teardown | no instance, volume or address is left |
+
+## 8. Decisions needed
+
+1. The rule's margins (Test 1). Until they are set the result decides nothing.
+2. Who launches the instances: nothing in this tree does, and the machine this was planned on has no AWS credentials.
+3. A budget cap in instance-hours; Test 1b is about 7.5 h on four hosts.
+4. The architecture: this plan is x86_64 (c6in, c6id); the figures in `hosted-facade.md` are aarch64, and Graviton is not covered.
+5. The deployment's hypervisor and region, if the virtualised run is to match it; the prices above are us-east-1.
+6. The deployment's real payload sizes and target rate, to replace the sweep where it differs.
+7. Shared or dedicated tenancy for the virtualised instance.
