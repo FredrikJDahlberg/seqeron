@@ -49,9 +49,9 @@ it, what the prototype host and the C++ stubs were shown to do, and the plan for
   Added complexity that is not lines: a second protocol (spec §17.7), two-process failure modes and a second unit to
   supervise per instance (spec §17.6), and a JVM and a core per client (§3.1). The parity the C++ client carried
   does not go with it: `ReplayerRecovery`, `PendingSends` and the façades stay case for case in Java and C#, two
-  languages rather than three. **The added lines are only partly counted, and the first stage is not decided until
-  they are.** What exists: the C++ stubs of `Application`, `Gateway` and `Consumer` share a core,
-  `hosted/detail/ClientLink.hpp`, of 612 lines with its comments, and are 140, 252 and 49 lines on top of it (a build of
+  languages rather than three. **The added lines are only partly counted, so the figures below are a floor.
+  The first stage is decided: the local tests show the hosted client is good enough.** What exists: the C++ stubs
+  of `Application`, `Gateway` and `Consumer` share a core, `hosted/detail/ClientLink.hpp`, of 612 lines with its comments, and are 140, 252 and 49 lines on top of it (a build of
   the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217 lines of XML and its
   generated C++ codecs 16,800 more, and the host, `ClientProxy`, which runs any of the three façades, is about 910 lines of Java with its
   configuration checks and the allocation window, plus `Liveness`, `CommandLedger` and `AttachRules`, its Aeron-free seams. A C# stub is not counted,
@@ -75,12 +75,13 @@ it, what the prototype host and the C++ stubs were shown to do, and the plan for
    loop shows no resolvable difference (§3.2). The remaining risk is the host's thread: it needs its own core,
    since the extra spinning threads slowed an in-JVM commit by tens of microseconds until the thread counts
    matched. The laptop's commit of about 250 µs hides the hop; a tuned cluster commits faster, and there the hop
-   and the host's pauses weigh more. **The first stage waits on two results**: the proposed shape measured, a C++
+   and the host's pauses weigh more. **The first stage rests on two results**: the proposed shape measured, a C++
    client process beside a separate host JVM, pinned, on Linux; and an allocation test that holds the host's
    steady state to zero bytes a frame, as the C# suite does for its client. The second is met by the
-   prototype host (§3.5). The first is measured in an aarch64 Linux VM (§3.6) and open on the deployment's
-   own hardware: with the host spinning, a C++ client beside it shows no resolvable difference at the median, and
-   a host that backs off adds 66–107 µs.
+   prototype host (§3.5). The first is measured in an aarch64 Linux VM (§3.6): with the host spinning, a C++
+   client beside it shows no resolvable difference at the median, and a host that backs off adds 66–107 µs. The
+   deployment's own hardware is not measured. A bad result there is a tuning matter for the host, and the direct
+   client stays on `cpp-direct-client` if it is not.
 3. **Throughput.** The rate at which the per-message offer, not the hop, is the limit is unmeasured (the one
    20,000 msg/s pass was noise-bound, §3). A multi-message `Payload` would save one IPC offer per frame, under
    a microsecond (§3), and would hold the first frame back until the last is encoded.
