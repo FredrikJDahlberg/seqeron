@@ -71,17 +71,21 @@ host's is shown to be zero (`hosted-facade.md` §3.5), the stub's is not. `hoste
   the run). It prints the whole loop's p50, p99, p99.9 and max, the declines, the stub's window declines and retained count, and the
   allocations.
 - The `direct` arm is `hop_bench` of the tag `cpp-direct-client-final`, built in a separate checkout against the same Aeron version
-  (§4); `MULTIHOST_DIRECT_BENCH` names it. It publishes 18 B only.
+  (§4) with `direct-hop-bench-payload.patch` applied, which gives it `--payload` and a `payload=` field in its line;
+  `MULTIHOST_DIRECT_BENCH` names it.
 - `hop-matrix.sh` and `node.sh` start `ClientProxy` with `proxy.*` properties and run the arms and modes above, one fresh cluster per
-  rate, interleaved within it. `HOP_RATES`, `HOP_REPEATS`, `HOP_SECONDS`, `HOP_MODES` and `MULTIHOST_PAYLOAD` select the set. Both
+  rate, interleaved within it. `HOP_RATES`, `HOP_REPEATS`, `HOP_SECONDS`, `HOP_MODES` and `HOP_PAYLOADS` select the set. Both
   benches drop the first 20% of a run, so `HOP_SECONDS=150` is 30 s of warm-up and 120 s measured.
+- `hop-knee.sh` ramps the rate on one fresh cluster per arm, payload and run, in steps of `KNEE_SECONDS`, and ends each ramp in a
+  `knee` line: the last rate below the first step whose p99 exceeds `KNEE_P99_US` (default 10 ms), that loses a marker or whose
+  leader moved. The limit is a choice, not a measurement; the step lines are in `hop-matrix.sh`'s format.
 - `hop-analyze.py <results>…` applies the rule's latency part: per rate and hosted mode, the hosted median of each percentile
   must lie within the direct runs' range plus the margin (`--margins`, `--min-runs`), and no run may fail or lose a marker.
 
-The rate sweep and the idle-strategy set of Test 1b run with these settings. Not built yet:
+The rate sweep, the idle-strategy set, the payload sweep and the knee of Test 1b run with these settings; the 1 KiB run at 100k msg/s is a
+second invocation with `HOP_PAYLOADS=1024 HOP_RATES=100000`. Not built yet:
 
-- the payload sweep: `hop_bench` needs a `--payload` option and a `payload=` field in its line, and the matrix a payload loop;
-- the knee ramp, and the soak's histogram, since each bench keeps every sample;
+- the soak's histogram, since each bench keeps every sample;
 - the gate-edge set: a flood mode that counts offered, sequenced and lost commands in both benches, and a driver that pauses the leader;
 - a manifest per run and the recordings under "What a run records" other than the bench's own line;
 - the rule's other criteria in `hop-analyze.py` (commands lost at a gate edge, the host's cores), and a randomised run order.
@@ -188,6 +192,7 @@ git clone <this repository> ~/seqeron && cd ~/seqeron && git checkout <branch>
 cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build cmake-build-release --target hosted_hop_bench
 git worktree add ../seqeron-direct cpp-direct-client-final    # the direct arm: hop_bench of the tag
+git -C ../seqeron-direct apply "$PWD/seqeron-service/src/test/scripts/multihost/direct-hop-bench-payload.patch"
 cmake -S ../seqeron-direct -B ../seqeron-direct/cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build ../seqeron-direct/cmake-build-release --target hop_bench
 ```
