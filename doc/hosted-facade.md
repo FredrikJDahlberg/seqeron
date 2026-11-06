@@ -45,7 +45,7 @@ it, what the prototype host and the C++ stubs were shown to do, and the plan for
   sender, stay, and with them the Java/C# parity they carry.
 - Net accounting, first stage. Retired: the C++ list above. Added and maintained: the Java host and its command
   queue, the schema 218 codecs in Java and C++, the C++ stubs with their three local publish checks and the
-  command window (**H-4**, **H-5**), the golden traces and their replay harness, and the host's counters.
+  command window (**H-4**, **H-5**), and the host's counters.
   Added complexity that is not lines: a second protocol (spec §17.7), two-process failure modes and a second unit to
   supervise per instance (spec §17.6), and a JVM and a core per client (§3.1). The parity the C++ client carried
   does not go with it: `ReplayerRecovery`, `PendingSends` and the façades stay case for case in Java and C#, two
@@ -54,17 +54,12 @@ it, what the prototype host and the C++ stubs were shown to do, and the plan for
   `hosted/detail/ClientLink.hpp`, of 612 lines with its comments, and are 140, 252 and 49 lines on top of it (a build of
   the direct `Application` and what only it uses is part of the ~9,000 above), the schema is 217 lines of XML and its
   generated C++ codecs 16,800 more, and the host, `ClientProxy`, which runs any of the three façades, is about 910 lines of Java with its
-  configuration checks and the allocation window, plus `Liveness`, `CommandLedger` and `AttachRules`, its Aeron-free seams. A C# stub and the golden-trace harness are not counted,
+  configuration checks and the allocation window, plus `Liveness`, `CommandLedger` and `AttachRules`, its Aeron-free seams. A C# stub is not counted,
   so it is a floor, not the answer.
-- Conformance is by golden trace, so that the stubs' tests are not three ports of one suite. A trace is streams
-  303 and 304 and the counters recorded from the Java host through a scripted scenario: attach, restore, steady
-  state, a leader change, a hold, a cut, a lost client, a detach. Each stub is tested by replaying the host half
-  into it, under a scripted listener that makes the scenario's calls, and comparing the commands it emits and the
-  listener calls it makes with the recording; the Java host is the oracle. Session ids, counter ids, timestamps
-  and positions differ between runs, so a trace records them normalized and the comparison ignores them. The
-  traces are checked in beside the schema, with a task that regenerates them from the host and one that checks
-  the committed copy is current, as for the SBE codecs. The §14 rows and `FailoverProcessTest` also rerun against
-  a hosted pair.
+- Conformance is the Java system tests run against each language's probe, so that the stubs' tests are not three
+  ports of one suite: the assertions are Java's and the stub is the probe executable the test launches, as
+  `HostedSnapshotTest` selects one with `HOSTED_CLIENT`. The Java host is the one implementation of its half and is
+  normative where spec §17 is silent. The §14 rows and `FailoverProcessTest` also rerun against a hosted pair.
 
 ## 2. Open questions
 
@@ -464,31 +459,27 @@ publish whose loss it cannot accept, a timer's included (spec §17.5).
 1. **The shared contract in C#.** `generateCSharpHostedSbe`, with `checkCSharpSbeCurrent` covering it; a C#
    `ProxyProtocol`; the 5300 range in C# `SeqeronCounters`. Done when the check passes and `GeneratedCodecsTest`
    asserts schema 218.
-2. **The golden traces (§1), against the C++ stub first.** They do not exist yet, and a second stub is what they pay
-   for: without them C# ports the `Hosted*Test` assertions a second time. Done when the C++ stub passes the committed
-   traces and a stub broken on purpose fails them.
-3. **The C# stub**, in `Org.Limitless.Seqeron.Hosted`, as C++'s is in `hosted`: an `internal` `ClientLink`, and
+2. **The C# stub**, in `Org.Limitless.Seqeron.Hosted`, as C++'s is in `hosted`: an `internal` `ClientLink`, and
    `Application`, `Gateway` and `Consumer`, each with an options class carrying C++'s `Config` (`SourceId`,
    `Snapshots`, `HostTimeoutMs`, `AttachTimeoutMs`, `HostName`). The listener types stay in `App`. Done when it
-   passes the golden traces and `HotPathAllocationTest` holds its dispatch and `publish` to zero bytes a frame.
-4. **The system tests.** A C# hosted probe with an `Application`, a `Gateway` and a `Consumer` mode, and the stub
+   passes the stub tests of stage 3 and `HotPathAllocationTest` holds its dispatch and `publish` to zero bytes a frame.
+3. **The system tests.** A C# hosted probe with an `Application`, a `Gateway` and a `Consumer` mode, and the stub
    tests of §4.1 run with either stub, as `HostedSnapshotTest` already selects one with `HOSTED_CLIENT`. Done when
    every scenario passes with each.
-5. **Windows, and the measurements of §3.4.** `csharp-windows-test.sh` runs the host in the gateway host's
+4. **Windows, and the measurements of §3.4.** `csharp-windows-test.sh` runs the host in the gateway host's
    `proxy.hosts` and attaches the probe to it; the hop and the host's allocation are measured from a C# client on
    Linux and on Windows. Done when they show no resolvable difference from direct at the median, as §3.6 does for
    C++, and are recorded in §3.
-6. **Retire the direct C# client**, kept on a `csharp-direct-client` branch and tag `csharp-direct-client-final`. The
+5. **Retire the direct C# client**, kept on a `csharp-direct-client` branch and tag `csharp-direct-client-final`. The
    examples move to the stub (`FollowStream` to a hosted `Consumer`, with `topology-csharp.xml` gaining the proxy
    hosts), `FacadeSurfaceTest` and `checkFacadeOnly` admit `Hosted`, and the phases of `csharp-client-test.sh` that
    drive the retired classes (A–E, H) go. Done when `dotnet test`, the examples against the packed package, CI on
    Linux and Windows, and the hosted system tests pass.
-7. **The documents.** `client-api.md`'s C# column, `getting-started.md`, `building.md`, the parity rules in the
+6. **The documents.** `client-api.md`'s C# column, `getting-started.md`, `building.md`, the parity rules in the
    `CLAUDE.md` files, and §1 and question 5 here.
 
 **Open.**
 
 - Whether the release that ships the C# stub also retires direct C#, as the C++ move did, or carries both for one
   release.
-- Whether the golden traces come before the C# stub (stage 2) or after it.
-- Whether stage 5 gates the start or only the retirement (stage 6). Question 5 makes it gate the start.
+- Whether stage 4 gates the start or only the retirement (stage 5). Question 5 makes it gate the start.
