@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string_view>
 
-#include "org/limitless/seqeron/app/Gateway.hpp"
+#include "org/limitless/seqeron/app/Listeners.hpp"
 #include "org/limitless/seqeron/hosted/detail/ClientLink.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 
@@ -18,13 +18,15 @@
 namespace org::limitless::seqeron::hosted {
 
 /**
- * The client stub of a hosted Gateway (doc/hosted-facade-draft.md §17): the surface of app::Gateway, with the façade
+ * The client stub of a hosted Gateway (doc/seqeron-protocol-spec.md §17): the surface of app::Gateway, with the façade
  * itself, the pair and the election running in a host process that this talks to over schema 218. Its listener is the
  * direct Gateway's, and onActivated returns what the host waits for (§17.5).
  *
  * What differs: connection ids are allocated here, from the host's last Role (H-4); a Published command can be lost
  * at a gate edge (H-3, H-4), and one on a connection whose ConnectionOpened is not yet placed is Published, not
- * Declined; the queries mirror the host's last Gate (H-16).
+ * Declined; the queries mirror the host's last Gate (H-16). The host waits in onActivated for the answer and drops a
+ * stub whose heartbeat is silent for its clientTimeoutMs, so a listener that dials for longer calls keepAlive() while
+ * it does (H-14).
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread.
  */
@@ -138,7 +140,9 @@ class Gateway : public detail::ClientLink<Gateway<Listener>, Listener>
         }
         this->template sendUndeclinable<wire::GateClosed>(
             [&](wire::GateClosed& closed) { closed.epoch(this->m_epoch); });
+        // The host drops whatever follows under this epoch, so publish declines until the next Gate (H-3).
         m_serving = false;
+        this->m_canPublish = false;
     }
 
     /**
@@ -174,7 +178,8 @@ class Gateway : public detail::ClientLink<Gateway<Listener>, Listener>
     {
         return this->template offerPayload<wire::Publish>(
             groupMask, payloadId, payloadLength, [&](wire::Publish& command) {
-                command.connectionId(connectionId)
+                command.commandSeq(0)
+                    .connectionId(connectionId)
                     .groupMask(groupMask)
                     .payloadId(payloadId)
                     .putBody(reinterpret_cast<const char*>(payload), payloadLength);

@@ -1,16 +1,20 @@
-// The same flow as FollowStream.cpp, written against the front door instead of the tiers under it, and the
-// C++ twin of src/java's ColocatedApp. Look at the includes: app, protocol/Publish, and util for the two
-// things Java gets from its own standard library. No receiver, no sender, no envelope, no systemEventType —
-// app::Application assembles the cluster session, the queue, confirmed ingress across a failover, the
-// fences and the leader gate, and hands this file Payloads.
+// A co-located application written against the hosted stub, hosted::Application. The includes are the whole
+// import list: app, hosted, protocol/Publish, and util for the two things Java gets from its own standard library.
+// The cluster session, the queue, confirmed ingress across a failover, the fences and the leader gate are in the
+// host process, org.limitless.seqeron.proxy.ClientProxy; this file hands it a duty cycle and gets Payloads back.
 //
-// A co-located application is the producer kind nothing elects: one replica per node, publishing only while
-// its own node leads. That is why it needs no topology document and no clusterctl step — LeadershipChanged
-// already picks the replica that submits, so onLeadershipChanged is the whole election.
+// A co-located application is the producer kind nothing elects: one replica per node, publishing only while its own
+// node leads. onLeadershipChanged is the whole election.
 //
-// Start a node first (seqeron-service/src/main/scripts/start-cluster.sh in the seqeron repo), then run this.
-// Environment: SEQERON_NODE_MEMBER_ID (default 0), SEQERON_REPLAYER_CLIENT_ID (default 14),
-// SEQERON_AERON_DIR, SEQERON_IDLE_STRATEGY, SEQERON_EXAMPLE_EGRESS_PORT.
+// Start a node, load the examples' topology, start the host, then run this (in the seqeron repo, after
+// ./gradlew uberJar; doc/running-a-cluster.md, "Client proxy", has the host's properties):
+//   seqeron-service/src/main/scripts/start-cluster.sh
+//   seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology.xml
+//   seqeron-service/src/main/scripts/start-client-proxy.sh -Dproxy.sourceId=12 -Dproxy.clientId=14 \
+//        -Dproxy.snapshotDir=/tmp/colocated-example
+//   ./colocated_app
+// Environment: SEQERON_NODE_MEMBER_ID (default 0), SEQERON_AERON_DIR, SEQERON_IDLE_STRATEGY, SEQERON_HOST_NAME (the
+// host's proxy.hostName; default hosted).
 
 #include <atomic>
 #include <chrono>
@@ -23,7 +27,9 @@
 
 #include "Aeron.h"
 
-#include "org/limitless/seqeron/app/Application.hpp"
+#include "org/limitless/seqeron/app/ClusterError.hpp"
+#include "org/limitless/seqeron/app/Payload.hpp"
+#include "org/limitless/seqeron/hosted/Application.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/util/Env.hpp"
 #include "org/limitless/seqeron/util/IdleStrategy.hpp"
@@ -31,18 +37,21 @@
 namespace {
 
 namespace app = org::limitless::seqeron::app;
+namespace hosted = org::limitless::seqeron::hosted;
 namespace protocol = org::limitless::seqeron::protocol;
 
-// The examples' payloadId — eight raw bytes, no schema, which spec §13.2 admits.
+// The examples' payloadId: eight raw bytes, no schema, which spec §13.2 admits.
 constexpr std::uint16_t PING_PAYLOAD_ID = 6;
 
-// This example's own sourceId (spec §5); the low-level example is 10, the Java façade one 11.
+// This example's own sourceId (spec §5), the row COLO-EX-C in topology.xml.
 constexpr std::int32_t SOURCE_ID = 12;
 
 constexpr std::int64_t PING_INTERVAL_NS = 1'000'000'000;
 
-// Fenced, restart me: this repository's convention (doc/ops.md).
-constexpr int EXIT_FENCED = 70;
+// Fenced or host lost, restart me: this repository's convention (doc/ops.md). 78: the host refused the attach, which a
+// restart does not cure.
+constexpr int EXIT_RESTART = 70;
+constexpr int EXIT_REFUSED = 78;
 
 std::atomic_bool running{ true };
 std::int64_t pingSentNs = 0;
@@ -72,20 +81,18 @@ bool isOwnPing(const app::Payload& payload)
     return sentNs == pingSentNs;
 }
 
-// What an application does that the façade cannot do for it — the whole of it, for this example.
+// What an application does that the stub cannot do for it: the whole of it, for this example.
 struct PingListener
 {
-    // The whole election, for the producer kind nothing elects. Every leadership change shuts an open
-    // gate, and a payload submitted during the election may have gone with it; a replica keeping outstanding
-    // work sets Config::onNotLeader to discharge it.
+    // The gate crossed an edge, in stream order. Every leadership change shuts an open gate, and a payload submitted
+    // during the election may have gone with it.
     void onLeadershipChanged(const bool leading) const
     {
-        std::puts(leading ? "# leading — publishing" : "# not leading — silent");
+        std::puts(leading ? "# leading, publishing" : "# not leading, silent");
     }
 
-    // Every application payload on this node's queue, in clusterSeqNo order, history and live alike — every
-    // replica sees the same ones and so holds the same state. System frames never arrive here; the façade
-    // acts on them and reports only what an application has a decision to make about.
+    // Every application payload on this node's queue, in clusterSeqNo order, history and live alike. System frames
+    // never arrive here; the host acts on them.
     void onSequenced(const app::Payload& payload) const
     {
         if (isOwnPing(payload))
@@ -103,10 +110,10 @@ struct PingListener
 
     void onCaughtUp(const std::int64_t clusterSeqNo) const
     {
-        std::printf("# caught up at %lld — following the queue live\n", static_cast<long long>(clusterSeqNo));
+        std::printf("# caught up at %lld, following the queue live\n", static_cast<long long>(clusterSeqNo));
     }
 
-    // Latched, once: this replica may no longer act, and exiting lets its restart re-walk the log.
+    // Latched, once: the host fenced and has exited. Exiting lets the supervisor restart both.
     void onFenced(const app::ClusterError fence, const std::string& detail) const
     {
         fault = std::string(app::clusterErrorName(fence)) + ": " + detail;
@@ -120,7 +127,6 @@ int main()
     namespace util = org::limitless::seqeron::util;
 
     const std::int32_t memberId = util::envInt("SEQERON_NODE_MEMBER_ID", 0);
-    const std::int32_t clientId = util::envInt("SEQERON_REPLAYER_CLIENT_ID", 14);
     const std::string aeronDir = util::resolveAeronDir("SEQERON_AERON_DIR", memberId);
 
     // A line at a time even into a file or a pipe, as the Java and C# twins print.
@@ -128,41 +134,37 @@ int main()
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
+    // The stub connects to the host's media driver and to nothing else: no ports, no cluster session.
     aeron::Context context;
     context.aeronDir(aeronDir);
     const std::shared_ptr<aeron::Aeron> aeron = aeron::Aeron::connect(context);
 
     PingListener listener;
-    app::Application<PingListener> application{
-        { .sourceId = SOURCE_ID,
-          .clientId = clientId,
-          .memberId = memberId,
-          .egressChannel = "aeron:udp?endpoint=localhost:" +
-                           std::to_string(util::envInt("SEQERON_EXAMPLE_EGRESS_PORT", 9202 + memberId)) },
-        listener
-    };
+    hosted::Application<PingListener>::Config config;
+    config.sourceId = SOURCE_ID;
+    config.hostName = util::envString("SEQERON_HOST_NAME", config.hostName);
+    hosted::Application<PingListener> application{ config, listener };
     application.start(aeron);
-    std::printf("# member %d via %s — replica of application sourceId %d\n", memberId, aeronDir.c_str(), SOURCE_ID);
+    std::printf("# host %s via %s: replica of application sourceId %d\n", config.hostName.c_str(), aeronDir.c_str(),
+                SOURCE_ID);
 
-    // The one duty cycle. Every method on the façade belongs to this thread, callbacks included.
+    // The one duty cycle. Every method on the stub belongs to this thread, callbacks included.
     auto idle = util::resolveIdleStrategy();
     std::int64_t nextPingNs = 0;
-    while (running.load(std::memory_order_relaxed) && fault.empty())
+    while (running.load(std::memory_order_relaxed) && fault.empty() && application.failure() == hosted::Failure::None)
     {
         const int work = application.doWork();
         const std::int64_t now = nowNs();
-        // canPublish() is the gate and the failover hold in one: shut while this node does not lead, and shut
-        // while PendingSends is still resending what the last leader change lost.
+        // canPublish() mirrors the host's last Gate: the leader gate and the failover hold in one, a hop behind.
         if (application.canPublish() && now >= nextPingNs)
         {
-            // Eight raw bytes, so the publish taking already-encoded bytes is the one this reaches for; the
-            // other is templated on an SBE encoder and a Fill.
+            // Eight raw bytes, so the publish taking already-encoded bytes is the one this reaches for.
             pingSentNs = now;
             if (application.publish(PING_PAYLOAD_ID, reinterpret_cast<const std::uint8_t*>(&pingSentNs),
                                     sizeof pingSentNs) != protocol::Publish::Published)
             {
-                // Declined: the gate shut, ingress is held behind a resend, or the transport is
-                // back-pressured. Next second's ping is the retry.
+                // Declined: the gate shut, the command window is full or the stream is back-pressured. Next
+                // second's ping is the retry.
                 pingSentNs = 0;
             }
             nextPingNs = now + PING_INTERVAL_NS;
@@ -175,7 +177,21 @@ int main()
     if (!fault.empty())
     {
         std::fprintf(stderr, "# %s\n", fault.c_str());
-        return EXIT_FENCED;
+        return EXIT_RESTART;
+    }
+    switch (application.failure())
+    {
+        case hosted::Failure::AttachRefused:
+            std::fputs("# the host refused the attach\n", stderr);
+            return EXIT_REFUSED;
+        case hosted::Failure::AttachTimedOut:
+            std::fputs("# no host answered the attach\n", stderr);
+            return EXIT_RESTART;
+        case hosted::Failure::HostLost:
+            std::fputs("# HOST_LOST\n", stderr);
+            return EXIT_RESTART;
+        case hosted::Failure::None:
+            break;
     }
     return 0;
 }

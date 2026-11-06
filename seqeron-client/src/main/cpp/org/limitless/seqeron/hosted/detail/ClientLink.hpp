@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "Aeron.h"
@@ -18,6 +19,7 @@
 #include "org/limitless/seqeron/app/Payload.hpp"
 #include "org/limitless/seqeron/app/SnapshotListener.hpp"
 #include "org/limitless/seqeron/app/detail/GroupResolution.hpp"
+#include "org/limitless/seqeron/hosted/detail/RetainedCommands.hpp"
 #include "org/limitless/seqeron/protocol/ProxyProtocol.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/SeqeronCounters.hpp"
@@ -26,12 +28,16 @@
 #include "org_limitless_seqeron_sbe_hosted/Attach.h"
 #include "org_limitless_seqeron_sbe_hosted/Attached.h"
 #include "org_limitless_seqeron_sbe_hosted/CaughtUp.h"
+#include "org_limitless_seqeron_sbe_hosted/ClusterTime.h"
 #include "org_limitless_seqeron_sbe_hosted/Detach.h"
+#include "org_limitless_seqeron_sbe_hosted/Dropped.h"
 #include "org_limitless_seqeron_sbe_hosted/Fenced.h"
 #include "org_limitless_seqeron_sbe_hosted/Gate.h"
 #include "org_limitless_seqeron_sbe_hosted/GroupsResolved.h"
 #include "org_limitless_seqeron_sbe_hosted/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_hosted/Payload.h"
+#include "org_limitless_seqeron_sbe_hosted/Publish.h"
+#include "org_limitless_seqeron_sbe_hosted/Resolved.h"
 #include "org_limitless_seqeron_sbe_hosted/RestoreRecord.h"
 #include "org_limitless_seqeron_sbe_hosted/SnapshotCut.h"
 #include "org_limitless_seqeron_sbe_hosted/SnapshotEnd.h"
@@ -41,7 +47,7 @@ namespace org::limitless::seqeron::hosted {
 
 namespace wire = sbe::hosted;
 
-/** Why a stub stopped (doc/hosted-facade-draft.md §17.6): its own faults, which are not a fence. */
+/** Why a stub stopped (doc/seqeron-protocol-spec.md §17.6): its own faults, which are not a fence. */
 enum class Failure : std::uint8_t
 {
     None,
@@ -59,7 +65,9 @@ inline constexpr const char* COMMANDS_CHANNEL = "aeron:ipc?term-length=1m";
 inline constexpr std::size_t HEADER = 8;
 inline constexpr std::int64_t ATTACH_RETRY_NS = 500'000'000LL;
 inline constexpr std::int64_t SEND_BOUND_NS = 10'000'000'000LL;
+inline constexpr std::int64_t DETACH_BOUND_NS = 1'000'000'000LL;
 inline constexpr std::uint16_t MAX_RECORD = 65535;
+inline constexpr int RESEND_PER_CYCLE = 64;
 
 inline std::int64_t nowNs()
 {
@@ -68,8 +76,8 @@ inline std::int64_t nowNs()
 }
 
 /**
- * What a hosted Application and a hosted Gateway share (doc/hosted-facade-draft.md §17): the attach, the counters, the
- * command window, the host's events and the snapshot cut. The derived class supplies the hooks
+ * What a hosted Application and a hosted Gateway share (doc/seqeron-protocol-spec.md §17): the attach, the counters,
+ * the command window, the host's events and the snapshot cut. The derived class supplies the hooks
  *
  *   onGate(bool leading), onOther(templateId, base, length, blockLength, version)
  *
@@ -126,7 +134,14 @@ class ClientLink
             return attach();
         }
         const int work = m_events->poll(m_assembler.handler(), 16);
-        if (hostLost())
+        resendFlagged();
+        // The image goes when the host closes the attachment, though it lives on (§17.6), and never comes when the
+        // host closed it first. A fenced host exits; its counter or image going is not a failure of its own.
+        const bool connected = m_events->isConnected();
+        const bool imageGone =
+            m_eventsConnected ? !connected : !connected && nowNs() - m_attachedNs > m_hostTimeoutMs * 1'000'000LL;
+        m_eventsConnected = m_eventsConnected || connected;
+        if (!m_fenced && (imageGone || hostLost()))
         {
             m_failure = Failure::HostLost;
         }
@@ -147,8 +162,16 @@ class ClientLink
             return;
         }
         wire::Detach detach;
-        detach.wrapAndApplyHeader(out(), 0, m_out.size()).clientId(m_clientId);
-        m_requests->offer(buffer(), 0, static_cast<aeron::util::index_t>(HEADER + detach.encodedLength()));
+        begin(detach).clientId(m_clientId);
+        const auto length = static_cast<aeron::util::index_t>(HEADER + detach.encodedLength());
+        // Not resent (H-9), so it waits out back-pressure, briefly: the host's liveness covers the rest.
+        const std::int64_t deadline = nowNs() + DETACH_BOUND_NS;
+        for (std::int64_t result = m_requests->offer(buffer(), 0, length);
+             (result == aeron::BACK_PRESSURED || result == aeron::ADMIN_ACTION) && nowNs() < deadline;
+             result = m_requests->offer(buffer(), 0, length))
+        {
+            std::this_thread::yield();
+        }
         m_attached = false;
     }
 
@@ -172,6 +195,12 @@ class ClientLink
         return m_fenced;
     }
 
+    /** Publish commands kept for the host's report of their fate (H-17): undecided, or dropped and awaiting a resend. */
+    [[nodiscard]] std::size_t retainedCount() const noexcept
+    {
+        return m_retained.count();
+    }
+
     /** Commands the stub declined for want of room in H-5's window. */
     [[nodiscard]] std::int64_t windowDeclines() const noexcept
     {
@@ -192,6 +221,20 @@ class ClientLink
       m_hasCommands{ hasCommands }
     {
         m_out.resize(128 * 1024);
+    }
+
+    // H-17: an Application keeps the Publish commands it has offered until the host reports their fate.
+    void retainPublishes() noexcept
+    {
+        m_retains = true;
+    }
+
+    // Wraps a message with its block zeroed, so a field the caller leaves unset reads 0, never an earlier message's bytes.
+    template<typename Message>
+    Message& begin(Message& message)
+    {
+        std::memset(out() + HEADER, 0, Message::sbeBlockLength());
+        return message.wrapAndApplyHeader(out(), 0, m_out.size());
     }
 
     char* out()
@@ -226,6 +269,13 @@ class ClientLink
         {
             return protocol::Publish::Refused;
         }
+        if constexpr (std::is_same_v<Command, wire::Publish>)
+        {
+            if (m_retains && m_retained.blocksPublish(m_epoch))
+            {
+                return protocol::Publish::Declined;
+            }
+        }
         return offerWindowed<Command>(payloadLength, std::forward<Fill>(fill)) ? protocol::Publish::Published
                                                                                : protocol::Publish::Declined;
     }
@@ -236,19 +286,36 @@ class ClientLink
     {
         const std::int64_t length =
             static_cast<std::int64_t>(HEADER + Command::sbeBlockLength() + sizeof(std::uint32_t) + bodyLength);
+        constexpr bool numbered = std::is_same_v<Command, wire::Publish>;
+        const bool retains = numbered && m_retains;
+        if (retains && !m_retained.canRetain(static_cast<std::size_t>(length)))
+        {
+            return false;
+        }
         if (m_offeredBytes + length - retired() > m_window)
         {
             m_windowDeclines++;
             return false;
         }
         Command command;
-        command.wrapAndApplyHeader(out(), 0, m_out.size()).epoch(m_epoch);
+        begin(command).epoch(m_epoch);
+        if constexpr (numbered)
+        {
+            if (m_retains)
+            {
+                command.commandSeq(m_nextCommandSeq);
+            }
+        }
         fill(command);
         if (m_commands->offer(buffer(), 0, static_cast<aeron::util::index_t>(HEADER + command.encodedLength())) < 0)
         {
             return false;
         }
         m_offeredBytes += length;
+        if (retains)
+        {
+            m_retained.retain(m_nextCommandSeq++, m_epoch, out(), static_cast<std::size_t>(length));
+        }
         return true;
     }
 
@@ -258,7 +325,7 @@ class ClientLink
     void sendUndeclinable(Fill&& fill)
     {
         Command command;
-        command.wrapAndApplyHeader(out(), 0, m_out.size());
+        begin(command);
         fill(command);
         sendCommand(HEADER + command.encodedLength());
     }
@@ -284,6 +351,10 @@ class ClientLink
     bool m_canPublish = false;
 
   private:
+    bool m_retains = false;
+    RetainedCommands m_retained;
+    std::int64_t m_nextCommandSeq = 1;
+
     Derived& self()
     {
         return static_cast<Derived&>(*this);
@@ -320,6 +391,7 @@ class ClientLink
             }
             m_replies.reset();
             m_attached = true;
+            m_attachedNs = nowNs();
             return work + 1;
         }
         if (m_failure != Failure::None)
@@ -341,21 +413,25 @@ class ClientLink
     void sendAttach()
     {
         const std::uint32_t format = m_snapshots != nullptr ? m_snapshots->formatVersion() : 0;
+        const std::vector<std::uint32_t> formats =
+            m_snapshots != nullptr ? m_snapshots->supportedFormatVersions() : std::vector<std::uint32_t>{};
         wire::Attach attach;
-        attach.wrapAndApplyHeader(out(), 0, m_out.size())
-            .clientId(m_clientId)
-            .requestId(m_requestId)
-            .kind(m_kind)
-            .protocolVersion(protocol::PROXY_PROTOCOL_VERSION)
-            .commandSessionId(m_hasCommands ? m_commands->sessionId() : -1)
-            .heartbeatCounterId(m_heartbeat->id())
-            .heartbeatRegistrationId(m_heartbeat->registrationId())
-            .appliedCounterId(m_applied->id())
-            .appliedRegistrationId(m_applied->registrationId())
-            .formatVersion(static_cast<std::int32_t>(format))
-            .supportedFormatsCount(1)
-            .next()
-            .formatVersion(static_cast<std::int32_t>(format));
+        auto& supported = begin(attach)
+                              .clientId(m_clientId)
+                              .requestId(m_requestId)
+                              .kind(m_kind)
+                              .protocolVersion(protocol::PROXY_PROTOCOL_VERSION)
+                              .commandSessionId(m_hasCommands ? m_commands->sessionId() : -1)
+                              .heartbeatCounterId(m_heartbeat->id())
+                              .heartbeatRegistrationId(m_heartbeat->registrationId())
+                              .appliedCounterId(m_applied->id())
+                              .appliedRegistrationId(m_applied->registrationId())
+                              .formatVersion(static_cast<std::int32_t>(format))
+                              .supportedFormatsCount(static_cast<std::uint16_t>(formats.size()));
+        for (const std::uint32_t supportedFormat : formats)
+        {
+            supported.next().formatVersion(static_cast<std::int32_t>(supportedFormat));
+        }
         attach.putHostName(m_hostName).putAeronVersion(std::string{ aeron_version_text() });
         m_requests->offer(buffer(), 0, static_cast<aeron::util::index_t>(HEADER + attach.encodedLength()));
     }
@@ -390,7 +466,15 @@ class ClientLink
             return;
         }
         m_retiredCounterId = attached.retiredCounterId();
+        m_retiredRegistrationId = attached.retiredRegistrationId();
         m_window = attached.commandWindow();
+        if (m_retains)
+        {
+            // Twice the window: the commands the host holds and the copies resent after an edge, and one more.
+            const std::size_t smallest = HEADER + wire::Publish::sbeBlockLength() + sizeof(std::uint32_t);
+            const std::size_t arena = 2 * static_cast<std::size_t>(m_window) + smallest + protocol::MAX_PAYLOAD_LENGTH;
+            m_retained.reset(arena, arena / smallest + 1);
+        }
         m_hostHeartbeatId = attached.heartbeatCounterId();
         m_hostHeartbeatRegistrationId = attached.heartbeatRegistrationId();
         m_hostHeartbeatValue = m_aeron->countersReader().getCounterValue(m_hostHeartbeatId);
@@ -400,12 +484,12 @@ class ClientLink
     }
 
     // §17.2.1: stale when the value has not changed for the timeout on this clock, or it is no longer the counter
-    // given.
+    // given; nor may the retired counter the window reads be another's.
     bool hostLost()
     {
         const auto& reader = m_aeron->countersReader();
-        if (reader.getCounterState(m_hostHeartbeatId) != aeron::concurrent::CountersReader::RECORD_ALLOCATED ||
-            reader.getCounterRegistrationId(m_hostHeartbeatId) != m_hostHeartbeatRegistrationId)
+        if (!isCounter(reader, m_hostHeartbeatId, m_hostHeartbeatRegistrationId) ||
+            !isCounter(reader, m_retiredCounterId, m_retiredRegistrationId))
         {
             return true;
         }
@@ -417,6 +501,13 @@ class ClientLink
             m_hostChangeNs = now;
         }
         return now - m_hostChangeNs > m_hostTimeoutMs * 1'000'000LL;
+    }
+
+    static bool isCounter(const aeron::concurrent::CountersReader& reader, const std::int32_t id,
+                          const std::int64_t registrationId)
+    {
+        return reader.getCounterState(id) == aeron::concurrent::CountersReader::RECORD_ALLOCATED &&
+               reader.getCounterRegistrationId(id) == registrationId;
     }
 
     void onGroupsResolved(wire::GroupsResolved message)
@@ -434,7 +525,10 @@ class ClientLink
         }
         // The own group id only sets the bit a direct frame adds to its mask; the stub reads the directory alone.
         m_groups.onSnapshotHeader(table);
-        m_groups.onCaughtUp(table.front().groupId);
+        if (m_groups.onCaughtUp(table.front().groupId) != app::detail::GroupResolution::Outcome::Resolved)
+        {
+            return;
+        }
         if constexpr (requires { m_listener.onGroupsResolved(*m_groups.directory()); })
         {
             m_listener.onGroupsResolved(*m_groups.directory());
@@ -468,11 +562,28 @@ class ClientLink
                 }
                 break;
             }
+            case wire::ClusterTime::sbeTemplateId(): {
+                wire::ClusterTime time(base, HEADER, length, blockLength, version);
+                if constexpr (requires { m_listener.onClusterHeartbeat(std::int64_t{}, std::int64_t{}); })
+                {
+                    m_listener.onClusterHeartbeat(time.clusterTimeNs(), time.receiveTimeNs());
+                }
+                break;
+            }
             case wire::RestoreRecord::sbeTemplateId():
                 onRestore(wire::RestoreRecord(base, HEADER, length, blockLength, version));
                 break;
             case wire::SnapshotCut::sbeTemplateId():
                 onCut(wire::SnapshotCut(base, HEADER, length, blockLength, version).roundId());
+                break;
+            case wire::Dropped::sbeTemplateId():
+                onDropped(wire::Dropped(base, HEADER, length, blockLength, version));
+                break;
+            case wire::Resolved::sbeTemplateId():
+                if (m_retains)
+                {
+                    m_retained.resolved(wire::Resolved(base, HEADER, length, blockLength, version).through());
+                }
                 break;
             case wire::Fenced::sbeTemplateId(): {
                 wire::Fenced fenced(base, HEADER, length, blockLength, version);
@@ -483,6 +594,54 @@ class ClientLink
             default:
                 self().onOther(header.templateId(), base, length, blockLength, version);
                 break;
+        }
+    }
+
+    // H-17: an epoch drop is resent when the gate reopens; a refusal is final and is the stub's fault to raise.
+    void onDropped(wire::Dropped dropped)
+    {
+        if (!m_retains)
+        {
+            return;
+        }
+        if (dropped.reason() == wire::DropReason::REFUSED)
+        {
+            m_canPublish = false;
+            m_fenced = true;
+            m_listener.onFenced(app::ClusterError::ClientProtocol,
+                                "the host refused Publish commands the stub offered");
+            return;
+        }
+        m_retained.dropped(dropped.firstSeq(), dropped.lastSeq());
+    }
+
+    // H-17: once every command of an earlier epoch is decided, the dropped ones go again, in order, before any new one.
+    void resendFlagged()
+    {
+        if (!m_retains || !m_retained.hasFlagged() || !m_attached || !m_canPublish || m_fenced ||
+            m_retained.hasUndecidedBefore(m_epoch))
+        {
+            return;
+        }
+        for (int i = 0; i < RESEND_PER_CYCLE; i++)
+        {
+            const RetainedCommands::Flagged flagged = m_retained.flagged();
+            if (flagged.data == nullptr || !m_retained.canRetain(flagged.length) ||
+                m_offeredBytes + static_cast<std::int64_t>(flagged.length) - retired() > m_window)
+            {
+                return;
+            }
+            wire::Publish publish(flagged.data, HEADER, flagged.length, wire::Publish::sbeBlockLength(),
+                                  wire::Publish::sbeSchemaVersion());
+            publish.epoch(m_epoch).commandSeq(m_nextCommandSeq);
+            const aeron::concurrent::AtomicBuffer resend(reinterpret_cast<std::uint8_t*>(flagged.data),
+                                                         flagged.length);
+            if (m_commands->offer(resend, 0, static_cast<aeron::util::index_t>(flagged.length)) < 0)
+            {
+                return;
+            }
+            m_offeredBytes += static_cast<std::int64_t>(flagged.length);
+            m_retained.resent(m_nextCommandSeq++, m_epoch);
         }
     }
 
@@ -543,13 +702,21 @@ class ClientLink
     void onCut(const std::int64_t roundId)
     {
         std::int32_t count = 0;
+        bool abandoned = false;
         if (m_snapshots != nullptr)
         {
             std::array<std::uint8_t, MAX_RECORD> record;
-            for (std::int32_t length; (length = m_snapshots->onSnapshot(record, count)) > 0; count++)
+            for (std::int32_t length; (length = m_snapshots->onSnapshot(record, count)) != 0; count++)
             {
+                // A length outside 0-65535 abandons the round, as for a direct façade.
+                if (length < 0 || length > MAX_RECORD)
+                {
+                    abandoned = true;
+                    break;
+                }
+                beat();
                 wire::SnapshotRecord message;
-                message.wrapAndApplyHeader(out(), 0, m_out.size())
+                begin(message)
                     .roundId(roundId)
                     .recordIndex(count)
                     .putData(reinterpret_cast<const char*>(record.data()), static_cast<std::uint32_t>(length));
@@ -557,9 +724,9 @@ class ClientLink
             }
         }
         wire::SnapshotEnd end;
-        end.wrapAndApplyHeader(out(), 0, m_out.size())
+        begin(end)
             .roundId(roundId)
-            .recordCount(m_snapshots != nullptr ? count : -1);
+            .recordCount(m_snapshots != nullptr && !abandoned ? count : -1);
         sendCommand(HEADER + end.encodedLength());
     }
 
@@ -590,6 +757,7 @@ class ClientLink
     std::int64_t m_nextAttachNs = 0;
     std::int32_t m_eventSessionId = -1;
     std::int32_t m_retiredCounterId = 0;
+    std::int64_t m_retiredRegistrationId = 0;
     std::int32_t m_hostHeartbeatId = 0;
     std::int64_t m_hostHeartbeatRegistrationId = 0;
     std::int64_t m_hostHeartbeatValue = 0;
@@ -602,6 +770,9 @@ class ClientLink
     bool m_accepted = false;
     bool m_caughtUp = false;
     bool m_fenced = false;
+    // Set once the events image has connected; until then its absence is a lost host only after the host timeout.
+    bool m_eventsConnected = false;
+    std::int64_t m_attachedNs = 0;
 };
 
 } // namespace detail

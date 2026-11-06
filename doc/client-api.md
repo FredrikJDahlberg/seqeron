@@ -10,6 +10,12 @@ for cross-package access, with no compatibility guarantee. The wire contract is
 
 The sections before [Façades](#façades-app) define the model and the contract; the rest is reference.
 
+**C++ is the hosted stubs.** The direct C++ client is retired and kept on the `cpp-direct-client` branch (tag
+`cpp-direct-client-final`). C++ here means `hosted::Application`, `hosted::Gateway` and `hosted::Consumer`, which keep the
+façades' operation names and listener concepts and differ as
+[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md) §17.5 says. The C++ columns and notes below that name `ClusterStreamClient`, `ClusterStreamSender`, `PortLayout`, `offerFrame`,
+the producer components or `sequencer::client` describe that branch, not this tree.
+
 ## Application types
 
 | application type | role | API |
@@ -17,7 +23,7 @@ The sections before [Façades](#façades-app) define the model and the contract;
 | **Gateway** | Edge producer deployed as an active/hot-standby pair, the active instance designated by the cluster: exchange session, client gateway, feed handler | [`Gateway`](#gateway) |
 | **Replicated service** | One replica per cluster member, deterministic over the stream, publishing from the leader's replica | [`Application`](#application) |
 | **Consumer** | Reads the stream and publishes nothing: audit, risk, downstream feed | [`Consumer`](#consumer) |
-| **Offline reader** | Decodes messages from a recording, outside a live client | `SequencedFrameDecoder` (Java, C#), `unwrapFrame` / `ClusterStreamClient` (C++) |
+| **Offline reader** | Decodes messages from a recording, outside a live client | `SequencedFrameDecoder` (Java, C#), `unwrapFrame` (C++) |
 
 ## Guarantees
 
@@ -90,7 +96,7 @@ The guarantees are conditional on these; spec §16 states them normatively (**A-
 - **No query path.** The cluster holds no application state. Consumers materialize state from the stream
   and rebuild it on restart from a snapshot or the start of its queue.
 - **History is node-local:** from the start, from a snapshot cut, or from a recording position after a gap.
-  There is no random access by `clusterSeqNo`; C++'s `ClusterStreamClient` performs bounded archive scans.
+  There is no random access by `clusterSeqNo`.
 - **Opaque, bounded payloads:** at most 8,874 bytes, never decoded or modified by the cluster.
 - **A topology first.** The cluster sequences nothing until `clusterctl load-topology` has activated its
   groups, and a pair is elected only once its rows are on the log.
@@ -178,6 +184,7 @@ top-level rather than nested, per .NET design guidelines.
 | `tuning` | ✓ | ✓ | `Tuning.DEFAULT` | the policy knobs below, in one value (Java `Tuning` record with `withX` methods, C++ `Tuning` aggregate, C# `Tuning` options class) |
 | `outstandingWork` (C++ `onNotLeader`, C# `OnNotLeader`) | | ✓ | none | Java: tracker; C++, C#: hook. `onNotLeader()` is called when the gate closes |
 | `ipcConnectTimeoutMs` | | ✓ | 500 | wait for IPC ingress to the local member while it leads; empty by default so that `offCluster` can tell it was not set |
+| `idleStrategy` (C# `IdleStrategy`) | ✓ | ✓ | a yielding spin; Aeron's own connect wait | what a call that blocks waits on: a `publish` spinning through an election (up to 10 s) and the cluster connect in `start`. One that also does the caller's periodic work keeps it going meanwhile. Java and C# only |
 
 | `tuning` field | default | meaning |
 |---|---|---|
@@ -288,8 +295,8 @@ round's `SnapshotEnd`. The façade's file header carries the pair's rows, the ac
 highest connection id, replacing the pre-cut messages on restore. See [Snapshots](#snapshots).
 
 **Reference implementations.** `TestGateway` (`seqeron-service/src/test/java/org/limitless/seqeron/tools/TestGateway.java`);
-`seqeron-examples/src/java/example/GatewayApp.java` and `src/cpp/GatewayApp.cpp` (one pair, from
-`seqeron-examples/topology.xml`, the C++ one handed over by `cpp-client-test.sh`);
+`seqeron-examples/src/java/example/GatewayApp.java` (a pair, from
+`seqeron-examples/topology.xml`);
 `seqeron-examples/src/csharp/GatewayApp` (pair from `topology-csharp.xml`, handed over by
 `csharp-client-test.sh`).
 
@@ -342,7 +349,7 @@ outlive the process ([`snapshot.md`](snapshot.md) §4.1).
 | write next record | `onSnapshot(MutableDirectBuffer buffer, int recordIndex)` | `onSnapshot(std::span<std::uint8_t> buffer, std::int32_t recordIndex)` | `OnSnapshot(IMutableDirectBuffer, int)` |
 | read one record | `onRestore(DirectBuffer buffer, int length, int recordIndex, int formatVersion)` | `onRestore(std::span<const std::uint8_t> record, std::int32_t recordIndex, std::uint32_t formatVersion)` | `OnRestore(IDirectBuffer, int length, int recordIndex, int formatVersion)` |
 | record format | `formatVersion()` | `formatVersion()` | `FormatVersion` |
-| formats it reads (default: its own) | `supportsFormatVersion(int formatVersion)` | `supportsFormatVersion(std::uint32_t formatVersion) const` | `SupportsFormatVersion(int formatVersion)` |
+| formats it reads (default: its own) | `supportsFormatVersion(int formatVersion)` | `supportedFormatVersions() const`, a `std::vector<std::uint32_t>` | `SupportsFormatVersion(int formatVersion)` |
 
 1. **At the cut**, before the next message is dispatched, the façade calls `onSnapshot` from `recordIndex` 0
    until it returns 0. Each call encodes one record (at most 65,535 bytes) and returns its length;
@@ -352,10 +359,10 @@ outlive the process ([`snapshot.md`](snapshot.md) §4.1).
    match and fences with `SNAPSHOT_DIVERGED` on a mismatch.
 3. **On start**, the newest confirmed file whose cut the recording holds is restored before any dispatch:
    `onRestore` once per record in write order, `recordIndex` 0 meaning clear state, each with the file's
-   `formatVersion`. A build that changes its format overrides `supportsFormatVersion` to keep reading the
-   formats it replaces ([`snapshot.md`](snapshot.md) §9). Dispatch resumes after the cut; with no such file,
+   `formatVersion`. A build that changes its format overrides `supportsFormatVersion` (C++
+   `supportedFormatVersions`) to keep reading the formats it replaces ([`snapshot.md`](snapshot.md) §9). Dispatch resumes after the cut; with no such file,
    from the start of the queue.
-4. **An unreadable file** (a `formatVersion` that `supportsFormatVersion` refuses) fences with
+4. **An unreadable file** (a `formatVersion` that `supportsFormatVersion` refuses, or C++'s list omits) fences with
    `SNAPSHOT_UNRESTORABLE` (C++/C# `ClusterError::SnapshotUnrestorable`; divergence is
    `ClusterError::SnapshotDiverged`). Corrupt records give way to the older confirmed file the instance keeps,
    or with none to a replay from the start, before `onRestore` sees any of them.
@@ -451,7 +458,7 @@ makes it unique.
 | other system messages | `onSequenced`, `isSystem()` | `onSequenced`, `system` |
 | application messages | `onSequenced` | `onSequenced` |
 
-C++'s two extra callbacks keep the callback set interchangeable with `ClusterStreamClient`; a
+C++'s two extra callbacks were kept interchangeable with the retired `ClusterStreamClient`; a
 `LifecycleEvent` carries the message identity and payload, from which `decodeSystem<ConnectionOpened>(event)`
 reads `connectionData`. A message whose dedicated callback is null (Java, C#) or empty (C++) is delivered to
 `onSequenced` as a system message, so `groupSeqNo` has no holes. `onSequenced` is mandatory.
@@ -475,8 +482,7 @@ fields `header.sessionId`, `header.timestamp` and `header.groupSeqNo` (spec F-6)
 languages.
 
 **Without a receiver.** `SequencedFrameDecoder` (Java, C#) and `unwrapFrame`/`FrameView` (C++) strip the
-envelope from a raw queue message read out of a recording. `ClusterStreamClient` (C++ only,
-`sequencer/client/ClusterStreamClient.hpp`) performs bounded archive scans; it is not a live path. A caller
+envelope from a raw queue message read out of a recording. A caller
 that keeps the archive session `connectLocalArchive` or `connectToArchiveWithClusterStream` returned calls
 `pollArchiveSession` every duty cycle, because the archive closes a session whose pings go unread.
 
@@ -487,8 +493,8 @@ Aeron's layout: a component's server at the package root, its client in `.client
 
 | package | tier | contents |
 |---|---|---|
-| `protocol` | client | `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters`, `Publish` (C++: `SequencedFrame.hpp`, `PortLayout.hpp`, `ReplayProtocol.hpp`, `SeqeronCounters.hpp`, `Publish.hpp`) |
-| `sequencer.client` | client | internal: the [producer components](#producer-components) (C++ also `ClusterStreamClient`) |
+| `protocol` | client | `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters`, `Publish` (C++: `SequencedFrame.hpp`, `SeqeronCounters.hpp`, `ProxyProtocol.hpp`, `Publish.hpp`) |
+| `sequencer.client` | client | internal: the [producer components](#producer-components) |
 | `replayer.client` | client | `ReplayerStreamReceiver`, its callback types (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), `SnapshotRestoreHandler`, `SnapshotStore`; `SequencedEvent` in Java and C# (C++: `protocol`, beside `unwrapFrame` and `decodeSystem`/`decodeSequenced`) |
 | `app` | client | the façades (`Gateway`, `Application`, `Consumer`) and their components |
 | `util` | client | support code |

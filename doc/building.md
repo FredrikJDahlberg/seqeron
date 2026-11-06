@@ -201,18 +201,17 @@ Docker VM, check faulteron out beside this repository and run them after `./grad
 
 ## Client and operator scripts
 
-The harnesses for the C# and C++ clients, and the operator-facing local cluster, are still bash, under
+The harnesses for the C# client, and the operator-facing local cluster, are still bash, under
 `seqeron-service/src/test/scripts/`. Each brings a cluster up and tears it down again; run them from the repository
 root, with `./gradlew uberJar` done first. The two C# harnesses want the .NET SDK beside the jar:
 `csharp-client-test.sh` on Linux, and `csharp-windows-test.sh` on Windows, in Git Bash, with its member in a WSL1
-distribution that has a JDK 21. `cpp-client-test.sh` drives the C++ client and wants CMake.
+distribution that has a JDK 21.
 
 | Script | Purpose |
 |--------|---------|
 | `start-three-node-cluster.sh` | Start a local 3-node Raft cluster with a per-node `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_NO_CONSUMERS=1` leaves out the replicas, for a caller that runs its own |
 | `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `groupSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, a `GatewayApp` pair handed over when its active instance is killed, and a `SnapshotApp` restart that restores from a round it confirmed; last, a member restarted at a cut, where a cold start with no snapshot file must fail from its poll. Rerun on every Aeron upgrade (spec V-1); CI runs it in `chaos.yml` on every pull request. Needs the .NET SDK (`DOTNET` names one off the `PATH`) |
 | `csharp-windows-test.sh` | The C# client on Windows, where it is deployed, against a member on Linux, on one host: the member in WSL1, which shares Windows' network stack, and on Windows a gateway host with the C# probe and examples beside it. UDP ingress through `PendingSends`, a cold start through the gateway host, and the C# gateway pair handed over. One member, because three cannot hold Raft's heartbeats under WSL1's system-call translation; the leader kill is `csharp-client-test.sh`'s. Runs in Git Bash; CI runs it in `windows.yml` |
-| `cpp-client-test.sh` | The C++ client tier against a live 3-node cluster: `cluster_probe` runs the same phases as the C# probe — UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `groupSeqNo` 1 — then the C++ examples, built as an outside consumer builds them: `follow_stream`, `colocated_app`, a `gateway_app` pair handed over when its active instance is killed, and a `snapshot_app` restart that restores from a round it confirmed; last, a member restarted at a cut, whose recording `cluster_probe scan` replays with `ClusterStreamClient`, and where a cold start with no snapshot file must fail from its poll. Builds the probe and the examples in one tree, so Aeron once: `SEQERON_EXAMPLES_BUILD` (default `seqeron-examples/cmake-build-e2e`), configured with `SEQERON_BUILD_TESTS=ON`, and as Release only if it does not exist; CI runs it in `chaos.yml` on every pull request |
 
 ## Examples
 

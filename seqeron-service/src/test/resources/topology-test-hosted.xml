@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The hosted-façade prototype's topology (doc/hosted-facade-draft.md): the TestApplication row, taking part in
+    The hosted-façade prototype's topology (doc/hosted-facade.md): the TestApplication row, taking part in
     snapshot rounds every 2 s, and no gateway. HostedSnapshotTest loads it.
 -->
 <topology xmlns="http://limitless.org/seqeron/topology/1">

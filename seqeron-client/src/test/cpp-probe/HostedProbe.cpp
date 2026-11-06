@@ -1,16 +1,21 @@
-// The C++ twin of HostedTestApplicationClient (doc/hosted-facade-draft.md §17): a hosted::Application stub holding
+// The C++ twin of HostedTestApplicationClient (doc/seqeron-protocol-spec.md §17): a hosted::Application stub holding
 // the probe's state, a count of the markers sequenced under its source and a digest of their clusterSeqNos, for the
 // prototype host to snapshot. HostedCppStubTest drives it against a cluster and the host; nothing else runs it.
 //
 //   hosted_probe --aeron-dir D [--source-id 16] [--interval-ms 100] [--flood 1] [--max-markers N]
 //                [--host-timeout-ms 3000] [--host-name hosted] [--check-refusals 1] [--stall-cut-no N] [--slow-cut-ms
 //                N]
-//                [--corrupt-record 1] [--check-groups 1] [--reply-every N]
+//                [--corrupt-record 1] [--check-groups 1] [--reply-every N] [--format-version 1]
+//                [--supported-formats 1,2] [--no-snapshots 1] [--abandon-cuts 1] [--records N --record-ms M]
 //
 // Exits 70 when fenced or the host is lost, 78 when the attach is refused and 3 when it times out, as the Java client.
+// SIGUSR1 detaches it (H-9) and it exits 0.
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -50,6 +55,8 @@ constexpr std::int64_t OWN_TAG = 1LL << 40;
 constexpr int SALT_SHIFT = 24;
 constexpr std::int64_t INDEX_MASK = (1LL << SALT_SHIFT) - 1;
 
+std::atomic<bool> g_detach{ false };
+
 std::int64_t nowNs()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -71,12 +78,19 @@ class Probe final : public app::SnapshotListener
 {
   public:
     Probe(const std::int32_t sourceId, const std::int64_t stallCutNo, const std::int64_t slowCutMs,
-          const bool corruptRecord, const std::int64_t replyEvery) :
+          const bool corruptRecord, const std::int64_t replyEvery, const std::uint32_t formatVersion,
+          std::vector<std::uint32_t> supportedFormats, const bool abandonCuts, const std::int64_t records,
+          const std::int64_t recordMs) :
       m_sourceId{ sourceId },
       m_replyEvery{ replyEvery },
       m_stallCutNo{ stallCutNo },
       m_slowCutMs{ slowCutMs },
-      m_corruptRecord{ corruptRecord }
+      m_corruptRecord{ corruptRecord },
+      m_formatVersion{ formatVersion },
+      m_supportedFormats{ std::move(supportedFormats) },
+      m_abandonCuts{ abandonCuts },
+      m_records{ records },
+      m_recordMs{ recordMs }
     {
         m_salt = ((nowNs() / 1'000'000'000LL) & 0xFFFF) << SALT_SHIFT;
         const std::array<std::uint16_t, 4> header{ 8, PROBE_MARKER_TEMPLATE_ID, PROBE_SCHEMA_ID, 0 };
@@ -86,6 +100,15 @@ class Probe final : public app::SnapshotListener
     void onLeadershipChanged(const bool leading)
     {
         log(leading ? "now leading - submitting markers" : "not leading - silent");
+    }
+
+    void onClusterHeartbeat(const std::int64_t clusterTimeNs, std::int64_t)
+    {
+        if (m_clusterTimeNs == 0)
+        {
+            log("cluster time %lld", static_cast<long long>(clusterTimeNs));
+        }
+        m_clusterTimeNs = clusterTimeNs;
     }
 
     void onGroupsResolved(const app::GroupDirectory& directory)
@@ -170,15 +193,15 @@ class Probe final : public app::SnapshotListener
         m_published++;
     }
 
-    void state(const std::int64_t declined) const
+    void state(const std::int64_t declined, const std::size_t retained) const
     {
         log("state: %llu marker(s), digest %016llx, published %lld, declined %lld, own %lld, replied %lld, "
-            "replies %lld, bad %lld, dropped %lld",
+            "replies %lld, bad %lld, dropped %lld, retained %zu",
             static_cast<unsigned long long>(m_markers), static_cast<unsigned long long>(m_digest),
             static_cast<long long>(m_published), static_cast<long long>(declined),
             static_cast<long long>(m_ownSequenced), static_cast<long long>(m_replied),
             static_cast<long long>(m_repliesSequenced), static_cast<long long>(m_badReplies),
-            static_cast<long long>(m_replyDropped));
+            static_cast<long long>(m_replyDropped), retained);
     }
 
     // Answers the sequenced markers waiting for a reply, each with the ReplyAddress it was sequenced under.
@@ -223,14 +246,23 @@ class Probe final : public app::SnapshotListener
     // One record: the marker count, then the digest (TestApplication's, byte for byte).
     [[nodiscard]] std::uint32_t formatVersion() const override
     {
-        return 1;
+        return m_formatVersion;
+    }
+
+    [[nodiscard]] std::vector<std::uint32_t> supportedFormatVersions() const override
+    {
+        return m_supportedFormats.empty() ? app::SnapshotListener::supportedFormatVersions() : m_supportedFormats;
     }
 
     std::int32_t onSnapshot(const std::span<std::uint8_t> buffer, const std::int32_t recordIndex) override
     {
+        if (m_abandonCuts)
+        {
+            return -1;
+        }
         if (recordIndex != 0)
         {
-            return 0;
+            return recordIndex < m_records ? fillerRecord(buffer) : 0;
         }
         m_cuts++;
         if (m_cuts == m_stallCutNo)
@@ -239,6 +271,10 @@ class Probe final : public app::SnapshotListener
             std::this_thread::sleep_for(std::chrono::hours(24));
         }
         const std::int64_t slowEndNs = nowNs() + m_slowCutMs * 1'000'000LL;
+        if (m_slowCutMs > 0)
+        {
+            log("IN SLOW CUT round %lld", static_cast<long long>(m_cuts));
+        }
         while (nowNs() < slowEndNs)
         {
             m_keepAlive();
@@ -247,6 +283,14 @@ class Probe final : public app::SnapshotListener
         const std::uint64_t digest = m_corruptRecord ? m_digest + 1 : m_digest;
         std::memcpy(buffer.data(), &m_markers, sizeof m_markers);
         std::memcpy(buffer.data() + sizeof m_markers, &digest, sizeof digest);
+        return 2 * sizeof(std::uint64_t);
+    }
+
+    // A record past the first, after --record-ms with no keepAlive(): the stub must keep the host through the cut.
+    std::int32_t fillerRecord(const std::span<std::uint8_t> buffer) const
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(m_recordMs));
+        std::memset(buffer.data(), 0, 2 * sizeof(std::uint64_t));
         return 2 * sizeof(std::uint64_t);
     }
 
@@ -289,8 +333,14 @@ class Probe final : public app::SnapshotListener
     std::int64_t m_stallCutNo;
     std::int64_t m_slowCutMs;
     bool m_corruptRecord;
+    std::uint32_t m_formatVersion;
+    std::vector<std::uint32_t> m_supportedFormats;
+    bool m_abandonCuts;
+    std::int64_t m_records;
+    std::int64_t m_recordMs;
     std::function<void()> m_keepAlive = [] {};
     std::int64_t m_cuts = 0;
+    std::int64_t m_clusterTimeNs = 0;
     std::int64_t m_salt = 0;
     std::int64_t m_lastOwn = 0;
     std::int64_t m_ownSequenced = 0;
@@ -325,6 +375,20 @@ class Options
         return it == m_values.end() ? fallback : it->second;
     }
 
+    // A comma-separated list, empty when absent.
+    [[nodiscard]] std::vector<std::uint32_t> integers(const std::string& name) const
+    {
+        std::vector<std::uint32_t> values;
+        const std::string list = string(name, "");
+        for (std::size_t start = 0; start < list.size();)
+        {
+            const std::size_t end = std::min(list.find(',', start), list.size());
+            values.push_back(static_cast<std::uint32_t>(std::stoul(list.substr(start, end - start))));
+            start = end + 1;
+        }
+        return values;
+    }
+
   private:
     std::map<std::string, std::string> m_values;
 };
@@ -346,22 +410,32 @@ int main(const int argc, char** argv)
     context.aeronDir(options.string("aeron-dir", ""));
     const auto aeron = aeron::Aeron::connect(context);
 
-    Probe probe{ sourceId, options.integer("stall-cut-no", 0), options.integer("slow-cut-ms", 0),
-                 options.integer("corrupt-record", 0) != 0, options.integer("reply-every", 0) };
+    Probe probe{ sourceId,
+                 options.integer("stall-cut-no", 0),
+                 options.integer("slow-cut-ms", 0),
+                 options.integer("corrupt-record", 0) != 0,
+                 options.integer("reply-every", 0),
+                 static_cast<std::uint32_t>(options.integer("format-version", 1)),
+                 options.integers("supported-formats"),
+                 options.integer("abandon-cuts", 0) != 0,
+                 options.integer("records", 1),
+                 options.integer("record-ms", 0) };
+    const std::int64_t hostTimeoutMs = options.integer("host-timeout-ms", 3000);
     hosted::Application<Probe> application{
         { .sourceId = sourceId,
-          .snapshots = &probe,
-          .hostTimeoutMs = options.integer("host-timeout-ms", 3000),
+          .snapshots = options.integer("no-snapshots", 0) != 0 ? nullptr : &probe,
+          .hostTimeoutMs = hostTimeoutMs,
           .hostName = options.string("host-name", org::limitless::seqeron::protocol::PROXY_DEFAULT_HOST_NAME) },
         probe
     };
+    std::signal(SIGUSR1, [](int) { g_detach = true; });
     application.start(aeron);
     probe.keepAliveWith([&application] { application.keepAlive(); });
 
     auto idle = util::resolveIdleStrategy();
     std::int64_t nextMarkerNs = 0;
     std::int64_t nextStateNs = 0;
-    while (application.failure() == hosted::Failure::None && !application.fenced())
+    while (application.failure() == hosted::Failure::None && !application.fenced() && !g_detach)
     {
         int work = application.doWork();
         const std::int64_t now = nowNs();
@@ -403,12 +477,29 @@ int main(const int argc, char** argv)
         }
         if (now >= nextStateNs)
         {
-            probe.state(application.windowDeclines());
+            probe.state(application.windowDeclines(), application.retainedCount());
             nextStateNs = now + 2'000'000'000LL;
         }
         idle.idle(work);
     }
+    // The fenced host exits; the stub must not then call it lost.
+    for (const std::int64_t end = nowNs() + (hostTimeoutMs + 1000) * 1'000'000LL;
+         application.fenced() && nowNs() < end;)
+    {
+        application.doWork();
+        if (application.failure() == hosted::Failure::HostLost)
+        {
+            log("HOST_LOST AFTER FENCE");
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     application.close();
+    if (g_detach)
+    {
+        log("DETACHED");
+        return 0;
+    }
     switch (application.failure())
     {
         case hosted::Failure::AttachTimedOut:

@@ -110,6 +110,21 @@ class MetricsExporterTest {
     }
 
     @Test
+    @DisplayName("a host's export of its hosted client's lag carries the client label")
+    void hostedLagIsLabelledByClient() {
+        counters.newCounter("seqeron.hosted.lag member=1 client=7", SeqeronCounters.HOSTED_LAG_TYPE_ID,
+                            keyBuffer -> {
+                                keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, MEMBER);
+                                keyBuffer.putInt(SeqeronCounters.KEY_CLIENT_ID_OFFSET, 7);
+                            })
+            .set(4096);
+
+        assertTrue(new MetricsExporter(counters, MEMBER)
+                       .renderMetrics()
+                       .contains("seqeron_hosted_lag_bytes{member=\"1\",client=\"7\"} 4096"));
+    }
+
+    @Test
     @DisplayName("Aeron Cluster's counters carry the exporter's member id, since their key holds the cluster id")
     void clusterCountersAreLabelledWithTheExportersMember() {
         // Aeron's key: the cluster id where seqeron's carry a member id.

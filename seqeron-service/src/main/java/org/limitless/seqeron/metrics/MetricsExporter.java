@@ -110,6 +110,10 @@ public final class MetricsExporter {
                                + "up, else 0. It is holding, which is correct — but it is not serving, and this is the "
                                + "only signal that says so.",
                            "gauge")),
+        Map.entry(SeqeronCounters.HOSTED_LAG_TYPE_ID,
+                  new MetricMeta("seqeron_hosted_lag_bytes",
+                                 "Bytes of the queue the host has dispatched and its hosted client not yet applied.",
+                                 "gauge")),
         Map.entry(SeqeronCounters.APP_SNAPSHOT_ROUND_TYPE_ID,
                   new MetricMeta("seqeron_app_snapshot_round",
                                  "The last snapshot round this client confirmed. A client whose round lags the "

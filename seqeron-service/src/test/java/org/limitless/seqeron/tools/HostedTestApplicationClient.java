@@ -13,6 +13,7 @@ import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import org.agrona.DirectBuffer;
@@ -38,7 +39,7 @@ import org.limitless.seqeron.sbe.hosted.SnapshotRecordEncoder;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
 
 /**
- * The client of the hosted-façade prototype (doc/hosted-facade-draft.md): {@code TestApplication}'s state and snapshot
+ * The client of the hosted-façade prototype (doc/hosted-facade.md): {@code TestApplication}'s state and snapshot
  * records, byte for byte, behind {@link ProxyProtocol}'s streams instead of an {@code Application}. Its state is the count
  * of markers sequenced under its {@code sourceId} and a digest of their {@code clusterSeqNo}s, so a direct replica
  * comparing a round against the one this client wrote fences if the two differ (spec A-7).
@@ -47,10 +48,14 @@ import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
  * {@code probe.sourceId} (16), {@code probe.intervalMs} (100), {@code client.stallCutNo} (0: stall in that cut, after
  * printing {@code IN CUT}, until killed), {@code client.slowCutMs} (0: spend that long in every cut, heartbeating,
  * before the record), {@code client.staleEpoch} (once leading, send one marker under the previous gate epoch first),
- * {@code client.ghost} (send one marker from a second publication on stream 304, which the host does not read: H-15), {@code client.corruptRecord} (write a digest one off in every snapshot record), {@code
+ * {@code client.ghost} (send one marker from a second publication on stream 304, which the host does not read: H-15), {@code client.corruptRecord} (write a digest one off in every snapshot record), {@code client.abandonCuts} (answer
+ * every cut with {@code SnapshotEnd(-1)} and no record), {@code client.formatVersion} (1: the format it writes), {@code
+ * client.supportedFormats} (the formats it reads, comma-separated; its own by default), {@code client.noSnapshots} (attach
+ * as a client with no snapshot listener, reading no format, and log any cut it is sent), {@code
  * client.hostTimeoutMs} (3000), {@code client.flood} (publish as fast as the window allows), {@code client.maxMarkers} (0: no limit; else
  * offer that many and go on counting), {@code
- * client.ignoreWindow} (a control: do not keep H-5's window, so the host must close the attachment).
+ * client.ignoreWindow} (a control: do not keep H-5's window, so the host must close the attachment), {@code
+ * client.badSeq} (0: the sixth marker's {@code commandSeq} is the next one plus this, which the host must fence: H-17).
  */
 public final class HostedTestApplicationClient {
     private static final int EXIT_FENCED = 70;
@@ -71,7 +76,13 @@ public final class HostedTestApplicationClient {
     private final long maxMarkers = Long.getLong("client.maxMarkers", 0);
     private final boolean flood = Boolean.getBoolean("client.flood");
     private final boolean ignoreWindow = Boolean.getBoolean("client.ignoreWindow");
+    private final long badSeq = Long.getLong("client.badSeq", 0);
     private final boolean corruptRecord = Boolean.getBoolean("client.corruptRecord");
+    private final boolean abandonCuts = Boolean.getBoolean("client.abandonCuts");
+    private final boolean noSnapshots = Boolean.getBoolean("client.noSnapshots");
+    private final int formatVersion = noSnapshots ? 0 : Integer.getInteger("client.formatVersion", 1);
+    private final int[] supportedFormats = noSnapshots ? new int[0] : Arrays.stream(
+        System.getProperty("client.supportedFormats", "" + formatVersion).split(",")).mapToInt(Integer::parseInt).toArray();
     private final long hostTimeoutNs = TimeUnit.MILLISECONDS.toNanos(Long.getLong("client.hostTimeoutMs", 3000));
     private final UnsafeBuffer out = new UnsafeBuffer(new byte[64 * 1024]);
     private final ClusterProbe.MarkerEncoder marker = new ClusterProbe.MarkerEncoder();
@@ -106,6 +117,7 @@ public final class HostedTestApplicationClient {
     private int retiredCounterId;
     private long commandWindow;
     private long offeredBytes;
+    private long nextCommandSeq = 1;
     private long markers;
     private long digest;
     private long lastAppliedSeqNo;
@@ -141,7 +153,7 @@ public final class HostedTestApplicationClient {
                                                               ProxyProtocol.EVENTS_STREAM);
             log("attached, clientId=%d", clientId);
             if (ghost) {
-                publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).connectionId(0).groupMask(0)
+                publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).commandSeq(0).connectionId(0).groupMask(0)
                     .payloadId(ClusterProbe.PROBE_PAYLOAD_ID);
                 final int length = marker.encodePayload(GHOST_MARKER, ClusterProbe.NO_FILLER);
                 publishOut.putBody(marker.payload(), 0, length);
@@ -191,7 +203,7 @@ public final class HostedTestApplicationClient {
             replies.poll(onReply, 16);
             final long now = System.nanoTime();
             if (now >= nextAttachNs) {
-                attachOut.wrapAndApplyHeader(out, 0, headerOut)
+                final AttachEncoder.SupportedFormatsEncoder formats = attachOut.wrapAndApplyHeader(out, 0, headerOut)
                     .clientId(clientId)
                     .requestId(requestId)
                     .kind(Kind.APPLICATION)
@@ -201,10 +213,11 @@ public final class HostedTestApplicationClient {
                     .heartbeatRegistrationId(heartbeat.registrationId())
                     .appliedCounterId(applied.id())
                     .appliedRegistrationId(applied.registrationId())
-                    .formatVersion(1)
-                    .supportedFormatsCount(1)
-                    .next()
-                    .formatVersion(1);
+                    .formatVersion(formatVersion)
+                    .supportedFormatsCount(supportedFormats.length);
+                for (final int supported : supportedFormats) {
+                    formats.next().formatVersion(supported);
+                }
                 final byte[] hostName = System.getProperty("client.hostName", ProxyProtocol.DEFAULT_HOST_NAME).getBytes(StandardCharsets.UTF_8);
                 final byte[] aeronVersion = AeronVersion.VERSION.getBytes(StandardCharsets.UTF_8);
                 attachOut.putHostName(hostName, 0, hostName.length).putAeronVersion(aeronVersion, 0, aeronVersion.length);
@@ -330,6 +343,15 @@ public final class HostedTestApplicationClient {
     /** One record: the marker count, then the digest. The state is as of the last payload applied. */
     private void onCut(final long cutNo) {
         cuts++;
+        if (noSnapshots) {
+            log("CUT WITHOUT A LISTENER %d", cutNo);
+        }
+        if (abandonCuts || noSnapshots) {
+            endOut.wrapAndApplyHeader(out, 0, headerOut).roundId(cutNo).recordCount(-1);
+            send(commands, ProxyProtocol.HEADER + endOut.encodedLength());
+            log("abandoned cut %d", cutNo);
+            return;
+        }
         if (cuts == stallCutNo) {
             log("IN CUT round %d", cutNo);
             try {
@@ -339,6 +361,9 @@ public final class HostedTestApplicationClient {
             }
         }
         final long slowEndNs = System.nanoTime() + slowCutNs;
+        if (slowCutNs > 0) {
+            log("IN SLOW CUT round %d", cutNo);
+        }
         while (System.nanoTime() < slowEndNs) {
             ProxyProtocol.beat(heartbeat);
             LockSupport.parkNanos(CUT_BEAT_NS);
@@ -355,7 +380,7 @@ public final class HostedTestApplicationClient {
     private void publishStaleMarker() {
         staleSent = true;
         final int length = marker.encodePayload(STALE_MARKER, ClusterProbe.NO_FILLER);
-        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch - 1).connectionId(0).groupMask(0)
+        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch - 1).commandSeq(nextCommandSeq++).connectionId(0).groupMask(0)
             .payloadId(ClusterProbe.PROBE_PAYLOAD_ID).putBody(marker.payload(), 0, length);
         send(commands, ProxyProtocol.HEADER + publishOut.encodedLength());
         log("sent one marker under stale gate epoch %d", epoch - 1);
@@ -372,13 +397,15 @@ public final class HostedTestApplicationClient {
             declined++;
             return false;
         }
-        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).connectionId(0).groupMask(0)
-            .payloadId(ClusterProbe.PROBE_PAYLOAD_ID).putBody(marker.payload(), 0, length);
+        final long commandSeq = badSeq != 0 && markerSeqNo == 5 ? nextCommandSeq + badSeq : nextCommandSeq;
+        publishOut.wrapAndApplyHeader(out, 0, headerOut).epoch(epoch).commandSeq(commandSeq).connectionId(0)
+            .groupMask(0).payloadId(ClusterProbe.PROBE_PAYLOAD_ID).putBody(marker.payload(), 0, length);
         if (commands.offer(out, 0, messageLength) < 0) {
             declined++;
             return false;
         }
         markerSeqNo++;
+        nextCommandSeq++;
         offeredBytes += messageLength;
         return true;
     }

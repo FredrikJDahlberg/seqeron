@@ -61,12 +61,15 @@ inline constexpr std::int32_t REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;
 inline constexpr std::int32_t REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
 
 // ── Co-located application replicas (5200-5299) ──────────────────────────────────────────────
-// Core reserves 5200, 5298 and 5299; a consumer allocates its own in 5201-5297 (doc/ops.md, "Counter type ids").
+// Core reserves 5200 and 5297-5299; a consumer allocates its own in 5201-5296 (doc/ops.md, "Counter type ids").
 inline constexpr std::int32_t APP_TYPE_ID_MIN = 5200;
 inline constexpr std::int32_t APP_TYPE_ID_MAX = 5299;
 
 // 1 while this replica's recovery has been reported unconvergent (see ReplayerRecovery::checkRecoveryProgress), else 0.
 inline constexpr std::int32_t APP_RECOVERY_STALLED_TYPE_ID = 5200;
+
+// How far a hosted client trails its host: the host's last dispatched position less the client's applied one.
+inline constexpr std::int32_t HOSTED_LAG_TYPE_ID = 5297;
 
 // The last snapshot round a participating client confirmed (doc/snapshot.md §4), 0 for none yet.
 inline constexpr std::int32_t APP_SNAPSHOT_ROUND_TYPE_ID = 5298;

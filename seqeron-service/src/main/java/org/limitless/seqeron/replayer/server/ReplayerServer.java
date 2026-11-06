@@ -9,6 +9,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Properties;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -20,6 +21,7 @@ import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.proxy.Hosts;
 import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
@@ -54,6 +56,10 @@ import org.limitless.seqeron.util.Logger;
  *                                (doc/ops.md, "A node that terminates itself")
  *   replayer.host              — this host's name as the members reach it; default localhost
  *   replayer.baseDir           — data directory root; default {tmpdir}/seqeron-seq
+ *   proxy.hosts                — hosted façades this process runs beside the Replayer, as ClientProxy's
+ *                                proxy.hosts, with proxy.memberId, proxy.aeronDir and proxy.egressHost defaulting
+ *                                to this host's and proxy.offCluster to true; a host that throws stops this
+ *                                process as a fatal duty cycle does
  *   aeron.threading.mode       — the driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
  *   aeron.ipc.term.buffer.length — the driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
  *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
@@ -140,14 +146,23 @@ public final class ReplayerServer {
     /** Gateway host only: on a cluster member the Replayer runs inside {@code SequencerServer}. */
     public static void main(final String[] args) {
         final GatewayHostConfig config = GatewayHostConfig.fromProperties();
+        final Hosts hosts = System.getProperty("proxy.hosts") == null ? null : Hosts.configure(hostProperties(config));
         final AtomicBoolean dutyCycleFatal = new AtomicBoolean();
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
-        final ReplayerServer server = launchGatewayHost(config, () -> {
+        final Runnable fatal = () -> {
             dutyCycleFatal.set(true);
             barrier.signalAll();
-        });
+        };
+        final ReplayerServer server = launchGatewayHost(config, fatal);
+        if (hosts != null) {
+            hosts.start(fatal);
+        }
 
         barrier.await();
+        // The hosts first, so their clients see them go rather than the driver under them.
+        if (hosts != null) {
+            hosts.close();
+        }
         final boolean stopped = server.stop();
         if (stopped) {
             Logger.info(Logger.CoreComponent.ReplayerServer, config.nodeId(), "Shutdown complete");
@@ -160,6 +175,20 @@ public final class ReplayerServer {
         if (!stopped) {
             System.exit(NodeDriver.EXIT_SHUTDOWN_TIMEOUT);
         }
+    }
+
+    /**
+     * The hosted façades' {@code proxy.*} properties on this gateway host: its node id, Aeron directory and name unless
+     * set, and an {@code Application} off the cluster (doc/hosted-facade.md §2, question 4).
+     */
+    static Properties hostProperties(final GatewayHostConfig config) {
+        final Properties properties = new Properties();
+        properties.putAll(System.getProperties());
+        properties.putIfAbsent("proxy.memberId", Integer.toString(config.nodeId()));
+        properties.putIfAbsent("proxy.aeronDir", config.aeronDir());
+        properties.putIfAbsent("proxy.egressHost", config.host());
+        properties.putIfAbsent("proxy.offCluster", "true");
+        return properties;
     }
 
     /**

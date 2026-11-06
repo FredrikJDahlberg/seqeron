@@ -23,14 +23,10 @@ include("${CMAKE_CURRENT_LIST_DIR}/seqeronTargets.cmake")
 set_property(TARGET seqeron::seqeron_core PROPERTY
     INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@/seqeron-sbe")
 
-# The four Aeron targets the headers need: Aeron.h and the C client behind it (aeronc.h), then
-# client/archive/AeronArchive.h and the C archive client behind that, which ClusterStreamClient.hpp
-# uses to read the queue's recording back.
+# The two Aeron targets the headers need: Aeron.h and the C client behind it (aeronc.h).
 set_property(TARGET seqeron::seqeron_core APPEND PROPERTY INTERFACE_LINK_LIBRARIES
     aeron::aeron_client_wrapper
     aeron::aeron
-    aeron::aeron_archive_wrapper
-    aeron::aeron_archive_c_client
 )
 
 check_required_components(seqeron)

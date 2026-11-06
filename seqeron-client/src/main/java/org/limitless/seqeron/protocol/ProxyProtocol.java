@@ -4,7 +4,7 @@ import io.aeron.Counter;
 import org.limitless.seqeron.sbe.hosted.MessageHeaderDecoder;
 
 /**
- * What a ClientProxy and its client share (doc/hosted-facade-draft.md §17.2, §17.7): schema 218 on four {@code
+ * What a ClientProxy and its client share (doc/seqeron-protocol-spec.md §17.2, §17.7): schema 218 on four {@code
  * aeron:ipc} streams, and the heartbeat both write. The counters' type ids are in {@link SeqeronCounters}. The C++
  * twin is {@code protocol/ProxyProtocol.hpp}, which leaves the channels to each end.
  */
@@ -13,7 +13,7 @@ public final class ProxyProtocol {
     public static final String DEFAULT_HOST_NAME = "hosted";
 
     /** {@code Attach.protocolVersion}. */
-    public static final int PROTOCOL_VERSION = 1;
+    public static final int PROTOCOL_VERSION = 2;
 
     /** The schema id of the {@code MessageHeader} on all four streams. */
     public static final int SCHEMA_ID = 218;
