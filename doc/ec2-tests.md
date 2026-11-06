@@ -61,21 +61,32 @@ declines; the host's `queue:` line (placed, `epochDrops`, `headDeclines`, `peakQ
 the stub's retained count; CPU per process (`pidstat 1`), `mpstat -P ALL` and context switches; the GC and safepoint logs of the
 host and the members (`-Xlog:gc,safepoint`, `-Xms` equal to `-Xmx`, `-XX:+AlwaysPreTouch`, the default collector first, and
 `-XX:+UseZGC` on the host only if its pauses appear in the p99.9); `lscpu`, `uname -a`, the git sha, the Aeron version and the instance
-and image ids. **The stub's allocation in the measured window** is counted by hooking `operator new` and `malloc` in the bench: the
-host's is shown to be zero (`hosted-facade.md` §3.5), the stub's is not.
+and image ids. **The stub's allocation in the measured window** is counted in the bench, from the first published marker to the last: the
+host's is shown to be zero (`hosted-facade.md` §3.5), the stub's is not. `hosted_hop_bench` hooks `operator new`; hooking `malloc` as well is not done.
 
-**What exists and what changes.** `hop-matrix.sh` and `node.sh` launch `hop_bench` and a test-class host that this tree no
-longer has. `hop_bench` lives on the tag, in its `cpp-bench` directory, and its hosted arm drives the prototype wire at
-protocol version 1, which the host now fences. Before Test 1 runs:
+**Tooling.** Test 1a runs on what exists. The scripts are in `seqeron-service/src/test/scripts/multihost`.
 
-1. `hosted_hop_bench`: the open-loop generator over the real `hosted::Application`, writing the histogram and counting allocations.
-2. The `direct` arm: `hop_bench` built from the tag against the same Aeron version, in a separate checkout.
-3. `hop-matrix.sh` and `node.sh` start `ClientProxy` with `proxy.*` properties, as the runner of the tag did, take the arms,
-   sets and modes above, and write a manifest per run.
-4. An analysis script: per arm and rate, the percentiles of every run and their range, the hosted-minus-direct difference against the
-   rule, and a pass or fail line.
+- `hosted_hop_bench` (`seqeron-client/src/test/cpp-bench/HostedHopBench.cpp`, CMake target of the same name): the open-loop generator over the
+  real `hosted::Application`. `--payload` sets the marker's length (18 to 8875 B) and `--warmup-ms` the discarded warm-up (default 20% of
+  the run). It prints the whole loop's p50, p99, p99.9 and max, the declines, the stub's window declines and retained count, and the
+  allocations.
+- The `direct` arm is `hop_bench` of the tag `cpp-direct-client-final`, built in a separate checkout against the same Aeron version
+  (§4); `MULTIHOST_DIRECT_BENCH` names it. It publishes 18 B only.
+- `hop-matrix.sh` and `node.sh` start `ClientProxy` with `proxy.*` properties and run the arms and modes above, one fresh cluster per
+  rate, interleaved within it. `HOP_RATES`, `HOP_REPEATS`, `HOP_SECONDS`, `HOP_MODES` and `MULTIHOST_PAYLOAD` select the set. Both
+  benches drop the first 20% of a run, so `HOP_SECONDS=150` is 30 s of warm-up and 120 s measured.
+- `hop-analyze.py <results>…` applies the rule's latency part: per rate and hosted mode, the hosted median of each percentile
+  must lie within the direct runs' range plus the margin (`--margins`, `--min-runs`), and no run may fail or lose a marker.
 
-Steps 1 and 2 are validated on localhost first (`MULTIHOST_MEMBERS=localhost,localhost,localhost`): the direct arm and the
+The rate sweep and the idle-strategy set of Test 1b run with these settings. Not built yet:
+
+- the payload sweep: `hop_bench` needs a `--payload` option and a `payload=` field in its line, and the matrix a payload loop;
+- the knee ramp, and the soak's histogram, since each bench keeps every sample;
+- the gate-edge set: a flood mode that counts offered, sequenced and lost commands in both benches, and a driver that pauses the leader;
+- a manifest per run and the recordings under "What a run records" other than the bench's own line;
+- the rule's other criteria in `hop-analyze.py` (commands lost at a gate edge, the host's cores), and a randomised run order.
+
+The tooling is validated on localhost first (`MULTIHOST_MEMBERS=localhost,localhost,localhost`): the direct arm and the
 hosted arm must reproduce `hosted-facade.md` §3.6 within its spread before an instance is launched. A one-instance variant
 of the matrix (all members, the host and the client on one instance, cores apart) takes the network out; a difference from the
 three-instance run is the network.
@@ -175,8 +186,10 @@ sudo apt-get install -y openjdk-21-jdk-headless cmake g++ git perl docker.io
 git clone <this repository> ~/seqeron && cd ~/seqeron && git checkout <branch>
 ./gradlew uberJar :seqeron-service:compileTestJava
 cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
-cmake --build cmake-build-release --target hosted_hop_bench   # to be built (Test 1)
-git worktree add ../seqeron-direct cpp-direct-client-final    # the direct arm: build its hop_bench there
+cmake --build cmake-build-release --target hosted_hop_bench
+git worktree add ../seqeron-direct cpp-direct-client-final    # the direct arm: hop_bench of the tag
+cmake -S ../seqeron-direct -B ../seqeron-direct/cmake-build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build ../seqeron-direct/cmake-build-release --target hop_bench
 ```
 
 Tuning, all of it applied at boot so the image carries it:
@@ -205,9 +218,11 @@ cd ~/seqeron/seqeron-service/src/test/scripts/multihost
 export MULTIHOST_MEMBERS=10.0.0.11,10.0.0.12,10.0.0.13   # private addresses, member-id order
 export MULTIHOST_CLIENT=10.0.0.14                         # this host
 export MULTIHOST_IDLE=busyspin MULTIHOST_MEMBER_CPUS=2-11 MULTIHOST_HOST_CPUS=12-13 MULTIHOST_BENCH_CPUS=14-15
+export MULTIHOST_DIRECT_BENCH=$HOME/seqeron-direct/cmake-build-release/hop_bench
 
 ./cluster.sh up && ./cluster.sh leader && ./cluster.sh down    # the check after launch
 ./hop-matrix.sh                                                # test 1
+./hop-analyze.py ../../../../../build/multihost/hop-*.txt      # the rule's latency part
 HOP_RATES=20000 MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1 -Daeron.archive.catalog.file.sync.level=1" \
     ./hop-matrix.sh                                            # the sync comparison; run it again without the option
 REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and again with REPLAY_LOAD_DURING=1

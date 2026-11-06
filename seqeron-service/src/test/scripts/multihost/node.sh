@@ -7,7 +7,9 @@
 #                                                    start a Java main off the uber jar and the test classes
 #   node.sh run   [--cpus L] <name> <class> [-Dk=v…] [-- args…]
 #                                                    the same in the foreground, exiting with it
-#   node.sh bench [--cpus L] <hop_bench arguments…>  run hop_bench in the foreground
+#   node.sh bench [--cpus L] <direct|hosted> <arguments…>
+#                                                    run that arm's bench in the foreground: direct is hop_bench
+#                                                    of the tag cpp-direct-client-final, hosted is hosted_hop_bench
 #   node.sh kill <name>                              stop what start, member or gateway-host started as <name>
 #   node.sh wait-log <name> <pattern> <seconds>      wait for <pattern> in <name>'s log
 #   node.sh last-line <name> <pattern>               the last line of <name>'s log holding <pattern>
@@ -27,7 +29,8 @@
 #   MULTIHOST_MEMBER_OPTS   extra JVM flags for a member, space-separated
 #   MULTIHOST_MEMBER_CPUS   taskset CPU list for a member                 (default unpinned)
 #   MULTIHOST_BENCH_IDLE    hop_bench's SEQERON_IDLE_STRATEGY             (default busyspin)
-#   MULTIHOST_HOP_BENCH     the hop_bench binary                          (default cmake-build-release/hop_bench)
+#   MULTIHOST_HOP_BENCH     the hosted_hop_bench binary                   (default cmake-build-release/hosted_hop_bench)
+#   MULTIHOST_DIRECT_BENCH  hop_bench built on the tag, for the direct arm (required for it)
 #   MULTIHOST_CLIENT        this host's address when it runs the gateway host, as the members reach it
 
 set -euo pipefail
@@ -41,7 +44,7 @@ RUN_DIR="${MULTIHOST_BASE_DIR:-${HOME}/seqeron-multihost}"
 DATA_DIR="${RUN_DIR}/data"
 LOG_DIR="${RUN_DIR}/logs"
 TEST_CLASSES="${SEQERON_HOME}/seqeron-service/build/classes/java/test"
-HOP_BENCH="${MULTIHOST_HOP_BENCH:-${SEQERON_HOME}/cmake-build-release/hop_bench}"
+HOP_BENCH="${MULTIHOST_HOP_BENCH:-${SEQERON_HOME}/cmake-build-release/hosted_hop_bench}"
 
 mkdir -p "${DATA_DIR}" "${LOG_DIR}"
 cd "${RUN_DIR}"
@@ -144,7 +147,21 @@ bench)
         cpus="$2"
         shift 2
     fi
-    pinned_command "${cpus}" env SEQERON_IDLE_STRATEGY="${MULTIHOST_BENCH_IDLE:-busyspin}" "${HOP_BENCH}" "$@"
+    arm="$1"
+    shift
+    case "${arm}" in
+    direct)
+        bench=("${MULTIHOST_DIRECT_BENCH:?MULTIHOST_DIRECT_BENCH names hop_bench built on the tag}" direct "$@")
+        ;;
+    hosted)
+        bench=("${HOP_BENCH}" "$@")
+        ;;
+    *)
+        echo "ERROR: unknown arm ${arm}" >&2
+        exit 2
+        ;;
+    esac
+    pinned_command "${cpus}" env SEQERON_IDLE_STRATEGY="${MULTIHOST_BENCH_IDLE:-busyspin}" "${bench[@]}"
     "${PINNED[@]}" 2>&1 | tee -a "${LOG_DIR}/bench.log"
     ;;
 kill)

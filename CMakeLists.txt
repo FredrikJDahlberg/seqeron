@@ -332,6 +332,10 @@ if(SEQERON_BUILD_TESTS)
     add_executable(hosted_consumer_probe seqeron-client/src/test/cpp-probe/HostedConsumerProbe.cpp)
     target_link_libraries(hosted_consumer_probe PRIVATE seqeron_core seqeron_flags)
 
+    # hosted_hop_bench — the hosted-façade hop through the real stub (doc/ec2-tests.md, Test 1). Bench only.
+    add_executable(hosted_hop_bench seqeron-client/src/test/cpp-bench/HostedHopBench.cpp)
+    target_link_libraries(hosted_hop_bench PRIVATE seqeron_core seqeron_flags)
+
     # core_headers — every public header compiled on its own under -Werror, as a consumer's build would.
     # A header no test includes is otherwise never compiled here at all.
     set(SEQERON_HEADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/cpp")
