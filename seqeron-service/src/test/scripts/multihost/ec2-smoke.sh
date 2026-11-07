@@ -2,7 +2,7 @@
 # One c6in.8xlarge in the default VPC; all three members, host and bench on it (MULTIHOST_MEMBERS=localhost x3).
 set -euo pipefail
 
-export AWS_REGION=us-east-1
+export AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
 KEY=seqeron-smoke
 SG=seqeron-smoke
 MYIP=$(curl -s https://checkip.amazonaws.com)
@@ -28,6 +28,7 @@ printf '#!/bin/bash\nshutdown -h +120\n' > "$USERDATA"
 ID=$(aws ec2 run-instances \
     --image-id "$AMI" --instance-type c6in.8xlarge \
     --cpu-options CoreCount=16,ThreadsPerCore=1 \
+    --placement AvailabilityZone=us-east-1a \
     --key-name "$KEY" --security-group-ids "$SGID" \
     --instance-initiated-shutdown-behavior terminate \
     --user-data "file://$USERDATA" \

@@ -47,7 +47,7 @@ against the arm, each run with a 30 s warm-up that is discarded and 120 s measur
 | --- | --- | --- | --- | --- |
 | rate sweep | 18 B | 5k, 20k, 50k, 100k, 200k | `direct`, `hosted-spin` | 5 |
 | idle strategy | 18 B | 5k, 20k | `hosted-backoff` | 5 |
-| payload sweep | 256 B, 1 KiB, 8 KiB | 20k; 1 KiB also 100k | `direct`, `hosted-spin` | 5 |
+| payload sweep | 1 KiB, 8 KiB (256 B only if the 1 KiB cell fails) | 20k; 1 KiB also 100k | `direct`, `hosted-spin` | 5 |
 | knee | 18 B, 1 KiB | ramp to saturation | `direct`, `hosted-spin` | 2 |
 | soak | 256 B | 20k for 1 h | `direct`, `hosted-spin` | 1 |
 | gate edge | 18 B | flood, leader paused 4.5 s | `direct`, `hosted-spin` | 5 |
@@ -55,6 +55,21 @@ against the arm, each run with a 30 s warm-up that is discarded and 120 s measur
 The gate-edge set records, per run, the commands dropped, the time from the new leader's `LeadershipChanged` until every
 offered command is sequenced, and the number lost; the hosted arm must show 0. It follows `HostedCppStubTest`'s resend
 scenario. Run order within a rate is randomised.
+
+**Stages.** Test 1b runs in stages, each applied with `hop-analyze.py` before the next starts. Five runs per cell is the
+floor in every stage: the direct arm's range of fewer runs is narrower, so a hosted arm would fail by chance.
+
+| stage | set | runs | wall clock |
+| --- | --- | --- | --- |
+| 1 | rate sweep | 50 | 2.1 h |
+| 2 | payload sweep: 1 KiB and 8 KiB at 20k, 1 KiB at 100k | 30 | 1.3 h |
+| 3 | idle strategy | 10 | 0.4 h |
+| 4 | knee, gate edge, soak | | 3.1 h, the soak and the knee unattended |
+
+After stage 1 the owner decides whether stages 2 and 3 are needed: if `hosted-spin` is inside the rule at every rate, they
+check the result and do not decide it. Stage 3 matters only once `hosted-spin` has passed, since it asks whether the default
+idle strategy is enough. The 8 KiB cell stays in stage 2 because the stub copies the payload, so its cost is the one most
+likely to grow with size; 256 B lies between the rate sweep's 18 B and 1 KiB and is run only to locate a failure there.
 
 **What a run records.** The whole-loop histogram (HdrHistogram, 1 µs resolution), the achieved rate and the stub's window
 declines; the host's `queue:` line (placed, `epochDrops`, `headDeclines`, `peakQueued`), its hosted-lag counter once a second and
@@ -76,6 +91,16 @@ host's is shown to be zero (`hosted-facade.md` §3.5), the stub's is not. `hoste
 - `hop-matrix.sh` and `node.sh` start `ClientProxy` with `proxy.*` properties and run the arms and modes above, one fresh cluster per
   rate, interleaved within it. `HOP_RATES`, `HOP_REPEATS`, `HOP_SECONDS`, `HOP_MODES` and `HOP_PAYLOADS` select the set. Both
   benches drop the first 20% of a run, so `HOP_SECONDS=150` is 30 s of warm-up and 120 s measured.
+- Every JVM `node.sh` starts logs its safepoints with wall-clock time (`-Xlog:safepoint`) beside its GC, and `hop-matrix.sh` takes
+  `node.sh sample` on each member before and after every run into `hop-<stamp>.samples`: per-CPU steal, context switches and the
+  members' java ticks. A difference between the two lines is that run's, and the safepoint times, in UTC, place a stall in a run
+  through the sample's `t` (epoch ms).
+- `hop-matrix.sh` also starts `CounterSampler` on each member (`node.sh counter-sampler`, on CPUs 0-1, `MULTIHOST_COUNTER_MS`
+  default 10, 0 for none): every counter of the member's driver, read off its CnC file, as the changed ones with a wall-clock `t`,
+  in `counter-sampler.log` under the rate's logs. It shows which counter, commit position or agent's maximum cycle time moves
+  or stops in a stall. Each rate's logs are fetched when the rate ends.
+- `MULTIHOST_ARCHIVE_DIR` puts each member's `archive-<id>` there, linked into `data/`, and `node.sh wipe` removes it; the
+  cluster directory stays under `MULTIHOST_BASE_DIR`. Set it to `/dev/shm/…` to take the archive's disk out of a run.
 - `hop-knee.sh` ramps the rate on one fresh cluster per arm, payload and run, in steps of `KNEE_SECONDS`, and ends each ramp in a
   `knee` line: the last rate below the first step whose p99 exceeds `KNEE_P99_US` (default 10 ms), that loses a marker or whose
   leader moved. The limit is a choice, not a measurement; the step lines are in `hop-matrix.sh`'s format.
@@ -87,7 +112,8 @@ second invocation with `HOP_PAYLOADS=1024 HOP_RATES=100000`. Not built yet:
 
 - the soak's histogram, since each bench keeps every sample;
 - the gate-edge set: a flood mode that counts offered, sequenced and lost commands in both benches, and a driver that pauses the leader;
-- a manifest per run and the recordings under "What a run records" other than the bench's own line;
+- a manifest per run, and of the recordings under "What a run records" the per-second `mpstat` and `pidstat` and the CPU of the
+  host and the bench, which are gone when the run's second sample is taken; the samples cover each member's processes;
 - the rule's other criteria in `hop-analyze.py` (commands lost at a gate edge, the host's cores), and a randomised run order.
 
 The tooling is validated on localhost first (`MULTIHOST_MEMBERS=localhost,localhost,localhost`): the direct arm and the
@@ -100,6 +126,29 @@ column of `/proc/stat` per run, and repeat a run with steal above 1%. No burstab
 the worst (JIT, warm-up), so each run discards a warm-up and each rate gets a fresh cluster. A faster commit than the laptop's 250 µs
 makes the hop a larger share of the loop; that is the question, so the cluster is not slowed to match. Time is slewed by `chrony`, never
 stepped: a step back of more than 10 s terminates a member (`ops.md`).
+
+**Archive writes on EBS.** The archive recorder is the queue's one tethered subscriber, so a blocked `write()` of it holds back
+the queue's publication limit and stalls the sequencer, and every consumer with it. On the members' root volume (gp3, 3000 IOPS,
+125 MB/s) with the kernel's default writeback, 6 of 24 runs at 50k msg/s stalled, in every arm and on any leader (a run counts
+as a stall at p99.9 ≥ 5 ms; maxima 37–70 ms, none at 30k msg/s). The recorder's `archive-recorder max write time` counter
+(`CounterSampler`) read 36 and then 60 ms, and an off-CPU trace of the thread (`bpftrace`, `sched:sched_switch` on its name,
+`archive-recorde`) showed it waiting 24 and 37.5 ms, inside one run whose maximum was 37.6 ms, in
+`pwrite64 → ext4_da_write_begin → __filemap_get_folio → folio_wait_bit_common → io_schedule`. A 20 ms sample of `/proc/diskstats`
+and `/proc/meminfo` showed the cause: the kernel writes about 30 s of dirty archive data at once, 150–230 MB in under a second
+every 20–35 s, and the recorder waits behind it when it appends to a page in that flush. One burst in seven blocked it.
+
+| archive and cluster directories | kernel writeback | stalled runs | worst max |
+| --- | --- | --- | --- |
+| EBS | default, with and without `discard` | 6 of 24 | 70 ms |
+| tmpfs | default | 0 of 9 | 7.1 ms |
+| archive on tmpfs, cluster on EBS | default | 0 of 9 | 5.5 ms |
+| EBS, `nodiscard` | `vm.dirty_bytes` 64 MiB, `vm.dirty_background_bytes` 16 MiB | p99.9 above 4.8 ms in each of 8 runs | 13 ms |
+| EBS, `nodiscard` | `vm.dirty_expire_centisecs=50`, `vm.dirty_writeback_centisecs=20` | 0 of 15 | 7.8 ms |
+
+The byte limits flush small amounts often and hit more runs. The shorter timers keep each flush to a few MB, so the waits are
+5–8 ms: p99.9 is 2.4–2.8 ms in every run, p99 unchanged. A latency target under that needs the waits gone, not shortened:
+higher provisioned gp3 throughput or an instance-store volume, neither tried. Not a deployment setting: tmpfs loses the recording
+on a reboot, and without a `<snapshots>` policy the archive grows by 190 MB per 30 s run at this rate.
 
 ### Test 2: the network-fault suite without CPU steal
 
@@ -176,9 +225,10 @@ launch and check take 20 minutes: tests 1 and 3 cost about $23.60, the session a
 plan $20.26. Test 1a alone on metal, after the session above, takes 45 minutes and costs about $15.20, for a direct
 comparison of the same CPU with and without the hypervisor.
 
-Test 1b is a session of its own. Its runs come to about 100 of 150 s (4.2 h), the knee ramps (0.7 h), the soak and its warm-up
-(2.1 h), the gate-edge runs (0.3 h) and setup (0.3 h): about 7.5 h on the four Test 1 hosts. That costs about $48 on
-c6in.8xlarge ($6.35/hr) and about $152 on c6id.metal ($20.26/hr), from the instance prices above. Neither includes the
+Test 1b is a session of its own. Its runs come to about 90 of 150 s (3.75 h), the knee ramps (0.7 h), the soak and its warm-up
+(2.1 h), the gate-edge runs (0.3 h) and setup (0.3 h): about 7.2 h on the four Test 1 hosts. That costs about $45 on
+c6in.8xlarge ($6.35/hr) and about $145 on c6id.metal ($20.26/hr), from the instance prices above; stage 1 alone is 2.1 h and
+about $13 on c6in.8xlarge. Neither includes the
 rehearsals, so allow the first attempt twice the figure; the soak and the knee ramps run unattended.
 
 ## 4. Image
@@ -186,7 +236,9 @@ rehearsals, so allow the first attempt twice the figure; the soak and the knee r
 One Ubuntu 24.04 x86_64 image serves every host. Build it on a c6in.large and save it as an AMI:
 
 ```bash
-sudo apt-get install -y openjdk-21-jdk-headless cmake g++ git perl docker.io
+sudo apt-get install -y openjdk-21-jdk-headless g++ git perl docker.io
+sudo snap install cmake --classic    # the repo needs 3.30; apt has 3.28
+export PATH=$PATH:/snap/bin          # non-login ssh commands lack it
 git clone <this repository> ~/seqeron && cd ~/seqeron && git checkout <branch>
 ./gradlew uberJar :seqeron-service:compileTestJava
 cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
@@ -209,6 +261,9 @@ Tuning, all of it applied at boot so the image carries it:
   apart with `taskset` (§5). Not `isolcpus`: the kernel does not balance load across isolated CPUs, so a JVM pinned to
   a set of them would run every thread on the first.
 - **Socket buffers**: `net.core.rmem_max` and `net.core.wmem_max` at 16777216 in `/etc/sysctl.d`.
+- **Even writeback**: `vm.dirty_expire_centisecs=50` and `vm.dirty_writeback_centisecs=20`, so the kernel flushes the
+  archive every 0.2 s instead of in a burst every 30 s ("Archive writes on EBS", test 1). Leave the `vm.dirty_*_bytes`
+  and `*_ratio` limits at their defaults.
 
 Launch the members and the driver host into one cluster placement group, with
 `--instance-initiated-shutdown-behavior terminate` and a user-data `shutdown -h +180`, so a forgotten session ends
@@ -224,6 +279,7 @@ export MULTIHOST_MEMBERS=10.0.0.11,10.0.0.12,10.0.0.13   # private addresses, me
 export MULTIHOST_CLIENT=10.0.0.14                         # this host
 export MULTIHOST_IDLE=busyspin MULTIHOST_MEMBER_CPUS=2-11 MULTIHOST_HOST_CPUS=12-13 MULTIHOST_BENCH_CPUS=14-15
 export MULTIHOST_DIRECT_BENCH=$HOME/seqeron-direct/cmake-build-release/hop_bench
+export MULTIHOST_SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"   # BatchMode refuses an unseen host key
 
 ./cluster.sh up && ./cluster.sh leader && ./cluster.sh down    # the check after launch
 ./hop-matrix.sh                                                # test 1
@@ -275,7 +331,7 @@ is still ENA. Its CPU is c6in's, so its results compare with the c6in.8xlarge ru
 ## 8. Decisions needed
 
 1. The rule's margins (Test 1). Until they are set the result decides nothing.
-2. Who launches the instances: nothing in this tree does, and the machine this was planned on has no AWS credentials.
+2. Who launches the instances: nothing in this tree does but `ec2-smoke.sh`, and the machine this was planned on has no AWS credentials. [`account.md`](account.md) sets the account up and gives the launch commands.
 3. A budget cap in instance-hours; Test 1b is about 7.5 h on four hosts.
 4. The architecture: this plan is x86_64 (c6in, c6id); the figures in `hosted-facade.md` are aarch64, and Graviton is not covered.
 5. The deployment's hypervisor and region, if the virtualised run is to match it; the prices above are us-east-1.
