@@ -269,6 +269,10 @@ An AMI keeps its snapshot, which is billed by the GB-month on the blocks in use 
 image, at $0.05 per GB); `deregister-image` and
 `delete-snapshot` remove both when the tests are finished.
 
+The image in use, in us-east-1: `ami-01d47887f2c8496bb` (`seqeron-bench-20261108`), built from commit 07affaf2 with the
+writeback sysctls of `ec2-tests.md` §4. `ami-0fb1c1745ad4284e1` (`seqeron-bench-20261107`) predates the gate-edge
+tooling and the sysctls; deregister it, and its snapshot, when it is no longer wanted.
+
 ## 8. Launching a session
 
 The members take fixed private addresses, so that `MULTIHOST_MEMBERS` is known before they start (`ec2-tests.md` §5).
