@@ -8,7 +8,9 @@ deadlines; kills by the PID or container it started; and gives every boot a log 
 `seqeron-service/build/system-test/<test>/`. `doc/building.md` lists the tests.
 
 `seqeron-service/src/test/scripts` holds what is left: two bash harnesses for the C# client tier —
-`csharp-client-test.sh` and `csharp-windows-test.sh` (Git Bash on Windows, with its member in WSL1) — plus `start-three-node-cluster.sh`, the operator-facing local cluster.
+`csharp-client-test.sh` and `csharp-windows-test.sh` (Git Bash on Windows, with its member in WSL1) — plus `start-three-node-cluster.sh`, the operator-facing local cluster, and `multihost/`, the
+drivers that run a three-member cluster across hosts over ssh for `doc/ec2-tests.md` (`node.sh` is the per-host half;
+`MULTIHOST_MEMBERS=localhost,localhost,localhost` rehearses them on one machine).
 They still resolve paths relative to the repository root — they were written when this tree sat under `cluster/`, so
 check the depth of any `../..` you add.
 

@@ -205,7 +205,8 @@ The harnesses for the C# client, and the operator-facing local cluster, are stil
 `seqeron-service/src/test/scripts/`. Each brings a cluster up and tears it down again; run them from the repository
 root, with `./gradlew uberJar` done first. The two C# harnesses want the .NET SDK beside the jar:
 `csharp-client-test.sh` on Linux, and `csharp-windows-test.sh` on Windows, in Git Bash, with its member in a WSL1
-distribution that has a JDK 21.
+distribution that has a JDK 21. The drivers in
+`multihost/`, which run a cluster across hosts over ssh, are [`ec2-tests.md`](ec2-tests.md)'s.
 
 | Script | Purpose |
 |--------|---------|

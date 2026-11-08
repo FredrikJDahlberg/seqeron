@@ -1,0 +1,88 @@
+diff --git a/seqeron-client/src/test/cpp-bench/HopBench.cpp b/seqeron-client/src/test/cpp-bench/HopBench.cpp
+index 6d393d1..854bbb0 100644
+--- a/seqeron-client/src/test/cpp-bench/HopBench.cpp
++++ b/seqeron-client/src/test/cpp-bench/HopBench.cpp
+@@ -7,6 +7,7 @@
+ //           streams and its counters, as a stub would. ProxyProtocol.java is the transport; this is its only other reader.
+ //
+ //   hop_bench <direct|hosted> --member M --rate R/s --count N [--client-id C] [--egress-port P] [--aeron-dir D]
++//             [--payload B]   (direct only: the marker's length, 18 to 8875)
+ //
+ // The first 20% of the markers are warm-up and are not reported. Transport constants below are ProxyProtocol.java's.
+ 
+@@ -158,12 +159,18 @@ struct Run
+ class Marker
+ {
+   public:
+-    Marker()
++    explicit Marker(const std::size_t length = MARKER_LENGTH) :
++      m_bytes(length, 0)
+     {
+         const std::array<std::uint16_t, 4> header{ MARKER_BLOCK_LENGTH, PROBE_MARKER_TEMPLATE_ID, PROBE_SCHEMA_ID, 0 };
+         std::memcpy(m_bytes.data(), header.data(), sizeof header);
+     }
+ 
++    [[nodiscard]] std::uint16_t length() const
++    {
++        return static_cast<std::uint16_t>(m_bytes.size());
++    }
++
+     // The payload for marker number index (from 1) of a run, its own MessageHeader first.
+     const std::uint8_t* encode(const Run& run, const std::int64_t index)
+     {
+@@ -173,10 +180,10 @@ class Marker
+     }
+ 
+   private:
+-    std::array<std::uint8_t, MARKER_LENGTH> m_bytes{};
++    std::vector<std::uint8_t> m_bytes;
+ };
+ 
+-void report(const char* arm, const Run& run, const std::int64_t rate)
++void report(const char* arm, const Run& run, const std::int64_t rate, const std::size_t payload = MARKER_LENGTH)
+ {
+     const auto warm = static_cast<std::size_t>(std::max<std::int64_t>(2000, run.count / 5));
+     std::vector<std::int64_t> samples;
+@@ -198,8 +205,8 @@ void report(const char* arm, const Run& run, const std::int64_t rate)
+         return static_cast<double>(samples[static_cast<std::size_t>(q * static_cast<double>(samples.size() - 1))]) /
+                1000.0;
+     };
+-    std::printf("arm=%s rate=%lld n=%zu seen=%lld declines=%lld p50=%.1f p99=%.1f p99.9=%.1f max=%.1f (us)\n", arm,
+-                static_cast<long long>(rate), samples.size(), static_cast<long long>(run.seen),
++    std::printf("arm=%s rate=%lld payload=%zu n=%zu seen=%lld declines=%lld p50=%.1f p99=%.1f p99.9=%.1f max=%.1f (us)\n",
++                arm, static_cast<long long>(rate), payload, samples.size(), static_cast<long long>(run.seen),
+                 static_cast<long long>(run.declines), at(0.5), at(0.99), at(0.999), at(1.0));
+ }
+ 
+@@ -256,7 +263,12 @@ int direct(const Options& options, const std::int64_t rate, const std::int64_t c
+         listener
+     };
+     application.start(aeron);
+-    Marker marker;
++    const std::int64_t payload = options.integer("payload", MARKER_LENGTH);
++    if (payload < MARKER_LENGTH || payload > 8875)
++    {
++        throw std::invalid_argument("payload must be within 18..8875");
++    }
++    Marker marker{ static_cast<std::size_t>(payload) };
+     auto idle = util::resolveIdleStrategy();
+     while (!run.done(nowNs()) && listener.fault.empty())
+     {
+@@ -272,7 +284,7 @@ int direct(const Options& options, const std::int64_t rate, const std::int64_t c
+         else if (run.sent < count && now >= run.due(run.sent) && application.canPublish())
+         {
+             const protocol::Publish outcome =
+-                application.publish(PROBE_PAYLOAD_ID, marker.encode(run, run.sent + 1), MARKER_LENGTH);
++                application.publish(PROBE_PAYLOAD_ID, marker.encode(run, run.sent + 1), marker.length());
+             if (outcome == protocol::Publish::Published)
+             {
+                 run.sent++;
+@@ -294,7 +306,7 @@ int direct(const Options& options, const std::int64_t rate, const std::int64_t c
+         std::printf("FENCED %s\n", listener.fault.c_str());
+         return 1;
+     }
+-    report("direct", run, rate);
++    report("direct", run, rate, marker.length());
+     return 0;
+ }
+ 
