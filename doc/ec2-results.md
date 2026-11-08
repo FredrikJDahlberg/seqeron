@@ -14,7 +14,7 @@ it does not establish.
 | Hosted façade against the direct client | No resolvable difference at p50 and p99 at 20k, 50k and 100k msg/s with a spinning host; the default idle strategy adds 61 µs at p50 | Within the direct arm's own run-to-run spread. |
 | Forced archive writes (`file.sync.level=1`) | **+6.5 ms at p50, +9 ms at p99**, throughput held | One launch, EBS only. Not repeated on local NVMe. |
 | Saturation of 100-byte messages | Not found. One ramp reached 888k msg/s without saturating; the other stopped at 568k on a 30 ms stall | Two ramps that disagree. A stall decides the verdict, not a capacity limit. |
-| Replay of 2.3 GB | 1.1–1.4 GB/s local, 0.61 GB/s over the UDP relay | One run each; a fourth run did not complete. |
+| Replay of 2.3 GB | 1.1–1.4 GB/s local, 0.61 GB/s over the UDP relay | One run each; a fourth run did not complete, cause unconfirmed. |
 
 Plan on this: a few tens of µs through the loop up to about 20k msg/s; a 2–3 ms p99.9 from 50k msg/s that has not been
 explained; and no forced writes unless 6.5 ms is acceptable.
