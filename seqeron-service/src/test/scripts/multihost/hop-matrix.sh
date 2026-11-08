@@ -13,7 +13,8 @@
 # the matrix rather than measure an election. Every member's /proc counters (node.sh sample) are taken before and
 # after each run into hop-<stamp>.samples, beside the results. Each member's driver counters are sampled every
 # MULTIHOST_COUNTER_MS (default 10, 0 for none) by CounterSampler, into its counter-sampler.log in the rate's logs.
-# Each rate's logs are fetched when it ends, since the next rate's fresh cluster wipes them.
+# Each rate's logs are fetched when it ends, since the next rate's fresh cluster wipes them. Before a rate's cluster
+# goes down the members' queue recordings are compared (hop-order-check.py), into a "# order" line of the results.
 #
 #   HOP_RATES     msg/s, space-separated            (default "10000 20000 50000")
 #   HOP_REPEATS   runs of each mode at each rate     (default 3)
@@ -23,8 +24,8 @@
 #   HOP_PAYLOADS  marker lengths in bytes, 18 to 8875, space-separated (default "18"); every arm takes each
 #
 # Prerequisites on every host: ./gradlew uberJar, hosted_hop_bench built Release and, for the direct arm,
-# MULTIHOST_DIRECT_BENCH, hop_bench of the tag with direct-hop-bench-payload.patch applied (doc/ec2-tests.md,
-# "Image").
+# MULTIHOST_DIRECT_BENCH, hop_bench of the tag with direct-hop-bench-payload.patch and then
+# direct-hop-bench-histogram.patch applied (doc/ec2-tests.md, "Image").
 #
 # Usage:
 #   MULTIHOST_MEMBERS=10.0.0.11,10.0.0.12,10.0.0.13 ./hop-matrix.sh
@@ -87,6 +88,8 @@ for rate in ${RATES}; do
             done
         done
     done
+    order_line="$(check_order "rate=${rate}" || true)"
+    echo "${order_line}" | tee -a "${RESULTS}"
     cluster_down
 done
 trap - EXIT

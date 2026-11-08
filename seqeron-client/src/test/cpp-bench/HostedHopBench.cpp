@@ -3,10 +3,19 @@
 // sequenced. The direct arm is hop_bench from the tag cpp-direct-client-final; the two print the same line.
 //
 //   hosted_hop_bench --rate R/s --count N [--member M] [--aeron-dir D] [--payload B] [--warmup-ms W]
-//                    [--source-id S] [--host-name H]
+//                    [--source-id S] [--host-name H] [--flood-ms F] [--settle-ms T]
 //
-// The first --warmup-ms of the run (default 20% of it) is discarded. Allocations are counted from the first
+// The first --warmup-ms of the run (default 20% of it) is discarded, and so are the declines before it: declines= and
+// window_declines= count the rest (window_declines= being those for want of room in H-5's window, declines= all of
+// them), warmup_declines= the declines before. hist= is the reported latencies in nanoseconds as bucket:count pairs,
+// 32 buckets to each power of two (hop-analyze.py merges them across runs). Allocations are counted from the first
 // published marker to the last; only operator new is counted, so the Aeron client's own mallocs are not.
+//
+// With --flood-ms the schedule is dropped: markers are offered as fast as the stub takes them for F ms, or until N,
+// and the run ends once every one offered is sequenced, or T ms (default 20000) after the last sequenced. It prints
+// FLOODING when it starts, then a line of the offered, sequenced and lost markers, any duplicated or out of order, and
+// the gate's last edge: how long the gate was shut, and how long after it reopened the last marker offered before it
+// shut was sequenced (doc/ec2-tests.md, the gate-edge set).
 
 #include <algorithm>
 #include <atomic>
@@ -131,17 +140,51 @@ struct Run
     void received(const std::int64_t seqNo, const std::int64_t now)
     {
         const std::int64_t index = (seqNo & INDEX_MASK) - 1;
-        if ((seqNo & (OWN_TAG - 1) & ~INDEX_MASK) == salt && index >= 0 && index < sent &&
-            latency[static_cast<std::size_t>(index)] < 0)
+        if ((seqNo & (OWN_TAG - 1) & ~INDEX_MASK) != salt || index < 0 || index >= sent)
+        {
+            return;
+        }
+        if (latency[static_cast<std::size_t>(index)] >= 0)
+        {
+            duplicates++;
+        }
+        else
         {
             latency[static_cast<std::size_t>(index)] = now - due(index);
             seen++;
+            lastNs = now;
+            outOfOrder += index < highest ? 1 : 0;
+            highest = std::max(highest, index);
+            if (recoveredNs == 0 && reopenedNs > closedNs && index + 1 >= sentAtClose)
+            {
+                recoveredNs = now;
+            }
         }
     }
 
     [[nodiscard]] bool done(const std::int64_t now) const
     {
+        if (floodNs > 0)
+        {
+            return t0 != 0 && (sent >= count || now > t0 + floodNs) && (seen >= sent || now > lastNs + settleNs);
+        }
         return seen >= count || (t0 != 0 && now > t0 + TIMEOUT_NS + count * interval);
+    }
+
+    // A gate edge: the gate shut, or reopened after one.
+    void gate(const bool leading, const std::int64_t now)
+    {
+        if (!leading)
+        {
+            edges++;
+            closedNs = now;
+            sentAtClose = sent;
+            recoveredNs = 0;
+        }
+        else if (edges > 0)
+        {
+            reopenedNs = now;
+        }
     }
 
     std::int64_t count;
@@ -151,8 +194,48 @@ struct Run
     std::int64_t sent = 0;
     std::int64_t seen = 0;
     std::int64_t declines = 0;
+    std::int64_t floodNs = 0;
+    std::int64_t settleNs = 0;
+    std::int64_t lastNs = 0;
+    std::int64_t highest = -1;
+    std::int64_t duplicates = 0;
+    std::int64_t outOfOrder = 0;
+    std::int64_t edges = 0;
+    std::int64_t closedNs = 0;
+    std::int64_t reopenedNs = 0;
+    std::int64_t sentAtClose = 0;
+    std::int64_t recoveredNs = 0;
+    std::int64_t declinesAtWarm = 0;
+    std::int64_t windowDeclinesAtWarm = 0;
     std::vector<std::int64_t> latency;
 };
+
+// The markers before the first one reported.
+std::size_t warmCount(const Run& run, const std::int64_t warmupMs)
+{
+    return std::min<std::size_t>(run.latency.size(),
+                                 warmupMs >= 0 ? static_cast<std::size_t>(warmupMs * 1'000'000LL / run.interval)
+                                               : static_cast<std::size_t>(std::max<std::int64_t>(2000, run.count / 5)));
+}
+
+// The samples as "bucket:count" pairs, so that runs merge: 32 buckets to each power of two of the nanoseconds (3%
+// wide), a bucket's index being (log2 - 4) * 32 + the five bits under the leading one, and below 32 ns the value.
+std::string histogram(const std::vector<std::int64_t>& samples)
+{
+    std::map<int, std::int64_t> buckets;
+    for (const std::int64_t ns : samples)
+    {
+        const auto value = static_cast<std::uint64_t>(ns);
+        const int log = value < 32 ? 0 : 63 - __builtin_clzll(value);
+        buckets[value < 32 ? static_cast<int>(value) : (log - 4) * 32 + static_cast<int>((value >> (log - 5)) & 31)]++;
+    }
+    std::string text;
+    for (const auto& [bucket, count] : buckets)
+    {
+        text += (text.empty() ? "" : ",") + std::to_string(bucket) + ":" + std::to_string(count);
+    }
+    return text;
+}
 
 class Marker
 {
@@ -182,8 +265,13 @@ class Marker
 
 struct Listener
 {
-    void onLeadershipChanged(const bool) const
-    {}
+    void onLeadershipChanged(const bool leading) const
+    {
+        if (run != nullptr)
+        {
+            run->gate(leading, nowNs());
+        }
+    }
 
     void onSequenced(const app::Payload& payload) const
     {
@@ -210,12 +298,9 @@ struct Listener
     std::string fault;
 };
 
-void report(const Run& run, const std::int64_t rate, const std::size_t payload, const std::int64_t warmupMs,
+void report(const Run& run, const std::int64_t rate, const std::size_t payload, const std::size_t warm,
             const std::int64_t windowDeclines, const std::int64_t allocations)
 {
-    const auto warm = std::min<std::size_t>(
-        run.latency.size(), warmupMs >= 0 ? static_cast<std::size_t>(warmupMs * 1'000'000LL / run.interval)
-                                          : static_cast<std::size_t>(std::max<std::int64_t>(2000, run.count / 5)));
     std::vector<std::int64_t> samples;
     for (std::size_t i = warm; i < run.latency.size(); i++)
     {
@@ -235,11 +320,28 @@ void report(const Run& run, const std::int64_t rate, const std::size_t payload, 
         return static_cast<double>(samples[static_cast<std::size_t>(q * static_cast<double>(samples.size() - 1))]) /
                1000.0;
     };
-    std::printf("arm=hosted rate=%lld payload=%zu n=%zu seen=%lld declines=%lld window_declines=%lld allocs=%lld "
-                "p50=%.1f p99=%.1f p99.9=%.1f max=%.1f (us)\n",
+    std::printf("arm=hosted rate=%lld payload=%zu n=%zu seen=%lld declines=%lld window_declines=%lld "
+                "warmup_declines=%lld allocs=%lld p50=%.1f p99=%.1f p99.9=%.1f max=%.1f (us) hist=%s\n",
                 static_cast<long long>(rate), payload, samples.size(), static_cast<long long>(run.seen),
-                static_cast<long long>(run.declines), static_cast<long long>(windowDeclines),
-                static_cast<long long>(allocations), at(0.5), at(0.99), at(0.999), at(1.0));
+                static_cast<long long>(run.declines - run.declinesAtWarm),
+                static_cast<long long>(windowDeclines - run.windowDeclinesAtWarm),
+                static_cast<long long>(run.declinesAtWarm), static_cast<long long>(allocations), at(0.5), at(0.99),
+                at(0.999), at(1.0), histogram(samples).c_str());
+}
+
+// The flood's line: what was offered against what was sequenced, and the gate's edges (times in ms, -1 when none).
+void reportFlood(const Run& run, const std::size_t payload, const std::int64_t windowDeclines)
+{
+    const bool edged = run.edges > 0 && run.reopenedNs > run.closedNs;
+    const auto ms = [](const std::int64_t ns) { return static_cast<double>(ns) / 1'000'000.0; };
+    std::printf("arm=hosted-edge payload=%zu offered=%lld sequenced=%lld lost=%lld duplicates=%lld out_of_order=%lld "
+                "window_declines=%lld edges=%lld gate_shut_ms=%.1f recover_ms=%.1f\n",
+                payload, static_cast<long long>(run.sent), static_cast<long long>(run.seen),
+                static_cast<long long>(run.sent - run.seen), static_cast<long long>(run.duplicates),
+                static_cast<long long>(run.outOfOrder), static_cast<long long>(windowDeclines),
+                static_cast<long long>(run.edges), edged ? ms(run.reopenedNs - run.closedNs) : -1.0,
+                edged && run.recoveredNs > 0 ? ms(run.recoveredNs - run.reopenedNs) : -1.0);
+    std::fflush(stdout);
 }
 
 int hostedRun(const Options& options)
@@ -258,6 +360,8 @@ int hostedRun(const Options& options)
     const std::shared_ptr<aeron::Aeron> aeron = aeron::Aeron::connect(context);
 
     Run run{ rate, count };
+    run.floodNs = options.integer("flood-ms", 0) * 1'000'000LL;
+    run.settleNs = options.integer("settle-ms", 20'000) * 1'000'000LL;
     Listener listener;
     listener.run = &run;
     listener.sourceId = static_cast<std::int32_t>(options.integer("source-id", 16));
@@ -268,6 +372,7 @@ int hostedRun(const Options& options)
     application.start(aeron);
 
     Marker marker{ payload };
+    const std::size_t warm = warmCount(run, options.integer("warmup-ms", -1));
     auto idle = util::resolveIdleStrategy();
     std::int64_t allocationsBefore = 0;
     std::int64_t allocations = 0;
@@ -280,10 +385,17 @@ int hostedRun(const Options& options)
             if (application.canPublish())
             {
                 run.t0 = now + START_DELAY_NS;
+                run.lastNs = run.t0;
+                if (run.floodNs > 0)
+                {
+                    std::printf("FLOODING\n");
+                    std::fflush(stdout);
+                }
                 allocationsBefore = g_allocations.load(std::memory_order_relaxed);
             }
         }
-        else if (run.sent < count && now >= run.due(run.sent) && application.canPublish())
+        else if (run.sent < count && now >= run.t0 &&
+                 (run.floodNs > 0 ? now < run.t0 + run.floodNs : now >= run.due(run.sent)) && application.canPublish())
         {
             const protocol::Publish outcome =
                 application.publish(PROBE_PAYLOAD_ID, marker.encode(run, run.sent + 1), marker.length());
@@ -291,6 +403,11 @@ int hostedRun(const Options& options)
             {
                 run.sent++;
                 work++;
+                if (run.sent == static_cast<std::int64_t>(warm))
+                {
+                    run.declinesAtWarm = run.declines;
+                    run.windowDeclinesAtWarm = application.windowDeclines();
+                }
                 if (run.sent == count)
                 {
                     allocations = g_allocations.load(std::memory_order_relaxed) - allocationsBefore;
@@ -329,7 +446,14 @@ int hostedRun(const Options& options)
         case hosted::Failure::None:
             break;
     }
-    report(run, rate, payload, options.integer("warmup-ms", -1), windowDeclines, allocations);
+    if (run.floodNs > 0)
+    {
+        reportFlood(run, payload, windowDeclines);
+    }
+    else
+    {
+        report(run, rate, payload, warm, windowDeclines, allocations);
+    }
     std::printf("retained=%zu\n", retained);
     return 0;
 }

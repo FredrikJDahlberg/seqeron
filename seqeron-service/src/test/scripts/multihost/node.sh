@@ -11,6 +11,7 @@
 #                                                    run that arm's bench in the foreground: direct is hop_bench
 #                                                    of the tag cpp-direct-client-final, hosted is hosted_hop_bench
 #   node.sh kill <name>                              stop what start, member or gateway-host started as <name>
+#   node.sh pause <name> | resume <name>             SIGSTOP / SIGCONT what start, member or gateway-host started as <name>
 #   node.sh wait-log <name> <pattern> <seconds>      wait for <pattern> in <name>'s log
 #   node.sh last-line <name> <pattern>               the last line of <name>'s log holding <pattern>
 #   node.sh clusterctl <memberId> <arguments…>       clusterctl.sh as member <memberId>'s co-located tool
@@ -22,8 +23,12 @@
 #   node.sh logs                                     this host's logs as a tar stream on stdout
 #   node.sh counter-sampler <memberId>               start CounterSampler on member <memberId>'s driver, its changed
 #                                                    counters every MULTIHOST_COUNTER_MS in <run>/logs/counter-sampler.log
+#   node.sh queue-digest <memberId>                  QueueDigest on member <memberId>'s archive: one line per recording of
+#                                                    group 1's queue, for hop-order-check.py; exits 1 on a gap;
+#                                                    MULTIHOST_DIGEST_UPTO caps the last groupSeqNo digested
 #   node.sh sample <label>                        one line of /proc counters: time in ms, per-CPU steal, context
-#                                                    switches, and each java and bench process's utime+stime ticks
+#                                                    switches, each java and bench process's utime+stime ticks, and the
+#                                                    NIC's ENA allowance and drop counters (ethtool -S)
 #
 # A -D value may name {data}, this host's data directory. A name's log is <run>/logs/<name>.log and its pid
 # <run>/logs/<name>.pid; a gateway host's ReplayerServer logs to <run>/logs/ReplayerServer-3.log.
@@ -180,6 +185,12 @@ bench)
 kill)
     kill_name "$1"
     ;;
+pause)
+    kill -STOP "$(cat "${LOG_DIR}/$1.pid")"
+    ;;
+resume)
+    kill -CONT "$(cat "${LOG_DIR}/$1.pid")"
+    ;;
 wait-log)
     wait_for_log "${LOG_DIR}/$1.log" "$2" "$3"
     ;;
@@ -215,12 +226,21 @@ counter-sampler)
     java_main start --cpus "${MULTIHOST_COUNTER_CPUS:-0-1}" counter-sampler org.limitless.seqeron.tools.CounterSampler \
         "-Dsampler.aeronDir=$(seqeron_aeron_dir "$1")" "-Dsampler.intervalMs=${MULTIHOST_COUNTER_MS:-10}"
     ;;
+queue-digest)
+    status=0
+    java_main run --cpus "${MULTIHOST_COUNTER_CPUS:-0-1}" queue-digest org.limitless.seqeron.tools.QueueDigest \
+        "-Ddigest.aeronDir=$(seqeron_aeron_dir "$1")" "-Ddigest.upTo=${MULTIHOST_DIGEST_UPTO:-9223372036854775807}" || status=$?
+    cat "${LOG_DIR}/queue-digest.log"
+    exit "${status}"
+    ;;
 sample)
     steal="$(awk '/^cpu[0-9]/ { printf "%s%d", (n++ ? "," : ""), $9 }' /proc/stat)"
     ctxt="$(awk '$1 == "ctxt" { print $2 }' /proc/stat)"
     procs="$(awk '$2 ~ /^\((java|hop_bench|hosted_hop_ben.*)\)$/ { printf "%s:%s:%d ", $1, substr($2, 2, length($2) - 2), $14 + $15 }' \
              /proc/[0-9]*/stat 2>/dev/null || true)"
-    echo "t=$(date +%s%3N) label=$1 steal=${steal} ctxt=${ctxt} procs=${procs}"
+    nic="$(ip route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')" || true
+    ena="$(ethtool -S "${nic}" 2>/dev/null | awk '/allowance_exceeded|rx_drops|tx_drops/ { gsub(":", "", $1); printf "%s%s:%s", (n++ ? "," : ""), $1, $2 }' || true)"
+    echo "t=$(date +%s%3N) label=$1 steal=${steal} ctxt=${ctxt} procs=${procs} nic=${nic:-none} ena=${ena}"
     ;;
 *)
     sed -n '2,/^$/p' "$0" >&2

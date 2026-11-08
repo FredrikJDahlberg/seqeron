@@ -1,0 +1,178 @@
+diff --git a/seqeron-client/src/test/cpp-bench/HopBench.cpp b/seqeron-client/src/test/cpp-bench/HopBench.cpp
+index b53f3b3..ebe1d96 100644
+--- a/seqeron-client/src/test/cpp-bench/HopBench.cpp
++++ b/seqeron-client/src/test/cpp-bench/HopBench.cpp
+@@ -8,6 +8,12 @@
+ //
+ //   hop_bench <direct|hosted> --member M --rate R/s --count N [--client-id C] [--egress-port P] [--aeron-dir D]
+ //             [--payload B]   (direct only: the marker's length, 18 to 8875)
++//             [--off-cluster 1 --egress-host H]   (direct only: a gateway host's driver, whose member id --member is,
++//                                                  with this client's egress endpoint on host H)
++//             [--flood-ms F --settle-ms T]   (direct only: offer as fast as it takes for F ms, ending when all offered are
++//                                             sequenced or T ms (default 20000) after the last; prints FLOODING at the start
++//                                             and one arm=direct-edge line: offered, sequenced, lost, duplicates, out of
++//                                             order, and the gate's last edge, as hosted_hop_bench does)
+ //
+ // The first 20% of the markers are warm-up and are not reported, nor are the declines before them (warmup_declines=).
+ // hist= is the reported latencies in nanoseconds as bucket:count pairs, 32 buckets to each power of two.
+@@ -135,19 +141,53 @@ struct Run
+     void received(const std::int64_t seqNo, const std::int64_t now)
+     {
+         const std::int64_t index = (seqNo & INDEX_MASK) - 1;
+-        if ((seqNo & (OWN_TAG - 1) & ~INDEX_MASK) == salt && index >= 0 && index < sent &&
+-            latency[static_cast<std::size_t>(index)] < 0)
++        if ((seqNo & (OWN_TAG - 1) & ~INDEX_MASK) != salt || index < 0 || index >= sent)
++        {
++            return;
++        }
++        if (latency[static_cast<std::size_t>(index)] >= 0)
++        {
++            duplicates++;
++        }
++        else
+         {
+             latency[static_cast<std::size_t>(index)] = now - due(index);
+             seen++;
++            lastNs = now;
++            outOfOrder += index < highest ? 1 : 0;
++            highest = std::max(highest, index);
++            if (recoveredNs == 0 && reopenedNs > closedNs && index + 1 >= sentAtClose)
++            {
++                recoveredNs = now;
++            }
+         }
+     }
+ 
+     [[nodiscard]] bool done(const std::int64_t now) const
+     {
++        if (floodNs > 0)
++        {
++            return t0 != 0 && (sent >= count || now > t0 + floodNs) && (seen >= sent || now > lastNs + settleNs);
++        }
+         return seen >= count || (t0 != 0 && now > t0 + TIMEOUT_NS + count * interval);
+     }
+ 
++    // A gate edge: the gate shut, or reopened after one.
++    void gate(const bool leading, const std::int64_t now)
++    {
++        if (!leading)
++        {
++            edges++;
++            closedNs = now;
++            sentAtClose = sent;
++            recoveredNs = 0;
++        }
++        else if (edges > 0)
++        {
++            reopenedNs = now;
++        }
++    }
++
+     std::int64_t count;
+     std::int64_t interval;
+     std::int64_t salt;
+@@ -156,6 +196,17 @@ struct Run
+     std::int64_t seen = 0;
+     std::int64_t declines = 0;
+     std::int64_t declinesAtWarm = 0;
++    std::int64_t floodNs = 0;
++    std::int64_t settleNs = 0;
++    std::int64_t lastNs = 0;
++    std::int64_t highest = -1;
++    std::int64_t duplicates = 0;
++    std::int64_t outOfOrder = 0;
++    std::int64_t edges = 0;
++    std::int64_t closedNs = 0;
++    std::int64_t reopenedNs = 0;
++    std::int64_t sentAtClose = 0;
++    std::int64_t recoveredNs = 0;
+     std::vector<std::int64_t> latency;
+ };
+ 
+@@ -240,6 +291,21 @@ void report(const char* arm, const Run& run, const std::int64_t rate, const std:
+                 at(0.5), at(0.99), at(0.999), at(1.0), histogram(samples).c_str());
+ }
+ 
++// The flood's line: what was offered against what was sequenced, and the gate's edges (times in ms, -1 when none).
++void reportFlood(const Run& run, const std::size_t payload)
++{
++    const bool edged = run.edges > 0 && run.reopenedNs > run.closedNs;
++    const auto ms = [](const std::int64_t ns) { return static_cast<double>(ns) / 1'000'000.0; };
++    std::printf("arm=direct-edge payload=%zu offered=%lld sequenced=%lld lost=%lld duplicates=%lld out_of_order=%lld "
++                "declines=%lld edges=%lld gate_shut_ms=%.1f recover_ms=%.1f\n",
++                payload, static_cast<long long>(run.sent), static_cast<long long>(run.seen),
++                static_cast<long long>(run.sent - run.seen), static_cast<long long>(run.duplicates),
++                static_cast<long long>(run.outOfOrder), static_cast<long long>(run.declines),
++                static_cast<long long>(run.edges), edged ? ms(run.reopenedNs - run.closedNs) : -1.0,
++                edged && run.recoveredNs > 0 ? ms(run.recoveredNs - run.reopenedNs) : -1.0);
++    std::fflush(stdout);
++}
++
+ std::shared_ptr<aeron::Aeron> connect(const Options& options, const std::int32_t member)
+ {
+     aeron::Context context;
+@@ -251,8 +317,13 @@ std::shared_ptr<aeron::Aeron> connect(const Options& options, const std::int32_t
+ 
+ struct DirectListener
+ {
+-    void onLeadershipChanged(const bool) const
+-    {}
++    void onLeadershipChanged(const bool leading) const
++    {
++        if (run != nullptr)
++        {
++            run->gate(leading, nowNs());
++        }
++    }
+ 
+     void onSequenced(const app::Payload& payload) const
+     {
+@@ -283,13 +354,17 @@ int direct(const Options& options, const std::int64_t rate, const std::int64_t c
+     const auto member = static_cast<std::int32_t>(options.integer("member", 0));
+     const std::shared_ptr<aeron::Aeron> aeron = connect(options, member);
+     Run run{ rate, count };
++    run.floodNs = options.integer("flood-ms", 0) * 1'000'000LL;
++    run.settleNs = options.integer("settle-ms", 20'000) * 1'000'000LL;
+     DirectListener listener;
+     listener.run = &run;
+     app::Application<DirectListener> application{
+         { .sourceId = SOURCE_ID,
+           .clientId = static_cast<std::int32_t>(options.integer("client-id", 11)),
+           .memberId = member,
+-          .egressChannel = "aeron:udp?endpoint=localhost:" + std::to_string(options.integer("egress-port", 9230)) },
++          .offCluster = options.integer("off-cluster", 0) != 0,
++          .egressChannel = "aeron:udp?endpoint=" + options.string("egress-host", "localhost") + ":" +
++                           std::to_string(options.integer("egress-port", 9230)) },
+         listener
+     };
+     application.start(aeron);
+@@ -310,9 +385,16 @@ int direct(const Options& options, const std::int64_t rate, const std::int64_t c
+             if (application.canPublish())
+             {
+                 run.t0 = now + START_DELAY_NS;
++                run.lastNs = run.t0;
++                if (run.floodNs > 0)
++                {
++                    std::printf("FLOODING\n");
++                    std::fflush(stdout);
++                }
+             }
+         }
+-        else if (run.sent < count && now >= run.due(run.sent) && application.canPublish())
++        else if (run.sent < count && now >= run.t0 &&
++                 (run.floodNs > 0 ? now < run.t0 + run.floodNs : now >= run.due(run.sent)) && application.canPublish())
+         {
+             const protocol::Publish outcome =
+                 application.publish(PROBE_PAYLOAD_ID, marker.encode(run, run.sent + 1), marker.length());
+@@ -341,6 +423,11 @@ int direct(const Options& options, const std::int64_t rate, const std::int64_t c
+         std::printf("FENCED %s\n", listener.fault.c_str());
+         return 1;
+     }
++    if (run.floodNs > 0)
++    {
++        reportFlood(run, marker.length());
++        return 0;
++    }
+     report("direct", run, rate, marker.length());
+     return 0;
+ }

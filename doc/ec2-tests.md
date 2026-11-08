@@ -50,11 +50,20 @@ against the arm, each run with a 30 s warm-up that is discarded and 120 s measur
 | payload sweep | 1 KiB, 8 KiB (256 B only if the 1 KiB cell fails) | 20k; 1 KiB also 100k | `direct`, `hosted-spin` | 5 |
 | knee | 18 B, 1 KiB | ramp to saturation | `direct`, `hosted-spin` | 2 |
 | soak | 256 B | 20k for 1 h | `direct`, `hosted-spin` | 1 |
-| gate edge | 18 B | flood, leader paused 4.5 s | `direct`, `hosted-spin` | 5 |
+| gate edge | 18 B | flood, leader paused 4.5 s | `hosted` and `direct`, both off the cluster on the fourth host | 5 |
 
-The gate-edge set records, per run, the commands dropped, the time from the new leader's `LeadershipChanged` until every
-offered command is sequenced, and the number lost; the hosted arm must show 0. It follows `HostedCppStubTest`'s resend
-scenario. Run order within a rate is randomised.
+The gate-edge set records, per run, the commands offered, sequenced and lost, any sequenced twice or out of order, the
+commands the host dropped at the edge, what the stub retains at the end, how long the gate was shut and how long after it
+reopened the last command offered before the edge was sequenced; the hosted arm must show 0 lost. It follows
+`HostedCppStubTest`'s resend scenario, so the host runs inside a gateway host on the fourth host: a host on the leader's
+member does not lead again, and the gate would never reopen. That host has too few cores to spin, so it runs with the default
+idle strategy, and the set's times are not comparable with the rate sweep's. The `direct` arm is `hop_bench` of the tag as an
+`app::Application` on the same gateway host's driver (`--off-cluster 1`, whose gate opens whoever leads), so both arms pay the
+gateway host's queue relay and UDP ingress and differ by the stub and the host alone. It does not resend; the set records what
+it loses and how often the cluster declines it, as the baseline the hosted arm's drops are read against, and does not judge
+them. Recovery times are an off-cluster client's, not a co-located one's, and the matrix's latency cells, which run
+co-located over IPC, say nothing about them. The runs of the two arms alternate in order from one repeat to the next.
+Run order within a rate is randomised.
 
 **Stages.** Test 1b runs in stages, each applied with `hop-analyze.py` before the next starts. Five runs per cell is the
 floor in every stage: the direct arm's range of fewer runs is narrower, so a hosted arm would fail by chance.
@@ -71,7 +80,7 @@ check the result and do not decide it. Stage 3 matters only once `hosted-spin` h
 idle strategy is enough. The 8 KiB cell stays in stage 2 because the stub copies the payload, so its cost is the one most
 likely to grow with size; 256 B lies between the rate sweep's 18 B and 1 KiB and is run only to locate a failure there.
 
-**What a run records.** The whole-loop histogram (HdrHistogram, 1 µs resolution), the achieved rate and the stub's window
+**What a run records.** The whole-loop histogram (3%-wide buckets), the achieved rate and the stub's window
 declines; the host's `queue:` line (placed, `epochDrops`, `headDeclines`, `peakQueued`), its hosted-lag counter once a second and
 the stub's retained count; CPU per process (`pidstat 1`), `mpstat -P ALL` and context switches; the GC and safepoint logs of the
 host and the members (`-Xlog:gc,safepoint`, `-Xms` equal to `-Xmx`, `-XX:+AlwaysPreTouch`, the default collector first, and
@@ -79,14 +88,47 @@ host and the members (`-Xlog:gc,safepoint`, `-Xms` equal to `-Xmx`, `-XX:+Always
 and image ids. **The stub's allocation in the measured window** is counted in the bench, from the first published marker to the last: the
 host's is shown to be zero (`hosted-facade.md` §3.5), the stub's is not. `hosted_hop_bench` hooks `operator new`; hooking `malloc` as well is not done.
 
+**Also recorded, and what each one guards.**
+
+| measurement | per | why |
+| --- | --- | --- |
+| Order check: the sequence numbers the bench sees are gap-free and unique, and at the end of the run the three members' queue recordings are identical (length and hash up to the common commit position) | run | A faster path that mis-orders or diverges is not a pass, and a client's `seen == n` does not show it. A run that fails it is discarded, whatever its latency. |
+| ENA counters before and after (`ethtool -S`: `bw_in_allowance_exceeded`, `bw_out_allowance_exceeded`, `pps_allowance_exceeded`), NIC packets, bytes and drops | run, per host | EC2 shapes traffic without saying so; a tail at 200k msg/s or 8 KiB may be the allowance, not the software. A run in which one moved is flagged, not averaged in. |
+| Calibration: Aeron's own cluster echo benchmark on the same three hosts and settings | session, before the matrix | Shows the tuned cluster commits near the 95 µs the plan expects. Without it a slow cluster looks like a slow arm and the hop's share of the loop is unknown. |
+| Stage split of the loop: client to leader ingress, ingress to commit, commit to the callback | one run per rate | The rule judges the whole loop; the split says which stage a failed percentile came from. From timestamps in the marker and the sequencer's counters, not a second histogram on the hot path. |
+| Merged histogram of a cell's runs, and its worst run, beside the median of the per-run percentiles | cell | The median of five p99.9 values hides a bad run. |
+| Achieved rate and the declines, with the rule for them: a declined command is retried at the same index and its latency runs from the intended send time (`HostedHopBench.cpp`, `Run::due`), so it counts; the achieved rate is reported with every percentile | run | At 50k msg/s hosted-backoff declined 8–10% of the offered commands in the runs where it declined; a percentile over completed commands alone would not show it. |
+| Leader member, and whether the leader's host also runs the bench | run | Placement is a variable; the writeback fix was shown on one leader. |
+| A run's stall flag: p99.9 ≥ 5 ms, or the recorder's max write time ≥ 10 ms | run | A flagged run is rerun and reported, not entered in the rule's comparison, so the rule measures the hop and not the volume. |
+| Per-minute percentiles, RSS of the bench, the host and the members, the stub's retained count, archive bytes and heap after GC | soak | One hour-long percentile cannot show a slope. Pass: none in RSS or retained count. |
+| Time from `LeadershipChanged` to the first sequenced command, and the election's duration, under load | gate edge | The figure an operator plans failover around; the set records loss and catch-up but not this. |
+| `fdatasync` latency (`bpftrace`) beside the sequencer's p99.9 | sync comparison | The comparison reports the rate's latency, not what the forced write itself costs. |
+| Producers: 1, 4 and 16 sessions at the same total rate, `direct` and `hosted-spin` | 20k and 100k msg/s | Every set has one producer; the sequencer exists to merge many. Reported, not judged by the rule. |
+
+Test 1b is repeated on a second launch of the same instances before a result decides anything: placement and neighbours vary
+between launches by more than between runs on one.
+
+**What test 1a left open.** It ran 204 unique runs, 18 B only, 10k–50k msg/s, at 3 to 10 runs per cell. At 50k msg/s 12 of 47
+`direct`, 16 of 46 `hosted-spin` and 6 of 45 `hosted-backoff` runs stalled (the archive write above). At 40k `hosted-spin`
+stalled in 2 of 3 runs and `direct` in 0 of 3, and at 20k `hosted-spin` and `hosted-backoff` once each in 10: the writeback
+setting was shown at 50k only, so 1b reruns 20k and 40k with it. Every hosted run carries a fixed number of declines that
+are not the window's, proportional to the rate (27, 54, 82, 109 and 137 at 10k to 50k msg/s, in both hosted modes, 135 runs,
+whatever the p99.9); the cause is not found, the stub's offer declines for a shut gate, a full retained queue or a
+back-pressured stream 304 and the bench does not say which. `hop-analyze.py` therefore reads `window_declines`, the real
+back-pressure; the bench now counts declines after its warm-up (`declines=`, `window_declines=`, and `warmup_declines=` for the rest), so the next runs show whether the constant is the start-up's. No run lost a marker, by the client's count; the order check above is what would show a divergence.
+
 **Tooling.** Test 1a runs on what exists. The scripts are in `seqeron-service/src/test/scripts/multihost`.
 
 - `hosted_hop_bench` (`seqeron-client/src/test/cpp-bench/HostedHopBench.cpp`, CMake target of the same name): the open-loop generator over the
   real `hosted::Application`. `--payload` sets the marker's length (18 to 8875 B) and `--warmup-ms` the discarded warm-up (default 20% of
-  the run). It prints the whole loop's p50, p99, p99.9 and max, the declines, the stub's window declines and retained count, and the
-  allocations.
+  the run). It prints the reported loop's p50, p99, p99.9 and max, the declines after the warm-up (all of them, and the stub's window
+  declines among them; the warm-up's own as `warmup_declines=`), the retained count, the allocations, and `hist=`, the reported latencies
+  as nanosecond buckets, 32 to each power of two (3% wide). `hop-analyze.py` merges a cell's histograms and prints the merged p50 to p99.99
+  and max beside the medians; they read up to 3% low.
 - The `direct` arm is `hop_bench` of the tag `cpp-direct-client-final`, built in a separate checkout against the same Aeron version
-  (§4) with `direct-hop-bench-payload.patch` applied, which gives it `--payload` and a `payload=` field in its line;
+  (§4) with `direct-hop-bench-payload.patch`, `direct-hop-bench-histogram.patch` and `direct-hop-bench-edge.patch` applied, which give it
+  `--payload`, a `payload=` field, `--flood-ms` with the gate-edge line, `--off-cluster` and `--egress-host`,
+  `warmup_declines=` and `hist=` in its line;
   `MULTIHOST_DIRECT_BENCH` names it.
 - `hop-matrix.sh` and `node.sh` start `ClientProxy` with `proxy.*` properties and run the arms and modes above, one fresh cluster per
   rate, interleaved within it. `HOP_RATES`, `HOP_REPEATS`, `HOP_SECONDS`, `HOP_MODES` and `HOP_PAYLOADS` select the set. Both
@@ -104,17 +146,34 @@ host's is shown to be zero (`hosted-facade.md` §3.5), the stub's is not. `hoste
 - `hop-knee.sh` ramps the rate on one fresh cluster per arm, payload and run, in steps of `KNEE_SECONDS`, and ends each ramp in a
   `knee` line: the last rate below the first step whose p99 exceeds `KNEE_P99_US` (default 10 ms), that loses a marker or whose
   leader moved. The limit is a choice, not a measurement; the step lines are in `hop-matrix.sh`'s format.
+- `hop-matrix.sh` runs the order check once per rate, before the cluster goes down: `node.sh queue-digest` (`QueueDigest`) reads each
+  member's recordings of group 1's queue off its archive, fails on a gap in `groupSeqNo`, and prints a CRC-32C over the frames with
+  a checkpoint every 65536; `hop-order-check.py` compares the three, and when the members stopped at different frames (the 1 Hz
+  heartbeat keeps adding them) they are digested again up to the last frame all hold. The verdict is a `# order` line of the results,
+  and `hop-analyze.py` fails a result set whose line is not `order=PASS`. It covers the rate's runs together, not each one.
+- `hop-gate-edge.sh` runs the gate-edge set: a fresh cluster per arm and repeat, a gateway host on `MULTIHOST_CLIENT` (with the
+  stub's host inside it for `hosted`), `hosted_hop_bench` or `hop_bench direct` with `--flood-ms` offering markers as fast as
+  they are taken, the leader's member stopped (`node.sh pause`) for `HOP_EDGE_PAUSE_S`, and a line per run with a verdict.
+  Hosted passes with nothing lost, duplicated or out of order, the stub retaining nothing, an edge seen and at least one
+  command dropped by the host (else the edge proved nothing); direct with nothing duplicated or out of order and an edge seen;
+  both with `hop-order-check.py`'s comparison of the members. It exits 1 if any run fails. Rehearsed on localhost: three
+  hosted repeats dropped 2048 commands each at the edges, lost none, and recovered in 25–41 ms. Four direct runs lost none either
+  (1.2–1.8 million offered each, 110 million declines): the client's offers are declined while the stopped leader back-pressures
+  ingress and the gate shuts within a cycle, so on localhost the baseline is no loss, and EC2's timing may differ.
+- `node.sh sample` also records the NIC's ENA allowance and drop counters (`ethtool -S`) in each `.samples` line.
 - `hop-analyze.py <results>…` applies the rule's latency part: per rate and hosted mode, the hosted median of each percentile
-  must lie within the direct runs' range plus the margin (`--margins`, `--min-runs`), and no run may fail or lose a marker.
+  must lie within the direct runs' range plus the margin (`--margins`, `--min-runs`), and no run may fail or lose a marker. A run with p99.9
+  at or above `--stall-us` (5 ms) is a stall: it is listed and left out of the comparison and of `--min-runs`, and each arm's worst
+  p99.9 is printed.
 
 The rate sweep, the idle-strategy set, the payload sweep and the knee of Test 1b run with these settings; the 1 KiB run at 100k msg/s is a
 second invocation with `HOP_PAYLOADS=1024 HOP_RATES=100000`. Not built yet:
 
 - the soak's histogram, since each bench keeps every sample;
-- the gate-edge set: a flood mode that counts offered, sequenced and lost commands in both benches, and a driver that pauses the leader;
 - a manifest per run, and of the recordings under "What a run records" the per-second `mpstat` and `pidstat` and the CPU of the
   host and the bench, which are gone when the run's second sample is taken; the samples cover each member's processes;
-- the rule's other criteria in `hop-analyze.py` (commands lost at a gate edge, the host's cores), and a randomised run order.
+- the rule's other criteria in `hop-analyze.py` (commands lost at a gate edge, the host's cores), and a randomised run order;
+- the calibration run, the stage split, the producer sweep and the `fdatasync` trace.
 
 The tooling is validated on localhost first (`MULTIHOST_MEMBERS=localhost,localhost,localhost`): the direct arm and the
 hosted arm must reproduce `hosted-facade.md` §3.6 within its spread before an instance is launched. A one-instance variant
@@ -244,7 +303,9 @@ git clone <this repository> ~/seqeron && cd ~/seqeron && git checkout <branch>
 cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build cmake-build-release --target hosted_hop_bench
 git worktree add ../seqeron-direct cpp-direct-client-final    # the direct arm: hop_bench of the tag
-git -C ../seqeron-direct apply "$PWD/seqeron-service/src/test/scripts/multihost/direct-hop-bench-payload.patch"
+git -C ../seqeron-direct apply "$PWD/seqeron-service/src/test/scripts/multihost/direct-hop-bench-payload.patch" \
+    "$PWD/seqeron-service/src/test/scripts/multihost/direct-hop-bench-histogram.patch" \
+    "$PWD/seqeron-service/src/test/scripts/multihost/direct-hop-bench-edge.patch"
 cmake -S ../seqeron-direct -B ../seqeron-direct/cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build ../seqeron-direct/cmake-build-release --target hop_bench
 ```

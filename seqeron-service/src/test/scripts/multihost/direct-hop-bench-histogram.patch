@@ -1,0 +1,93 @@
+diff --git a/seqeron-client/src/test/cpp-bench/HopBench.cpp b/seqeron-client/src/test/cpp-bench/HopBench.cpp
+index 854bbb0..b53f3b3 100644
+--- a/seqeron-client/src/test/cpp-bench/HopBench.cpp
++++ b/seqeron-client/src/test/cpp-bench/HopBench.cpp
+@@ -9,7 +9,9 @@
+ //   hop_bench <direct|hosted> --member M --rate R/s --count N [--client-id C] [--egress-port P] [--aeron-dir D]
+ //             [--payload B]   (direct only: the marker's length, 18 to 8875)
+ //
+-// The first 20% of the markers are warm-up and are not reported. Transport constants below are ProxyProtocol.java's.
++// The first 20% of the markers are warm-up and are not reported, nor are the declines before them (warmup_declines=).
++// hist= is the reported latencies in nanoseconds as bucket:count pairs, 32 buckets to each power of two.
++// Transport constants below are ProxyProtocol.java's.
+ 
+ #include <algorithm>
+ #include <array>
+@@ -153,9 +155,35 @@ struct Run
+     std::int64_t sent = 0;
+     std::int64_t seen = 0;
+     std::int64_t declines = 0;
++    std::int64_t declinesAtWarm = 0;
+     std::vector<std::int64_t> latency;
+ };
+ 
++// The markers before the first one reported.
++std::size_t warmCount(const Run& run)
++{
++    return static_cast<std::size_t>(std::max<std::int64_t>(2000, run.count / 5));
++}
++
++// The samples as "bucket:count" pairs, so that runs merge: 32 buckets to each power of two of the nanoseconds (3%
++// wide), a bucket's index being (log2 - 4) * 32 + the five bits under the leading one, and below 32 ns the value.
++std::string histogram(const std::vector<std::int64_t>& samples)
++{
++    std::map<int, std::int64_t> buckets;
++    for (const std::int64_t ns : samples)
++    {
++        const auto value = static_cast<std::uint64_t>(ns);
++        const int log = value < 32 ? 0 : 63 - __builtin_clzll(value);
++        buckets[value < 32 ? static_cast<int>(value) : (log - 4) * 32 + static_cast<int>((value >> (log - 5)) & 31)]++;
++    }
++    std::string text;
++    for (const auto& [bucket, count] : buckets)
++    {
++        text += (text.empty() ? "" : ",") + std::to_string(bucket) + ":" + std::to_string(count);
++    }
++    return text;
++}
++
+ class Marker
+ {
+   public:
+@@ -185,7 +213,7 @@ class Marker
+ 
+ void report(const char* arm, const Run& run, const std::int64_t rate, const std::size_t payload = MARKER_LENGTH)
+ {
+-    const auto warm = static_cast<std::size_t>(std::max<std::int64_t>(2000, run.count / 5));
++    const auto warm = warmCount(run);
+     std::vector<std::int64_t> samples;
+     for (std::size_t i = warm; i < run.latency.size(); i++)
+     {
+@@ -205,9 +233,11 @@ void report(const char* arm, const Run& run, const std::int64_t rate, const std:
+         return static_cast<double>(samples[static_cast<std::size_t>(q * static_cast<double>(samples.size() - 1))]) /
+                1000.0;
+     };
+-    std::printf("arm=%s rate=%lld payload=%zu n=%zu seen=%lld declines=%lld p50=%.1f p99=%.1f p99.9=%.1f max=%.1f (us)\n",
++    std::printf("arm=%s rate=%lld payload=%zu n=%zu seen=%lld declines=%lld warmup_declines=%lld p50=%.1f p99=%.1f "
++                "p99.9=%.1f max=%.1f (us) hist=%s\n",
+                 arm, static_cast<long long>(rate), payload, samples.size(), static_cast<long long>(run.seen),
+-                static_cast<long long>(run.declines), at(0.5), at(0.99), at(0.999), at(1.0));
++                static_cast<long long>(run.declines - run.declinesAtWarm), static_cast<long long>(run.declinesAtWarm),
++                at(0.5), at(0.99), at(0.999), at(1.0), histogram(samples).c_str());
+ }
+ 
+ std::shared_ptr<aeron::Aeron> connect(const Options& options, const std::int32_t member)
+@@ -269,6 +299,7 @@ int direct(const Options& options, const std::int64_t rate, const std::int64_t c
+         throw std::invalid_argument("payload must be within 18..8875");
+     }
+     Marker marker{ static_cast<std::size_t>(payload) };
++    const auto warm = static_cast<std::int64_t>(warmCount(run));
+     auto idle = util::resolveIdleStrategy();
+     while (!run.done(nowNs()) && listener.fault.empty())
+     {
+@@ -289,6 +320,10 @@ int direct(const Options& options, const std::int64_t rate, const std::int64_t c
+             {
+                 run.sent++;
+                 work++;
++                if (run.sent == warm)
++                {
++                    run.declinesAtWarm = run.declines;
++                }
+             }
+             else if (outcome == protocol::Publish::Refused)
+             {

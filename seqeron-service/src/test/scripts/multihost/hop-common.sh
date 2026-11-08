@@ -34,3 +34,24 @@ run_mode() {
     [[ "${arm}" == hosted ]] && node "${host}" kill host
     grep '^arm=' <<< "${output}" || echo "FAILED: ${output//$'\n'/ | }"
 }
+
+# check_order <label> — digests each member's queue and compares them (hop-order-check.py). The cluster's 1 Hz heartbeat
+# keeps adding frames, so when the members stopped at different frames they are digested again up to the last frame
+# all hold. Prints the verdict as a "# order" line, and fails on a divergence or a gap.
+check_order() {
+    local dir id status=0 verdict upto=""
+    dir="$(mktemp -d)"
+    for pass in 1 2; do
+        for id in 0 1 2; do
+            MULTIHOST_DIGEST_UPTO="${upto:-9223372036854775807}" node "${MEMBERS[$id]}" queue-digest "${id}" \
+                > "${dir}/${id}" &
+        done
+        wait || true
+        verdict="$("${MH_DIR}/hop-order-check.py" "${dir}/0" "${dir}/1" "${dir}/2")" && status=0 || status=$?
+        (( status == 3 )) || break
+        upto="$(sed -n 's/.* min=\([0-9]*\) .*/\1/p' <<< "${verdict}")"
+    done
+    rm -rf "${dir}"
+    echo "# order $1 ${verdict:-order=FAIL}"
+    (( status == 0 ))
+}
