@@ -90,8 +90,9 @@ Limitations
 - **seqeron protocol changes are not rolling.** seqeron's own protocol — the message envelope and system
   messages — changes rarely, but a change cannot be rolled out across a running cluster: every member,
   gateway host and client moves together, and the recorded history is purged. seqeron is pre-1.0, and minor releases break the API.
-- **No performance figures.** Latency, throughput and capacity have not been measured on production
-  hardware, so a deployment is sized by measuring on its own.
+- **No production performance figures.** Latency, throughput and capacity have not been measured on production
+  hardware, so a deployment is sized by measuring on its own. The measurements on EC2 are in
+  [Benchmark Results](doc/ec2-results.md); the method is in [Tests on EC2](doc/ec2-tests.md).
 - **C# trails by one Aeron version.** Aeron.NET is a release behind Aeron. Spec **V-1** records the
   exception and the evidence that the two interoperate; it is re-verified on every Aeron upgrade.
 
