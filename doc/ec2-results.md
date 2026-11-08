@@ -165,9 +165,12 @@ relay serves it. Preloads of 400,000 and 4,000,000 messages, quiet and with a pr
   about 1.25 GB/s. The relay is close to its limit, and one replay is one flow.
 - **A producer running costs the local replay 30% on the large archive** (1.6 s to 2.1 s) and the small one nothing.
   One run each does not separate that from noise.
-- **The fourth run did not complete.** The relay's follower dropped frames when its retained-frame buffer filled
-  (65,536 frames, 16 MB) and ended with 2,778,464 frames delivered in order against the 4 million preloaded. Commit
-  `6e938ab4` changes how the remote follower starts and postdates the image, so this may be the fault it fixed. Not rerun.
+- **The fourth run did not complete, and the cause is unconfirmed.** The follower reported caught up with 2,778,464
+  frames delivered in order against the 4 million preloaded. The likely cause is that it caught up at the end of the
+  gateway host's recording while the relay was still copying the preload. Its retained-frame buffer (65,536 frames,
+  16 MB) also overflowed, but that makes the follower resume rather than report caught up, and the logs do not show it
+  to be the cause. Commit `6e938ab4` restarts the remote follow until it has delivered the preload and postdates the
+  image, so it may be the fault it fixed. Not rerun.
 
 ## 4. What this does not show
 
