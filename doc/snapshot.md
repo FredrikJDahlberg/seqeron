@@ -158,8 +158,7 @@ of a source serializing the same state to the same bytes (§8).
 
 Each instance has a directory of its own, the snapshot directory on either façade, which a `SnapshotListener`
 requires. A restart restores from what it holds, so it must outlive the process, and no other instance may
-write to it, the other instance of a gateway pair included. §11 proposes a snapshot server per host in its
-place.
+write to it, the other instance of a gateway pair included. §11 proposes fetching files between hosts.
 
 A round is written as `<round>.tmp`: the records, each a little-endian uint16 length followed by its
 bytes, then a trailer:
@@ -616,7 +615,7 @@ the cut, so when the replica returns its newest file is cut below the recording'
 it (spec R-2), the walk finds a first frame that is not `groupSeqNo` 1, and it is fenced until a peer's file is
 copied in (§4.1, §10.6). That includes a replica that was down only across the round. The peers' replicas ran
 the same state machine and confirmed the round, so a file exists; copying it is the operator's step until the
-server of §11 fetches it.
+fetch of §11 does it.
 
 **A replica that joined and does not confirm** leaves the round unsafe: a replica that is slow makes it safe
 when it confirms, one that stops or misses the round (§12) never does. The member keeps its previous
@@ -709,9 +708,11 @@ state, so any instance's file restores any other. It holds for seqeron's replica
   (§7 step 4) and gets the next `LeadershipChanged` from the replay.
 - `ReplayerService.checkReady` serves a recording whatever its first frame, as in §10.6.
 
-## 11. The snapshot server
+## 11. Offloaded snapshots
 
-Proposed, not implemented: a snapshot server per host in place of each instance's directory (§4.1), so that a damaged file falls back to an older round and a host with no file fetches one from a peer. The design is in [`snapshot-server.md`](snapshot-server.md). It was written for an earlier confirmation scheme and is to be revised before it is built.
+Proposed, not implemented: the instance that may publish serializes nothing and fetches the round's file from
+the source's other instances — the followers' replicas, a gateway's standby, or a snapshot host — and an instance
+with no usable file fetches one from a peer. The design is in [`snapshot-offload.md`](snapshot-offload.md).
 
 ## 12. Costs and limits
 
@@ -733,7 +734,7 @@ Proposed, not implemented: a snapshot server per host in place of each instance'
 - **Catching up costs files.** A replica catching up through old rounds serializes and writes a file at
   each `SnapshotStarted` it passes.
 - **No file means a full replay**: a new host, a lost disk, a purged log (§7 step 3).
-  A peer's file spares it that (§4.1). The server proposed in §11 fetches one.
+  A peer's file spares it that (§4.1). The fetch proposed in §11 gets one.
 - **Durability is paid off the dispatch thread.** Forcing a file to disk takes milliseconds on local SSDs
   and up to about a hundred on network block storage, on the store's own thread. An OS crash before the
   newest file is durable leaves the previous confirmed one, which is deleted only after it.

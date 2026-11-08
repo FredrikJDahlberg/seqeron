@@ -1333,6 +1333,9 @@ The motivation is a smaller code base, and with it less maintenance and complexi
 **The first stage is C++ alone**: the direct C++ façades are retired and the hosted stub is the only C++ client.
 The C# client stays direct. Java's direct façades stay, since the host is built on them.
 
+The Java host is the only host and is normative where this section is silent: a stub is conformant when it
+agrees with it ([`hosted-facade.md`](hosted-facade.md) §1).
+
 The client keeps what is the application's: its state, a deterministic reply (**A-3**), deterministic
 snapshot records (**A-6**) and `OutstandingWork` (**A-2**). The host's façade is built with no tracker.
 
