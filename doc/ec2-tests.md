@@ -247,6 +247,20 @@ The members run the archive with Aeron's default `aeron.archive.file.sync.level`
 Running test 1 again with `MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1
 -Daeron.archive.catalog.file.sync.level=1"` measures what forcing it would cost on the instance's storage.
 
+On c6in.8xlarge members with gp3 root volumes, at 20k msg/s, 18-byte payload, three runs of each arm per setting (one launch,
+leader member 2, order check `PASS` in both), latency in µs:
+
+| arm | sync level 0: p50 | p99 | sync level 1: p50 | p99 |
+| --- | --- | --- | --- | --- |
+| direct | 36.0–37.5 | 45.4–52.5 | 6537–6599 | 8920–9014 |
+| hosted-spin | 36.7–37.7 | 47.7–50.0 | 6458–6507 | 8910–8983 |
+| hosted-backoff | 92.9–99.6 | 121.9–132.3 | 6496–6572 | 8948–9018 |
+
+Forcing the archive and catalog adds about 6.5 ms at the median and 9 ms at p99, 175 times the unforced median, against the
+0.5–1 ms a single forced write is expected to cost on EBS (§6); the cause was not traced (the `fdatasync` trace is not built).
+The three arms agree within 2% with sync on, so the idle strategy's 60 µs does not show. The p99.9 is 9.5–12.6 ms and the maxima
+12.8–31 ms; with sync off the maxima are 0.2–3.4 ms.
+
 ## 2. Instances and cost
 
 | Role | Instance | vCPU / cores | Network | $/hr |
