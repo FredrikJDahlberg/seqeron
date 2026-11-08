@@ -54,7 +54,7 @@ follow() {
     delivered="$(node "${host}" last-line "${name}" "frames delivered in order:" | sed 's/.*: //')"
     if [[ -z "${delivered}" ]] || (( delivered < PRELOAD )); then
         echo "ERROR: ${name} delivered ${delivered:-no count}, fewer than the ${PRELOAD} preloaded" >&2
-        return 1
+        return 2
     fi
     echo "${elapsed}"
 }
@@ -87,8 +87,21 @@ node "${MULTIHOST_CLIENT}" wait-log ReplayerServer-3 "serving replay" "${TIMEOUT
     exit 1
 }
 ready_ms=$(( $(now_ms) - start ))
-remote_ms="$(follow "${MULTIHOST_CLIENT}" cold-remote 3)"
-report "remote (gateway host, udp relay): serving in ${ready_ms}ms, then caught up in ${remote_ms}ms," \
-       "$(rate "${archive_kb}" $(( ready_ms + remote_ms ))) MB/s overall"
+# "serving replay" is logged when the host's recording exists, not when the relay has copied the history, and a cold
+# follow is caught up at the recording's current end. A follow that delivered fewer than the preload started before the
+# relay got there, so it is started again until the host holds it all.
+attempts=1
+deadline=$(( $(now_ms) + TIMEOUT * 1000 ))
+while true; do
+    status=0
+    remote_ms="$(follow "${MULTIHOST_CLIENT}" cold-remote 3)" || status=$?
+    (( status == 2 )) || break
+    (( $(now_ms) < deadline )) || { echo "ERROR: the gateway host held less than the preload after ${TIMEOUT} s" >&2; exit 1; }
+    attempts=$(( attempts + 1 ))
+    sleep 1
+done
+(( status == 0 )) || exit 1
+report "remote (gateway host, udp relay): serving in ${ready_ms}ms, then caught up in ${remote_ms}ms" \
+       "(follow attempt ${attempts}), $(rate "${archive_kb}" $(( ready_ms + remote_ms ))) MB/s overall"
 
 mh_log "results in ${RESULTS}"
