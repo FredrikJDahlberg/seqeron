@@ -117,6 +117,19 @@ whatever the p99.9); the cause is not found, the stub's offer declines for a shu
 back-pressured stream 304 and the bench does not say which. `hop-analyze.py` therefore reads `window_declines`, the real
 back-pressure; the bench now counts declines after its warm-up (`declines=`, `window_declines=`, and `warmup_declines=` for the rest), so the next runs show whether the constant is the start-up's. No run lost a marker, by the client's count; the order check above is what would show a divergence.
 
+**Test 1a at five runs per cell.** One launch of the refreshed image (3 × c6in.8xlarge and a c6in.4xlarge driver), 18 B, 5 runs per arm at 10k, 20k and 50k msg/s, 45 runs; the order check passed at all three rates (4,500,710, 9,000,721 and 22,500,740 frames). `hop-analyze.py` found no stalled run and applied the placeholder margins (25 µs p50, 250 µs p99, 2 ms p99.9); the figures are the hosted median minus the direct median.
+
+| Rate | Mode | p50 | p99 | p99.9 | Rule |
+| --- | --- | --- | --- | --- | --- |
+| 10k | `hosted-spin` | −1.1 µs | −0.9 µs | +1.8 µs | pass |
+| 10k | `hosted-backoff` | +55.4 µs | +64.0 µs | +73.3 µs | fail (p50) |
+| 20k | `hosted-spin` | +0.1 µs | +3.3 µs | +2.8 µs | pass |
+| 20k | `hosted-backoff` | +52.8 µs | +81.3 µs | +85.2 µs | fail (p50) |
+| 50k | `hosted-spin` | +3.4 µs | +2.5 µs | +227 µs | pass |
+| 50k | `hosted-backoff` | +30.1 µs | +37.9 µs | +275 µs | pass |
+
+`hosted-spin` matches `direct` at p50 and p99 at every rate (merged p50 and p99 at 10k and 20k are equal to the printed digit). At 50k all three arms have a merged p99.9 of about 2.1–2.4 ms, the archive-write stall. `hosted-backoff` costs about 55 µs at p50 at 10k and 20k; it passes at 50k only because `direct`'s own p50 spread there is wide (44.6–73.9 µs), and its p50 is still about 30 µs higher. One 20k `hosted-backoff` run had a p99.9 of 3.27 ms, under the 5 ms stall cutoff, so it counted. The margins are placeholders until the owner sets them, so the verdicts are provisional.
+
 **Tooling.** Test 1a runs on what exists. The scripts are in `seqeron-service/src/test/scripts/multihost`.
 
 - `hosted_hop_bench` (`seqeron-client/src/test/cpp-bench/HostedHopBench.cpp`, CMake target of the same name): the open-loop generator over the
@@ -159,11 +172,13 @@ back-pressure; the bench now counts declines after its warm-up (`declines=`, `wi
   both with `hop-order-check.py`'s comparison of the members. It exits 1 if any run fails. The flood ends at `HOP_EDGE_FLOOD_MS`;
   a run that offers `HOP_EDGE_COUNT` markers (default 60 million) fails, since the pause may then come after the last one. A marker's
   index is 28 bits in both benches, so a run holds 268 million, and a larger `--count` is refused.
-  On c6in.8xlarge members, five runs of each arm: hosted lost, duplicated and reordered nothing, the host dropped 2048–3072 commands
-  at the edges, the stub retained none, and the gate was shut 0.2–0.3 ms and recovered in 11.6–20.4 ms; direct lost, duplicated and
-  reordered nothing either, saw 1–3 edges, and recovered in 1.7–20.6 ms, the client's offers being declined (about 50 million)
-  while the stopped leader back-pressures ingress. The direct arm offered about 4 million more markers in the same flood. Offers are
-  declined at whatever rate each arm drains, so that is not a throughput figure; the knee of Test 1b is.
+  On c6in.8xlarge members, five runs of each arm, twice (two launches): hosted lost, duplicated and reordered nothing, the host
+  dropped 1024–3072 commands at the edges (1024 per pass over a full window), the stub retained none, and the gate was shut 0.2–0.7 ms
+  and recovered in 8.9–22.5 ms; direct lost, duplicated and reordered nothing either, saw 1–3 edges, and recovered in 1.7–20.6 ms,
+  the client's offers being declined (44–59 million) while the stopped leader back-pressures ingress. In the second launch two direct
+  runs held the gate shut for 1426 and 1876 ms, and a pause gave 1–3 edges; the member logs of that launch were not kept, so neither is
+  explained. The direct arm offered 4–8 million more markers in the same flood (17.6–22.3 million against 13.9–16.5 million in the
+  second launch). Offers are declined at whatever rate each arm drains, so that is not a throughput figure; the knee of Test 1b is.
 - `node.sh sample` also records the NIC's ENA allowance and drop counters (`ethtool -S`) in each `.samples` line.
 - `hop-analyze.py <results>…` applies the rule's latency part: per rate and hosted mode, the hosted median of each percentile
   must lie within the direct runs' range plus the margin (`--margins`, `--min-runs`), and no run may fail or lose a marker. A run with p99.9
