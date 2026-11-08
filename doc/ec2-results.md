@@ -156,7 +156,7 @@ relay serves it. Preloads of 400,000 and 4,000,000 messages, quiet and with a pr
 | 230 MB | none | 1615 ms, 143 MB/s | 2506 ms serving, then 1621 ms; 56 MB/s overall |
 | 230 MB | running | 1618 ms, 142 MB/s | 1942 ms serving, then 1652 ms; 64 MB/s overall |
 | 2304 MB | none | 1619 ms, 1423 MB/s | 1623 ms serving, then 2142 ms; 612 MB/s overall |
-| 2304 MB | running | 2125 ms, 1084 MB/s | did not complete |
+| 2304 MB | running | 2125 ms, 1084 MB/s | did not complete, cause unconfirmed |
 
 - **Local replay is about 1.6 s whatever the size** between 230 MB and 2.3 GB, so its rate rises with the archive: the time
   is a fixed cost, not a bandwidth. Do not quote the MB/s of the small archive as a rate.
