@@ -156,10 +156,14 @@ back-pressure; the bench now counts declines after its warm-up (`declines=`, `wi
   they are taken, the leader's member stopped (`node.sh pause`) for `HOP_EDGE_PAUSE_S`, and a line per run with a verdict.
   Hosted passes with nothing lost, duplicated or out of order, the stub retaining nothing, an edge seen and at least one
   command dropped by the host (else the edge proved nothing); direct with nothing duplicated or out of order and an edge seen;
-  both with `hop-order-check.py`'s comparison of the members. It exits 1 if any run fails. Rehearsed on localhost: three
-  hosted repeats dropped 2048 commands each at the edges, lost none, and recovered in 25–41 ms. Four direct runs lost none either
-  (1.2–1.8 million offered each, 110 million declines): the client's offers are declined while the stopped leader back-pressures
-  ingress and the gate shuts within a cycle, so on localhost the baseline is no loss, and EC2's timing may differ.
+  both with `hop-order-check.py`'s comparison of the members. It exits 1 if any run fails. The flood ends at `HOP_EDGE_FLOOD_MS`;
+  a run that offers `HOP_EDGE_COUNT` markers (default 60 million) fails, since the pause may then come after the last one. A marker's
+  index is 28 bits in both benches, so a run holds 268 million, and a larger `--count` is refused.
+  On c6in.8xlarge members, five runs of each arm: hosted lost, duplicated and reordered nothing, the host dropped 2048–3072 commands
+  at the edges, the stub retained none, and the gate was shut 0.2–0.3 ms and recovered in 11.6–20.4 ms; direct lost, duplicated and
+  reordered nothing either, saw 1–3 edges, and recovered in 1.7–20.6 ms, the client's offers being declined (about 50 million)
+  while the stopped leader back-pressures ingress. The direct arm offered about 4 million more markers in the same flood. Offers are
+  declined at whatever rate each arm drains, so that is not a throughput figure; the knee of Test 1b is.
 - `node.sh sample` also records the NIC's ENA allowance and drop counters (`ethtool -S`) in each `.samples` line.
 - `hop-analyze.py <results>…` applies the rule's latency part: per rate and hosted mode, the hosted median of each percentile
   must lie within the direct runs' range plus the margin (`--margins`, `--min-runs`), and no run may fail or lose a marker. A run with p99.9

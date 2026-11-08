@@ -79,10 +79,10 @@ constexpr std::uint16_t MARKER_BLOCK_LENGTH = 8;
 constexpr std::size_t HEADER = 8;
 constexpr std::size_t MIN_PAYLOAD = HEADER + MARKER_BLOCK_LENGTH + sizeof(std::uint16_t);
 constexpr std::size_t MAX_PAYLOAD = 8875;
-// Set in the seqNo of every marker to tell them from other sources'. Bits 24-39 salt it per run, since the host
+// Set in the seqNo of every marker to tell them from other sources'. Bits 28-39 salt it per run, since the host
 // replays the queue's history; the index is below.
 constexpr std::int64_t OWN_TAG = 1LL << 40;
-constexpr int SALT_SHIFT = 24;
+constexpr int SALT_SHIFT = 28;
 constexpr std::int64_t INDEX_MASK = (1LL << SALT_SHIFT) - 1;
 constexpr std::int64_t TIMEOUT_NS = 90'000'000'000LL;
 constexpr std::int64_t START_DELAY_NS = 200'000'000LL;
@@ -128,7 +128,7 @@ struct Run
     Run(const std::int64_t rate, const std::int64_t count) :
       count{ count },
       interval{ 1'000'000'000LL / rate },
-      salt{ ((nowNs() / 1'000'000'000LL) & 0xFFFF) << SALT_SHIFT },
+      salt{ ((nowNs() / 1'000'000'000LL) & 0xFFF) << SALT_SHIFT },
       latency(static_cast<std::size_t>(count), -1)
     {}
 
@@ -348,6 +348,10 @@ int hostedRun(const Options& options)
 {
     const std::int64_t rate = options.integer("rate", 5000);
     const std::int64_t count = options.integer("count", 30000);
+    if (count > INDEX_MASK)
+    {
+        throw std::invalid_argument("count exceeds the marker index");
+    }
     const auto member = static_cast<std::int32_t>(options.integer("member", 0));
     const auto payload = static_cast<std::size_t>(options.integer("payload", static_cast<std::int64_t>(MIN_PAYLOAD)));
     if (rate <= 0 || count <= 0 || payload < MIN_PAYLOAD || payload > MAX_PAYLOAD)

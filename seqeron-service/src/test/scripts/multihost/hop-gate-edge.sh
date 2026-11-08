@@ -23,6 +23,8 @@
 #   HOP_EDGE_REPEATS     repeats                                         (default 5)
 #   HOP_EDGE_ARMS        the arms, space-separated                       (default "hosted direct")
 #   HOP_EDGE_SETTLE_MS   how long after the last sequenced marker the bench waits for the rest  (default 20000)
+#   HOP_EDGE_COUNT       the most markers a run may offer; a run that reaches it fails, for the pause may have come
+#                        after the last (default 60000000)
 #   HOP_EDGE_FLOOD_MS    how long the bench offers markers               (default 20000)
 #   HOP_EDGE_BEFORE_S    flood seconds before the leader is stopped      (default 5)
 #   HOP_EDGE_PAUSE_S     seconds the leader is stopped                   (default 4.5)
@@ -44,6 +46,7 @@ REPEATS="${HOP_EDGE_REPEATS:-5}"
 SETTLE_MS="${HOP_EDGE_SETTLE_MS:-20000}"
 read -r -a ARMS <<< "${HOP_EDGE_ARMS:-hosted direct}"
 FLOOD_MS="${HOP_EDGE_FLOOD_MS:-20000}"
+COUNT="${HOP_EDGE_COUNT:-60000000}"
 BEFORE_S="${HOP_EDGE_BEFORE_S:-5}"
 PAUSE_S="${HOP_EDGE_PAUSE_S:-4.5}"
 SPIN="${HOP_EDGE_SPIN:-false}"
@@ -98,7 +101,7 @@ run_arm() {
 
     out="$(mktemp)"
     node "${MULTIHOST_CLIENT}" bench --cpus "${MULTIHOST_BENCH_CPUS:-}" "${bench_args[@]}" --rate 1000000 \
-        --count 8000000 --flood-ms "${FLOOD_MS}" --settle-ms "${SETTLE_MS}" > "${out}" 2>&1 &
+        --count "${COUNT}" --flood-ms "${FLOOD_MS}" --settle-ms "${SETTLE_MS}" > "${out}" 2>&1 &
     bench_pid=$!
     node "${MULTIHOST_CLIENT}" wait-log bench FLOODING 60 || {
         echo "ERROR: the bench is not flooding after 60 s" >&2
@@ -133,6 +136,7 @@ run_arm() {
         lost="$(number "${bench_line}" lost)"
         [[ "$(number "${bench_line}" duplicates)" == 0 ]] || reasons+=("duplicates")
         [[ "$(number "${bench_line}" out_of_order)" == 0 ]] || reasons+=("out of order")
+        (( $(number "${bench_line}" offered) < COUNT )) || reasons+=("flood ended at HOP_EDGE_COUNT")
         (( $(number "${bench_line}" edges) >= 1 )) || reasons+=("no gate edge")
         if [[ "${arm}" == hosted ]]; then
             [[ "${lost}" == 0 ]] || reasons+=("lost ${lost}")

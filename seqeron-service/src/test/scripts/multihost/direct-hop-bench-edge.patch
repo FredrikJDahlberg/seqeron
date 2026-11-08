@@ -1,5 +1,5 @@
 diff --git a/seqeron-client/src/test/cpp-bench/HopBench.cpp b/seqeron-client/src/test/cpp-bench/HopBench.cpp
-index b53f3b3..ebe1d96 100644
+index b53f3b31..13a0d982 100644
 --- a/seqeron-client/src/test/cpp-bench/HopBench.cpp
 +++ b/seqeron-client/src/test/cpp-bench/HopBench.cpp
 @@ -8,6 +8,12 @@
@@ -15,6 +15,28 @@ index b53f3b3..ebe1d96 100644
  //
  // The first 20% of the markers are warm-up and are not reported, nor are the declines before them (warmup_declines=).
  // hist= is the reported latencies in nanoseconds as bucket:count pairs, 32 buckets to each power of two.
+@@ -57,10 +63,10 @@ constexpr std::uint16_t PROBE_SCHEMA_ID = 214;
+ constexpr std::uint16_t MARKER_BLOCK_LENGTH = 8;
+ constexpr std::size_t MESSAGE_HEADER_LENGTH = 8;
+ constexpr std::uint16_t MARKER_LENGTH = MESSAGE_HEADER_LENGTH + MARKER_BLOCK_LENGTH + sizeof(std::uint16_t);
+-// Set in the seqNo of every marker, as HostedTestApplicationClient does, to tell them from other sources'. Bits 24-39
++// Set in the seqNo of every marker, as HostedTestApplicationClient does, to tell them from other sources'. Bits 28-39
+ // salt it per run, since a replica replays the queue's history, earlier runs' markers included; the index is below.
+ constexpr std::int64_t OWN_TAG = 1LL << 40;
+-constexpr int SALT_SHIFT = 24;
++constexpr int SALT_SHIFT = 28;
+ constexpr std::int64_t INDEX_MASK = (1LL << SALT_SHIFT) - 1;
+ constexpr std::int64_t TIMEOUT_NS = 90'000'000'000LL;
+ constexpr std::int64_t START_DELAY_NS = 200'000'000LL;
+@@ -123,7 +129,7 @@ struct Run
+     Run(const std::int64_t rate, const std::int64_t count) :
+       count{ count },
+       interval{ 1'000'000'000LL / rate },
+-      salt{ ((nowNs() / 1'000'000'000LL) & 0xFFFF) << SALT_SHIFT },
++      salt{ ((nowNs() / 1'000'000'000LL) & 0xFFF) << SALT_SHIFT },
+       latency(static_cast<std::size_t>(count), -1)
+     {}
+ 
 @@ -135,19 +141,53 @@ struct Run
      void received(const std::int64_t seqNo, const std::int64_t now)
      {
@@ -176,3 +198,14 @@ index b53f3b3..ebe1d96 100644
      report("direct", run, rate, marker.length());
      return 0;
  }
+@@ -701,6 +788,10 @@ int main(const int argc, char** argv)
+     {
+         const std::int64_t rate = options.integer("rate", 5000);
+         const std::int64_t count = options.integer("count", 30000);
++        if (count > INDEX_MASK)
++        {
++            throw std::invalid_argument("count exceeds the marker index");
++        }
+         if (mode == "direct")
+         {
+             return direct(options, rate, count);
