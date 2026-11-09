@@ -7,9 +7,10 @@
 #                                                    start a Java main off the uber jar and the test classes
 #   node.sh run   [--cpus L] <name> <class> [-Dk=v…] [-- args…]
 #                                                    the same in the foreground, exiting with it
-#   node.sh bench [--cpus L] <direct|hosted> <arguments…>
+#   node.sh bench [--cpus L] <direct|hosted|java|csharp> <arguments…>
 #                                                    run that arm's bench in the foreground: direct is hop_bench
-#                                                    of the tag cpp-direct-client-final, hosted is hosted_hop_bench
+#                                                    of the tag cpp-direct-client-final, hosted is hosted_hop_bench,
+#                                                    java is DirectHopBench, csharp is Seqeron.HopBench
 #   node.sh kill <name>                              stop what start, member or gateway-host started as <name>
 #   node.sh pause <name> | resume <name>             SIGSTOP / SIGCONT what start, member or gateway-host started as <name>
 #   node.sh wait-log <name> <pattern> <seconds>      wait for <pattern> in <name>'s log
@@ -47,6 +48,7 @@
 #   MULTIHOST_BENCH_IDLE   hop_bench's SEQERON_IDLE_STRATEGY             (default busyspin)
 #   MULTIHOST_HOP_BENCH     the hosted_hop_bench binary                   (default cmake-build-release/hosted_hop_bench)
 #   MULTIHOST_DIRECT_BENCH  hop_bench built on the tag, for the direct arm (required for it)
+#   MULTIHOST_CSHARP_BENCH  the Seqeron.HopBench binary (dotnet publish), for the csharp arm (required for it)
 #   MULTIHOST_CLIENT        this host's address when it runs the gateway host, as the members reach it
 
 set -euo pipefail
@@ -177,6 +179,14 @@ bench)
         ;;
     hosted)
         bench=("${HOP_BENCH}" "$@")
+        ;;
+    java)
+        seqeron_require_jar
+        bench=(java "${SEQERON_SERVER_JAVA_OPTS[@]}" "-Dbench.idle=${MULTIHOST_BENCH_IDLE:-busyspin}"
+               -cp "${SEQERON_JAR}:${TEST_CLASSES}" org.limitless.seqeron.tools.DirectHopBench "$@")
+        ;;
+    csharp)
+        bench=("${MULTIHOST_CSHARP_BENCH:?MULTIHOST_CSHARP_BENCH names the published Seqeron.HopBench}" "$@")
         ;;
     *)
         echo "ERROR: unknown arm ${arm}" >&2

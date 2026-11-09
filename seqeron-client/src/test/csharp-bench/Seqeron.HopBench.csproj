@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The C# twin of tools/DirectHopBench, which hop-knee.sh drives on EC2 (doc/ec2-tests.md, Test 1b). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Seqeron.HopBench</AssemblyName>
+    <RootNamespace>Org.Limitless.Seqeron.Tools</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../main/csharp/Seqeron.Client.csproj" />
+  </ItemGroup>
+</Project>

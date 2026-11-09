@@ -15,7 +15,8 @@
 #   KNEE_P99_US    the p99 that counts as saturated, in microseconds (default 10000)
 #   KNEE_RUNS      ramps of each mode and payload       (default 2)
 #   KNEE_PAYLOADS  marker lengths in bytes, space-separated (default "18 1024")
-#   HOP_MODES      the modes, space-separated           (default "direct hosted-spin")
+#   HOP_MODES      the modes, space-separated           (default "direct hosted-spin"; "java" and "csharp" run the
+#                                                        Java and C# Application, hop-common.sh)
 #
 # A bench keeps every sample of a run, so KNEE_MAX times KNEE_SECONDS is its memory: 8 bytes a marker.
 # The prerequisites and the pinning variables are hop-matrix.sh's.

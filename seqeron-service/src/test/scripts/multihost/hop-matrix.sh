@@ -8,6 +8,7 @@
 #   direct          hop_bench direct, built on the tag: the C++ Application on the leader's driver
 #   hosted-spin     hosted_hop_bench against ClientProxy with proxy.spin=true
 #   hosted-backoff  the same with the host backing off between messages
+#   java, csharp    DirectHopBench and Seqeron.HopBench: the Java and C# Application on the leader's driver (HOP_MODES only)
 #
 # A run is HOP_SECONDS at its rate; each bench drops the first 20% of it. A run whose leader is not the block's fails
 # the matrix rather than measure an election. Every member's /proc counters (node.sh sample) are taken before and

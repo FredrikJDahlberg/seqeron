@@ -132,6 +132,11 @@ back-pressure; the bench now counts declines after its warm-up (`declines=`, `wi
 
 **Tooling.** Test 1a runs on what exists. The scripts are in `seqeron-service/src/test/scripts/multihost`.
 
+- `DirectHopBench` (`seqeron-service/src/test/java/org/limitless/seqeron/tools`) and `Seqeron.HopBench`
+  (`seqeron-client/src/test/csharp-bench`) are the Java and C# clients' arms of the knee: the same open-loop generator over those
+  languages' `Application` on the leader's driver, printing `hosted_hop_bench`'s line without its `window_declines=` and `allocs=`. They
+  are the modes `java` and `csharp` of `hop-knee.sh` and `hop-matrix.sh` (`HOP_MODES="java csharp"`), take `--payload`, and use
+  `MULTIHOST_BENCH_IDLE` (default `busyspin`) as the idle strategy; `MULTIHOST_CSHARP_BENCH` names the published C# binary.
 - `hosted_hop_bench` (`seqeron-client/src/test/cpp-bench/HostedHopBench.cpp`, CMake target of the same name): the open-loop generator over the
   real `hosted::Application`. `--payload` sets the marker's length (18 to 8875 B) and `--warmup-ms` the discarded warm-up (default 20% of
   the run). It prints the reported loop's p50, p99, p99.9 and max, the declines after the warm-up (all of them, and the stub's window
@@ -350,6 +355,7 @@ git -C ../seqeron-direct apply "$PWD/seqeron-service/src/test/scripts/multihost/
     "$PWD/seqeron-service/src/test/scripts/multihost/direct-hop-bench-edge.patch"
 cmake -S ../seqeron-direct -B ../seqeron-direct/cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build ../seqeron-direct/cmake-build-release --target hop_bench
+dotnet publish seqeron-client/src/test/csharp-bench/Seqeron.HopBench.csproj -c Release -o build/hopbench-csharp   # the csharp arm; needs a .NET 10 SDK
 ```
 
 Tuning, all of it applied at boot so the image carries it:
@@ -382,6 +388,7 @@ export MULTIHOST_MEMBERS=10.0.0.11,10.0.0.12,10.0.0.13   # private addresses, me
 export MULTIHOST_CLIENT=10.0.0.14                         # this host
 export MULTIHOST_IDLE=busyspin MULTIHOST_MEMBER_CPUS=2-11 MULTIHOST_HOST_CPUS=12-13 MULTIHOST_BENCH_CPUS=14-15
 export MULTIHOST_DIRECT_BENCH=$HOME/seqeron-direct/cmake-build-release/hop_bench
+export MULTIHOST_CSHARP_BENCH=$HOME/seqeron/build/hopbench-csharp/Seqeron.HopBench    # only for the csharp mode
 export MULTIHOST_SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"   # BatchMode refuses an unseen host key
 
 ./cluster.sh up && ./cluster.sh leader && ./cluster.sh down    # the check after launch

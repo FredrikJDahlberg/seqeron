@@ -12,6 +12,10 @@ run_mode() {
         arm=direct
         extra=(--client-id 12 --payload "${payload}")
         ;;
+    java | csharp)
+        arm="${mode}"
+        extra=(--client-id 12 --payload "${payload}")
+        ;;
     hosted-spin | hosted-backoff)
         spin=false
         [[ "${mode}" == hosted-spin ]] && spin=true
