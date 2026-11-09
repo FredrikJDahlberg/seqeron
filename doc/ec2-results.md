@@ -176,8 +176,8 @@ relay serves it. Preloads of 400,000 and 4,000,000 messages, quiet and with a pr
 
 - **One launch.** `ec2-tests.md` requires a second launch before a result decides anything, because placement and
   neighbours vary between launches by more than between runs. Nothing here has had one.
-- **One payload for latency.** 18 bytes at 20k–100k msg/s and 100 bytes in the ramps. A 1 KiB or 8 KiB payload, where the
-  stub's copy would show, was not run.
+- **Latency at fixed rates was measured below the production payload size.** Production payloads are 50–200 bytes. The
+  fixed-rate runs at 20k–100k msg/s used 18 bytes; only the saturation ramps used 100 bytes.
 - **One producer.** A sequencer exists to merge many, and the producer sweep (1, 4 and 16 sessions) was not run.
 - **No failover or gate-edge result this session.** The time from a leadership change to the first sequenced command is
   not measured here.

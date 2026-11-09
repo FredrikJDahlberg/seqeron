@@ -23,6 +23,10 @@
 #   node.sh logs                                     this host's logs as a tar stream on stdout
 #   node.sh counter-sampler <memberId>               start CounterSampler on member <memberId>'s driver, its changed
 #                                                    counters every MULTIHOST_COUNTER_MS in <run>/logs/counter-sampler.log
+#   node.sh thread-sampler <memberId>               start pidstat -t on member <memberId>'s JVM and mpstat -P ALL, once a
+#                                                    second: <run>/logs/pidstat-member-<id>.log and mpstat.log. Each
+#                                                    thread's CPU column shows where it ran, so a migration or two
+#                                                    threads on one core is visible. Needs sysstat; stop with kill or stop
 #   node.sh queue-digest <memberId>                  QueueDigest on member <memberId>'s archive: one line per recording of
 #                                                    group 1's queue, for hop-order-check.py; exits 1 on a gap;
 #                                                    MULTIHOST_DIGEST_UPTO caps the last groupSeqNo digested
@@ -225,6 +229,11 @@ logs)
 counter-sampler)
     java_main start --cpus "${MULTIHOST_COUNTER_CPUS:-0-1}" counter-sampler org.limitless.seqeron.tools.CounterSampler \
         "-Dsampler.aeronDir=$(seqeron_aeron_dir "$1")" "-Dsampler.intervalMs=${MULTIHOST_COUNTER_MS:-10}"
+    ;;
+thread-sampler)
+    command -v pidstat > /dev/null || { echo "ERROR: pidstat is not installed (package sysstat)" >&2; exit 1; }
+    detach "pidstat-member-$1" "${MULTIHOST_COUNTER_CPUS:-0-1}" pidstat -h -t -u -w -p "$(cat "${LOG_DIR}/member-$1.pid")" 1
+    detach mpstat "${MULTIHOST_COUNTER_CPUS:-0-1}" mpstat -P ALL 1
     ;;
 queue-digest)
     status=0

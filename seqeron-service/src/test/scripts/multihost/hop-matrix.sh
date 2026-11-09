@@ -13,6 +13,7 @@
 # the matrix rather than measure an election. Every member's /proc counters (node.sh sample) are taken before and
 # after each run into hop-<stamp>.samples, beside the results. Each member's driver counters are sampled every
 # MULTIHOST_COUNTER_MS (default 10, 0 for none) by CounterSampler, into its counter-sampler.log in the rate's logs.
+# MULTIHOST_THREAD_SAMPLER=1 also starts pidstat -t and mpstat on every member (node.sh thread-sampler).
 # Each rate's logs are fetched when it ends, since the next rate's fresh cluster wipes them. Before a rate's cluster
 # goes down the members' queue recordings are compared (hop-order-check.py), into a "# order" line of the results.
 #
@@ -21,7 +22,7 @@
 #   HOP_SECONDS   length of a run                    (default 30)
 #   HOP_MODES     the modes, space-separated         (default "direct hosted-spin hosted-backoff")
 #   MULTIHOST_HOST_CPUS, MULTIHOST_BENCH_CPUS   taskset CPU lists for the host JVM and hop_bench (default unpinned)
-#   HOP_PAYLOADS  marker lengths in bytes, 18 to 8875, space-separated (default "18"); every arm takes each
+#   HOP_PAYLOADS  marker lengths in bytes, 18 to 8875, space-separated (default "100"); every arm takes each
 #
 # Prerequisites on every host: ./gradlew uberJar, hosted_hop_bench built Release and, for the direct arm,
 # MULTIHOST_DIRECT_BENCH, hop_bench of the tag with direct-hop-bench-payload.patch and then
@@ -38,7 +39,7 @@ source "${MH_DIR}/hop-common.sh"
 RATES="${HOP_RATES:-10000 20000 50000}"
 REPEATS="${HOP_REPEATS:-3}"
 RUN_SECONDS="${HOP_SECONDS:-30}"
-PAYLOADS="${HOP_PAYLOADS:-18}"
+PAYLOADS="${HOP_PAYLOADS:-100}"
 MODES="${HOP_MODES:-direct hosted-spin hosted-backoff}"
 
 mkdir -p "${MULTIHOST_RESULTS}"
@@ -68,6 +69,11 @@ for rate in ${RATES}; do
     if [[ "${MULTIHOST_COUNTER_MS:-10}" != 0 ]]; then
         for id in 0 1 2; do
             node "${MEMBERS[$id]}" counter-sampler "${id}"
+        done
+    fi
+    if [[ "${MULTIHOST_THREAD_SAMPLER:-0}" == 1 ]]; then
+        for id in 0 1 2; do
+            node "${MEMBERS[$id]}" thread-sampler "${id}"
         done
     fi
     count=$(( rate * RUN_SECONDS ))

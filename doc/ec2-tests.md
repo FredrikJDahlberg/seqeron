@@ -45,12 +45,12 @@ against the arm, each run with a 30 s warm-up that is discarded and 120 s measur
 
 | set | payload | rate (msg/s) | arms | runs |
 | --- | --- | --- | --- | --- |
-| rate sweep | 18 B | 5k, 20k, 50k, 100k, 200k | `direct`, `hosted-spin` | 5 |
-| idle strategy | 18 B | 5k, 20k | `hosted-backoff` | 5 |
+| rate sweep | 100 B | 5k, 20k, 50k, 100k, 200k | `direct`, `hosted-spin` | 5 |
+| idle strategy | 100 B | 5k, 20k | `hosted-backoff` | 5 |
 | payload sweep | 1 KiB, 8 KiB (256 B only if the 1 KiB cell fails) | 20k; 1 KiB also 100k | `direct`, `hosted-spin` | 5 |
-| knee | 18 B, 1 KiB | ramp to saturation | `direct`, `hosted-spin` | 2 |
+| knee | 100 B, 1 KiB | ramp to saturation | `direct`, `hosted-spin` | 2 |
 | soak | 256 B | 20k for 1 h | `direct`, `hosted-spin` | 1 |
-| gate edge | 18 B | flood, leader paused 4.5 s | `hosted` and `direct`, both off the cluster on the fourth host | 5 |
+| gate edge | 100 B | flood, leader paused 4.5 s | `hosted` and `direct`, both off the cluster on the fourth host | 5 |
 
 The gate-edge set records, per run, the commands offered, sequenced and lost, any sequenced twice or out of order, the
 commands the host dropped at the edge, what the stub retains at the end, how long the gate was shut and how long after it
@@ -78,7 +78,7 @@ floor in every stage: the direct arm's range of fewer runs is narrower, so a hos
 After stage 1 the owner decides whether stages 2 and 3 are needed: if `hosted-spin` is inside the rule at every rate, they
 check the result and do not decide it. Stage 3 matters only once `hosted-spin` has passed, since it asks whether the default
 idle strategy is enough. The 8 KiB cell stays in stage 2 because the stub copies the payload, so its cost is the one most
-likely to grow with size; 256 B lies between the rate sweep's 18 B and 1 KiB and is run only to locate a failure there.
+likely to grow with size; 256 B lies between the rate sweep's 100 B and 1 KiB and is run only to locate a failure there.
 
 **What a run records.** The whole-loop histogram (3%-wide buckets), the achieved rate and the stub's window
 declines; the host's `queue:` line (placed, `epochDrops`, `headDeclines`, `peakQueued`), its hosted-lag counter once a second and
@@ -159,6 +159,15 @@ back-pressure; the bench now counts declines after its warm-up (`declines=`, `wi
 - `hop-knee.sh` ramps the rate on one fresh cluster per arm, payload and run, in steps of `KNEE_SECONDS`, and ends each ramp in a
   `knee` line: the last rate below the first step whose p99 exceeds `KNEE_P99_US` (default 10 ms), that loses a marker or whose
   leader moved. The limit is a choice, not a measurement; the step lines are in `hop-matrix.sh`'s format.
+- `hop-writeback.sh` sweeps the kernel's writeback timers against the tail: for each pair of `WB_EXPIRE` (`vm.dirty_expire_centisecs`)
+  and `WB_WAKEUP` (`vm.dirty_writeback_centisecs`) values it sets the members over `sudo -n sysctl`, checks the values read back, and runs
+  each of `WB_RATES` `WB_REPEATS` times, each on a fresh cluster so the archive starts empty. Every run is a line in `hop-matrix.sh`'s
+  format with `expire=` and `writeback=` appended, and each setting and rate ends in a `summary` line: runs, stalled runs (p99.9 of at
+  least `WB_STALL_US`, default 5 ms, as `hop-analyze.py` counts them), and the worst p99.9 and maximum. The members' values from before
+  are restored when it ends. The defaults cross 25/50/100/3000 with 10/20/50/500 centiseconds (3000 and 500 are the kernel's) at 50k and
+  100k msg/s with five 30 s runs, 160 runs and about 1.8 h at about 40 s a run; the image already sets 50/20, which is the cell to compare
+  the others with. It samples neither the device nor `/proc/meminfo`; `MULTIHOST_THREAD_SAMPLER=1` and the counter sampler apply as in
+  `hop-matrix.sh`.
 - `hop-matrix.sh` runs the order check once per rate, before the cluster goes down: `node.sh queue-digest` (`QueueDigest`) reads each
   member's recordings of group 1's queue off its archive, fails on a gap in `groupSeqNo`, and prints a CRC-32C over the frames with
   a checkpoint every 65536; `hop-order-check.py` compares the three, and when the members stopped at different frames (the 1 Hz
@@ -381,6 +390,7 @@ export MULTIHOST_SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" 
 HOP_RATES=20000 MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1 -Daeron.archive.catalog.file.sync.level=1" \
     ./hop-matrix.sh                                            # the sync comparison; run it again without the option
 REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and again with REPLAY_LOAD_DURING=1
+WB_EXPIRE="25 50 100" WB_WAKEUP="10 20 50" ./hop-writeback.sh  # the writeback-timer sweep; needs passwordless sudo on the members
 ```
 
 Each script's header lists its variables. Results and every host's logs land under `build/multihost` on the driver
