@@ -60,7 +60,7 @@ public final class SequencerService implements ClusteredService {
     private static final String QUEUE_FAULT_TRIGGER_FILE = "queue-stall-fault";
 
     /** Correlation id of the one repeating heartbeat timer; rescheduling it moves its deadline. */
-    private static final long HEARTBEAT_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
+    static final long HEARTBEAT_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
 
     /** Where a restored queue's publication starts in its term ids; any value serves, positions being what count. */
     private static final int INITIAL_TERM_ID = 0;
