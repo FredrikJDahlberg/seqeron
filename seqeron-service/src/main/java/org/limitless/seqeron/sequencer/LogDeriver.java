@@ -9,13 +9,19 @@ import io.aeron.cluster.codecs.SessionCloseEventDecoder;
 import io.aeron.cluster.codecs.SessionMessageHeaderDecoder;
 import io.aeron.cluster.codecs.SessionOpenEventDecoder;
 import io.aeron.cluster.codecs.TimerEventDecoder;
+import java.util.ArrayList;
+import java.util.List;
 import org.agrona.DirectBuffer;
+import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.LongHashSet;
+import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.seqeron.sbe.sequencer.SequencerStateDecoder;
 
 /**
  * Derives a member's queues from its Raft log: a {@link Sequencer} driven by the log's entries as {@link
  * SequencerService} drives one from the cluster's callbacks, so that its frames are the ones the member published
- * (doc/disk-load-plan.md, step 2a). Prototype: it starts at the log's first entry, and keeps no queue positions.
+ * (doc/disk-load-plan.md, step 2a). It starts at the log's first entry or from a {@link State}, and keeps no queue
+ * positions.
  *
  * <p>Free of the Aeron runtime: it reads the cluster's log codecs and nothing else. Single-threaded.
  */
@@ -44,6 +50,65 @@ public final class LogDeriver {
      */
     public LogDeriver(final int memberId, final Sequencer.FrameSink sink) {
         this.sequencer = new Sequencer(memberId, sink);
+    }
+
+    /**
+     * What a deriver continues from between two log entries: a checkpoint of one, or a cluster snapshot.
+     *
+     * @param sequencer    the {@link Sequencer}'s snapshot records in order, or none for one that has sequenced nothing
+     * @param openSessions the sessions the log has opened and not closed
+     */
+    public record State(List<byte[]> sequencer, long[] openSessions) { }
+
+    /** This deriver's state, between two log entries. */
+    public State state() {
+        final List<byte[]> records = new ArrayList<>();
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(4096);
+        for (int length; (length = sequencer.onSnapshot(buffer, records.size())) != 0;) {
+            final byte[] record = new byte[length];
+            buffer.getBytes(0, record);
+            records.add(record);
+        }
+        final long[] sessions = new long[openSessions.size()];
+        int i = 0;
+        for (final long sessionId : openSessions) {
+            sessions[i++] = sessionId;
+        }
+        return new State(records, sessions);
+    }
+
+    /**
+     * Continues from a state, in a deriver that has applied nothing.
+     *
+     * @param state        to continue from
+     * @param reemitMarker whether to publish the state's snapshot marker first, as a member that starts from a cluster
+     *                     snapshot does on each queue
+     * @throws IllegalStateException on records the {@link Sequencer} cannot restore
+     */
+    public void restore(final State state, final boolean reemitMarker) {
+        for (final long sessionId : state.openSessions()) {
+            openSessions.add(sessionId);
+        }
+        final List<byte[]> records = state.sequencer();
+        if (records.isEmpty()) {
+            return;
+        }
+        final UnsafeBuffer record = new UnsafeBuffer(records.getFirst());
+        final int formatVersion =
+            new SequencerStateDecoder()
+                .wrapAndApplyHeader(record, 0, new org.limitless.seqeron.sbe.sequencer.MessageHeaderDecoder())
+                .formatVersion();
+        for (int i = 0; i < records.size(); i++) {
+            record.wrap(records.get(i))
+            ;
+            sequencer.onRestore(record, record.capacity(), i, formatVersion);
+        }
+        if (!sequencer.isRestored()) {
+            throw new IllegalStateException("the Sequencer's state ended before its end record");
+        }
+        if (reemitMarker) {
+            sequencer.reemitMarker();
+        }
     }
 
     /** Where sequencing has reached. */
