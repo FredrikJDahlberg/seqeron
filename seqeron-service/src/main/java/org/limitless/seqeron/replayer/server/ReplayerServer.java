@@ -86,6 +86,8 @@ public final class ReplayerServer {
     private static final String PROP_GROUPS = "replayer.groups";
     private static final String PROP_SNAPSHOT_JOIN_MS = "replayer.snapshotJoinMs";
     private static final String PROP_QUEUE_STALL_TIMEOUT_MS = "replayer.queueStallTimeoutMs";
+    /** Prototype: a member serves a replay from a queue's first frame off the Raft log ({@link DerivingReplayer}). */
+    public static final String PROP_DERIVE_FROM_LOG = "replayer.deriveFromLog";
 
     /** Above a member's, since a host's purge cannot be undone (doc/snapshot.md §10.6). */
     static final long DEFAULT_SNAPSHOT_JOIN_MS = 10_000;
@@ -318,9 +320,12 @@ public final class ReplayerServer {
         relayThread = relays.isEmpty()
             ? null
             : new Thread(() -> AeronQueueRelay.run(relays, running, relayIdleStrategy), "relay-" + memberId);
-        final ReplayerService replayer =
-            new ReplayerService(wrapper.apply(new AeronReplayer(aeron, archive, memberId)), memberId, idleStrategy,
-                                topologyRows, relayedGroups, fatalHandler, cutIntake);
+        final Replayer recorded = new AeronReplayer(aeron, archive, memberId);
+        final Replayer served = archiveEndpoints == null && Boolean.getBoolean(PROP_DERIVE_FROM_LOG)
+            ? new DerivingReplayer(recorded, aeron, archive, memberId)
+            : recorded;
+        final ReplayerService replayer = new ReplayerService(wrapper.apply(served), memberId, idleStrategy,
+                                                             topologyRows, relayedGroups, fatalHandler, cutIntake);
         replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         if (relayThread != null) {
             relayThread.start();

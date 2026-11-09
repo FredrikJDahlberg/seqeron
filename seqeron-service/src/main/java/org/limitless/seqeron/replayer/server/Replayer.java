@@ -115,6 +115,14 @@ public interface Replayer {
      */
     void stopReplay(long replaySessionId);
 
+    /**
+     * Work of the implementation's own between requests, once a duty cycle.
+     * @return a work count for the idle strategy
+     */
+    default int doWork() {
+        return 0;
+    }
+
     /** {@link #pollArchive}'s answer once the archive has closed the control session. */
     String ARCHIVE_SESSION_CLOSED = "the control session is closed";
 

@@ -269,7 +269,7 @@ public final class ReplayerService {
             // An error answers one request and leaves the session open.
             onArchiveError("a replay", new IllegalStateException(archiveError));
         }
-        int work = drainTopologyRows();
+        int work = drainTopologyRows() + replayer.doWork();
         work += cutIntake == null ? 0 : trackCuts() + purgeBelowFloors();
         work += replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);
         if (replayer.monotonicMs() < archiveRetryAtMs) {
