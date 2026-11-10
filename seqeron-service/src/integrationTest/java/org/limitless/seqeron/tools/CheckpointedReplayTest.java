@@ -192,13 +192,23 @@ class CheckpointedReplayTest {
                                                         .orElseThrow();
                 final long tip = recorded.recordingPosition(span.recordingId());
                 final LongArrayList frames = new LongArrayList();
+                final LongArrayList seqNos = new LongArrayList();
                 assertEquals(Replayer.ScanEnd.TIP,
                              recorded.scanQueueRecording(span.recordingId(), span.startPosition(), tip,
                                                          (position, clusterSeqNo) -> {
                                                              frames.addLong(position);
+                                                             seqNos.addLong(clusterSeqNo);
                                                              return true;
                                                          }));
                 final String queue = "member " + member + "'s queue of group " + groupId;
+                assertDerivedScanIsRecorded(deriving, span.recordingId(), tip, frames, seqNos, 0, queue);
+                assertDerivedScanIsRecorded(deriving, span.recordingId(), tip, frames, seqNos, frames.size() / 2,
+                                            queue);
+                assertEquals(Replayer.ScanEnd.UNREADABLE,
+                             deriving.scanQueueRecording(span.recordingId(), frames.getLong(frames.size() / 2) + 32,
+                                                         tip, (position, clusterSeqNo) -> true),
+                             queue + ": a scan from inside a frame");
+                assertDerivedTipIsRecorded(recorded, deriving, span.recordingId(), queue);
                 final List<Fragment> whole = assertDerivedIsRecorded(aeron, archive, deriving, span.recordingId(),
                                                                      span.startPosition(), tip, queue);
                 for (final long from :
@@ -223,6 +233,37 @@ class CheckpointedReplayTest {
             return starts;
         } finally {
             CloseHelper.closeAll(archive, aeron);
+        }
+    }
+
+    /** Holds a derived scan from the frame at {@code first} to the recording's frames from there. */
+    private static void assertDerivedScanIsRecorded(final DerivingReplayer deriving, final long recordingId,
+                                                    final long tip, final LongArrayList frames,
+                                                    final LongArrayList seqNos, final int first, final String queue) {
+        final LongArrayList derivedFrames = new LongArrayList();
+        final LongArrayList derivedSeqNos = new LongArrayList();
+        assertEquals(Replayer.ScanEnd.TIP,
+                     deriving.scanQueueRecording(recordingId, frames.getLong(first), tip, (position, clusterSeqNo) -> {
+                         derivedFrames.addLong(position);
+                         derivedSeqNos.addLong(clusterSeqNo);
+                         return true;
+                     }), queue + ": the derived scan from frame " + first);
+        assertEquals(frames.subList(first, frames.size()), derivedFrames, queue + ": positions from frame " + first);
+        assertEquals(seqNos.subList(first, seqNos.size()), derivedSeqNos,
+                     queue + ": clusterSeqNos from frame " + first);
+    }
+
+    /** The derived tip is the recording's whenever the queue is still, between two heartbeats. */
+    private static void assertDerivedTipIsRecorded(final Replayer recorded, final DerivingReplayer deriving,
+                                                   final long recordingId, final String queue) {
+        final long deadline = System.nanoTime() + TIMEOUT_NS;
+        long derived;
+        long tip;
+        while ((derived = deriving.recordingPosition(recordingId)) != (tip = recorded.recordingPosition(recordingId))) {
+            assertTrue(System.nanoTime() < deadline, queue + ": the derived tip is " + derived + ", recorded " + tip);
+            if (deriving.doWork() == 0) {
+                Tests.yield();
+            }
         }
     }
 

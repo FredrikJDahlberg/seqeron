@@ -96,7 +96,8 @@ Costs and open questions:
 - Whether a derived replay keeps position addressing or moves to `groupSeqNo`. The prototype keeps positions.
 
 Prototype. With `replayer.deriveFromLog`, a member's Replayer serves replays through `DerivingReplayer`, a
-decorator over `AeronReplayer`. The queue is still recorded; only the replay's source changes.
+decorator over `AeronReplayer`. The queue is still recorded; only the source of a replay, a tip and a scan
+changes.
 
 - **Derivation.** `LogDeriver` runs a `Sequencer` over the log's entries and `QueuePositions` gives each frame
   its queue position. One bounded replay of the log follows the commit position and keeps a checkpoint in
@@ -106,16 +107,18 @@ decorator over `AeronReplayer`. The queue is still recorded; only the replay's s
 - **Replay.** The newest checkpoint at or below the requested position is restored, and the frames from that
   position on are published on a publication created at it, so the replay protocol and the clients are
   unchanged. A position at a fragment boundary inside a frame above the MTU is served as the archive serves it.
+- **Tip and scans.** A queue's tip is where the derivation has brought it, and a scan for a snapshot's cut derives
+  the frames from the last checkpoint at or before where it starts.
 - **Fallback.** No replay is derived until the derivation has produced each queue's first recorded frame at
   its recording's start position. Until then, after a mismatch and on any failure, the recorded path serves.
 - **Rate.** On a laptop, off the page cache, 200,000 frames with a 150-byte filler walk at 0.8–1.3 million
   frames/s derived and 1.8–2.7 million recorded.
 - **Tests.** `DerivedQueueTest`, `DerivedReplayTest` and `CheckpointedReplayTest`, which compares a derived
-  replay with the recording's fragment for fragment.
+  replay with the recording's fragment for fragment, and a derived scan and tip with the recording's.
 
-Not in the prototype: the queue's tip, the cut scans and the first-frame check still read the queue's
-recording, so it cannot be dropped yet; checkpoints are never released; the gateway host, retention and the
-live path are unchanged.
+Not in the prototype: a queue's identity, its start, its term length and MTU and the first-frame check are
+still read off its recording, so it cannot be dropped yet; checkpoints are never released; the gateway host,
+retention, the backlog throttle and the live path are unchanged.
 
 #### 2b: a second archive for queue recordings
 

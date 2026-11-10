@@ -36,7 +36,8 @@ The derived replay of `doc/disk-load-plan.md`, step 2a, has three: `DerivedQueue
 Raft log and checks them against its recordings frame for frame and position for position; `DerivedReplayTest` cold-starts
 a client with `replayer.deriveFromLog` and beside it off the recording, and prints each rate; `CheckpointedReplayTest`
 compares a `DerivingReplayer`'s replay with the archive's fragment for fragment, from the start, mid-history, inside a
-fragmented frame, and on a member restarted from a cluster snapshot, at the same and at another term length. `SystemTestWatcher` fails
+fragmented frame, and on a member restarted from a cluster snapshot, at the same and at another term length, and its
+scans and its tip with the recording's. `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;
 neither `test` nor `check` runs it. A member stopped in-process is closed rather than killed, and a cut drops frames

@@ -49,7 +49,10 @@ import org.limitless.seqeron.util.Logger;
  * checkpoint at or before the position it starts at. The derivation itself starts where the member's service did: at
  * the log's first entry, or at the cluster snapshot whose marker is the first frame of the queues' recordings.
  *
- * <p>Prototype: every other call goes to the Replayer it decorates, and so does a replay until the derivation has
+ * <p>A queue's tip and a scan of it are the derivation's too, so that only a queue's identity, its start and its
+ * first frame are read off its recording.
+ *
+ * <p>Prototype: every other call goes to the Replayer it decorates, and so do these until the derivation has
  * placed the first frame of each queue's recording where the recording holds it, and for good if it places one
  * elsewhere. It finds no start for a queue recording purged past its first frame on a member that started from a
  * snapshot. The checkpoints are held in memory and rebuilt at each start.
@@ -71,6 +74,8 @@ public final class DerivingReplayer implements Replayer {
     /** How long a derived replay waits for its subscriber, as the archive's replay does. */
     private static final long CONNECT_TIMEOUT_MS = 5_000;
     private static final long SNAPSHOT_READ_TIMEOUT_MS = 2_000;
+    /** How long a derived scan may go without a log entry, as the archive's replay of a recorded one. */
+    private static final long SCAN_STALL_TIMEOUT_MS = 2_000;
     private static final long FOLLOW_RETRY_MS = 1_000;
     private static final int FRAGMENT_LIMIT = 64;
     private static final int FOLLOW_FRAGMENT_LIMIT = 256;
@@ -662,20 +667,120 @@ public final class DerivingReplayer implements Replayer {
         }
     }
 
+    /** One scan: the queue's frames from a position, derived from a checkpoint at or before it. */
+    private final class DerivedScan implements Sequencer.FrameSink {
+        private final Queue queue;
+        private final long fromPosition;
+        private final long endPosition;
+        private final FrameVisitor visitor;
+        private final LogDeriver deriver = new LogDeriver(memberId, this);
+        private final SequencedFrameDecoder frame = new SequencedFrameDecoder();
+        private long derivedPosition;
+        private ScanEnd ended;
+
+        DerivedScan(final Queue queue, final Checkpoint from, final long fromPosition, final long endPosition,
+                    final FrameVisitor visitor) {
+            this.queue = queue;
+            this.fromPosition = fromPosition;
+            this.endPosition = endPosition;
+            this.visitor = visitor;
+            this.derivedPosition = from.queuePositions()[queue.groupId() - 1];
+            deriver.restore(from.state(), from.reemitMarker());
+        }
+
+        /** Reads the log until the scan ends, or delivers nothing for {@link #SCAN_STALL_TIMEOUT_MS}. */
+        ScanEnd run(final Subscription log, final int logSessionId) {
+            final ControlledFragmentHandler handler =
+                new ControlledFragmentAssembler((buffer, offset, length, header) -> {
+                    deriver.onLogEntry(buffer, offset, length);
+                    return ended == null ? ControlledFragmentHandler.Action.CONTINUE
+                                         : ControlledFragmentHandler.Action.BREAK;
+                });
+            long deadlineMs = delegate.monotonicMs() + SCAN_STALL_TIMEOUT_MS;
+            while (ended == null) {
+                if (derivedPosition >= endPosition) {
+                    return ScanEnd.TIP;
+                }
+                final Image image = log.imageBySessionId(logSessionId);
+                if (image != null && image.controlledPoll(handler, FRAGMENT_LIMIT) > 0) {
+                    deadlineMs = delegate.monotonicMs() + SCAN_STALL_TIMEOUT_MS;
+                } else if (delegate.monotonicMs() > deadlineMs) {
+                    return ScanEnd.STALLED;
+                } else {
+                    Thread.yield();
+                }
+            }
+            return ended;
+        }
+
+        @Override
+        public void activate(final int[] groupIds) {
+        }
+
+        @Override
+        public void publish(final int group, final DirectBuffer buffer, final int length) {
+            if (group != queue.groupId() || ended != null) {
+                return;
+            }
+            final long start = QueuePositions.frameStart(derivedPosition, length, queue.termLength(), queue.mtu());
+            derivedPosition = start + QueuePositions.framedLength(length, queue.mtu());
+            if (derivedPosition <= fromPosition) {
+                return; // before the scan
+            }
+            if (start >= endPosition) {
+                ended = ScanEnd.TIP;
+            } else if (start < fromPosition || !frame.wrap(buffer, 0, length)) {
+                ended = ScanEnd.UNREADABLE;
+            } else if (!visitor.onFrame(start, frame.clusterSeqNo())) {
+                ended = ScanEnd.STOPPED;
+            }
+        }
+    }
+
     @Override
     public List<RecordingSpan> listQueueRecordings(final int groupId) {
         return delegate.listQueueRecordings(groupId);
     }
 
+    /** Derived from the last checkpoint at or before {@code fromPosition}, once replays are. */
     @Override
     public ScanEnd scanQueueRecording(final long recordingId, final long fromPosition, final long endPosition,
                                       final FrameVisitor visitor) {
-        return delegate.scanQueueRecording(recordingId, fromPosition, endPosition, visitor);
+        final Queue queue = follower != null && follower.isValid() ? follower.queueOf(recordingId) : null;
+        final Checkpoint from = queue == null ? null : follower.checkpointAt(queue.groupId(), fromPosition);
+        if (from == null) {
+            return delegate.scanQueueRecording(recordingId, fromPosition, endPosition, visitor);
+        }
+        final long logSessionId;
+        try {
+            logSessionId = replayLog(follower.logRecordingId, from.logPosition(), follower.commitCounterId);
+        } catch (final RuntimeException ex) {
+            Logger.info(Logger.CoreComponent.ReplayerService, memberId,
+                        "group %d's scan from %d is not derived, the log does not replay from %d: %s", queue.groupId(),
+                        fromPosition, from.logPosition(), ex.getMessage());
+            return delegate.scanQueueRecording(recordingId, fromPosition, endPosition, visitor);
+        }
+        try (Subscription log = logSubscription(logSessionId)) {
+            return new DerivedScan(queue, from, fromPosition, endPosition, visitor).run(log, (int)logSessionId);
+        } finally {
+            try {
+                archive.stopReplay(logSessionId);
+            } catch (final RuntimeException ex) {
+                // the archive has ended it already
+            }
+        }
     }
 
+    /**
+     * Where the derivation has brought the queue, once replays are derived and while its recording is being written:
+     * the committed log's, which the recording reaches.
+     */
     @Override
     public long recordingPosition(final long recordingId) {
-        return delegate.recordingPosition(recordingId);
+        final long recorded = delegate.recordingPosition(recordingId);
+        final Queue queue =
+            recorded >= 0 && follower != null && follower.isValid() ? follower.queueOf(recordingId) : null;
+        return queue == null ? recorded : follower.queuePositions[queue.groupId() - 1];
     }
 
     @Override
