@@ -1,8 +1,9 @@
 # Disk load: findings and plan
 
 A review of what a member and a gateway host write to disk, how a slow write reaches a client, and the
-changes that would reduce both. Nothing here is implemented. Step 1 is unconfirmed on a running cluster and
-decides how much step 2 is worth.
+changes that would reduce both. Step 2a's replay exists as a prototype, off by default, step 3's warning is
+in, and nothing else here is implemented. Step 1 is confirmed, and bounds what step 2 is worth:
+it reduces the bytes written and leaves the stall to step 3.
 
 ## 1. What is written
 
@@ -20,9 +21,8 @@ At 50k msg/s with an 18-byte payload the archive grows by 190 MB per 30 s (`ec2-
 
 ## 2. How a slow write reaches a client
 
-`ec2-tests.md` ("Archive writes on EBS") and `ops.md` ("Term lengths") say a blocked recorder `write()` holds
-back the queue's publication limit, because the recording is the queue's one tethered subscriber. The
-measurements do not fit that:
+A blocked recorder `write()` reaches a client through the Raft log's recording, not through the queue's
+publication window, although the recording is the queue's one tethered subscriber:
 
 - The queue's window is 8 MiB at the 16 MiB default term. A 37–70 ms recorder stall at 50k msg/s is a few
   hundred KiB, well inside it, so `QueuePublisher.emit` should not back-pressure.
@@ -38,21 +38,15 @@ maximum latency was 37.6 ms. Two consequences:
 - A quorum does not hide a slow disk on the leader.
 - A slow disk on a follower does not delay commits, and delays that member's own consumers.
 
-This is read from Aeron's source and the existing measurements. It has not been observed directly.
-
 ## 3. Plan
 
 ### Step 1: confirm the mechanism
 
-During a run that stalls (EBS, default writeback, 50k msg/s), sample with `CounterSampler`:
+Confirmed (`ec2-tests.md`, "Archive writes on EBS"). During a stall on EBS with default writeback at 49k
+msg/s, sampled with `CounterSampler`:
 
-- `seqeron.sequencer.queueBackPressureAlerts`, and the queue's publisher limit minus its position;
-- the cluster commit position against the Raft log's `RecordingPos`.
-
-| observation during a stall | conclusion |
-| --- | --- |
-| alerts stay 0, the queue has window left, commit stops with the log's `RecordingPos` | the log's recording is the path; correct `ec2-tests.md` and `ops.md` |
-| the queue's limit is reached, alerts rise | the tether is the path, as documented |
+- `seqeron.sequencer.queueBackPressureAlerts` stays 0 and the queue keeps at least 7.0 MiB of its window;
+- the leader's commit position stops at the Raft log's `RecordingPos` while the log publication runs ahead.
 
 ### Step 2: stop writing the queue to the durable volume
 
@@ -95,10 +89,33 @@ Costs and open questions:
   `SessionCloseEvent`, `NewLeadershipTermEvent`, `ClusterActionRequest`) and reads the commit position
   counter. The codecs are public, in `io.aeron.cluster.codecs`, at the version `versions.properties` pins.
 - A group's replay reads every group's log entries and runs the sequencer over them: more CPU per replayed
-  byte than an archive replay, off the live path. To be measured against `ReplayColdStartTest`.
+  byte than an archive replay, off the live path. The prototype walks a queue at about half the recorded
+  path's rate, which a snapshot start shortens with the log it has to read.
 - Every restart-safety and purge rule in `snapshot.md` §10 that names a queue recording has to be restated
   against the log.
-- Whether a derived replay keeps position addressing or moves to `groupSeqNo`.
+- Whether a derived replay keeps position addressing or moves to `groupSeqNo`. The prototype keeps positions.
+
+Prototype. With `replayer.deriveFromLog`, a member's Replayer serves replays through `DerivingReplayer`, a
+decorator over `AeronReplayer`. The queue is still recorded; only the replay's source changes.
+
+- **Derivation.** `LogDeriver` runs a `Sequencer` over the log's entries and `QueuePositions` gives each frame
+  its queue position. One bounded replay of the log follows the commit position and keeps a checkpoint in
+  memory every 8 MiB of log.
+- **Start.** Log position 0 when the log's recording starts there, else the cluster snapshot whose
+  `clusterSeqNo` is that of the queues' first recorded frame.
+- **Replay.** The newest checkpoint at or below the requested position is restored, and the frames from that
+  position on are published on a publication created at it, so the replay protocol and the clients are
+  unchanged. A position at a fragment boundary inside a frame above the MTU is served as the archive serves it.
+- **Fallback.** No replay is derived until the derivation has produced each queue's first recorded frame at
+  its recording's start position. Until then, after a mismatch and on any failure, the recorded path serves.
+- **Rate.** On a laptop, off the page cache, 200,000 frames with a 150-byte filler walk at 0.8–1.3 million
+  frames/s derived and 1.8–2.7 million recorded.
+- **Tests.** `DerivedQueueTest`, `DerivedReplayTest` and `CheckpointedReplayTest`, which compares a derived
+  replay with the recording's fragment for fragment.
+
+Not in the prototype: the queue's tip, the cut scans and the first-frame check still read the queue's
+recording, so it cannot be dropped yet; checkpoints are never released; the gateway host, retention and the
+live path are unchanged.
 
 #### 2b: a second archive for queue recordings
 
@@ -115,14 +132,14 @@ to a queue segment can no longer block the log's recorder. On tmpfs, replays are
 competing with the recorder, so `ReplayerService.replayLimit`'s throttle matters much less.
 
 Cost: a second archive's threads and control streams, memory equal to the retained history, and a segment
-length below Aeron's 128 MiB default so a purge follows the cut closely. If step 1 shows the log's recording
-is the path, this halves the volume written and shortens the bursts, and step 3 is still what removes the stall.
+length below Aeron's 128 MiB default so a purge follows the cut closely. Since the log's recording is the path
+(step 1), this halves the volume written and shortens the bursts, and step 3 is still what removes the stall.
 
 ### Step 3: keep the log's own writes from blocking
 
 - `vm.dirty_expire_centisecs=50` and `vm.dirty_writeback_centisecs=20` are the one setting measured clean on
-  EBS: 0 of 15 runs stalled. They are a recommendation in `ec2-tests.md` today. Warn at start when a member's
-  values are the kernel defaults, as `NodeDriver.warnUnlessTmpfs` does for the Aeron directory.
+  EBS: 0 of 15 runs stalled. A member on Linux warns at start while both are the kernel's defaults
+  (`NodeDriver.warnIfDefaultWriteback`).
 - Local NVMe for the log is untested, and belongs to the deferred metal runs.
 
 ### Step 4: trim the log automatically

@@ -86,7 +86,7 @@ public final class ReplayerServer {
     private static final String PROP_GROUPS = "replayer.groups";
     private static final String PROP_SNAPSHOT_JOIN_MS = "replayer.snapshotJoinMs";
     private static final String PROP_QUEUE_STALL_TIMEOUT_MS = "replayer.queueStallTimeoutMs";
-    /** Prototype: a member serves a replay from a queue's first frame off the Raft log ({@link DerivingReplayer}). */
+    /** Prototype: a member serves its replays off the Raft log ({@link DerivingReplayer}). */
     public static final String PROP_DERIVE_FROM_LOG = "replayer.deriveFromLog";
 
     /** Above a member's, since a host's purge cannot be undone (doc/snapshot.md §10.6). */

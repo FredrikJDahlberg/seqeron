@@ -31,7 +31,12 @@ at once. `ReceiverFaultsTest` drops a client's `Replaying` or a run of its repla
 `ReplayerStreamReceiver`'s fault hooks, and holds it to a gap-free, in-order walk that is never caught up short of the
 tip. A run it drops from every replay is a recording with a hole: the client retries at the resend pace, raises
 `recoveryStalled` at the 30 s no-progress timeout, and heals once the hole is covered. `StalledHostReplayerTest` stops a gateway host's Replayer reading requests while a client cold-starts on it, and holds
-the client to waiting without a fault, then walking in order once the Replayer runs. In every case no queue goes silent for the queue-stall fence's default, and no frame is lost. `SystemTestWatcher` fails
+the client to waiting without a fault, then walking in order once the Replayer runs. In every case no queue goes silent for the queue-stall fence's default, and no frame is lost.
+The derived replay of `doc/disk-load-plan.md`, step 2a, has three: `DerivedQueueTest` derives a member's queues from its
+Raft log and checks them against its recordings frame for frame and position for position; `DerivedReplayTest` cold-starts
+a client with `replayer.deriveFromLog` and beside it off the recording, and prints each rate; `CheckpointedReplayTest`
+compares a `DerivingReplayer`'s replay with the archive's fragment for fragment, from the start, mid-history, inside a
+fragmented frame, and on a member restarted from a cluster snapshot, at the same and at another term length. `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;
 neither `test` nor `check` runs it. A member stopped in-process is closed rather than killed, and a cut drops frames

@@ -116,6 +116,14 @@ direct arm completed a step at 888k msg/s of 100-byte messages, a payload rate o
 and p99.9 of 136 µs, on a volume provisioned for 125 MB/s. Whether the ceiling is the volume, the cluster or the
 generator has not been measured.
 
+**A message rate is not a packet rate.** Aeron Cluster replicates the log as a byte stream and a follower acknowledges
+a position, so one datagram and one acknowledgement cover every entry appended since the last, and the batch grows with
+the backlog. A 100-byte payload is a 130-byte ingress frame and, behind the cluster's 32-byte session header and Aeron's
+32-byte data header, a 224-byte log entry after alignment. Six fit the 1408-byte MTU, Aeron's default, which these runs
+did not change. At 888k msg/s that is at least 148k datagrams/s and 1.6 Gbit/s to each follower. Both figures are
+computed from the frame sizes: the runs recorded no packet counts. Compare a system that sends one packet per message
+on the datagram rate, and one that forces its writes on §3.4.
+
 The hosted façade's window of 64 KiB back-pressures the offer, so a stall reaches its generator as `window_declines`
 (up to 1.05 million in a step); the direct client shows it as declined ingress offers (up to 690,000). Neither the cause
 of the stalls nor why they stop in the middle of a ramp is known.

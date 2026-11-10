@@ -329,6 +329,7 @@ public final class SequencerServer {
         }
         NodeDriver.warnUnlessTmpfs(Logger.CoreComponent.SequencerServer, memberId, aeronDir);
         NodeDriver.warnIfTmpfs(Logger.CoreComponent.SequencerServer, memberId, config.baseDir());
+        NodeDriver.warnIfDefaultWriteback(Logger.CoreComponent.SequencerServer, memberId);
 
         final AeronArchive.Context localArchiveCtx = new AeronArchive.Context()
                                                          .lock(NoOpLock.INSTANCE)

@@ -205,8 +205,10 @@ the worst (JIT, warm-up), so each run discards a warm-up and each rate gets a fr
 makes the hop a larger share of the loop; that is the question, so the cluster is not slowed to match. Time is slewed by `chrony`, never
 stepped: a step back of more than 10 s terminates a member (`ops.md`).
 
-**Archive writes on EBS.** The archive recorder is the queue's one tethered subscriber, so a blocked `write()` of it holds back
-the queue's publication limit and stalls the sequencer, and every consumer with it. On the members' root volume (gp3, 3000 IOPS,
+**Archive writes on EBS.** One recorder thread writes the Raft log's recording and every queue's, so a blocked `write()` of it
+stops the log's recording position. The leader commits no further than its own log recording
+(`ConsensusModuleAgent.quorumPositionBoundedByLeaderLog`) and a follower's service reads its log no further than its own, so the
+sequencer stalls for as long, and every consumer with it. On the members' root volume (gp3, 3000 IOPS,
 125 MB/s) with the kernel's default writeback, 6 of 24 runs at 50k msg/s stalled, in every arm and on any leader (a run counts
 as a stall at p99.9 ≥ 5 ms; maxima 37–70 ms, none at 30k msg/s). The recorder's `archive-recorder max write time` counter
 (`CounterSampler`) read 36 and then 60 ms, and an off-CPU trace of the thread (`bpftrace`, `sched:sched_switch` on its name,
@@ -227,6 +229,15 @@ The byte limits flush small amounts often and hit more runs. The shorter timers 
 5–8 ms: p99.9 is 2.4–2.8 ms in every run, p99 unchanged. A latency target under that needs the waits gone, not shortened:
 higher provisioned gp3 throughput or an instance-store volume, neither tried. Not a deployment setting: tmpfs loses the recording
 on a reboot, and without a `<snapshots>` policy the archive grows by 190 MB per 30 s run at this rate.
+
+**The path is the log's recording, not the queue's window.** One c6in.8xlarge held three unpinned members, each archive on its own
+gp3 volume with default writeback, at 49k msg/s for 600 s, and `CounterSampler` read each driver every 3 ms. The leader's
+`clusterSeqNo` stood still five times, for 18–54 ms. In the three of 47–54 ms the commit position and the log's `RecordingPos`
+held one value while the log publication ran 285–320 KiB ahead of it, and the recorder's written bytes did not change. A follower
+stalled the same way on its own recorder, for 63 ms while the other two sequenced 2,965 frames. On every member
+`queueBackPressureAlerts` stayed 0 and the queue kept at least 7.0 MiB of its 8 MiB window. In the leader's two shorter stalls
+(18 and 25 ms) its own recording advanced while a follower's recorder was blocked; this run does not explain them. The three
+archives shared one kernel, so their flushes coincided: the run shows the mechanism, not a stall rate.
 
 ### Test 2: the network-fault suite without CPU steal
 
