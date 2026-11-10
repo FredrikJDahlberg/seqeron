@@ -174,7 +174,8 @@ class CheckpointedReplayTest {
                                      .controlResponseStreamId(RESPONSE_STREAM_ID));
         try {
             final Replayer recorded = new AeronReplayer(aeron, archive, member);
-            final DerivingReplayer deriving = new DerivingReplayer(recorded, aeron, archive, member);
+            final DerivingReplayer deriving =
+                new DerivingReplayer(recorded, aeron, archive, member, () -> cluster.derivationStart(member));
             final long deadline = System.nanoTime() + TIMEOUT_NS;
             while (deriving.checkpointCount() < checkpoints) {
                 assertTrue(System.nanoTime() < deadline,
@@ -185,7 +186,7 @@ class CheckpointedReplayTest {
             }
             final long[] starts = new long[InProcessCluster.GROUP_IDS.size()];
             for (final int groupId : InProcessCluster.GROUP_IDS) {
-                final Replayer.RecordingSpan span = recorded.listQueueRecordings(groupId)
+                final Replayer.RecordingSpan span = deriving.listQueueRecordings(groupId)
                                                         .stream()
                                                         .filter(Replayer.RecordingSpan::active)
                                                         .findFirst()

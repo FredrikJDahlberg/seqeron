@@ -4,17 +4,11 @@ import io.aeron.Aeron;
 import io.aeron.ChannelUri;
 import io.aeron.ControlledFragmentAssembler;
 import io.aeron.ExclusivePublication;
-import io.aeron.FragmentAssembler;
 import io.aeron.Image;
 import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.ConsensusModule;
-import io.aeron.cluster.codecs.ClientSessionDecoder;
-import io.aeron.cluster.codecs.MessageHeaderDecoder;
-import io.aeron.cluster.codecs.SnapshotMark;
-import io.aeron.cluster.codecs.SnapshotMarkerDecoder;
-import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.logbuffer.BufferClaim;
 import io.aeron.logbuffer.ControlledFragmentHandler;
 import io.aeron.logbuffer.FragmentHandler;
@@ -22,17 +16,16 @@ import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.logbuffer.Header;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
+import java.util.function.Supplier;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
+import org.agrona.collections.Long2LongHashMap;
 import org.agrona.collections.Long2ObjectHashMap;
-import org.agrona.collections.LongArrayList;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
-import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.sequencer.LogDeriver;
 import org.limitless.seqeron.sequencer.QueuePositions;
@@ -46,16 +39,16 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p>One derivation follows the log for as long as this runs and keeps a checkpoint of it every {@link
  * #CHECKPOINT_LOG_BYTES}: the deriver's state, and where each queue stood. A replay continues from the last
- * checkpoint at or before the position it starts at. The derivation itself starts where the member's service did: at
- * the log's first entry, or at the cluster snapshot whose marker is the first frame of the queues' recordings.
+ * checkpoint at or before the position it starts at. The derivation starts where the member's service says it did
+ * ({@link DerivationStart}): at the log's first entry, or at the cluster snapshot it restored, each queue at the
+ * position the service created it at.
  *
- * <p>A queue's tip and a scan of it are the derivation's too, so that only a queue's identity, its start and its
- * first frame are read off its recording.
+ * <p>A queue's tip and a scan of it are the derivation's too, so that nothing but a queue's recording id is read off
+ * its recording.
  *
- * <p>Prototype: every other call goes to the Replayer it decorates, and so do these until the derivation has
- * placed the first frame of each queue's recording where the recording holds it, and for good if it places one
- * elsewhere. It finds no start for a queue recording purged past its first frame on a member that started from a
- * snapshot. The checkpoints are held in memory and rebuilt at each start.
+ * <p>Prototype: every other call goes to the Replayer it decorates, and so do these until the derivation has caught
+ * up with the log's commit position as it stood when it started. The checkpoints are held in memory and rebuilt at
+ * each start.
  *
  * <p>Not thread-safe: every call is from the Replayer's duty-cycle thread.
  */
@@ -73,7 +66,6 @@ public final class DerivingReplayer implements Replayer {
     private static final String DERIVED_CHANNEL = "aeron:ipc?alias=" + DERIVED_ALIAS;
     /** How long a derived replay waits for its subscriber, as the archive's replay does. */
     private static final long CONNECT_TIMEOUT_MS = 5_000;
-    private static final long SNAPSHOT_READ_TIMEOUT_MS = 2_000;
     /** How long a derived scan may go without a log entry, as the archive's replay of a recorded one. */
     private static final long SCAN_STALL_TIMEOUT_MS = 2_000;
     private static final long FOLLOW_RETRY_MS = 1_000;
@@ -84,16 +76,18 @@ public final class DerivingReplayer implements Replayer {
     private final Aeron aeron;
     private final AeronArchive archive;
     private final int memberId;
+    private final Supplier<DerivationStart> derivationStart;
+    /** The group of each active queue recording {@link #listQueueRecordings} has passed on. */
+    private final Long2LongHashMap recordingGroups = new Long2LongHashMap(0);
     private final Long2ObjectHashMap<DerivedReplay> replays = new Long2ObjectHashMap<>();
-    /** The derivation that keeps the checkpoints, or null until the queues' recordings have a first frame. */
+    /** The derivation that keeps the checkpoints, or null until the service has started and the log is recorded. */
     private Follower follower;
     /** Whether a start was found for the follower, or none can be. */
     private boolean followerDecided;
     private long nextFollowAttemptMs;
 
-    /** A queue's active recording, and the {@code clusterSeqNo} of the frame it starts with. */
-    private record
-        Queue(int groupId, long recordingId, long startPosition, int termLength, int mtu, long firstClusterSeqNo) { }
+    /** A queue as it is published: every queue of a node has its term length and MTU. */
+    private record Queue(int groupId, int termLength, int mtu) { }
 
     /**
      * Where a derivation continues from.
@@ -105,8 +99,12 @@ public final class DerivingReplayer implements Replayer {
      */
     private record Checkpoint(long logPosition, LogDeriver.State state, boolean reemitMarker, long[] queuePositions) { }
 
-    public DerivingReplayer(final Replayer delegate, final Aeron aeron, final AeronArchive archive,
-                            final int memberId) {
+    /**
+     * @param derivationStart where the member's service started, or null until it has
+     */
+    public DerivingReplayer(final Replayer delegate, final Aeron aeron, final AeronArchive archive, final int memberId,
+                            final Supplier<DerivationStart> derivationStart) {
+        this.derivationStart = derivationStart;
         this.delegate = delegate;
         this.aeron = aeron;
         this.archive = archive;
@@ -166,170 +164,41 @@ public final class DerivingReplayer implements Replayer {
         return aeron.addSubscription(ChannelUri.addSessionId(LOG_REPLAY_CHANNEL, (int)sessionId), LOG_REPLAY_STREAM_ID);
     }
 
-    /**
-     * Starts the follower once each active queue recording has a first frame and a start explains it: the cluster
-     * snapshot whose cut that frame is, else the log's first entry.
-     */
+    /** Starts the follower once the service has handed over its start and the log is being recorded. */
     private void startFollower() {
-        final Queue[] queues = new Queue[FrameLayer.MAX_GROUPS];
-        int found = 0;
-        for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
-            final Queue listed = activeRecording(FrameLayer.queueStreamId(groupId), groupId);
-            if (listed == null) {
-                continue;
-            }
-            final long[] first = { Aeron.NULL_VALUE };
-            final long tip = delegate.recordingPosition(listed.recordingId());
-            if (tip <= listed.startPosition() ||
-                delegate.scanQueueRecording(listed.recordingId(), listed.startPosition(), tip,
-                                            (framePosition, clusterSeqNo) -> {
-                                                first[0] = clusterSeqNo;
-                                                return false;
-                                            }) != ScanEnd.STOPPED) {
-                return; // nothing recorded yet, or not readable now
-            }
-            queues[groupId - 1] = new Queue(groupId, listed.recordingId(), listed.startPosition(), listed.termLength(),
-                                            listed.mtu(), first[0]);
-            found++;
-        }
-        final Queue log = activeRecording(ConsensusModule.Configuration.logStreamId(), 0);
+        final DerivationStart start = derivationStart.get();
+        final long[] log = start == null ? null : activeLogRecording();
         final int commitCounterId = commitPositionCounterId();
-        if (found == 0 || log == null || commitCounterId == CountersReader.NULL_COUNTER_ID) {
+        if (log == null || commitCounterId == CountersReader.NULL_COUNTER_ID) {
             return;
         }
         followerDecided = true;
-        Checkpoint start = snapshotStart(queues);
-        if (start == null && log.startPosition() == 0) {
-            start =
-                new Checkpoint(0, new LogDeriver.State(List.of(), new long[0]), false, new long[FrameLayer.MAX_GROUPS]);
-        }
-        if (start == null || start.logPosition() < log.startPosition()) {
+        if (start.logPosition() < log[1]) {
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                        "replays are not derived: the log's recording starts at %d and no cluster snapshot starts the "
-                            + "queues' recordings",
-                        log.startPosition());
+                        "replays are not derived: the log's recording starts at %d, after the service's start at %d",
+                        log[1], start.logPosition());
             return;
         }
         try {
-            follower = new Follower(queues, log.recordingId(), commitCounterId, start);
+            follower = new Follower(start, log[0], commitCounterId);
         } catch (final RuntimeException ex) {
             Logger.info(Logger.CoreComponent.ReplayerService, memberId, "replays are not derived: %s", ex.toString());
         }
     }
 
-    /** The active recording of a stream, its first frame's {@code clusterSeqNo} unset. */
-    private Queue activeRecording(final int recordedStreamId, final int groupId) {
-        final Queue[] active = { null };
-        archive.listRecordingsForUri(
-            0, Integer.MAX_VALUE, "", recordedStreamId,
-            (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp, startPosition, stopPosition,
-             initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
-             originalChannel, sourceIdentity) -> {
-                if (stopTimestamp == AeronArchive.NULL_TIMESTAMP) {
-                    active[0] =
-                        new Queue(groupId, recordingId, startPosition, termBufferLength, mtuLength, Aeron.NULL_VALUE);
-                }
-            });
+    /** The id and the start position of the log's active recording, or null. */
+    private long[] activeLogRecording() {
+        final long[][] active = { null };
+        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", ConsensusModule.Configuration.logStreamId(),
+                                     (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
+                                      startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
+                                      mtuLength, sessionId, streamId, strippedChannel, originalChannel,
+                                      sourceIdentity) -> {
+                                         if (stopTimestamp == AeronArchive.NULL_TIMESTAMP) {
+                                             active[0] = new long[] { recordingId, startPosition };
+                                         }
+                                     });
         return active[0];
-    }
-
-    /**
-     * The cluster snapshot the member's service started from, as a derivation's start: the one whose cut is the first
-     * frame of the queues' recordings, each queue standing at its recording's start. Null when there is none.
-     */
-    private Checkpoint snapshotStart(final Queue[] queues) {
-        final long[] starts = new long[FrameLayer.MAX_GROUPS];
-        long cut = Aeron.NULL_VALUE;
-        for (final Queue queue : queues) {
-            if (queue != null) {
-                starts[queue.groupId() - 1] = queue.startPosition();
-                cut = queue.firstClusterSeqNo();
-            }
-        }
-        final LongArrayList snapshots = new LongArrayList();
-        archive.listRecordingsForUri(
-            0, Integer.MAX_VALUE, "", ClusteredServiceContainer.Configuration.snapshotStreamId(),
-            (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp, startPosition, stopPosition,
-             initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
-             originalChannel, sourceIdentity) -> {
-                if (stopTimestamp != AeronArchive.NULL_TIMESTAMP) {
-                    snapshots.addLong(recordingId);
-                }
-            });
-        snapshots.sort(Comparator.reverseOrder());
-        final Sequencer.FrameSink nowhere = new Sequencer.FrameSink() {
-            @Override
-            public void activate(final int[] groupIds) {
-            }
-
-            @Override
-            public void publish(final int groupId, final DirectBuffer buffer, final int length) {
-            }
-        };
-        for (final long recordingId : snapshots) {
-            try {
-                final Checkpoint snapshot = readSnapshot(recordingId, starts);
-                final LogDeriver probe = new LogDeriver(memberId, nowhere);
-                probe.restore(snapshot.state(), false);
-                if (probe.clusterSeqNo() == cut) {
-                    return snapshot;
-                }
-            } catch (final RuntimeException ex) {
-                Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                            "cluster snapshot recording %d is no start for a derivation: %s", recordingId,
-                            ex.toString());
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Reads a service snapshot's recording: the log position it was taken at, the sessions open there, and the
-     * {@link Sequencer}'s records between the container's own.
-     */
-    private Checkpoint readSnapshot(final long recordingId, final long[] queueStarts) {
-        final MessageHeaderDecoder header = new MessageHeaderDecoder();
-        final SnapshotMarkerDecoder marker = new SnapshotMarkerDecoder();
-        final ClientSessionDecoder session = new ClientSessionDecoder();
-        final List<byte[]> records = new ArrayList<>();
-        final LongArrayList sessions = new LongArrayList();
-        final long[] logPosition = { Aeron.NULL_VALUE };
-        final boolean[] ended = { false };
-        final FragmentHandler handler = new FragmentAssembler((buffer, offset, length, frameHeader) -> {
-            header.wrap(buffer, offset);
-            if (header.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
-                final byte[] record = new byte[length];
-                buffer.getBytes(offset, record);
-                records.add(record);
-            } else if (header.templateId() == SnapshotMarkerDecoder.TEMPLATE_ID) {
-                marker.wrapAndApplyHeader(buffer, offset, header);
-                logPosition[0] = marker.logPosition();
-                ended[0] = marker.mark() == SnapshotMark.END;
-            } else if (header.templateId() == ClientSessionDecoder.TEMPLATE_ID) {
-                sessions.addLong(session.wrapAndApplyHeader(buffer, offset, header).clusterSessionId());
-            }
-        });
-        final long sessionId =
-            archive.startReplay(recordingId, 0, AeronArchive.NULL_LENGTH, LOG_REPLAY_CHANNEL, LOG_REPLAY_STREAM_ID);
-        final long deadlineMs = delegate.monotonicMs() + SNAPSHOT_READ_TIMEOUT_MS;
-        try (Subscription subscription = logSubscription(sessionId)) {
-            while (!ended[0]) {
-                if (subscription.poll(handler, FRAGMENT_LIMIT) == 0) {
-                    if (delegate.monotonicMs() > deadlineMs) {
-                        throw new IllegalStateException("its replay stalled before the snapshot's end");
-                    }
-                    Thread.yield();
-                }
-            }
-        } finally {
-            try {
-                archive.stopReplay(sessionId);
-            } catch (final RuntimeException ex) {
-                // the archive has ended it already
-            }
-        }
-        return new Checkpoint(logPosition[0], new LogDeriver.State(records, sessions.toLongArray()), true,
-                              queueStarts.clone());
     }
 
     private int commitPositionCounterId() {
@@ -380,11 +249,11 @@ public final class DerivingReplayer implements Replayer {
     }
 
     /**
-     * The derivation that follows the log from the member's start to its commit position, checks that it places the
-     * first frame of each queue's recording where the recording holds it, and keeps the checkpoints.
+     * The derivation that follows the log from the member's start to its commit position and keeps the checkpoints.
      */
     private final class Follower implements Sequencer.FrameSink {
-        private final Queue[] queues;
+        private final int termLength;
+        private final int mtu;
         private final long logRecordingId;
         private final int commitCounterId;
         private final List<Checkpoint> checkpoints = new ArrayList<>();
@@ -392,7 +261,6 @@ public final class DerivingReplayer implements Replayer {
         private final long logSessionId;
         private final Subscription log;
         private final LogDeriver deriver = new LogDeriver(memberId, this);
-        private final SequencedFrameDecoder frame = new SequencedFrameDecoder();
         private final ControlledFragmentAssembler entries =
             new ControlledFragmentAssembler((buffer, offset, length, header) -> {
                 deriver.onLogEntry(buffer, offset, length);
@@ -411,36 +279,33 @@ public final class DerivingReplayer implements Replayer {
             entryEnd = header.position();
             return checkpointDue() ? ControlledFragmentHandler.Action.BREAK : ControlledFragmentHandler.Action.CONTINUE;
         };
-        /** The queues whose recording's first frame is still to be derived. */
-        private int unplaced;
-        private boolean misplaced;
+        /** The commit position when this started: its queue positions are no tip before it has derived that far. */
+        private final long caughtUpAt;
+        private boolean caughtUp;
 
-        Follower(final Queue[] queues, final long logRecordingId, final int commitCounterId, final Checkpoint start) {
-            this.queues = queues;
+        Follower(final DerivationStart start, final long logRecordingId, final int commitCounterId) {
+            this.termLength = start.termLength();
+            this.mtu = start.mtu();
             this.logRecordingId = logRecordingId;
             this.commitCounterId = commitCounterId;
-            this.queuePositions = start.queuePositions().clone();
-            for (final Queue queue : queues) {
-                unplaced += queue == null ? 0 : 1;
-            }
-            checkpoints.add(start);
+            this.queuePositions = start.queueStarts().clone();
+            this.caughtUpAt = aeron.countersReader().getCounterValue(commitCounterId);
+            this.caughtUp = caughtUpAt <= start.logPosition();
+            checkpoints.add(
+                new Checkpoint(start.logPosition(), start.state(), start.restored(), start.queueStarts().clone()));
             logSessionId = replayLog(logRecordingId, start.logPosition(), commitCounterId);
             log = logSubscription(logSessionId);
-            deriver.restore(start.state(), start.reemitMarker());
+            deriver.restore(start.state(), start.restored());
         }
 
-        /** Whether every queue's first recorded frame has been derived, each at its recording's position. */
+        /** Whether the derivation has caught up with the log, so that where it has brought a queue is its tip. */
         boolean isValid() {
-            return unplaced == 0 && !misplaced;
+            return caughtUp;
         }
 
         Queue queueOf(final long recordingId) {
-            for (final Queue queue : queues) {
-                if (queue != null && queue.recordingId() == recordingId) {
-                    return queue;
-                }
-            }
-            return null;
+            final int groupId = (int)recordingGroups.get(recordingId);
+            return groupId == 0 ? null : new Queue(groupId, termLength, mtu);
         }
 
         /** The last checkpoint at which group {@code groupId}'s queue stood at or before {@code position}. */
@@ -454,11 +319,11 @@ public final class DerivingReplayer implements Replayer {
         }
 
         private boolean checkpointDue() {
-            return isValid() && entryEnd - checkpoints.getLast().logPosition() >= CHECKPOINT_LOG_BYTES;
+            return entryEnd - checkpoints.getLast().logPosition() >= CHECKPOINT_LOG_BYTES;
         }
 
         int doWork() {
-            final Image image = misplaced ? null : log.imageBySessionId((int)logSessionId);
+            final Image image = log.imageBySessionId((int)logSessionId);
             if (image == null) {
                 return 0;
             }
@@ -466,6 +331,7 @@ public final class DerivingReplayer implements Replayer {
             if (checkpointDue() && entryEnd == image.position()) {
                 checkpoints.add(new Checkpoint(entryEnd, deriver.state(), false, queuePositions.clone()));
             }
+            caughtUp |= entryEnd >= caughtUpAt;
             return fragments;
         }
 
@@ -475,25 +341,8 @@ public final class DerivingReplayer implements Replayer {
 
         @Override
         public void publish(final int groupId, final DirectBuffer buffer, final int length) {
-            final Queue queue = queues[groupId - 1];
-            if (queue == null) {
-                return;
-            }
-            final long start =
-                QueuePositions.frameStart(queuePositions[groupId - 1], length, queue.termLength(), queue.mtu());
-            queuePositions[groupId - 1] = start + QueuePositions.framedLength(length, queue.mtu());
-            if (unplaced == 0 || misplaced || !frame.wrap(buffer, 0, length) ||
-                frame.clusterSeqNo() != queue.firstClusterSeqNo()) {
-                return;
-            }
-            unplaced--;
-            if (start != queue.startPosition()) {
-                misplaced = true;
-                Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                            "replays are not derived: the log puts clusterSeqNo %d of group %d's queue at %d, and its "
-                                + "recording starts with it at %d",
-                            frame.clusterSeqNo(), groupId, start, queue.startPosition());
-            }
+            final long start = QueuePositions.frameStart(queuePositions[groupId - 1], length, termLength, mtu);
+            queuePositions[groupId - 1] = start + QueuePositions.framedLength(length, mtu);
         }
     }
 
@@ -739,7 +588,13 @@ public final class DerivingReplayer implements Replayer {
 
     @Override
     public List<RecordingSpan> listQueueRecordings(final int groupId) {
-        return delegate.listQueueRecordings(groupId);
+        final List<RecordingSpan> spans = delegate.listQueueRecordings(groupId);
+        for (final RecordingSpan span : spans) {
+            if (span.active()) {
+                recordingGroups.put(span.recordingId(), groupId);
+            }
+        }
+        return spans;
     }
 
     /** Derived from the last checkpoint at or before {@code fromPosition}, once replays are. */

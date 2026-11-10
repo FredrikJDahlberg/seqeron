@@ -25,6 +25,7 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
+import org.limitless.seqeron.replayer.server.DerivationStart;
 import org.limitless.seqeron.replayer.server.RelayedCut;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredEncoder;
@@ -246,6 +247,11 @@ final class InProcessCluster implements AutoCloseable {
         if (node != null) {
             node.stop();
         }
+    }
+
+    /** Where member {@code m}'s service started, as its Replayer is handed it. */
+    DerivationStart derivationStart(final int m) {
+        return nodes.get(m).derivationStart();
     }
 
     boolean isRunning(final int m) {

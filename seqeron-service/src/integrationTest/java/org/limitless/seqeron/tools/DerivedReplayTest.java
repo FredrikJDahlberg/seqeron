@@ -39,6 +39,8 @@ class DerivedReplayTest {
     private static final int FILLER = 150;
     private static final int LIVE_FRAMES = 1_000;
     private static final long CONVERGE_TIMEOUT_MS = 60_000;
+    /** Well under the time the shortest replay here takes. */
+    private static final long DERIVED_LOOK_INTERVAL_MS = 5;
     private static final int CLIENT_ID = 31;
 
     @RegisterExtension final SystemTestWatcher watcher = new SystemTestWatcher();
@@ -96,15 +98,14 @@ class DerivedReplayTest {
                  (final SequencedEvent event) -> groupSeqNos.addLong(event.groupSeqNo()), null, () -> { })) {
             final long startedNs = System.nanoTime();
             receiver.start(aeron, member, groupId);
-            converge(receiver, tipClusterSeqNo, groupSeqNos);
+            derivedReplay = converge(aeron, receiver, tipClusterSeqNo, groupSeqNos);
             final int walked = groupSeqNos.size();
             final double seconds = (System.nanoTime() - startedNs) / 1e9;
-            derivedReplay = derivedReplay(aeron);
             System.out.printf("group %d, %s: %d frame(s) walked in %.0f ms, %.0f frames/s%n", groupId,
                               derived ? "derived from the log" : "replayed from the recording", walked, seconds * 1e3,
                               walked / seconds);
 
-            converge(receiver, send(cluster.awaitLeader(), LIVE_FRAMES), groupSeqNos);
+            converge(aeron, receiver, send(cluster.awaitLeader(), LIVE_FRAMES), groupSeqNos);
             assertTrue(groupSeqNos.size() > walked, "nothing reached it live after the walk");
         }
         for (int i = 0; i < groupSeqNos.size(); i++) {
@@ -113,21 +114,32 @@ class DerivedReplayTest {
         assertEquals(derived, derivedReplay, "whether its replay was derived");
     }
 
-    private static void converge(final ReplayerStreamReceiver receiver, final long tipClusterSeqNo,
-                                 final LongArrayList groupSeqNos) {
+    /**
+     * @return whether a derived replay was seen on the way: looked for throughout, since a member that trails its
+     *         peers ends the replay long before the client has caught up on its queue
+     */
+    private static boolean converge(final Aeron aeron, final ReplayerStreamReceiver receiver,
+                                    final long tipClusterSeqNo, final LongArrayList groupSeqNos) {
         final long deadlineMs = System.currentTimeMillis() + CONVERGE_TIMEOUT_MS;
+        long nextLookMs = 0;
+        boolean derivedReplay = false;
         while (!receiver.isCaughtUp() || receiver.lastClusterSeqNo() < tipClusterSeqNo) {
-            assertTrue(System.currentTimeMillis() < deadlineMs,
+            final long nowMs = System.currentTimeMillis();
+            assertTrue(nowMs < deadlineMs,
                        "not caught up after " + CONVERGE_TIMEOUT_MS + " ms, at groupSeqNo " + groupSeqNos.size());
+            if (!derivedReplay && nowMs >= nextLookMs) {
+                nextLookMs = nowMs + DERIVED_LOOK_INTERVAL_MS;
+                derivedReplay = derivedReplay(aeron);
+            }
             if (receiver.poll() == 0) {
                 Tests.yield();
             }
         }
+        return derivedReplay || derivedReplay(aeron);
     }
 
     /**
-     * Whether a {@link DerivingReplayer} has published a replay: the driver keeps a publication's counters while its
-     * log buffer lingers, which outlasts the walk.
+     * Whether a {@link DerivingReplayer} is publishing a replay: the driver holds its publication's counters.
      */
     private static boolean derivedReplay(final Aeron aeron) {
         final CountersReader counters = aeron.countersReader();

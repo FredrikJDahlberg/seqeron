@@ -35,7 +35,7 @@ the client to waiting without a fault, then walking in order once the Replayer r
 The derived replay of `doc/disk-load-plan.md`, step 2a, has three: `DerivedQueueTest` derives a member's queues from its
 Raft log and checks them against its recordings frame for frame and position for position; `DerivedReplayTest` cold-starts
 a client with `replayer.deriveFromLog` and beside it off the recording, and prints each rate; `CheckpointedReplayTest`
-compares a `DerivingReplayer`'s replay with the archive's fragment for fragment, from the start, mid-history, inside a
+compares a `DerivingReplayer`'s replay, started from the member's `DerivationStart`, with the archive's fragment for fragment, from the start, mid-history, inside a
 fragmented frame, and on a member restarted from a cluster snapshot, at the same and at another term length, and its
 scans and its tip with the recording's. `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on

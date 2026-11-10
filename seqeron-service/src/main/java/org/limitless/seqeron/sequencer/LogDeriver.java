@@ -62,6 +62,16 @@ public final class LogDeriver {
 
     /** This deriver's state, between two log entries. */
     public State state() {
+        final long[] sessions = new long[openSessions.size()];
+        int i = 0;
+        for (final long sessionId : openSessions) {
+            sessions[i++] = sessionId;
+        }
+        return stateOf(sequencer, sessions);
+    }
+
+    /** A sequencer's state between two log entries, as its snapshot records. */
+    static State stateOf(final Sequencer sequencer, final long[] openSessions) {
         final List<byte[]> records = new ArrayList<>();
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(4096);
         for (int length; (length = sequencer.onSnapshot(buffer, records.size())) != 0;) {
@@ -69,12 +79,7 @@ public final class LogDeriver {
             buffer.getBytes(0, record);
             records.add(record);
         }
-        final long[] sessions = new long[openSessions.size()];
-        int i = 0;
-        for (final long sessionId : openSessions) {
-            sessions[i++] = sessionId;
-        }
-        return new State(records, sessions);
+        return new State(records, openSessions);
     }
 
     /**

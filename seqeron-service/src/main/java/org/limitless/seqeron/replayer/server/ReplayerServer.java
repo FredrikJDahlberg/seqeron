@@ -234,7 +234,7 @@ public final class ReplayerServer {
                 config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(), config.host(), config.groups(),
                 new ConcurrentLinkedQueue<>(), reports, config.idleStrategies(), fatalHandler,
                 CutIntake.ofHost(reports, Long.getLong(PROP_SNAPSHOT_JOIN_MS, DEFAULT_SNAPSHOT_JOIN_MS)),
-                stallTimeoutMs, wrapper);
+                stallTimeoutMs, wrapper, () -> null);
         } catch (final RuntimeException ex) {
             CloseHelper.quietClose(driver);
             throw ex;
@@ -267,22 +267,25 @@ public final class ReplayerServer {
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake) {
         return launch(memberId, aeronDir, idleStrategies, topologyRows, fatalHandler, cutIntake,
-                      UnaryOperator.identity());
+                      UnaryOperator.identity(), () -> null);
     }
 
     /**
      * As above, serving through {@code wrapper}'s decoration of the node's {@link AeronReplayer}. Test harnesses
      * only: a Replayer that fails or stalls on cue.
      *
-     * @param wrapper decorates the node's Replayer
+     * @param wrapper         decorates the node's Replayer
+     * @param derivationStart where the member's service started, or null until it has: what {@link
+     *                        #PROP_DERIVE_FROM_LOG} derives from
      */
     public static ReplayerServer launch(final int memberId, final String aeronDir,
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake,
-                                        final UnaryOperator<Replayer> wrapper) {
+                                        final UnaryOperator<Replayer> wrapper,
+                                        final Supplier<DerivationStart> derivationStart) {
         return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, List.of(), topologyRows,
                                   null, idleStrategies, fatalHandler, cutIntake,
-                                  NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS, wrapper);
+                                  NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS, wrapper, derivationStart);
     }
 
     private ReplayerServer(final int memberId, final ArchivingMediaDriver driver, final String aeronDir,
@@ -290,7 +293,7 @@ public final class ReplayerServer {
                            final Queue<byte[]> topologyRows, final Queue<RelayedCut> cutReports,
                            final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler,
                            final CutIntake cutIntake, final long relayStallTimeoutMs,
-                           final UnaryOperator<Replayer> wrapper) {
+                           final UnaryOperator<Replayer> wrapper, final Supplier<DerivationStart> derivationStart) {
         this.memberId = memberId;
         this.driver = driver;
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
@@ -322,7 +325,7 @@ public final class ReplayerServer {
             : new Thread(() -> AeronQueueRelay.run(relays, running, relayIdleStrategy), "relay-" + memberId);
         final Replayer recorded = new AeronReplayer(aeron, archive, memberId);
         final Replayer served = archiveEndpoints == null && Boolean.getBoolean(PROP_DERIVE_FROM_LOG)
-            ? new DerivingReplayer(recorded, aeron, archive, memberId)
+            ? new DerivingReplayer(recorded, aeron, archive, memberId, derivationStart)
             : recorded;
         final ReplayerService replayer = new ReplayerService(wrapper.apply(served), memberId, idleStrategy,
                                                              topologyRows, relayedGroups, fatalHandler, cutIntake);
