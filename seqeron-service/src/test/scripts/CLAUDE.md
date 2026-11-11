@@ -5,7 +5,8 @@ members, probes and `clusterctl` as child JVMs off the uber jar (`ClusterProcess
 (`networkFaultTest`) drive the `docker/compose.yml` cluster and the faulteron injector (`DockerCluster`). A test reads
 state from the members' CnC counters or `clusterctl counters`, never from a log line; waits on conditions with
 deadlines; kills by the PID or container it started; and gives every boot a log of its own under
-`seqeron-service/build/system-test/<test>/`. `doc/building.md` lists the tests.
+`seqeron-service/build/system-test/<test>/`. `doc/building.md` lists the tests. `-PderiveFromLog` starts every
+member and gateway host with `replayer.deriveFromLog` (`doc/disk-load-plan.md`, step 2a).
 
 `seqeron-service/src/test/scripts` holds what is left: two bash harnesses for the C# client tier —
 `csharp-client-test.sh` and `csharp-windows-test.sh` (Git Bash on Windows, with its member in WSL1) — plus `start-three-node-cluster.sh`, the operator-facing local cluster, and `multihost/`, the

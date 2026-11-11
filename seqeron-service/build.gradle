@@ -86,6 +86,10 @@ testing {
                     }
                     systemProperty 'seqeron.gatewayTopology',
                                    file('src/test/resources/topology-test-gateway.xml').absolutePath
+                    // -PderiveFromLog starts every member and gateway host with replayer.deriveFromLog.
+                    if (project.hasProperty('deriveFromLog')) {
+                        systemProperty 'replayer.deriveFromLog', 'true'
+                    }
                     doFirst {
                         // The children are separate JVMs, so each gets the agent and its own exec file.
                         def agent = (extensions.getByType(JacocoTaskExtension).asJvmArg =~ /-javaagent:([^=]+)=/)[0][1]

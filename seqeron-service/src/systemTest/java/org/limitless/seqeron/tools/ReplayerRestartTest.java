@@ -2,12 +2,12 @@ package org.limitless.seqeron.tools;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.replayer.server.ReplayerServer;
 
 /**
  * An app running through its own node's restart, and a cold start across a genuine
@@ -90,9 +91,12 @@ class ReplayerRestartTest {
                           + "of which not of the new recording: %d%n", oldRecording, newRecording, replays.size(),
                           other);
 
+        // A queue derived from the log is listed as recording <groupId> in every run.
+        final boolean renewed =
+            Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG) || !Objects.equals(oldRecording, newRecording);
         assertAll(
             () -> assertTrue(newRecording != null, "the restarted node logged no queue recording"),
-            () -> assertNotEquals(oldRecording, newRecording, "the restart reused the recording"),
+            () -> assertTrue(renewed, "the restart reused the recording"),
             () -> assertTrue(replays.size() >= 1, "no replay was served to the fresh client"),
             () -> assertEquals(0, other, "a replay was of a recording other than " + newRecording));
     }

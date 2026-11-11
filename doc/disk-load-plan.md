@@ -185,10 +185,10 @@ Limits of the prototype:
   first frame waits for the log between the checkpoint and the position asked for.
 - **No recorded path.** A member with the flag has no queue recording to fall back on, so `clusterctl` and the
   tools that read one (`QueueRecordings`, `SbeLogPrinter` on a queue) find none.
-- **Not run with the flag:** the system tests and the EC2 measurements. The stall of §2 has not been measured
-  with it. The integration suite runs with it under `-PderiveFromLog`, where `QueueRecordings` reads a
-  member's queues as its log derives them, not as its Replayer serves them, and the tests of a member's queue
-  recording are skipped.
+- **Not run with the flag:** the tests tagged `docker` and `chaos`, the C++ and C# clients, and the EC2
+  measurements. The stall of §2 has not been measured with it. The integration and system suites run with it
+  under `-PderiveFromLog`. There `QueueRecordings` reads a member's queues as its log derives them, not as its
+  Replayer serves them, and the checks of a member's queue recording are skipped.
 
 #### 2b: a second archive for queue recordings
 
