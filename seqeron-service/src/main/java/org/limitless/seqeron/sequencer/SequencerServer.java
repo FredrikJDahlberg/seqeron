@@ -417,7 +417,7 @@ public final class SequencerServer {
         final SequencerService service =
             new SequencerService(memberId, localArchiveCtx.clone(), topologyRows, fatalHandler, safeLog, cuts,
                                  derivationStart, driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(),
-                                 queueStallTimeoutMs);
+                                 queueStallTimeoutMs, !Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG));
 
         final ClusteredServiceContainer.Context serviceCtx =
             new ClusteredServiceContainer.Context()

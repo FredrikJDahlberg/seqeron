@@ -20,12 +20,12 @@ import java.util.List;
 import java.util.function.Supplier;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
-import org.agrona.collections.Long2LongHashMap;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.sequencer.LogDeriver;
 import org.limitless.seqeron.sequencer.QueuePositions;
@@ -33,22 +33,22 @@ import org.limitless.seqeron.sequencer.Sequencer;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * A member's {@link Replayer} that serves a replay off the Raft log's recording instead of the queue's: a {@link
- * LogDeriver} over the log, published at the queue's term length and MTU, puts each frame at the position the queue's
- * recording holds it at (doc/disk-load-plan.md, step 2a).
+ * A member's {@link Replayer} whose queues are not recorded: a queue's history is a {@link LogDeriver} over the Raft
+ * log's recording, published at the queue's term length and MTU, which puts each frame at the position the queue's
+ * publication put it at (doc/disk-load-plan.md, step 2a).
+ *
+ * <p>To {@link ReplayerService} each queue is one active recording whose id is its group's, which starts where the
+ * queue did and has reached where the derivation has brought it.
  *
  * <p>One derivation follows the log for as long as this runs and keeps a checkpoint of it every {@link
- * #CHECKPOINT_LOG_BYTES}: the deriver's state, and where each queue stood. A replay continues from the last
+ * #CHECKPOINT_LOG_BYTES}: the deriver's state, and where each queue stood. A replay or a scan continues from the last
  * checkpoint at or before the position it starts at. The derivation starts where the member's service says it did
  * ({@link DerivationStart}): at the log's first entry, or at the cluster snapshot it restored, each queue at the
  * position the service created it at.
  *
- * <p>A queue's tip and a scan of it are the derivation's too, so that nothing but a queue's recording id is read off
- * its recording.
- *
- * <p>Prototype: every other call goes to the Replayer it decorates, and so do these until the derivation has caught
- * up with the log's commit position as it stood when it started. The checkpoints are held in memory and rebuilt at
- * each start.
+ * <p>No queue is listed until the derivation has caught up with the log's commit position as it stood when it
+ * started. The checkpoints are held in memory, rebuilt at each start, and released below a purge. The replay
+ * protocol's streams, the counters and the clock are the Replayer's it decorates.
  *
  * <p>Not thread-safe: every call is from the Replayer's duty-cycle thread.
  */
@@ -77,8 +77,6 @@ public final class DerivingReplayer implements Replayer {
     private final AeronArchive archive;
     private final int memberId;
     private final Supplier<DerivationStart> derivationStart;
-    /** The group of each active queue recording {@link #listQueueRecordings} has passed on. */
-    private final Long2LongHashMap recordingGroups = new Long2LongHashMap(0);
     private final Long2ObjectHashMap<DerivedReplay> replays = new Long2ObjectHashMap<>();
     /** The derivation that keeps the checkpoints, or null until the service has started and the log is recorded. */
     private Follower follower;
@@ -111,32 +109,16 @@ public final class DerivingReplayer implements Replayer {
         this.memberId = memberId;
     }
 
-    /** The checkpoints kept so far, the derivation's start among them; 0 while replays are not derived. */
+    /** The checkpoints kept, the derivation's start among them; 0 until the queues are listed. */
     public int checkpointCount() {
         return follower != null && follower.isValid() ? follower.checkpoints.size() : 0;
     }
 
-    /** Whether a replay is derived from the log, and not the archive's of the queue's recording. */
-    public boolean isDerived(final long replaySessionId) {
-        return replays.containsKey(replaySessionId);
-    }
-
     @Override
     public long startReplay(final long recordingId, final long position, final long length, final int streamId) {
-        final Queue queue = follower != null && follower.isValid() ? follower.queueOf(recordingId) : null;
-        final Checkpoint from = queue == null ? null : follower.checkpointAt(queue.groupId(), position);
-        if (from == null) {
-            return delegate.startReplay(recordingId, position, length, streamId);
-        }
-        final long logSessionId;
-        try {
-            logSessionId = replayLog(follower.logRecordingId, from.logPosition(), follower.commitCounterId);
-        } catch (final RuntimeException ex) {
-            Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                        "group %d's replay from %d is not derived, the log does not replay from %d: %s",
-                        queue.groupId(), position, from.logPosition(), ex.getMessage());
-            return delegate.startReplay(recordingId, position, length, streamId);
-        }
+        final Queue queue = queueOf(recordingId);
+        final Checkpoint from = checkpointAt(queue, position);
+        final long logSessionId = replayLog(follower.logRecordingId, from.logPosition(), follower.commitCounterId);
         final Subscription log = logSubscription(logSessionId);
         final int termId = (int)(position >> Integer.numberOfTrailingZeros(queue.termLength()));
         final ExclusivePublication publication = aeron.addExclusivePublication(
@@ -153,6 +135,24 @@ public final class DerivingReplayer implements Replayer {
             replaySessionId, queue.groupId(), position, position + length, from.logPosition(),
             from.queuePositions()[queue.groupId() - 1]);
         return replaySessionId;
+    }
+
+    /** The queue a recording id names, once the queues are listed. */
+    private Queue queueOf(final long recordingId) {
+        if (follower == null || !follower.isValid() || recordingId < 1 || recordingId > FrameLayer.MAX_GROUPS) {
+            throw new IllegalArgumentException("no queue is derived as recording " + recordingId);
+        }
+        return new Queue((int)recordingId, follower.termLength, follower.mtu);
+    }
+
+    /** The last checkpoint at which a queue stood at or before {@code position}, which its start is the first of. */
+    private Checkpoint checkpointAt(final Queue queue, final long position) {
+        final Checkpoint from = follower.checkpointAt(queue.groupId(), position);
+        if (from == null) {
+            throw new IllegalArgumentException("group " + queue.groupId() + "'s queue is not derived from " + position +
+                                               ", before " + follower.queueStarts[queue.groupId() - 1]);
+        }
+        return from;
     }
 
     private long replayLog(final long logRecordingId, final long logPosition, final int commitCounterId) {
@@ -229,9 +229,7 @@ public final class DerivingReplayer implements Replayer {
     @Override
     public void stopReplay(final long replaySessionId) {
         final DerivedReplay replay = replays.remove(replaySessionId);
-        if (replay == null) {
-            delegate.stopReplay(replaySessionId);
-        } else {
+        if (replay != null) {
             replay.close();
         }
     }
@@ -258,6 +256,8 @@ public final class DerivingReplayer implements Replayer {
         private final int commitCounterId;
         private final List<Checkpoint> checkpoints = new ArrayList<>();
         private final long[] queuePositions;
+        /** Where each queue's history starts: where the service created it, or where it was purged to. */
+        private final long[] queueStarts;
         private final long logSessionId;
         private final Subscription log;
         private final LogDeriver deriver = new LogDeriver(memberId, this);
@@ -289,6 +289,7 @@ public final class DerivingReplayer implements Replayer {
             this.logRecordingId = logRecordingId;
             this.commitCounterId = commitCounterId;
             this.queuePositions = start.queueStarts().clone();
+            this.queueStarts = start.queueStarts().clone();
             this.caughtUpAt = aeron.countersReader().getCounterValue(commitCounterId);
             this.caughtUp = caughtUpAt <= start.logPosition();
             checkpoints.add(
@@ -303,11 +304,6 @@ public final class DerivingReplayer implements Replayer {
             return caughtUp;
         }
 
-        Queue queueOf(final long recordingId) {
-            final int groupId = (int)recordingGroups.get(recordingId);
-            return groupId == 0 ? null : new Queue(groupId, termLength, mtu);
-        }
-
         /** The last checkpoint at which group {@code groupId}'s queue stood at or before {@code position}. */
         Checkpoint checkpointAt(final int groupId, final long position) {
             for (int i = checkpoints.size() - 1; i >= 0; i--) {
@@ -316,6 +312,23 @@ public final class DerivingReplayer implements Replayer {
                 }
             }
             return null;
+        }
+
+        /** Moves a queue's start, and releases the checkpoints no replay can continue from any more. */
+        void purge(final int groupId, final long newStart) {
+            queueStarts[groupId - 1] = newStart;
+            while (checkpoints.size() > 1 && isBelowStarts(checkpoints.get(1))) {
+                checkpoints.removeFirst();
+            }
+        }
+
+        private boolean isBelowStarts(final Checkpoint checkpoint) {
+            for (int i = 0; i < queueStarts.length; i++) {
+                if (checkpoint.queuePositions()[i] > queueStarts[i]) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private boolean checkpointDue() {
@@ -586,35 +599,21 @@ public final class DerivingReplayer implements Replayer {
         }
     }
 
+    /** One recording per queue, once the derivation has caught up: nothing tells an inactive group's from another. */
     @Override
     public List<RecordingSpan> listQueueRecordings(final int groupId) {
-        final List<RecordingSpan> spans = delegate.listQueueRecordings(groupId);
-        for (final RecordingSpan span : spans) {
-            if (span.active()) {
-                recordingGroups.put(span.recordingId(), groupId);
-            }
-        }
-        return spans;
+        return follower != null && follower.isValid()
+            ? List.of(new RecordingSpan(groupId, follower.queueStarts[groupId - 1], true, follower.termLength,
+                                        follower.termLength))
+            : List.of();
     }
 
-    /** Derived from the last checkpoint at or before {@code fromPosition}, once replays are. */
     @Override
     public ScanEnd scanQueueRecording(final long recordingId, final long fromPosition, final long endPosition,
                                       final FrameVisitor visitor) {
-        final Queue queue = follower != null && follower.isValid() ? follower.queueOf(recordingId) : null;
-        final Checkpoint from = queue == null ? null : follower.checkpointAt(queue.groupId(), fromPosition);
-        if (from == null) {
-            return delegate.scanQueueRecording(recordingId, fromPosition, endPosition, visitor);
-        }
-        final long logSessionId;
-        try {
-            logSessionId = replayLog(follower.logRecordingId, from.logPosition(), follower.commitCounterId);
-        } catch (final RuntimeException ex) {
-            Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                        "group %d's scan from %d is not derived, the log does not replay from %d: %s", queue.groupId(),
-                        fromPosition, from.logPosition(), ex.getMessage());
-            return delegate.scanQueueRecording(recordingId, fromPosition, endPosition, visitor);
-        }
+        final Queue queue = queueOf(recordingId);
+        final Checkpoint from = checkpointAt(queue, fromPosition);
+        final long logSessionId = replayLog(follower.logRecordingId, from.logPosition(), follower.commitCounterId);
         try (Subscription log = logSubscription(logSessionId)) {
             return new DerivedScan(queue, from, fromPosition, endPosition, visitor).run(log, (int)logSessionId);
         } finally {
@@ -626,31 +625,30 @@ public final class DerivingReplayer implements Replayer {
         }
     }
 
-    /**
-     * Where the derivation has brought the queue, once replays are derived and while its recording is being written:
-     * the committed log's, which the recording reaches.
-     */
+    /** Where the derivation has brought the queue: the committed log's, which the queue reaches. */
     @Override
     public long recordingPosition(final long recordingId) {
-        final long recorded = delegate.recordingPosition(recordingId);
-        final Queue queue =
-            recorded >= 0 && follower != null && follower.isValid() ? follower.queueOf(recordingId) : null;
-        return queue == null ? recorded : follower.queuePositions[queue.groupId() - 1];
+        return follower != null && follower.isValid() ? follower.queuePositions[(int)recordingId - 1]
+                                                      : AeronArchive.NULL_POSITION;
     }
 
+    /** Never: the derivation runs for as long as this does. */
     @Override
     public long stopPosition(final long recordingId) {
-        return delegate.stopPosition(recordingId);
+        return AeronArchive.NULL_POSITION;
     }
 
+    /** None: nothing records the queue, so no replay competes with its recorder. */
     @Override
     public QueueBacklog queueBacklog(final int groupId, final RecordingSpan span) {
-        return delegate.queueBacklog(groupId, span);
+        return null;
     }
 
+    /** Moves the queue's start: the log below it is the operator's to trim. */
     @Override
     public boolean purgeSegments(final long recordingId, final long newStartPosition) {
-        return delegate.purgeSegments(recordingId, newStartPosition);
+        follower.purge(queueOf(recordingId).groupId(), newStartPosition);
+        return true;
     }
 
     @Override

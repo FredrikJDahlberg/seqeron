@@ -38,7 +38,8 @@ import org.limitless.seqeron.replayer.server.RestartSafeLog;
  * A replay derived from the Raft log is the archive's replay of the queue's recording, fragment for fragment, from
  * wherever it starts (doc/disk-load-plan.md, step 2a): from mid-history, which continues from a checkpoint, and on a
  * member that started from a cluster snapshot, whose derivation starts at the snapshot. A {@link DerivingReplayer}
- * of the test's own runs over a member's archive, and each derived replay is read beside the recorded one.
+ * of the test's own runs over the archive of a member that records its queues, and each derived replay is read
+ * beside the recorded one.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class CheckpointedReplayTest {
@@ -186,7 +187,7 @@ class CheckpointedReplayTest {
             }
             final long[] starts = new long[InProcessCluster.GROUP_IDS.size()];
             for (final int groupId : InProcessCluster.GROUP_IDS) {
-                final Replayer.RecordingSpan span = deriving.listQueueRecordings(groupId)
+                final Replayer.RecordingSpan span = recorded.listQueueRecordings(groupId)
                                                         .stream()
                                                         .filter(Replayer.RecordingSpan::active)
                                                         .findFirst()
@@ -202,19 +203,20 @@ class CheckpointedReplayTest {
                                                              return true;
                                                          }));
                 final String queue = "member " + member + "'s queue of group " + groupId;
-                assertDerivedScanIsRecorded(deriving, span.recordingId(), tip, frames, seqNos, 0, queue);
-                assertDerivedScanIsRecorded(deriving, span.recordingId(), tip, frames, seqNos, frames.size() / 2,
-                                            queue);
+                assertEquals(span.startPosition(), deriving.listQueueRecordings(groupId).getFirst().startPosition(),
+                             queue + ": where it starts");
+                assertDerivedScanIsRecorded(deriving, groupId, tip, frames, seqNos, 0, queue);
+                assertDerivedScanIsRecorded(deriving, groupId, tip, frames, seqNos, frames.size() / 2, queue);
                 assertEquals(Replayer.ScanEnd.UNREADABLE,
-                             deriving.scanQueueRecording(span.recordingId(), frames.getLong(frames.size() / 2) + 32,
-                                                         tip, (position, clusterSeqNo) -> true),
+                             deriving.scanQueueRecording(groupId, frames.getLong(frames.size() / 2) + 32, tip,
+                                                         (position, clusterSeqNo) -> true),
                              queue + ": a scan from inside a frame");
-                assertDerivedTipIsRecorded(recorded, deriving, span.recordingId(), queue);
+                assertDerivedTipIsRecorded(recorded, deriving, span.recordingId(), groupId, queue);
                 final List<Fragment> whole = assertDerivedIsRecorded(aeron, archive, deriving, span.recordingId(),
-                                                                     span.startPosition(), tip, queue);
+                                                                     groupId, span.startPosition(), tip, queue);
                 for (final long from :
                      new long[] { frames.getLong(frames.size() / 2), frames.getLong(frames.size() - 2) }) {
-                    assertDerivedIsRecorded(aeron, archive, deriving, span.recordingId(), from, tip, queue);
+                    assertDerivedIsRecorded(aeron, archive, deriving, span.recordingId(), groupId, from, tip, queue);
                 }
                 // The end of a fragment that is not its frame's last is inside the frame.
                 final Fragment inside = whole.stream()
@@ -223,8 +225,8 @@ class CheckpointedReplayTest {
                                             .findFirst()
                                             .orElse(null);
                 if (inside != null) {
-                    assertDerivedIsRecorded(aeron, archive, deriving, span.recordingId(), inside.position(), tip,
-                                            queue);
+                    assertDerivedIsRecorded(aeron, archive, deriving, span.recordingId(), groupId, inside.position(),
+                                            tip, queue);
                     insideFrames++;
                 }
                 starts[InProcessCluster.GROUP_IDS.indexOf(groupId)] = span.startPosition();
@@ -238,13 +240,13 @@ class CheckpointedReplayTest {
     }
 
     /** Holds a derived scan from the frame at {@code first} to the recording's frames from there. */
-    private static void assertDerivedScanIsRecorded(final DerivingReplayer deriving, final long recordingId,
-                                                    final long tip, final LongArrayList frames,
-                                                    final LongArrayList seqNos, final int first, final String queue) {
+    private static void assertDerivedScanIsRecorded(final DerivingReplayer deriving, final int groupId, final long tip,
+                                                    final LongArrayList frames, final LongArrayList seqNos,
+                                                    final int first, final String queue) {
         final LongArrayList derivedFrames = new LongArrayList();
         final LongArrayList derivedSeqNos = new LongArrayList();
         assertEquals(Replayer.ScanEnd.TIP,
-                     deriving.scanQueueRecording(recordingId, frames.getLong(first), tip, (position, clusterSeqNo) -> {
+                     deriving.scanQueueRecording(groupId, frames.getLong(first), tip, (position, clusterSeqNo) -> {
                          derivedFrames.addLong(position);
                          derivedSeqNos.addLong(clusterSeqNo);
                          return true;
@@ -256,11 +258,11 @@ class CheckpointedReplayTest {
 
     /** The derived tip is the recording's whenever the queue is still, between two heartbeats. */
     private static void assertDerivedTipIsRecorded(final Replayer recorded, final DerivingReplayer deriving,
-                                                   final long recordingId, final String queue) {
+                                                   final long recordingId, final int groupId, final String queue) {
         final long deadline = System.nanoTime() + TIMEOUT_NS;
         long derived;
         long tip;
-        while ((derived = deriving.recordingPosition(recordingId)) != (tip = recorded.recordingPosition(recordingId))) {
+        while ((derived = deriving.recordingPosition(groupId)) != (tip = recorded.recordingPosition(recordingId))) {
             assertTrue(System.nanoTime() < deadline, queue + ": the derived tip is " + derived + ", recorded " + tip);
             if (deriving.doWork() == 0) {
                 Tests.yield();
@@ -271,14 +273,14 @@ class CheckpointedReplayTest {
     /** @return the recorded replay's fragments */
     private static List<Fragment> assertDerivedIsRecorded(final Aeron aeron, final AeronArchive archive,
                                                           final DerivingReplayer deriving, final long recordingId,
-                                                          final long from, final long tip, final String queue) {
+                                                          final int groupId, final long from, final long tip,
+                                                          final String queue) {
         final long recordedSession =
             archive.startReplay(recordingId, from, tip - from, REPLAY_CHANNEL, RECORDED_STREAM_ID);
         final List<Fragment> expected = read(aeron, (int)recordedSession, RECORDED_STREAM_ID, tip, () -> 0);
 
         final long startedNs = System.nanoTime();
-        final long derivedSession = deriving.startReplay(recordingId, from, tip - from, DERIVED_STREAM_ID);
-        assertTrue(deriving.isDerived(derivedSession), queue + ": the replay from " + from + " is not derived");
+        final long derivedSession = deriving.startReplay(groupId, from, tip - from, DERIVED_STREAM_ID);
         final List<Fragment> actual = read(aeron, (int)derivedSession, DERIVED_STREAM_ID, tip, deriving::doWork);
         final long micros = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - startedNs);
         deriving.stopReplay(derivedSession);

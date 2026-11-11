@@ -34,8 +34,8 @@ tip. A run it drops from every replay is a recording with a hole: the client ret
 the client to waiting without a fault, then walking in order once the Replayer runs. In every case no queue goes silent for the queue-stall fence's default, and no frame is lost.
 The derived replay of `doc/disk-load-plan.md`, step 2a, has three: `DerivedQueueTest` derives a member's queues from its
 Raft log and checks them against its recordings frame for frame and position for position; `DerivedReplayTest` cold-starts
-a client with `replayer.deriveFromLog` and beside it off the recording, and prints each rate; `CheckpointedReplayTest`
-compares a `DerivingReplayer`'s replay, started from the member's `DerivationStart`, with the archive's fragment for fragment, from the start, mid-history, inside a
+a client with `replayer.deriveFromLog`, on a member that then records no queue, and beside it off the recording, and prints each rate; `CheckpointedReplayTest`
+runs a `DerivingReplayer` of its own, started from the member's `DerivationStart`, beside a recording member's archive and compares its replay with the archive's fragment for fragment, from the start, mid-history, inside a
 fragmented frame, and on a member restarted from a cluster snapshot, at the same and at another term length, and its
 scans and its tip with the recording's. `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on

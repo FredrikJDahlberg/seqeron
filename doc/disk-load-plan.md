@@ -1,8 +1,8 @@
 # Disk load: findings and plan
 
 A review of what a member and a gateway host write to disk, how a slow write reaches a client, and the
-changes that would reduce both. Step 2a's replay exists as a prototype, off by default, step 3's warning is
-in, and nothing else here is implemented. Step 1 is confirmed, and bounds what step 2 is worth:
+changes that would reduce both. Step 2a exists for a member as a prototype, off by default, step 3's warning
+is in, and nothing else here is implemented. Step 1 is confirmed, and bounds what step 2 is worth:
 it reduces the bytes written and leaves the stall to step 3.
 
 ## 1. What is written
@@ -60,9 +60,10 @@ the Raft log's recording produces the frames the member's own did, by the determ
 every member's queue the same. The log is then the one copy on disk, whatever the number of groups.
 
 - **Live path.** `SequencerService` still publishes each queue for co-located consumers, and nothing records
-  it. With no tethered subscriber `emit` cannot back-pressure, so the recording-liveness and stall fatals in
-  `QueuePublisher` go. An offer to a queue with no subscriber returns `NOT_CONNECTED` and is dropped, since
-  the frame is in the log.
+  it. The service keeps a subscriber of its own on each queue and moves it past every frame it offers, so the
+  queue is always connected and every offer lands: a dropped offer would leave the publication behind the
+  positions the log gives, which a client joins the live queue by. Only an untethered consumer can then hold
+  the window, until the driver evicts it.
 - **Replay.** The Replayer replays the log's recording, bounded by the commit position (the recording can
   hold entries a new leader truncates), decodes Aeron's cluster log codecs, runs a `Sequencer` over them and
   publishes the requested group's frames on the replay stream.
@@ -95,31 +96,37 @@ Costs and open questions:
   against the log.
 - Whether a derived replay keeps position addressing or moves to `groupSeqNo`. The prototype keeps positions.
 
-Prototype. With `replayer.deriveFromLog`, a member's Replayer serves replays through `DerivingReplayer`, a
-decorator over `AeronReplayer`. The queue is still recorded; only the source of a replay, a tip and a scan
-changes.
+Prototype. With `replayer.deriveFromLog`, a member records no queue and its Replayer is a `DerivingReplayer`,
+which is to `ReplayerService` what `AeronReplayer` is over recordings: each queue is one recording, named by
+its group, that starts where the queue did and has reached where the derivation has. There is no recorded
+path to fall back on. A gateway host cannot relay from such a member, since it replays the member's queue
+recording.
 
+- **Live path.** As above. `QueuePublisher` is unchanged: its liveness check and stall bound read the
+  service's own subscriber where they read the recording.
 - **Derivation.** `LogDeriver` runs a `Sequencer` over the log's entries and `QueuePositions` gives each frame
   its queue position. One bounded replay of the log follows the commit position and keeps a checkpoint in
   memory every 8 MiB of log.
 - **Start.** The member's service hands its Replayer a `DerivationStart` when it starts: log position 0 and
   nothing sequenced, or the cluster snapshot's log position and the state it restored, with the position it
-  created each queue at and the node's term length and MTU. Nothing is read off a queue's recording but its id.
+  created each queue at and the node's term length and MTU.
 - **Replay.** The newest checkpoint at or below the requested position is restored, and the frames from that
   position on are published on a publication created at it, so the replay protocol and the clients are
   unchanged. A position at a fragment boundary inside a frame above the MTU is served as the archive serves it.
 - **Tip and scans.** A queue's tip is where the derivation has brought it, and a scan for a snapshot's cut derives
   the frames from the last checkpoint at or before where it starts.
-- **Fallback.** Nothing is derived until the derivation has caught up with the commit position as it stood
-  when it started. Until then, and when the log will not replay from a checkpoint, the recorded path serves.
+- **Readiness.** No queue is listed until the derivation has caught up with the commit position as it stood
+  when it started, so the Replayer is not ready before then.
+- **Purge.** A purge below a restart-safe cut moves the queue's start and releases the checkpoints below it.
+  The log itself is not trimmed.
 - **Rate.** On a laptop, off the page cache, 200,000 frames with a 150-byte filler walk at 0.8–1.3 million
   frames/s derived and 1.8–2.7 million recorded.
-- **Tests.** `DerivedQueueTest`, `DerivedReplayTest` and `CheckpointedReplayTest`, which compares a derived
-  replay with the recording's fragment for fragment, and a derived scan and tip with the recording's.
+- **Tests.** `DerivedQueueTest`; `DerivedReplayTest`, a client's cold start and live following on a member
+  that records nothing; and `CheckpointedReplayTest`, which runs a `DerivingReplayer` beside a recording
+  member's archive and compares replays fragment for fragment, and scans and tips.
 
-Not in the prototype: the queue is still recorded, and the Replayer still names it by its recording's id;
-checkpoints are never released; the gateway host, retention, the backlog throttle and the live path are
-unchanged.
+Not in the prototype: checkpoints are never released without a `<snapshots>` policy; the gateway host and
+log retention are unchanged; `clusterctl` and the tools that read a member's queue recording find none.
 
 #### 2b: a second archive for queue recordings
 

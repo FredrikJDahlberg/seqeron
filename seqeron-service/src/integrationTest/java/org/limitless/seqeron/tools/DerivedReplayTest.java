@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.aeron.Aeron;
 import io.aeron.AeronCounters;
+import io.aeron.archive.client.AeronArchive;
 import io.aeron.driver.status.StreamCounter;
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
@@ -20,6 +21,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
@@ -28,9 +31,9 @@ import org.limitless.seqeron.replayer.server.ReplayerServer;
 
 /**
  * A client's cold start served off the Raft log (doc/disk-load-plan.md, step 2a): with {@code replayer.deriveFromLog} a
- * member's Replayer derives the replay through {@link DerivingReplayer}, once its derivation has placed each queue, and
- * an unchanged {@link ReplayerStreamReceiver} must walk each queue from groupSeqNo 1 in order, catch up at the queue's
- * tip and follow it live. The same walk off the queue's recording runs beside it, and each prints its rate.
+ * member records no queue and its Replayer derives the replay through {@link DerivingReplayer}, and an unchanged
+ * {@link ReplayerStreamReceiver} must walk each queue from groupSeqNo 1 in order, catch up at the queue's tip and
+ * follow it live. The same walk off the queue's recording runs beside it, and each prints its rate.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class DerivedReplayTest {
@@ -42,6 +45,7 @@ class DerivedReplayTest {
     /** Well under the time the shortest replay here takes. */
     private static final long DERIVED_LOOK_INTERVAL_MS = 5;
     private static final int CLIENT_ID = 31;
+    private static final int RESPONSE_STREAM_ID = 125; // beside QueueFrames' and NodeDriver's
 
     @RegisterExtension final SystemTestWatcher watcher = new SystemTestWatcher();
 
@@ -83,6 +87,8 @@ class DerivedReplayTest {
         final long tip = send(leader, HISTORY_FRAMES);
         for (final int groupId : InProcessCluster.GROUP_IDS) {
             walk(member, groupId, tip, derived);
+            assertEquals(derived, queueRecordings(member, groupId) == 0,
+                         "whether group " + groupId + "'s queue is unrecorded");
         }
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");
@@ -150,6 +156,25 @@ class DerivedReplayTest {
                 keyBuffer.getStringAscii(StreamCounter.CHANNEL_OFFSET).contains(DerivingReplayer.DERIVED_ALIAS);
         });
         return found[0];
+    }
+
+    /** How many recordings of a group's queue a member's archive holds. */
+    private int queueRecordings(final int member, final int groupId) {
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
+             AeronArchive archive =
+                 AeronArchive.connect(new AeronArchive.Context()
+                                          .aeron(aeron)
+                                          .ownsAeronClient(false)
+                                          .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                          .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+                                          .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                          .controlResponseStreamId(RESPONSE_STREAM_ID))) {
+            return archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", FrameLayer.queueStreamId(groupId),
+                                                (controlSessionId, correlationId, recordingId, startTimestamp,
+                                                 stopTimestamp, startPosition, stopPosition, initialTermId,
+                                                 segmentFileLength, termBufferLength, mtuLength, sessionId, streamId,
+                                                 strippedChannel, originalChannel, sourceIdentity) -> { });
+        }
     }
 
     /** @return the clusterSeqNo of the last of {@code frames} confirmed frames sent through {@code member} */
