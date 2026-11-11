@@ -1,4 +1,4 @@
-package org.limitless.seqeron.tools;
+package org.limitless.seqeron.replayer.server;
 
 import static io.aeron.cluster.ConsensusModule.Configuration.SERVICE_ID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -8,7 +8,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
-import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 class LogTrimPlanTest {
     private final List<RecordingLog.Entry> entries = new ArrayList<>();

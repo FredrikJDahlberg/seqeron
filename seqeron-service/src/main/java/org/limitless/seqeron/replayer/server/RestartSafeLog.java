@@ -28,11 +28,13 @@ public final class RestartSafeLog implements AutoCloseable {
     /** What a log holds. */
     public record State(Set<Long> cuts, Set<Long> safe) { }
 
+    private final Path directory;
     private final FileChannel channel;
     private final Set<Long> cuts;
     private final Set<Long> safe;
 
-    private RestartSafeLog(final FileChannel channel, final State state) {
+    private RestartSafeLog(final Path directory, final FileChannel channel, final State state) {
+        this.directory = directory;
         this.channel = channel;
         this.cuts = new HashSet<>(state.cuts());
         this.safe = new HashSet<>(state.safe());
@@ -49,6 +51,7 @@ public final class RestartSafeLog implements AutoCloseable {
             final Path file = clusterDir.resolve(FILE_NAME);
             final State state = read(file);
             return new RestartSafeLog(
+                clusterDir,
                 FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND),
                 state);
         } catch (final IOException ex) {
@@ -108,6 +111,21 @@ public final class RestartSafeLog implements AutoCloseable {
     /** Whether a snapshot at {@code logPosition} may be restarted from. */
     public synchronized boolean isSafe(final long logPosition) {
         return safe.contains(logPosition);
+    }
+
+    /** The cluster directory the log is in. */
+    public Path directory() {
+        return directory;
+    }
+
+    /** How many snapshots may be restarted from. */
+    public synchronized int safeCount() {
+        return safe.size();
+    }
+
+    /** A copy of what the log holds. */
+    public synchronized State state() {
+        return new State(Set.copyOf(cuts), Set.copyOf(safe));
     }
 
     private void append(final String line) {

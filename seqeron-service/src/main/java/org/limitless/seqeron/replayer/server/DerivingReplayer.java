@@ -135,6 +135,17 @@ public final class DerivingReplayer implements Replayer {
         this.memberId = memberId;
     }
 
+    /**
+     * The log position replays need the log from: the first checkpoint's, {@link LogTrimmer#HOLD} until the derivation
+     * has started, or {@link Long#MAX_VALUE} if it never will.
+     */
+    long firstCheckpointLogPosition() {
+        if (follower == null) {
+            return followerDecided ? Long.MAX_VALUE : LogTrimmer.HOLD;
+        }
+        return follower.checkpoints.getFirst().logPosition();
+    }
+
     /** The checkpoints kept, the derivation's start among them; 0 until the queues are listed. */
     public int checkpointCount() {
         return follower != null && follower.isValid() ? follower.checkpoints.size() : 0;

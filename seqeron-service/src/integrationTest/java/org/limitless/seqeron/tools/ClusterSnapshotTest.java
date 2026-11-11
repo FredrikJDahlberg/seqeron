@@ -757,14 +757,24 @@ class ClusterSnapshotTest {
     private static final int LOG_FILLER = 1_000;
     private static final int LOG_TERM = 64 * 1024 * 1024;
 
+    @Test
+    @InterruptAfter(300)
+    void aMemberTrimsItsLogOnceItsCutsAreRestartSafeAndAGatewayRestoresOnIt() throws Exception {
+        aMemberTrimsItsLog(false);
+    }
+
     /**
      * The log still derives the queue from the start a purge moved it to, and the member has announced the checkpoint
      * there to a host that could not start from the service's own start at log position 0.
      */
     @Test
     @InterruptAfter(300)
-    void aMemberThatRecordsNoQueueServesItsCutAndStartsAHostOnceItsLogIsTrimmed() throws Exception {
+    void aMemberThatRecordsNoQueueTrimsItsLogAboveWhatItsQueuesNeedAndStartsAHost() throws Exception {
         System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
+        aMemberTrimsItsLog(true);
+    }
+
+    private void aMemberTrimsItsLog(final boolean startHost) throws Exception {
         final String segment = setProperty(SEGMENT_PROPERTY, String.valueOf(LOG_TERM));
         try {
             gatewayRow = true;
@@ -786,14 +796,22 @@ class ClusterSnapshotTest {
             // Two more, so that the older of the two snapshots the trim keeps is above the traffic.
             awaitSafeRounds(member, safeLog(member).safe().size() + 2);
         }
-        assertEquals(0, trimLog(member));
-        assertTrue(firstTermStart(member) > 0, "the trim purged no segment of the log");
+        for (int i = 0; i < 600 && firstTermStart(member) == 0; i++) {
+            Tests.sleep(50);
+        }
+        assertTrue(firstTermStart(member) > 0, "the member purged no segment of its log");
+        assertEquals(0, trimLog(member), "a request finds the work done");
         assertTrue(listedStart(member) > 0, "the queue still starts at 0");
 
         try (GatewayInstance restarted = new GatewayInstance(member)) {
             restarted.awaitCaughtUp();
             assertNull(restarted.failure.get(), "doWork threw");
             assertEquals(1, restarted.restored.get(), "it restored its snapshot's one record");
+        }
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+        assertFalse(cluster.terminated(), "a member terminated");
+        if (!startHost) {
+            return;
         }
 
         cluster.startGatewayHost();

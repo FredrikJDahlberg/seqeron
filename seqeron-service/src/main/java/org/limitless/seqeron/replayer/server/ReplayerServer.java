@@ -341,10 +341,17 @@ public final class ReplayerServer {
         } else {
             relayThread = new Thread(() -> AeronQueueRelay.run(relays, running, relayIdleStrategy), "relay-" + memberId);
         }
-        final Replayer recorded = new AeronReplayer(aeron, archive, memberId);
-        final Replayer served = archiveEndpoints == null && derive
-            ? new DerivingReplayer(recorded, aeron, archive, memberId, derivationStart)
-            : recorded;
+        // The derivation needs the log from its first checkpoint, which only it knows, so the trim asks it.
+        final DerivingReplayer[] deriving = { null };
+        final LogTrimmer trimmer = cutIntake == null || cutIntake.log() == null
+            ? null
+            : new LogTrimmer(aeron, archive, memberId, cutIntake.log(),
+                             () -> deriving[0] == null ? Long.MAX_VALUE : deriving[0].firstCheckpointLogPosition());
+        final Replayer recorded = new AeronReplayer(aeron, archive, memberId, trimmer);
+        if (archiveEndpoints == null && derive) {
+            deriving[0] = new DerivingReplayer(recorded, aeron, archive, memberId, derivationStart);
+        }
+        final Replayer served = deriving[0] == null ? recorded : deriving[0];
         final ReplayerService replayer = new ReplayerService(wrapper.apply(served), memberId, idleStrategy,
                                                              topologyRows, relayedGroups, fatalHandler, cutIntake);
         replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);

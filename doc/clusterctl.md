@@ -35,7 +35,7 @@ The defaults match `SequencerServer`'s, so a default single-member cluster needs
 | `activate <gatewayId>` | yes | ask the cluster to make a gateway instance active |
 | `request-snapshot` | yes | start an application snapshot round |
 | `load-topology <file>` | yes | publish the deployment's topology document |
-| `trim-log [--dry-run]` | no | purge this member's Raft log and snapshot recordings below its two newest restart-safe snapshots |
+| `trim-log [--dry-run]` | no | have this member purge its Raft log and snapshot recordings below its two newest restart-safe snapshots |
 | `counters` | no | list this member's operator counters |
 | `help` | no | print usage |
 | `snapshot` | — | refused: the cluster takes no Aeron snapshots (`request-snapshot` is the application kind) |
@@ -53,7 +53,7 @@ Until a topology is loaded, the sequencer refuses every frame but the `<groups>`
 condition 13), and the replayer names no default queue, so every publishing command but `load-topology`
 exits 1 at once, `start` included.
 
-It exits 0 on success; 1 if the cluster (for `trim-log`, the member's archive) is unreachable, no leader answers, no replayer names the default
+It exits 0 on success; 1 if the cluster (for `trim-log`, the member's Replayer) is unreachable, no leader answers, no replayer names the default
 queue, a topology file conflicts with the log, the frame does not appear in time, or the abort fails; 2 for a
 usage error or an invalid topology file.
 
@@ -184,11 +184,11 @@ document in this repository lists only what its user starts:
 
 ### trim-log
 
-Purges what this member's two newest restart-safe snapshots make unneeded ([`snapshot.md`](snapshot.md) §10.7). Open
-source Aeron trims nothing, so a member's Raft log and snapshot recordings otherwise grow with uptime, which matters
-for a deployment that runs for weeks and not for one that resets daily. It acts on this
-member alone, needs no leader, and is run on each member. It reads the member's `recording.log` and
-`restart-safe.log` from its cluster directory and purges through the member's archive, over `aeron:ipc`:
+Asks this member's Replayer to purge what its two newest restart-safe snapshots make unneeded
+([`snapshot.md`](snapshot.md) §10.7), and prints what it did. The member runs the same trim by itself each time a
+snapshot becomes restart-safe, so the command is for a trim the archive refused, and for `--dry-run`. It acts on
+this member alone and needs no leader. The request and its answer are on `aeron:ipc`, streams 208 and 209; the
+Replayer reads the member's `recording.log` and `restart-safe.log` and purges through the member's archive:
 
 1. It keeps the two newest snapshots that `restart-safe.log` names and the log from the older one. With fewer than two
    it does nothing and exits 0.
@@ -197,12 +197,14 @@ member alone, needs no leader, and is run on each member. It reads the member's 
 
 It is safe to repeat: a recording already gone counts as done. The archive refuses a log purge while a replay reads
 below the position or while another delete runs; the command prints the refusal, leaves the log as it was and exits 1,
-and the next run trims it. A member that was down past the trim horizon may need log its leader has purged and is
+and the next run, or the next restart-safe snapshot, trims it. It exits 1 too if no Replayer answers within 5 s or
+the trim does not end within 30 s. A member that was down past the trim horizon may need log its leader has purged and is
 rebuilt from `ClusterBackup` (`snapshot.md` §10.7).
 
 `trim-log --dry-run` prints what a run would purge and purges nothing, one line per recording, each already-purged
 recording left out: `would purge snapshot recording <id>` and `would purge log recording <id> below position <p>`. It
-exits 0. Purging cannot be undone, so an operator who wants the history keeps a copy of the archive directory first.
+exits 0. Purging cannot be undone, and the member does not wait for an operator: a deployment that wants the
+history copies the archive's rolled segment files, which do not change, before the snapshots that release them.
 
 ### counters
 

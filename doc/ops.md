@@ -158,7 +158,7 @@ each stream. An alias changes no matching: IPC publications and subscriptions ma
 | alias | streams |
 |---|---|
 | `seqeron-queue` | the queues, 2000 + `groupId` (2001–2016) |
-| `seqeron-replay` | the replay protocol, 201–203, and the Replayer's own replays, 204 and 207 |
+| `seqeron-replay` | the replay protocol, 201–203, and the Replayer's own replays, 204 and 207, and a log trim's request and answer, 208 and 209 |
 | `seqeron-archive` | archive control, 100, and its responses: 120–122 in a member or gateway host |
 | `seqeron-ingress` | a co-located producer's cluster ingress, 101 |
 

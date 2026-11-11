@@ -42,7 +42,8 @@ member that has run throughout, on one restarted from a cluster snapshot, and on
 moved, read through `InProcessCluster.replayer`. A gateway host with the flag derives its queues from a member's log
 (`AeronLogRelay`): `DerivedReplayTest` cold-starts a client on one and stops the member it reads, and `ClusterSnapshotTest`
 holds it to the markers it reports, to its purge, and to starting at the cut of a member restarted from a snapshot.
-It also trims a deriving member's log past its first segment, then restores a gateway on it and starts a host on it.
+It also holds a member, recording and deriving, to trimming its log past its first segment by itself once its cuts are
+restart-safe and to restoring a gateway after, and the deriving one to starting a host.
 `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;

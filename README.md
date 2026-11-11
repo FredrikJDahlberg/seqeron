@@ -78,8 +78,8 @@ Limitations
   grow with the history the archive holds, so it suits a deployment whose archive is reset between runs. With a
   policy, each member purges its queue recordings below the newest restart-safe cut
   ([design](doc/snapshot.md#10-cluster-snapshots)).
-- **The Raft log is trimmed by hand.** Aeron's open-source release trims nothing; `clusterctl trim-log` is run on
-  each member. A deployment that resets daily does not need it; one that runs for weeks does.
+- **The Raft log is trimmed only with a `<snapshots>` policy.** Aeron's open-source release trims nothing; each
+  member trims its own log below its two newest restart-safe snapshots, and `clusterctl trim-log` asks it to.
 - **Gateway hosts do not purge.** A gateway host's queue recordings grow with uptime. A host whose relay is cut off
   from every member while they purge past it stops relaying, with error logs, until it is restarted.
 - **Groups are fixed for the life of an archive.** A deployment that starts from an empty archive can declare any

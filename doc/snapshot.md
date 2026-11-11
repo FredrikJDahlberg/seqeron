@@ -372,7 +372,7 @@ the recording starts again at the cut rather than being kept.
 | **when** | The `Sequencer` reports a round due (§10.6), from state every member holds, so a new leader carries on where the last one stopped, and the leader's service sets the `ClusterControl` toggle to `SNAPSHOT`. It asks only while `cluster.role()` is `LEADER`: the consensus module reads the toggle only on the leader and outside an election, so a request set elsewhere would wait and take an extra snapshot once that member leads. The toggle switches only from `NEUTRAL`, by compare-and-set, so a request that meets an operator's `clusterctl snapshot`, or a snapshot in progress, fails and is retried at the next check. `clusterctl snapshot` is allowed, and `clusterctl shutdown` uses `SHUTDOWN`. |
 | **restore** | `onStart` reads the records through a fragment assembler, creates the queues at their cut (§10.3), and refuses a foreign schema, a newer version or a count that differs from the end's, as it refuses any snapshot today. |
 | **version** | Aeron's `appVersion`, on the consensus module's context and the service container's, has `LOG_VERSION` as its major: a seqeron constant raised by every change spec V-3 makes a purge, and by a snapshot format the next release cannot read. Schema 210's own `version` stays 0 (spec §8), so it cannot serve. Aeron compares majors when it loads a snapshot and when it replays a leadership term from the log, so a member started on an archive V-3 says to purge stops with "incompatible version" rather than sequence another history. `LOG_VERSION` starts at 1, and seqeron's validator also accepts Aeron's default major 0, which every earlier log carries, until the first raise, so the release that introduces it needs no purge. |
-| **the Raft log** | Holds the two newest restart-safe snapshots (§10.8) and the log from the older one, so the newer always has a fallback. The log below the older is trimmed by `clusterctl trim-log` (§10.7). |
+| **the Raft log** | Holds the two newest restart-safe snapshots (§10.8) and the log from the older one, so the newer always has a fallback. The member trims the log below the older (§10.7). |
 | **fallback** | A snapshot `onStart` refuses stops the member's start, and Aeron loads no older one by itself. On each member it stops, the operator runs `clusterctl invalidate-latest-snapshot` (`ClusterTool`'s), and the member restores the older snapshot and replays the log from it: at most `2X`. A snapshot that is not restart-safe is invalidated the same way, by the launcher at start (§10.8). A release reads the snapshot format of the release before it; one that cannot raises `LOG_VERSION` and is deployed as a seqeron protocol change is, on a purged archive (spec V-3). |
 
 ### 10.3 The queue
@@ -463,8 +463,8 @@ A recording then holds at most about `bytes` plus one round's wait, plus one seg
   restart relays from a member's recording start into a new recording (§10.3).
 - **Nodes need not agree.** No client starts at the purge point: one restores at its file's cut, which is the
   same frame on every node, so each node may keep more than another.
-- **The Raft log** below the older of the two cluster snapshots kept (§10.2) is trimmed by `clusterctl
-  trim-log` (§10.7).
+- **The Raft log** below the older of the two cluster snapshots kept (§10.2) is trimmed by the member
+  (§10.7).
 
 What changes for clients:
 
@@ -515,15 +515,17 @@ with snapshots and purging on, and no test kills a member between a round's cut 
 Open-source Aeron trims nothing: a member's log recording grows from its first term, however many snapshots
 it takes. Aeron's retention policy, `RetainEnoughDataForRecoveryPolicy`, belongs to the Data Retention
 Regulator, a premium product, and `ClusterTool`'s `seed-recording-log-from-snapshot` rewrites
-`recording.log` but deletes no data. seqeron therefore has a procedure of its own: `clusterctl trim-log`, run on
-each member. It does what that policy does, with the count fixed at two (§10.2):
+`recording.log` but deletes no data. seqeron therefore has a procedure of its own, which a member's Replayer runs
+each time a snapshot becomes restart-safe (`LogTrimmer`), and when `clusterctl trim-log` asks it to. It does what
+that policy does, with the count fixed at two (§10.2):
 
 - **Find the floor.** Read `recording.log` (`RecordingLog`, read-only while the member runs) for its two
   newest valid snapshots that `restart-safe.log` names (§10.8), and take the older one's log position.
 - **Purge the log below it.** `purgeSegments` on each log recording the recording log names, at the segment
   boundary at or below that position, through the member archive's local control. The archive refuses a
   position below the end of the recording's first segment, and one a replay is reading; a refusal leaves the
-  log as it was, to be trimmed by the next run.
+  log as it was, to be trimmed by the next run. A member that derives its queues from the log
+  (`disk-load-plan.md`, step 2a) purges no further than the log its derivation's first checkpoint starts at.
 - **Purge older snapshots.** `purgeRecording` on every snapshot recording, the consensus module's and the
   service's, older than the two.
 - **Per member, and safe to repeat.** Each member trims its own archive; a run that fails leaves more than
@@ -531,9 +533,10 @@ each member. It does what that policy does, with the count fixed at two (§10.2)
 - **The trim is in the archive's catalog.** A purged segment moves the first term's recording start above 0,
   and a start reads that instead of a record of its own, so a start never falls back to a replay of a log that no
   longer begins at its first term (§10.8), and a rebuilt member or a lost `restart-safe.log` cannot lose the fence.
-- **`--dry-run`** prints each recording `trim-log` would purge, and for a log recording the position it would purge
-  below, and purges nothing. It computes them as a run does. An operator who wants the history first copies it
-  from the archive directory, whose rolled segment files do not change.
+- **`clusterctl trim-log --dry-run`** prints each recording a run would purge, and for a log recording the
+  position it would purge below, and purges nothing. It computes them as a run does. A deployment that wants the
+  history copies it from the archive directory, whose rolled segment files do not change, before the snapshots
+  that release it.
 - **Recovery needs a snapshot.** With a snapshot, Aeron's recovery plan starts the log at the snapshot's
   position and reads nothing below it. With none, it starts at the recording's start, which a trim has moved,
   and would replay a partial log. A trimmed member therefore never runs without a snapshot (§10.8).

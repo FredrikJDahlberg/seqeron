@@ -2,7 +2,7 @@
 
 A review of what a member and a gateway host write to disk, how a slow write reaches a client, and the
 changes that would reduce both. Step 2a exists as a prototype, off by default, step 3's warning
-is in, and nothing else here is implemented. Step 1 is confirmed, and bounds what step 2 is worth:
+and step 4 are in, and nothing else here is implemented. Step 1 is confirmed, and bounds what step 2 is worth:
 it reduces the bytes written and leaves the stall to step 3.
 
 ## 1. What is written
@@ -120,7 +120,7 @@ its queue recordings.
 - **Readiness.** No queue is listed until the derivation has caught up with the commit position as it stood
   when it started, so the Replayer is not ready before then.
 - **Purge.** A purge below a restart-safe cut moves the queue's start, a term at a time as a recording's moves
-  a segment at a time, and releases the checkpoints below it. The log is not trimmed automatically (step 4).
+  a segment at a time, and releases the checkpoints below it.
 - **Gateway host.** One `AeronLogRelay` replaces the relay per group: it replays a member's log over UDP,
   bounded by that member's commit position, runs a `LogDeriver` over it and publishes each relayed group's
   frames on the host's own queue. The host still records those queues and serves them as before, so its
@@ -145,8 +145,8 @@ its queue recordings.
   For a host: `LogRelayTest`; in `DerivedReplayTest`, a client's cold start on a host and its walk on across
   the stop of the member the host read; and three in `ClusterSnapshotTest`: the markers the host reports, its
   purge below the cuts its gateway confirms, and its start from a member restarted from a cluster snapshot.
-  For retention, one more there: a member's log is trimmed past its first segment, a gateway then restores
-  on it, and a host starts on it above the trimmed log.
+  For retention, one more there: a member trims its log past its first segment, a gateway then restores on
+  it, and a host starts on it above the trimmed log.
 
 Retention. `snapshot.md` §10 with the flag on, where it differs:
 
@@ -156,7 +156,7 @@ Retention. `snapshot.md` §10 with the flag on, where it differs:
 | Replayer ready (§10.5) | each queue recording, the earlier one purged | the derivation caught up with the commit position |
 | purge (§10.6) | whole segments below the newest restart-safe cut | the start moves to the term boundary below that cut; nothing is deleted |
 | what holds a queue's history | its recording | the log from the first checkpoint kept, which is at or below the queue's start |
-| the log kept (§10.7) | from the older of the two newest restart-safe snapshots, for a restart | that, and from the first checkpoint kept, which `trim-log` does not know (limits, below) |
+| the log kept (§10.7) | from the older of the two newest restart-safe snapshots, for a restart | from the lower of that and the first checkpoint kept, which the member's Replayer tells its trim |
 | a host's start (§10.3, §10.6) | the member's recording start | the member's last announcement |
 | a host left behind by a purge (§10.6) | fatal | the member is dropped and the next tried, without end |
 | a new member (§10.6) | copies no queue | has none to copy |
@@ -168,17 +168,12 @@ Limits of the prototype:
 
 - **A gateway host still records the queues it derives.** Its disk writes are unchanged. Its disk is not on the
   commit path (§2), so the stall is unaffected.
-- **`trim-log` can remove log a queue's start needs.** It trims below the older of the two newest restart-safe
-  snapshots. A queue's start is the term boundary below the newest restart-safe cut, and the checkpoint it is
-  derived from lies up to the checkpoint spacing below that. With less than a queue term between rounds, as on
-  a quiet cluster with an `interval`, that checkpoint falls below the trim floor. A replay from the start then
-  fails and is answered `ReplayPending`, and the client raises `recoveryStalled`. A client that restores from
-  a file of either of the two newest cuts is not affected. Step 4 has to trim below the lower of the two
-  positions, which the member's Replayer knows and `clusterctl` does not.
-- **Moving the start to the cut itself is not the fix.** With a checkpoint taken at each snapshot it keeps the
-  start's checkpoint at a snapshot the trim keeps. But a client that is down across one round, on a node
-  where no other instance joins it, then finds its file's cut below the start and is fenced (`snapshot.md`
-  §10.6), where a recording leaves it up to a segment.
+- **The queue's start holds the trim.** A queue's start is the term boundary below the newest restart-safe
+  cut, and the trim keeps the log from the checkpoint below it. On a quiet cluster the start moves seldom, so the
+  log kept is up to a queue term and the checkpoint spacing more than the two snapshots need. Moving the start
+  to the cut itself would bound that, but a client that is down across one round, on a node where no other
+  instance joins it, would then find its file's cut below the start and be fenced (`snapshot.md` §10.6), where
+  a recording leaves it up to a segment.
 - **A host with no suitable member does not stop.** A member is unsuitable when its log no longer holds the
   position the host needs: its announced start for a host's first read, the host's own position after. The
   relay moves to the next member and retries, where a queue relay left behind stops with a fatal.
@@ -220,8 +215,10 @@ length below Aeron's 128 MiB default so a purge follows the cut closely. Since t
 
 ### Step 4: trim the log automatically
 
-Run what `clusterctl trim-log` does once a cut is restart-safe. This bounds space and recovery time, not the
-write rate.
+Done. A member's Replayer runs the trim each time a snapshot becomes restart-safe (`LogTrimmer`,
+`snapshot.md` §10.7), and `clusterctl trim-log` asks it to and prints its answer. This bounds space and
+recovery time, not the write rate. With step 2a's flag the trim stops at the log position of the derivation's
+first checkpoint, and trims nothing until the derivation has started.
 
 ### Step 5: keep `groupMask` narrow
 
