@@ -37,7 +37,7 @@ Raft log and checks them against its recordings frame for frame and position for
 a client with `replayer.deriveFromLog`, on a member that then records no queue, and beside it off the recording, and prints each rate; `CheckpointedReplayTest`
 runs a `DerivingReplayer` of its own, started from the member's `DerivationStart`, beside a recording member's archive and compares its replay with the archive's fragment for fragment, from the start, mid-history, inside a
 fragmented frame, and on a member restarted from a cluster snapshot, at the same and at another term length, and its
-scans and its tip with the recording's. `ClusterSnapshotTest` runs three of its gateway restarts with the flag on: on a
+scans and its tip with the recording's, and holds its checkpoints to their bound and to a purge's release. `ClusterSnapshotTest` runs three of its gateway restarts with the flag on: on a
 member that has run throughout, on one restarted from a cluster snapshot, and on one whose queue start a purge has
 moved, read through `InProcessCluster.replayer`. `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on

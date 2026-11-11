@@ -107,6 +107,9 @@ recording.
 - **Derivation.** `LogDeriver` runs a `Sequencer` over the log's entries and `QueuePositions` gives each frame
   its queue position. One bounded replay of the log follows the commit position and keeps a checkpoint in
   memory every 8 MiB of log.
+- **Checkpoint bound.** At most 1024 are kept. Past that every other one is released and the log between two
+  doubles, so a log nothing purges costs a bounded number of them and a replay derives more log before its
+  first frame: up to 16 MiB of it once the log passes 8 GiB, 32 MiB past 16 GiB.
 - **Start.** The member's service hands its Replayer a `DerivationStart` when it starts: log position 0 and
   nothing sequenced, or the cluster snapshot's log position and the state it restored, with the position it
   created each queue at and the node's term length and MTU.
@@ -126,10 +129,9 @@ recording.
   member's archive and compares replays fragment for fragment, and scans and tips; and three in
   `ClusterSnapshotTest` on members that record nothing: a gateway restores its snapshot file and catches up, on
   a member that has run throughout, on one restarted from a cluster snapshot, and on one whose queue start a
-  purge has moved. None releases a checkpoint: each runs within the first 8 MiB of log.
+  purge has moved. `CheckpointedReplayTest` thins and releases checkpoints, at a spacing and a bound it sets.
 
-Not in the prototype: checkpoints are never released without a `<snapshots>` policy; the gateway host and
-log retention are unchanged; `clusterctl` and the tools that read a member's queue recording find none.
+Not in the prototype: the gateway host and log retention are unchanged; `clusterctl` and the tools that read a member's queue recording find none.
 
 #### 2b: a second archive for queue recordings
 

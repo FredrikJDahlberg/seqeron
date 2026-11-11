@@ -62,6 +62,10 @@ class CheckpointedReplayTest {
     private int insideFrames;
     private String ipcTerm;
     private String joinMs;
+    private long checkpointLogBytes = DerivingReplayer.CHECKPOINT_LOG_BYTES;
+    private int maxCheckpoints = DerivingReplayer.MAX_CHECKPOINTS;
+    /** Whether each queue is purged to its middle frame once compared, and replayed from there. */
+    private boolean purge;
 
     /** One fragment of a replay: where it ends, its flags and its bytes. */
     private record Fragment(long position, int flags, byte[] bytes) { }
@@ -98,6 +102,26 @@ class CheckpointedReplayTest {
         final int leader = cluster.awaitLeader();
         send(leader, 200_000, FILLER);
         assertDerivedIsRecorded((leader + 1) % InProcessCluster.MEMBERS, 3);
+    }
+
+    /**
+     * A log nothing purges keeps a bounded number of checkpoints, further apart, and a purge releases the ones below
+     * every queue's start.
+     */
+    @Test
+    @InterruptAfter(240)
+    void checkpointsAreThinnedPastTheirBoundAndReleasedBelowAPurge() {
+        checkpointLogBytes = 64 * 1024;
+        maxCheckpoints = 8;
+        purge = true;
+        cluster = new InProcessCluster(baseDir);
+        cluster.startAll();
+        final int leader = cluster.awaitLeader();
+        final int member = (leader + 1) % InProcessCluster.MEMBERS;
+        send(leader, 20_000, FILLER);
+        assertTrue(cluster.commitPosition(member) / checkpointLogBytes > 4 * maxCheckpoints,
+                   "too little log to thin the checkpoints twice");
+        assertDerivedIsRecorded(member, 3);
     }
 
     /**
@@ -176,7 +200,8 @@ class CheckpointedReplayTest {
         try {
             final Replayer recorded = new AeronReplayer(aeron, archive, member);
             final DerivingReplayer deriving =
-                new DerivingReplayer(recorded, aeron, archive, member, () -> cluster.derivationStart(member));
+                new DerivingReplayer(recorded, aeron, archive, member,
+                                     () -> cluster.derivationStart(member), checkpointLogBytes, maxCheckpoints);
             final long deadline = System.nanoTime() + TIMEOUT_NS;
             while (deriving.checkpointCount() < checkpoints) {
                 assertTrue(System.nanoTime() < deadline,
@@ -186,6 +211,7 @@ class CheckpointedReplayTest {
                 }
             }
             final long[] starts = new long[InProcessCluster.GROUP_IDS.size()];
+            final LongArrayList middles = new LongArrayList();
             for (final int groupId : InProcessCluster.GROUP_IDS) {
                 final Replayer.RecordingSpan span = recorded.listQueueRecordings(groupId)
                                                         .stream()
@@ -230,6 +256,29 @@ class CheckpointedReplayTest {
                     insideFrames++;
                 }
                 starts[InProcessCluster.GROUP_IDS.indexOf(groupId)] = span.startPosition();
+                middles.addLong(frames.getLong(frames.size() / 2));
+            }
+            assertTrue(deriving.checkpointCount() <= maxCheckpoints,
+                       deriving.checkpointCount() + " checkpoints kept, past the bound of " + maxCheckpoints);
+            if (purge) {
+                final int kept = deriving.checkpointCount();
+                for (final int groupId : InProcessCluster.GROUP_IDS) {
+                    final long middle = middles.getLong(InProcessCluster.GROUP_IDS.indexOf(groupId));
+                    assertTrue(deriving.purgeSegments(groupId, middle));
+                    assertEquals(middle, deriving.listQueueRecordings(groupId).getFirst().startPosition());
+                }
+                assertTrue(deriving.checkpointCount() < kept, "the purges released none of " + kept + " checkpoint(s)");
+                for (final int groupId : InProcessCluster.GROUP_IDS) {
+                    final Replayer.RecordingSpan span = recorded.listQueueRecordings(groupId)
+                                                            .stream()
+                                                            .filter(Replayer.RecordingSpan::active)
+                                                            .findFirst()
+                                                            .orElseThrow();
+                    assertDerivedIsRecorded(aeron, archive, deriving, span.recordingId(), groupId,
+                                            middles.getLong(InProcessCluster.GROUP_IDS.indexOf(groupId)),
+                                            recorded.recordingPosition(span.recordingId()),
+                                            "member " + member + "'s purged queue of group " + groupId);
+                }
             }
             assertFalse(cluster.fatal(), "a member raised a fatal");
             assertFalse(cluster.terminated(), "a member terminated");

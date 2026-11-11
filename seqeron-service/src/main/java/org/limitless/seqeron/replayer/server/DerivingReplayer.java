@@ -47,8 +47,10 @@ import org.limitless.seqeron.util.Logger;
  * position the service created it at.
  *
  * <p>No queue is listed until the derivation has caught up with the log's commit position as it stood when it
- * started. The checkpoints are held in memory, rebuilt at each start, and released below a purge. The replay
- * protocol's streams, the counters and the clock are the Replayer's it decorates.
+ * started. The checkpoints are held in memory, rebuilt at each start, and released below a purge. Past {@link
+ * #MAX_CHECKPOINTS} every other one is released and the log between two doubles, so a log nothing purges costs a
+ * bounded number of them and a longer derivation before a replay's first frame. The replay protocol's streams, the
+ * counters and the clock are the Replayer's it decorates.
  *
  * <p>Not thread-safe: every call is from the Replayer's duty-cycle thread.
  */
@@ -56,8 +58,10 @@ public final class DerivingReplayer implements Replayer {
     /** The stream the archive replays the log, and a cluster snapshot, on to this, beside the replay protocol's. */
     private static final int LOG_REPLAY_STREAM_ID = 204;
 
-    /** How much log lies between two checkpoints: the most a replay derives before its first frame. */
+    /** How much log lies between two checkpoints at first: the most a replay derives before its first frame. */
     public static final long CHECKPOINT_LOG_BYTES = 8L * 1024 * 1024;
+    /** The most checkpoints kept: 8 GiB of log at {@link #CHECKPOINT_LOG_BYTES}, before the log between two doubles. */
+    public static final int MAX_CHECKPOINTS = 1024;
 
     private static final String LOG_REPLAY_CHANNEL = "aeron:ipc?alias=seqeron-log-derive";
     /** The alias of a derived replay's publication, which an archive's replay does not carry. */
@@ -77,6 +81,8 @@ public final class DerivingReplayer implements Replayer {
     private final AeronArchive archive;
     private final int memberId;
     private final Supplier<DerivationStart> derivationStart;
+    private final long checkpointLogBytes;
+    private final int maxCheckpoints;
     private final Long2ObjectHashMap<DerivedReplay> replays = new Long2ObjectHashMap<>();
     /** The derivation that keeps the checkpoints, or null until the service has started and the log is recorded. */
     private Follower follower;
@@ -102,6 +108,20 @@ public final class DerivingReplayer implements Replayer {
      */
     public DerivingReplayer(final Replayer delegate, final Aeron aeron, final AeronArchive archive, final int memberId,
                             final Supplier<DerivationStart> derivationStart) {
+        this(delegate, aeron, archive, memberId, derivationStart, CHECKPOINT_LOG_BYTES, MAX_CHECKPOINTS);
+    }
+
+    /**
+     * As above, for a test that cannot write gigabytes of log.
+     *
+     * @param checkpointLogBytes the log between two checkpoints at first
+     * @param maxCheckpoints     the most kept
+     */
+    public DerivingReplayer(final Replayer delegate, final Aeron aeron, final AeronArchive archive, final int memberId,
+                            final Supplier<DerivationStart> derivationStart, final long checkpointLogBytes,
+                            final int maxCheckpoints) {
+        this.checkpointLogBytes = checkpointLogBytes;
+        this.maxCheckpoints = maxCheckpoints;
         this.derivationStart = derivationStart;
         this.delegate = delegate;
         this.aeron = aeron;
@@ -282,6 +302,8 @@ public final class DerivingReplayer implements Replayer {
         /** The commit position when this started: its queue positions are no tip before it has derived that far. */
         private final long caughtUpAt;
         private boolean caughtUp;
+        /** The log between two checkpoints, which doubles each time they are thinned. */
+        private long checkpointSpacing = checkpointLogBytes;
 
         Follower(final DerivationStart start, final long logRecordingId, final int commitCounterId) {
             this.termLength = start.termLength();
@@ -332,7 +354,17 @@ public final class DerivingReplayer implements Replayer {
         }
 
         private boolean checkpointDue() {
-            return entryEnd - checkpoints.getLast().logPosition() >= CHECKPOINT_LOG_BYTES;
+            return entryEnd - checkpoints.getLast().logPosition() >= checkpointSpacing;
+        }
+
+        /** Releases every other checkpoint, keeping the first, which a queue's start may be continued from alone. */
+        private void thin() {
+            int kept = 0;
+            for (int i = 0; i < checkpoints.size(); i += 2) {
+                checkpoints.set(kept++, checkpoints.get(i));
+            }
+            checkpoints.subList(kept, checkpoints.size()).clear();
+            checkpointSpacing *= 2;
         }
 
         int doWork() {
@@ -343,6 +375,9 @@ public final class DerivingReplayer implements Replayer {
             final int fragments = image.controlledPoll(handler, FOLLOW_FRAGMENT_LIMIT);
             if (checkpointDue() && entryEnd == image.position()) {
                 checkpoints.add(new Checkpoint(entryEnd, deriver.state(), false, queuePositions.clone()));
+                if (checkpoints.size() > maxCheckpoints) {
+                    thin();
+                }
             }
             caughtUp |= entryEnd >= caughtUpAt;
             return fragments;
