@@ -105,7 +105,8 @@ its queue recordings.
   service's own subscriber where they read the recording.
 - **Derivation.** `LogDeriver` runs a `Sequencer` over the log's entries and `QueuePositions` gives each frame
   its queue position. One bounded replay of the log follows the commit position and keeps a checkpoint in
-  memory every 8 MiB of log.
+  memory every 8 MiB of log. That replay ends when the consensus module stops the log's recording, as it does to
+  extend it in an election, and is started again from the last entry applied.
 - **Checkpoint bound.** At most 1024 are kept. Past that every other one is released and the log between two
   doubles, so a log nothing purges costs a bounded number of them and a replay derives more log before its
   first frame: up to 16 MiB of it once the log passes 8 GiB, 32 MiB past 16 GiB.
@@ -188,10 +189,10 @@ Limits of the prototype:
   first frame waits for the log between the checkpoint and the position asked for.
 - **No recorded path.** A member with the flag has no queue recording to fall back on, so `clusterctl` and the
   tools that read one (`QueueRecordings`, `SbeLogPrinter` on a queue) find none.
-- **Not run with the flag:** the tests tagged `docker` and `chaos`, the C++ and C# clients, and the multi-host EC2
-  tests. The integration and system suites run with it
-  under `-PderiveFromLog`. There `QueueRecordings` reads a member's queues as its log derives them, not as its
-  Replayer serves them, and the checks of a member's queue recording are skipped.
+- **Not run with the flag:** the tests tagged `docker`, the C++ and C# clients, and the multi-host EC2
+  tests. The integration and system suites and `ChaosTest` run with it
+  under `-PderiveFromLog`. There `QueueRecordings` reads a member's queues twice, as its log derives them and as
+  its Replayer replays them, and the checks of a member's queue recording are skipped.
 
 #### 2b: a second archive for queue recordings
 

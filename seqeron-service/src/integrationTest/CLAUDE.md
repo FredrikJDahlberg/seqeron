@@ -45,7 +45,7 @@ holds it to the markers it reports, to its purge, and to starting at the cut of 
 It also holds a member, recording and deriving, to trimming its log past its first segment by itself once its cuts are
 restart-safe and to restoring a gateway after, and the deriving one to starting a host. `-PderiveFromLog` runs the
 whole suite on members that record no queue: `QueueRecordings` then reads each member's queues as its log derives
-them, the tests that set the flag themselves keep their own, and the ones of a member's queue recording
+them and as its Replayer replays them, the tests that set the flag themselves keep their own, and the ones of a member's queue recording
 (`InProcessCluster.assumeMembersRecordQueues`) are skipped.
 `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on

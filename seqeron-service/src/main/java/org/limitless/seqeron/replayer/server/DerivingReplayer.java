@@ -8,6 +8,7 @@ import io.aeron.Image;
 import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.ArchiveException;
 import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.cluster.ConsensusModule;
 import io.aeron.logbuffer.BufferClaim;
@@ -337,8 +338,12 @@ public final class DerivingReplayer implements Replayer {
         private final long[] queuePositions;
         /** Where each queue's history starts: where the service created it, or where it was purged to. */
         private final long[] queueStarts;
-        private final long logSessionId;
-        private final Subscription log;
+        private long logSessionId;
+        /** The log's replay, or null when the archive refused one. */
+        private Subscription log;
+        /** Whether the replay's image has been seen: once it has, its absence is the replay's end. */
+        private boolean attached;
+        private long resumeAtMs;
         private final LogDeriver deriver = new LogDeriver(memberId, this);
         private final ControlledFragmentAssembler entries =
             new ControlledFragmentAssembler((buffer, offset, length, header) -> {
@@ -375,9 +380,29 @@ public final class DerivingReplayer implements Replayer {
             this.caughtUp = caughtUpAt <= start.logPosition();
             checkpoints.add(
                 new Checkpoint(start.logPosition(), start.state(), start.restored(), start.queueStarts().clone()));
-            logSessionId = replayLog(logRecordingId, start.logPosition(), commitCounterId);
+            entryEnd = start.logPosition();
+            logSessionId = replayLog(logRecordingId, entryEnd, commitCounterId);
             log = logSubscription(logSessionId);
+            resumeAtMs = delegate.monotonicMs() + CONNECT_TIMEOUT_MS;
             deriver.restore(start.state(), start.restored());
+        }
+
+        /**
+         * Replays the log again from the last entry applied. A replay ends when the consensus module stops the log's
+         * recording, as it does to extend it in an election.
+         */
+        private void resume() {
+            CloseHelper.quietClose(log);
+            log = null;
+            attached = false;
+            resumeAtMs = delegate.monotonicMs() + FOLLOW_RETRY_MS;
+            try {
+                logSessionId = replayLog(logRecordingId, entryEnd, commitCounterId);
+                log = logSubscription(logSessionId);
+            } catch (final ArchiveException ex) {
+                Logger.info(Logger.CoreComponent.ReplayerService, memberId,
+                            "the log's replay from %d is not resumed yet: %s", entryEnd, ex.getMessage());
+            }
         }
 
         /** Whether the derivation has caught up with the log, so that where it has brought a queue is its tip. */
@@ -427,10 +452,14 @@ public final class DerivingReplayer implements Replayer {
         }
 
         int doWork() {
-            final Image image = log.imageBySessionId((int)logSessionId);
+            final Image image = log == null ? null : log.imageBySessionId((int)logSessionId);
             if (image == null) {
+                if (attached || delegate.monotonicMs() >= resumeAtMs) {
+                    resume();
+                }
                 return 0;
             }
+            attached = true;
             final int fragments = image.controlledPoll(handler, FOLLOW_FRAGMENT_LIMIT);
             if (checkpointDue() && entryEnd == image.position()) {
                 checkpoints.add(new Checkpoint(entryEnd, deriver.state(), false, queuePositions.clone()));
