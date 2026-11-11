@@ -8,6 +8,7 @@ import io.aeron.Image;
 import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.cluster.ConsensusModule;
 import io.aeron.logbuffer.BufferClaim;
 import io.aeron.logbuffer.ControlledFragmentHandler;
@@ -88,6 +89,11 @@ public final class DerivingReplayer implements Replayer {
     private Follower follower;
     /** Whether a start was found for the follower, or none can be. */
     private boolean followerDecided;
+    /** Where a gateway host reads this member's {@link DerivationAnnouncement}, and what is still to be published. */
+    private ExclusivePublication announcement;
+    private final ArrayDeque<byte[]> unannounced = new ArrayDeque<>();
+    /** The checkpoint announced last: the first kept, which a gateway host may start from. */
+    private Checkpoint announced;
     private long nextFollowAttemptMs;
 
     /** A queue as it is published: every queue of a node has its term length and MTU. */
@@ -201,8 +207,42 @@ public final class DerivingReplayer implements Replayer {
         }
         try {
             follower = new Follower(start, log[0], commitCounterId);
+            recordAnnouncements();
         } catch (final RuntimeException ex) {
             Logger.info(Logger.CoreComponent.ReplayerService, memberId, "replays are not derived: %s", ex.toString());
+        }
+    }
+
+    /** Records this run's announcements, and purges the ones earlier runs left. */
+    private void recordAnnouncements() {
+        final List<Long> earlier = new ArrayList<>();
+        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", DerivationAnnouncement.STREAM_ID,
+                                     (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
+                                      startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
+                                      mtuLength, sessionId, streamId, strippedChannel, originalChannel,
+                                      sourceIdentity) -> {
+                                         if (stopTimestamp != AeronArchive.NULL_TIMESTAMP) {
+                                             earlier.add(recordingId);
+                                         }
+                                     });
+        for (final long recordingId : earlier) {
+            archive.purgeRecording(recordingId);
+        }
+        archive.startRecording(DerivationAnnouncement.CHANNEL, DerivationAnnouncement.STREAM_ID, SourceLocation.LOCAL,
+                               true);
+        announcement = aeron.addExclusivePublication(DerivationAnnouncement.CHANNEL, DerivationAnnouncement.STREAM_ID);
+    }
+
+    /** Announces the first checkpoint kept once a purge has released the one announced before it. */
+    private void announceFirstCheckpoint() {
+        final Checkpoint first = follower.checkpoints.getFirst();
+        if (first != announced && unannounced.isEmpty()) {
+            announced = first;
+            unannounced.addAll(new DerivationAnnouncement(
+                                   new DerivationStart(first.logPosition(), first.state(), first.reemitMarker(),
+                                                       first.queuePositions(), follower.termLength, follower.mtu),
+                                   follower.commitCounterId)
+                                   .encode());
         }
     }
 
@@ -234,6 +274,14 @@ public final class DerivingReplayer implements Replayer {
     @Override
     public int doWork() {
         int work = delegate.doWork();
+        if (announcement != null) {
+            announceFirstCheckpoint();
+        }
+        while (!unannounced.isEmpty() &&
+               announcement.offer(new UnsafeBuffer(unannounced.peek()), 0, unannounced.peek().length) > 0) {
+            unannounced.poll();
+            work++;
+        }
         if (follower != null) {
             work += follower.doWork();
         } else if (!followerDecided && delegate.monotonicMs() >= nextFollowAttemptMs) {

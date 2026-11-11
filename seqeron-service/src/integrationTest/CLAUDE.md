@@ -39,7 +39,11 @@ runs a `DerivingReplayer` of its own, started from the member's `DerivationStart
 fragmented frame, and on a member restarted from a cluster snapshot, at the same and at another term length, and its
 scans and its tip with the recording's, and holds its checkpoints to their bound and to a purge's release. `ClusterSnapshotTest` runs three of its gateway restarts with the flag on: on a
 member that has run throughout, on one restarted from a cluster snapshot, and on one whose queue start a purge has
-moved, read through `InProcessCluster.replayer`. `SystemTestWatcher` fails
+moved, read through `InProcessCluster.replayer`. A gateway host with the flag derives its queues from a member's log
+(`AeronLogRelay`): `DerivedReplayTest` cold-starts a client on one and stops the member it reads, and `ClusterSnapshotTest`
+holds it to the markers it reports, to its purge, and to starting at the cut of a member restarted from a snapshot.
+It also trims a deriving member's log past its first segment, then restores a gateway on it and starts a host on it.
+`SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;
 neither `test` nor `check` runs it. A member stopped in-process is closed rather than killed, and a cut drops frames

@@ -1,7 +1,7 @@
 # Disk load: findings and plan
 
 A review of what a member and a gateway host write to disk, how a slow write reaches a client, and the
-changes that would reduce both. Step 2a exists for a member as a prototype, off by default, step 3's warning
+changes that would reduce both. Step 2a exists as a prototype, off by default, step 3's warning
 is in, and nothing else here is implemented. Step 1 is confirmed, and bounds what step 2 is worth:
 it reduces the bytes written and leaves the stall to step 3.
 
@@ -81,7 +81,8 @@ every member's queue the same. The log is then the one copy on disk, whatever th
   position counter) and the host derives its queues as a member's Replayer does. Members' log positions
   agree by construction, so failing over to another member needs no term-length or MTU condition.
 - **Retention.** Queue purging goes. The log must be kept back to the oldest cut a client may restore from,
-  so the restart-safe cut becomes the log's trim point, which is step 4.
+  so the restart-safe cut becomes the log's trim point, which is step 4. The prototype restates
+  `snapshot.md` §10 against the log ("Retention" below).
 - **Restart.** A member no longer rewrites its whole queue history while it replays the log.
 
 Costs and open questions:
@@ -92,15 +93,13 @@ Costs and open questions:
 - A group's replay reads every group's log entries and runs the sequencer over them: more CPU per replayed
   byte than an archive replay, off the live path. The prototype walks a queue at about half the recorded
   path's rate, which a snapshot start shortens with the log it has to read.
-- Every restart-safety and purge rule in `snapshot.md` §10 that names a queue recording has to be restated
-  against the log.
 - Whether a derived replay keeps position addressing or moves to `groupSeqNo`. The prototype keeps positions.
 
 Prototype. With `replayer.deriveFromLog`, a member records no queue and its Replayer is a `DerivingReplayer`,
 which is to `ReplayerService` what `AeronReplayer` is over recordings: each queue is one recording, named by
 its group, that starts where the queue did and has reached where the derivation has. There is no recorded
-path to fall back on. A gateway host cannot relay from such a member, since it replays the member's queue
-recording.
+path to fall back on. A gateway host takes the same flag, and then relays a member's log where it relayed
+its queue recordings.
 
 - **Live path.** As above. `QueuePublisher` is unchanged: its liveness check and stall bound read the
   service's own subscriber where they read the recording.
@@ -120,8 +119,21 @@ recording.
   the frames from the last checkpoint at or before where it starts.
 - **Readiness.** No queue is listed until the derivation has caught up with the commit position as it stood
   when it started, so the Replayer is not ready before then.
-- **Purge.** A purge below a restart-safe cut moves the queue's start and releases the checkpoints below it.
-  The log itself is not trimmed.
+- **Purge.** A purge below a restart-safe cut moves the queue's start, a term at a time as a recording's moves
+  a segment at a time, and releases the checkpoints below it. The log is not trimmed automatically (step 4).
+- **Gateway host.** One `AeronLogRelay` replaces the relay per group: it replays a member's log over UDP,
+  bounded by that member's commit position, runs a `LogDeriver` over it and publishes each relayed group's
+  frames on the host's own queue. The host still records those queues and serves them as before, so its
+  Replayer, its cut tracking and its purge are unchanged, and so is what it writes. Its decisions are the
+  pure `LogRelay`.
+- **Announcement.** A host cannot read a member's driver, so the member's Replayer publishes the first
+  checkpoint it keeps and the id of its commit position counter on a stream its archive records
+  (`DerivationAnnouncement`, stream 207): its `DerivationStart` when it starts, and the first checkpoint left
+  after each purge. A host reads the last. The recording is active for as long as that run is.
+- **Host start and failover.** The derivation starts where the first member the host reads announces, so the
+  host's queues begin at `groupSeqNo` 1, at a cut, or at the checkpoint below that member's purged start, and
+  the topology rows reach the host's Replayer from the state it restores. On losing its member the relay resumes on the next at the
+  end of the last log entry it applied, whatever that member's term length or MTU.
 - **Rate.** On a laptop, off the page cache, 200,000 frames with a 150-byte filler walk at 0.8–1.3 million
   frames/s derived and 1.8–2.7 million recorded.
 - **Tests.** `DerivedQueueTest`; `DerivedReplayTest`, a client's cold start and live following on a member
@@ -130,8 +142,56 @@ recording.
   `ClusterSnapshotTest` on members that record nothing: a gateway restores its snapshot file and catches up, on
   a member that has run throughout, on one restarted from a cluster snapshot, and on one whose queue start a
   purge has moved. `CheckpointedReplayTest` thins and releases checkpoints, at a spacing and a bound it sets.
+  For a host: `LogRelayTest`; in `DerivedReplayTest`, a client's cold start on a host and its walk on across
+  the stop of the member the host read; and three in `ClusterSnapshotTest`: the markers the host reports, its
+  purge below the cuts its gateway confirms, and its start from a member restarted from a cluster snapshot.
+  For retention, one more there: a member's log is trimmed past its first segment, a gateway then restores
+  on it, and a host starts on it above the trimmed log.
 
-Not in the prototype: the gateway host and log retention are unchanged; `clusterctl` and the tools that read a member's queue recording find none.
+Retention. `snapshot.md` §10 with the flag on, where it differs:
+
+| §10 | recorded | derived |
+| --- | --- | --- |
+| a queue starts at a cut (§10.1, §10.3) | a recording created at the marker's position; the earlier one purged | no recording: the service hands over a `DerivationStart`, and the queue's positions are the snapshot's at its term length and MTU, else from 0 |
+| Replayer ready (§10.5) | each queue recording, the earlier one purged | the derivation caught up with the commit position |
+| purge (§10.6) | whole segments below the newest restart-safe cut | the start moves to the term boundary below that cut; nothing is deleted |
+| what holds a queue's history | its recording | the log from the first checkpoint kept, which is at or below the queue's start |
+| the log kept (§10.7) | from the older of the two newest restart-safe snapshots, for a restart | that, and from the first checkpoint kept, which `trim-log` does not know (limits, below) |
+| a host's start (§10.3, §10.6) | the member's recording start | the member's last announcement |
+| a host left behind by a purge (§10.6) | fatal | the member is dropped and the next tried, without end |
+| a new member (§10.6) | copies no queue | has none to copy |
+
+The restart-safety rules (§10.8), the client rules (§10.6) and the cut lookup (§10.3) are unchanged: they read
+the Replayer's listing, and a derived queue is listed as one recording.
+
+Limits of the prototype:
+
+- **A gateway host still records the queues it derives.** Its disk writes are unchanged. Its disk is not on the
+  commit path (§2), so the stall is unaffected.
+- **`trim-log` can remove log a queue's start needs.** It trims below the older of the two newest restart-safe
+  snapshots. A queue's start is the term boundary below the newest restart-safe cut, and the checkpoint it is
+  derived from lies up to the checkpoint spacing below that. With less than a queue term between rounds, as on
+  a quiet cluster with an `interval`, that checkpoint falls below the trim floor. A replay from the start then
+  fails and is answered `ReplayPending`, and the client raises `recoveryStalled`. A client that restores from
+  a file of either of the two newest cuts is not affected. Step 4 has to trim below the lower of the two
+  positions, which the member's Replayer knows and `clusterctl` does not.
+- **Moving the start to the cut itself is not the fix.** With a checkpoint taken at each snapshot it keeps the
+  start's checkpoint at a snapshot the trim keeps. But a client that is down across one round, on a node
+  where no other instance joins it, then finds its file's cut below the start and is fenced (`snapshot.md`
+  §10.6), where a recording leaves it up to a segment.
+- **A host with no suitable member does not stop.** A member is unsuitable when its log no longer holds the
+  position the host needs: its announced start for a host's first read, the host's own position after. The
+  relay moves to the next member and retries, where a queue relay left behind stops with a fatal.
+- **The announcement recording grows** by one announcement, the sequencer's state, per purge, and a host reads
+  it whole at each connect. A member's restart purges it.
+- **Checkpoints are memory.** Each holds the sequencer's state, and up to 1024 are kept. They are
+  rebuilt at each start by deriving the log from the service's start, and no queue is served before that ends.
+- **A replay costs more.** It derives every group's entries, at about half the recorded path's rate, and its
+  first frame waits for the log between the checkpoint and the position asked for.
+- **No recorded path.** A member with the flag has no queue recording to fall back on, so `clusterctl` and the
+  tools that read one (`QueueRecordings`, `SbeLogPrinter` on a queue) find none.
+- **Not run with the flag:** `FailoverPropertyTest`, the fault tests, the system tests and the EC2
+  measurements. The stall of §2 has not been measured with it.
 
 #### 2b: a second archive for queue recordings
 

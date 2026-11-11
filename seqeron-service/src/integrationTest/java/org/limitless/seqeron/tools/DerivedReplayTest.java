@@ -41,6 +41,7 @@ class DerivedReplayTest {
     /** With the frame's envelope, a payload of the size production carries. */
     private static final int FILLER = 150;
     private static final int LIVE_FRAMES = 1_000;
+    private static final int HOST_HISTORY_FRAMES = 20_000;
     private static final long CONVERGE_TIMEOUT_MS = 60_000;
     /** Well under the time the shortest replay here takes. */
     private static final long DERIVED_LOOK_INTERVAL_MS = 5;
@@ -79,6 +80,70 @@ class DerivedReplayTest {
         walkEachQueue(false);
     }
 
+    /**
+     * A gateway host cannot relay a queue recording its members do not make: it derives its queues from a member's
+     * log, and goes on from the next member's when that one stops.
+     */
+    @Test
+    @InterruptAfter(240)
+    void aGatewayHostDerivesItsQueuesFromAMembersLogAndGoesOnFromTheNextMembers() {
+        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
+        cluster = new InProcessCluster(baseDir);
+        cluster.startAll();
+        final long tip = send(cluster.awaitLeader(), HOST_HISTORY_FRAMES);
+        cluster.startGatewayHost();
+        for (final int groupId : InProcessCluster.GROUP_IDS) {
+            awaitRelayed(groupId);
+            walk(InProcessCluster.GATEWAY_HOST, groupId, tip, false);
+        }
+
+        cluster.stop(0); // the member the host reads first
+        final long later = send(cluster.awaitLeader(), LIVE_FRAMES);
+        for (final int groupId : InProcessCluster.GROUP_IDS) {
+            walk(InProcessCluster.GATEWAY_HOST, groupId, later, false);
+        }
+        assertFalse(cluster.fatal(), "a member or the host raised a fatal");
+        assertFalse(cluster.terminated(), "a member terminated");
+    }
+
+    /**
+     * Waits until the host's recording of a queue holds the history: a client that reads the queue from before its
+     * first frame takes it all live and leaves the replay it asked for unread, which the archive logs as an error.
+     */
+    private void awaitRelayed(final int groupId) {
+        final long deadlineMs = System.currentTimeMillis() + CONVERGE_TIMEOUT_MS;
+        try (Aeron aeron =
+                 Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(InProcessCluster.GATEWAY_HOST)));
+             AeronArchive archive = connectArchive(aeron)) {
+            final long[] recordingId = { Aeron.NULL_VALUE };
+            long position = -1;
+            while (true) {
+                assertTrue(System.currentTimeMillis() < deadlineMs, "the host relayed nothing of group " + groupId);
+                Tests.sleep(200);
+                archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", FrameLayer.queueStreamId(groupId),
+                                             (controlSessionId, correlationId, id, startTimestamp, stopTimestamp,
+                                              startPosition, stopPosition, initialTermId, segmentFileLength,
+                                              termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
+                                              originalChannel, sourceIdentity) -> recordingId[0] = id);
+                final long now = recordingId[0] == Aeron.NULL_VALUE ? -1 : archive.getRecordingPosition(recordingId[0]);
+                if (now > 0 && now == position) {
+                    return;
+                }
+                position = now;
+            }
+        }
+    }
+
+    private static AeronArchive connectArchive(final Aeron aeron) {
+        return AeronArchive.connect(new AeronArchive.Context()
+                                        .aeron(aeron)
+                                        .ownsAeronClient(false)
+                                        .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                        .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+                                        .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                        .controlResponseStreamId(RESPONSE_STREAM_ID));
+    }
+
     private void walkEachQueue(final boolean derived) {
         cluster = new InProcessCluster(baseDir);
         cluster.startAll();
@@ -94,7 +159,7 @@ class DerivedReplayTest {
         assertFalse(cluster.terminated(), "a member terminated");
     }
 
-    /** Cold-starts a client on a follower's queue, then sends more and holds it to following live. */
+    /** Cold-starts a client on a node's queue, then sends more and holds it to following live. */
     private void walk(final int member, final int groupId, final long tipClusterSeqNo, final boolean derived) {
         final LongArrayList groupSeqNos = new LongArrayList();
         boolean derivedReplay = false;
@@ -161,14 +226,7 @@ class DerivedReplayTest {
     /** How many recordings of a group's queue a member's archive holds. */
     private int queueRecordings(final int member, final int groupId) {
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
-             AeronArchive archive =
-                 AeronArchive.connect(new AeronArchive.Context()
-                                          .aeron(aeron)
-                                          .ownsAeronClient(false)
-                                          .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
-                                          .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
-                                          .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
-                                          .controlResponseStreamId(RESPONSE_STREAM_ID))) {
+             AeronArchive archive = connectArchive(aeron)) {
             return archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", FrameLayer.queueStreamId(groupId),
                                                 (controlSessionId, correlationId, recordingId, startTimestamp,
                                                  stopTimestamp, startPosition, stopPosition, initialTermId,

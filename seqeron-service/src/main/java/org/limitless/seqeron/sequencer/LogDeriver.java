@@ -11,6 +11,7 @@ import io.aeron.cluster.codecs.SessionOpenEventDecoder;
 import io.aeron.cluster.codecs.TimerEventDecoder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.LongHashSet;
@@ -114,6 +115,11 @@ public final class LogDeriver {
         if (reemitMarker) {
             sequencer.reemitMarker();
         }
+    }
+
+    /** Hands over the topology rows a restored state holds, which the log no longer replays. */
+    public void replayTopologyRows(final Consumer<byte[]> rows) {
+        sequencer.replayTopologyRows(rows);
     }
 
     /** Where sequencing has reached. */

@@ -78,6 +78,11 @@ replaces every older one but the confirmed round before it. A starting client re
 newest confirmed file whose records match its trailer once a replay from the file's cut position opens on that cut —
 a file from a purged log fails it — then resumes after the cut; an instance with no such file replays its queue from `groupSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
 
+**With `replayer.deriveFromLog` a member records no queue** (`doc/disk-load-plan.md`, step 2a; a prototype, off by
+default). Its Replayer is a `DerivingReplayer`, which derives each queue from the Raft log's recording through a
+`LogDeriver`, and a gateway host with the flag relays a member's log (`AeronLogRelay`, `LogRelay`) where it relays
+queue recordings. Everything in this file describes the flag off; the plan lists what differs and the limits.
+
 ## The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
 `ReplaySlotAllocator` and the gateway host's `QueueRelay`, with
