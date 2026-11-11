@@ -109,6 +109,7 @@ class CutLookupTest {
     @Test
     @InterruptAfter(60)
     void aScanPastWhatTheRecordingWillHoldStallsAtItsDeadlineRatherThanBlocking() {
+        InProcessCluster.assumeMembersRecordQueues();
         final int member = cluster.awaitLeader();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
              AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()
@@ -153,6 +154,7 @@ class CutLookupTest {
     @Test
     @InterruptAfter(60)
     void aScanOfARecordingStillGrowingRunsPastItsDeadlineWhileFramesKeepArriving() {
+        InProcessCluster.assumeMembersRecordQueues();
         final int member = cluster.awaitLeader();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
              AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()

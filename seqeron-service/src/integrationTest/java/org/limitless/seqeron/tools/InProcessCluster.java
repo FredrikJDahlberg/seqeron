@@ -21,6 +21,7 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.MutableLong;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
+import org.junit.jupiter.api.Assumptions;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
@@ -298,6 +299,12 @@ final class InProcessCluster implements AutoCloseable {
     /** Member {@code m}'s Aeron directory, or the gateway host's for {@link #GATEWAY_HOST}. */
     String aeronDir(final int m) {
         return baseDir.resolve("aeron-" + m).toString();
+    }
+
+    /** Skips a test of a member's queue recording when the suite runs members that record none (-PderiveFromLog). */
+    static void assumeMembersRecordQueues() {
+        Assumptions.assumeFalse(Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG),
+                                "members record no queue with " + ReplayerServer.PROP_DERIVE_FROM_LOG);
     }
 
     /** Each running member's driver directory, and the gateway host's if launched, by name. */

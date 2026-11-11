@@ -54,14 +54,22 @@ class DerivedReplayTest {
 
     private InProcessCluster cluster;
 
+    private String deriveFromLog;
+
     @BeforeEach
     void collect() {
+        // Each test here sets the flag it runs with, whatever the suite's.
+        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         watcher.dataCollector().add(baseDir);
     }
 
     @AfterEach
     void stopCluster() {
-        System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
+        if (deriveFromLog == null) {
+            System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
+        } else {
+            System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
+        }
         if (cluster != null) {
             cluster.close();
         }

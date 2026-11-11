@@ -9,6 +9,7 @@ import io.aeron.FragmentAssembler;
 import io.aeron.Image;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.cluster.ConsensusModule;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import io.aeron.test.Tests;
@@ -20,19 +21,26 @@ import java.util.zip.CRC32C;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.LongArrayList;
+import org.agrona.collections.MutableInteger;
+import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
+import org.limitless.seqeron.replayer.server.ReplayerServer;
+import org.limitless.seqeron.sequencer.LogDeriver;
+import org.limitless.seqeron.sequencer.Sequencer;
 
 /**
  * The recordings of the in-process cluster's queues on each archive, read straight off the archive rather than through
  * {@code ReplayerRecovery}, which drops a repeated frame and replays over a gap: what a client sees can be whole while
- * a recording is not.
+ * a recording is not. A member that records no queue ({@code replayer.deriveFromLog}) is read as what its Raft log
+ * derives, bounded by its commit position: one active recording per queue.
  */
 final class QueueRecordings {
     private static final int RESPONSE_STREAM_ID = 123; // beside NodeDriver's archive response streams
     private static final String REPLAY_CHANNEL = "aeron:ipc";
     private static final int REPLAY_STREAM_ID = 1205;
+    private static final int LOG_REPLAY_STREAM_ID = 1206;
     private static final long TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
 
     /** One recording of a group's queue: a digest of each frame it holds, groupSeqNo 1 first. */
@@ -103,6 +111,9 @@ final class QueueRecordings {
                                      .controlResponseStreamId(RESPONSE_STREAM_ID));
         try {
             final List<Recording> recordings = new ArrayList<>();
+            if (Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG) && commitPositionCounterId(aeron) >= 0) {
+                return derive(name, aeron, archive, untilClusterSeqNo);
+            }
             for (final int groupId : InProcessCluster.GROUP_IDS) {
                 for (final Span span : awaitSpans(name, archive, groupId)) {
                     recordings.add(readOne(name, aeron, archive, groupId, span, untilClusterSeqNo));
@@ -175,6 +186,91 @@ final class QueueRecordings {
             }
         }
         return reader.recording;
+    }
+
+    /** Each queue as a member's log derives it, from the log's start to {@code untilClusterSeqNo}. */
+    private static List<Recording> derive(final String name, final Aeron aeron, final AeronArchive archive,
+                                          final long untilClusterSeqNo) {
+        final Reader[] readers = new Reader[FrameLayer.MAX_GROUPS];
+        for (final int groupId : InProcessCluster.GROUP_IDS) {
+            readers[groupId - 1] = new Reader(new Recording(name, groupId, -1, true, new LongArrayList()));
+        }
+        final LogDeriver deriver = new LogDeriver(0, new Sequencer.FrameSink() {
+            @Override
+            public void activate(final int[] groupIds) {
+            }
+
+            @Override
+            public void publish(final int groupId, final DirectBuffer buffer, final int length) {
+                readers[groupId - 1].onFragment(buffer, 0, length, null);
+            }
+        });
+        final FragmentAssembler entries =
+            new FragmentAssembler((buffer, offset, length, header) -> deriver.onLogEntry(buffer, offset, length));
+        final long deadline = System.nanoTime() + TIMEOUT_NS;
+        final long[] log = awaitActiveLog(name, archive, deadline);
+        assertEquals(0, log[1], name + "'s log does not start at its first entry");
+        final long replaySessionId = archive.startBoundedReplay(
+            log[0], 0, AeronArchive.NULL_LENGTH, commitPositionCounterId(aeron), REPLAY_CHANNEL, LOG_REPLAY_STREAM_ID);
+        try (Subscription subscription = aeron.addSubscription(
+                 ChannelUri.addSessionId(REPLAY_CHANNEL, (int)replaySessionId), LOG_REPLAY_STREAM_ID)) {
+            while (deriver.clusterSeqNo() < untilClusterSeqNo) {
+                final int fragments = subscription.poll(entries, 100);
+                for (final int groupId : InProcessCluster.GROUP_IDS) {
+                    if (readers[groupId - 1].error != null) {
+                        fail(readers[groupId - 1].error);
+                    }
+                }
+                if (fragments == 0) {
+                    if (System.nanoTime() > deadline) {
+                        fail(name + "'s log derived clusterSeqNo " + deriver.clusterSeqNo() + " of " +
+                             untilClusterSeqNo);
+                    }
+                    Tests.yield();
+                }
+            }
+        } finally {
+            archive.stopReplay(replaySessionId);
+        }
+        final List<Recording> recordings = new ArrayList<>();
+        for (final int groupId : InProcessCluster.GROUP_IDS) {
+            recordings.add(readers[groupId - 1].recording);
+        }
+        return recordings;
+    }
+
+    /** The id and start of the log's active recording: a restarted member's consensus module extends it. */
+    private static long[] awaitActiveLog(final String name, final AeronArchive archive, final long deadline) {
+        final long[][] active = { null };
+        while (true) {
+            archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", ConsensusModule.Configuration.LOG_STREAM_ID_DEFAULT,
+                                         (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
+                                          startPosition, stopPosition, initialTermId, segmentFileLength,
+                                          termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
+                                          originalChannel, sourceIdentity) -> {
+                                             if (stopTimestamp == AeronArchive.NULL_TIMESTAMP) {
+                                                 active[0] = new long[] { recordingId, startPosition };
+                                             }
+                                         });
+            if (active[0] != null) {
+                return active[0];
+            }
+            if (System.nanoTime() > deadline) {
+                fail(name + "'s archive is not recording a log");
+            }
+            Tests.sleep(50);
+        }
+    }
+
+    /** The driver's commit position counter, or -1 on a gateway host, which has no consensus module. */
+    private static int commitPositionCounterId(final Aeron aeron) {
+        final MutableInteger id = new MutableInteger(CountersReader.NULL_COUNTER_ID);
+        aeron.countersReader().forEach((counterId, typeId, keyBuffer, label) -> {
+            if (typeId == ConsensusModule.Configuration.COMMIT_POSITION_TYPE_ID) {
+                id.set(counterId);
+            }
+        });
+        return id.get();
     }
 
     private static boolean isReplayed(final Subscription subscription, final long stopPosition) {

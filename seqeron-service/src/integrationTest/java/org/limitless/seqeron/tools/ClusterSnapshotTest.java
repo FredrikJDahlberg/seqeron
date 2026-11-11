@@ -61,16 +61,19 @@ class ClusterSnapshotTest {
     private InProcessCluster cluster;
     private Boolean gatewayRow;
     private String joinMs;
+    private String deriveFromLog;
 
     @BeforeEach
     void remember() {
+        // Each test here sets the flag it runs with, whatever the suite's.
+        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         joinMs = System.getProperty(JOIN_PROPERTY);
         watcher.dataCollector().add(baseDir);
     }
 
     @AfterEach
     void stopCluster() {
-        System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
+        restoreProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
         if (cluster != null) {
             cluster.close();
         }
@@ -801,7 +804,8 @@ class ClusterSnapshotTest {
         }
         assertTrue(firstTermStart(member) > 0, "the member purged no segment of its log");
         assertEquals(0, trimLog(member), "a request finds the work done");
-        assertTrue(listedStart(member) > 0, "the queue still starts at 0");
+        // A recording member's Replayer lists through its archive session, which is its own thread's alone.
+        assertTrue((startHost ? listedStart(member) : memberStart(member)) > 0, "the queue still starts at 0");
 
         try (GatewayInstance restarted = new GatewayInstance(member)) {
             restarted.awaitCaughtUp();

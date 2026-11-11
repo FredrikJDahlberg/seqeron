@@ -138,6 +138,7 @@ class ReplaySlotsTest {
     @Test
     @InterruptAfter(60)
     void eachQueuesBacklogIsFoundInItsMembersCountersAgainstItsOwnRecording() {
+        InProcessCluster.assumeMembersRecordQueues();
         final int member = cluster.awaitLeader();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
              AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()
