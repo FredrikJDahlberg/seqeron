@@ -134,6 +134,9 @@ its queue recordings.
   host's queues begin at `groupSeqNo` 1, at a cut, or at the checkpoint below that member's purged start, and
   the topology rows reach the host's Replayer from the state it restores. On losing its member the relay resumes on the next at the
   end of the last log entry it applied, whatever that member's term length or MTU.
+- **Stall.** On EBS with default writeback at 50k msg/s, two 600 s runs with the flag had no interval of 10 ms or
+  more without a new `clusterSeqNo`, where the recorded path had 17 of up to 81 ms, and the archive grew half as fast
+  (`ec2-tests.md`, "Archive writes on EBS").
 - **Rate.** On a laptop, off the page cache, 200,000 frames with a 150-byte filler walk at 0.8–1.3 million
   frames/s derived and 1.8–2.7 million recorded.
 - **Tests.** `DerivedQueueTest`; `DerivedReplayTest`, a client's cold start and live following on a member
@@ -185,8 +188,8 @@ Limits of the prototype:
   first frame waits for the log between the checkpoint and the position asked for.
 - **No recorded path.** A member with the flag has no queue recording to fall back on, so `clusterctl` and the
   tools that read one (`QueueRecordings`, `SbeLogPrinter` on a queue) find none.
-- **Not run with the flag:** the tests tagged `docker` and `chaos`, the C++ and C# clients, and the EC2
-  measurements. The stall of §2 has not been measured with it. The integration and system suites run with it
+- **Not run with the flag:** the tests tagged `docker` and `chaos`, the C++ and C# clients, and the multi-host EC2
+  tests. The integration and system suites run with it
   under `-PderiveFromLog`. There `QueueRecordings` reads a member's queues as its log derives them, not as its
   Replayer serves them, and the checks of a member's queue recording are skipped.
 

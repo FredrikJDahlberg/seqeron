@@ -239,6 +239,21 @@ stalled the same way on its own recorder, for 63 ms while the other two sequence
 (18 and 25 ms) its own recording advanced while a follower's recorder was blocked; this run does not explain them. The three
 archives shared one kernel, so their flushes coincided: the run shows the mechanism, not a stall rate.
 
+**With no queue recording the stall is gone at this rate.** The same host, volumes, rate and length, three runs in one launch,
+`CounterSampler` every 3 ms. With `replayer.deriveFromLog` (`disk-load-plan.md`, step 2a) a member's archive holds the Raft log
+alone:
+
+| run | intervals of 10 ms or more without a new `clusterSeqNo`, all members | longest | recorder's longest write | archive growth | dirty pages, peak |
+| --- | --- | --- | --- | --- | --- |
+| derived | 0 | 7 ms | 3.4 ms | 3.7 GB | 619 MB |
+| recorded | 17, 3 of them on the leader | 81 ms | 79 ms | 7.3 GB | 1270 MB |
+| derived, after the recorded run | 0 | 9 ms | 9.0 ms | 3.7 GB | 615 MB |
+
+A blocked write on a follower holds that follower alone; the leader's longest write was 0.6 and 1.4 ms in the derived runs. The
+kernel still flushes in bursts, of half the bytes. Intervals of 5–9 ms occur in every run, 67–79 in a derived run and 118 in
+the recorded one, at a sampling interval that resolves no finer. Two runs on one host: no stall rate, and no figure for a higher
+rate or a larger payload, where the log alone writes what both wrote here.
+
 ### Test 2: the network-fault suite without CPU steal
 
 `failover.yml` runs `networkFaultTest` with `TIMEOUT_SCALE: '3'` to cover the CPU steal of a shared 4-vCPU runner,
