@@ -122,8 +122,11 @@ recording.
 - **Rate.** On a laptop, off the page cache, 200,000 frames with a 150-byte filler walk at 0.8–1.3 million
   frames/s derived and 1.8–2.7 million recorded.
 - **Tests.** `DerivedQueueTest`; `DerivedReplayTest`, a client's cold start and live following on a member
-  that records nothing; and `CheckpointedReplayTest`, which runs a `DerivingReplayer` beside a recording
-  member's archive and compares replays fragment for fragment, and scans and tips.
+  that records nothing; `CheckpointedReplayTest`, which runs a `DerivingReplayer` beside a recording
+  member's archive and compares replays fragment for fragment, and scans and tips; and three in
+  `ClusterSnapshotTest` on members that record nothing: a gateway restores its snapshot file and catches up, on
+  a member that has run throughout, on one restarted from a cluster snapshot, and on one whose queue start a
+  purge has moved. None releases a checkpoint: each runs within the first 8 MiB of log.
 
 Not in the prototype: checkpoints are never released without a `<snapshots>` policy; the gateway host and
 log retention are unchanged; `clusterctl` and the tools that read a member's queue recording find none.
