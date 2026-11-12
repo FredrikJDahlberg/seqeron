@@ -267,7 +267,7 @@ Every replay in the suites is served over loopback or IPC, which loses nothing a
 `replay-remote.sh` repeats `ReplayColdStartTest`'s measurement twice against one preloaded cluster: a cold
 `ClusterProbe follow` on member 1, replayed over `aeron:ipc`, and a gateway host on a fourth host, whose relay copies
 the queue recording over UDP before a cold follow replays it there. Each phase checks the replica delivered every
-preloaded frame.
+preloaded frame, and with `REPLAY_COLD=1` starts on an empty page cache.
 
 The members run the archive with Aeron's default `aeron.archive.file.sync.level` of 0: nothing is forced to disk.
 Running test 1 again with `MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1
@@ -408,6 +408,12 @@ HOP_RATES=20000 MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1 -Daeron
     ./hop-matrix.sh                                            # the sync comparison; run it again without the option
 REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and again with REPLAY_LOAD_DURING=1
 ```
+
+To run either arm on members that record no queue (`disk-load-plan.md`, step 2a), set
+`MULTIHOST_MEMBER_OPTS=-Dreplayer.deriveFromLog=true`, and the same in `MULTIHOST_HOST_OPTS` for a gateway host
+(`replay-remote.sh`, `hop-gate-edge.sh`), which then relays a member's Raft log. The order check reads each such member's
+queue through its Replayer. `REPLAY_COLD=1` drops every member's page cache before each replay phase, so the replay reads
+its log or recording from EBS; it needs passwordless `sudo` on the members.
 
 Each script's header lists its variables. Results and every host's logs land under `build/multihost` on the driver
 host. A hosted run that cannot attach, or a matrix whose leader moves, fails rather than measuring an election.

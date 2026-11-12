@@ -26,17 +26,20 @@
 #   node.sh queue-digest <memberId>                  QueueDigest on member <memberId>'s archive: one line per recording of
 #                                                    group 1's queue, for hop-order-check.py; exits 1 on a gap;
 #                                                    MULTIHOST_DIGEST_UPTO caps the last groupSeqNo digested
+#   node.sh drop-caches                              write back dirty pages and drop the page cache (Linux, sudo), so a
+#                                                    replay after it reads its log or recording from the disk
 #   node.sh sample <label>                        one line of /proc counters: time in ms, per-CPU steal, context
 #                                                    switches, each java and bench process's utime+stime ticks, and the
 #                                                    NIC's ENA allowance and drop counters (ethtool -S)
 #
 # A -D value may name {data}, this host's data directory. A name's log is <run>/logs/<name>.log and its pid
-# <run>/logs/<name>.pid; a gateway host's ReplayerServer logs to <run>/logs/ReplayerServer-3.log.
+# <run>/logs/<name>.pid; a gateway host's ReplayerServer logs to <run>/logs/gateway-host.log.
 #
 #   MULTIHOST_BASE_DIR      the run directory: data/ and logs/            (default ~/seqeron-multihost)
 #   MULTIHOST_IDLE          every member agent's idle strategy            (default backoff; busyspin when pinned)
 #   MULTIHOST_MEMBER_OPTS   extra JVM flags for a member, space-separated
 #   MULTIHOST_MEMBER_CPUS   taskset CPU list for a member                 (default unpinned)
+#   MULTIHOST_HOST_OPTS     extra JVM flags for a gateway host, space-separated
 #   MULTIHOST_ARCHIVE_DIR   where a member's archive-<id> lives, linked into data/  (default inside data/)
 #   MULTIHOST_COUNTER_MS    CounterSampler's interval; 0 starts none          (default 10)
 #   MULTIHOST_COUNTER_CPUS  taskset CPU list for it                           (default 0-1)
@@ -153,8 +156,15 @@ member)
         -jar "${SEQERON_JAR}"
     ;;
 gateway-host)
-    detach gateway-host "" env SEQERON_GROUPS=1 SEQERON_NODE_ID=3 SEQERON_HOST="${MULTIHOST_CLIENT:-localhost}" \
-        SEQERON_BASE_DIR="${DATA_DIR}" "${MAIN_SCRIPTS}/start-gateway-host.sh"
+    read -r -a host_opts <<< "${MULTIHOST_HOST_OPTS:-}"
+    java_main start gateway-host org.limitless.seqeron.replayer.server.ReplayerServer -Dreplayer.memberId=3 \
+        -Dreplayer.groups=1 -Dreplayer.host="${MULTIHOST_CLIENT:-localhost}" -Dreplayer.baseDir="${DATA_DIR}" \
+        ${host_opts[@]+"${host_opts[@]}"}
+    ;;
+drop-caches)
+    [[ -e /proc/sys/vm/drop_caches ]] || { echo "ERROR: drop-caches needs Linux" >&2; exit 1; }
+    sync
+    echo 3 | sudo -n tee /proc/sys/vm/drop_caches > /dev/null
     ;;
 start | run)
     java_main "${action}" "$@"
