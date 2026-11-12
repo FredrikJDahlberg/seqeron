@@ -5,6 +5,7 @@ import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.ElectionState;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.test.Tests;
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Collections;
@@ -299,6 +300,11 @@ final class InProcessCluster implements AutoCloseable {
     /** Member {@code m}'s Aeron directory, or the gateway host's for {@link #GATEWAY_HOST}. */
     String aeronDir(final int m) {
         return baseDir.resolve("aeron-" + m).toString();
+    }
+
+    /** Member {@code m}'s archive directory. */
+    File archiveDir(final int m) {
+        return baseDir.resolve("archive-" + m).toFile();
     }
 
     /** Skips a test of a member's queue recording when the suite runs members that record none (-PderiveFromLog). */

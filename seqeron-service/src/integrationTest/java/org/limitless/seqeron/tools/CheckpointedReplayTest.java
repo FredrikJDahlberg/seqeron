@@ -66,6 +66,10 @@ class CheckpointedReplayTest {
     private String deriveFromLog;
     private long checkpointLogBytes = DerivingReplayer.CHECKPOINT_LOG_BYTES;
     private int maxCheckpoints = DerivingReplayer.MAX_CHECKPOINTS;
+    private long maxRunBytes = DerivingReplayer.MAX_RUN_BYTES;
+    /** The runs the derivation kept, and how many of them run a sequencer. */
+    private int runs;
+    private int sequencedRuns;
     /** Whether each queue is purged to its middle frame once compared, and replayed from there. */
     private boolean purge;
 
@@ -107,6 +111,27 @@ class CheckpointedReplayTest {
         final int leader = cluster.awaitLeader();
         send(leader, 200_000, FILLER);
         assertDerivedIsRecorded((leader + 1) % InProcessCluster.MEMBERS, 3);
+        // One run per checkpoint and a few at the log's start: more, and FramePredictor has left the sequencer's
+        // encoding.
+        assertTrue(runs < 32,
+                   runs + " runs kept: the predictor differs from the sequencer on entries it should derive");
+        assertEquals(0, sequencedRuns);
+    }
+
+    /** Each producer's session close is an entry the predictor does not derive. */
+    @Test
+    @InterruptAfter(240)
+    void runsPastTheirBoundRunASequencer() {
+        checkpointLogBytes = 256 * 1024;
+        maxRunBytes = 0;
+        cluster = new InProcessCluster(baseDir);
+        cluster.startAll();
+        final int leader = cluster.awaitLeader();
+        for (int i = 0; i < 8; i++) {
+            send(leader, 2_500, FILLER);
+        }
+        assertDerivedIsRecorded((leader + 1) % InProcessCluster.MEMBERS, 3);
+        assertTrue(sequencedRuns > 1, sequencedRuns + " of " + runs + " runs run a sequencer");
     }
 
     /**
@@ -204,9 +229,9 @@ class CheckpointedReplayTest {
                                      .controlResponseStreamId(RESPONSE_STREAM_ID));
         try {
             final Replayer recorded = new AeronReplayer(aeron, archive, member);
-            final DerivingReplayer deriving =
-                new DerivingReplayer(recorded, aeron, archive, member,
-                                     () -> cluster.derivationStart(member), checkpointLogBytes, maxCheckpoints);
+            final DerivingReplayer deriving = new DerivingReplayer(
+                recorded, aeron, archive, cluster.archiveDir(member), member,
+                () -> cluster.derivationStart(member), checkpointLogBytes, maxCheckpoints, maxRunBytes);
             final long deadline = System.nanoTime() + TIMEOUT_NS;
             while (deriving.checkpointCount() < checkpoints) {
                 assertTrue(System.nanoTime() < deadline,
@@ -236,13 +261,15 @@ class CheckpointedReplayTest {
                 final String queue = "member " + member + "'s queue of group " + groupId;
                 assertEquals(span.startPosition(), deriving.listQueueRecordings(groupId).getFirst().startPosition(),
                              queue + ": where it starts");
+                // First: a scan ends where the derivation has brought the queue, and a heartbeat may just have moved
+                // the tip.
+                assertDerivedTipIsRecorded(recorded, deriving, span.recordingId(), groupId, queue);
                 assertDerivedScanIsRecorded(deriving, groupId, tip, frames, seqNos, 0, queue);
                 assertDerivedScanIsRecorded(deriving, groupId, tip, frames, seqNos, frames.size() / 2, queue);
                 assertEquals(Replayer.ScanEnd.UNREADABLE,
                              deriving.scanQueueRecording(groupId, frames.getLong(frames.size() / 2) + 32, tip,
                                                          (position, clusterSeqNo) -> true),
                              queue + ": a scan from inside a frame");
-                assertDerivedTipIsRecorded(recorded, deriving, span.recordingId(), groupId, queue);
                 final List<Fragment> whole = assertDerivedIsRecorded(aeron, archive, deriving, span.recordingId(),
                                                                      groupId, span.startPosition(), tip, queue);
                 for (final long from :
@@ -263,6 +290,9 @@ class CheckpointedReplayTest {
                 starts[InProcessCluster.GROUP_IDS.indexOf(groupId)] = span.startPosition();
                 middles.addLong(frames.getLong(frames.size() / 2));
             }
+            runs = deriving.runCount();
+            sequencedRuns = deriving.sequencedRunCount();
+            System.out.printf("member %d: %d run(s), %d of them a sequencer's%n", member, runs, sequencedRuns);
             assertTrue(deriving.checkpointCount() <= maxCheckpoints,
                        deriving.checkpointCount() + " checkpoints kept, past the bound of " + maxCheckpoints);
             if (purge) {

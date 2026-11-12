@@ -64,9 +64,9 @@ every member's queue the same. The log is then the one copy on disk, whatever th
   queue is always connected and every offer lands: a dropped offer would leave the publication behind the
   positions the log gives, which a client joins the live queue by. Only an untethered consumer can then hold
   the window, until the driver evicts it.
-- **Replay.** The Replayer replays the log's recording, bounded by the commit position (the recording can
-  hold entries a new leader truncates), decodes Aeron's cluster log codecs, runs a `Sequencer` over them and
-  publishes the requested group's frames on the replay stream.
+- **Replay.** The Replayer reads the log's recording up to the commit position (the recording can
+  hold entries a new leader truncates), decodes Aeron's cluster log codecs, derives the frames and
+  publishes the requested group's on the replay stream.
 - **Starting mid-history.** A resume needs the sequencer's state at the point it starts from. The Replayer
   follows the log with a `Sequencer` of its own and keeps a checkpoint every so many bytes: log position,
   the state `Sequencer.onSnapshot` already serializes, and each queue's position. A request restores the
@@ -90,9 +90,9 @@ Costs and open questions:
 - The Replayer decodes five of Aeron's cluster log templates (`SessionMessageHeader`, `TimerEvent`,
   `SessionCloseEvent`, `NewLeadershipTermEvent`, `ClusterActionRequest`) and reads the commit position
   counter. The codecs are public, in `io.aeron.cluster.codecs`, at the version `versions.properties` pins.
-- A group's replay reads every group's log entries and runs the sequencer over them: more CPU per replayed
-  byte than an archive replay, off the live path. The prototype walks a queue at about half the recorded
-  path's rate, which a snapshot start shortens with the log it has to read.
+- A group's replay reads every group's log entries and builds each of its frames: more CPU per replayed
+  byte than an archive replay, off the live path. The prototype walks a queue at a third to a half of the
+  recorded path's rate, which a snapshot start shortens with the log it has to read.
 - Whether a derived replay keeps position addressing or moves to `groupSeqNo`. The prototype keeps positions.
 
 Prototype. With `replayer.deriveFromLog`, a member records no queue and its Replayer is a `DerivingReplayer`,
@@ -103,25 +103,42 @@ its queue recordings.
 
 - **Live path.** As above. `QueuePublisher` is unchanged: its liveness check and stall bound read the
   service's own subscriber where they read the recording.
+- **Reading the log.** `RecordingReader` reads the log's recording from the archive's segment files, as far as
+  the commit position: a member's commit position never passes what its own archive has written, and nothing
+  below it is truncated. No archive replay is involved, so an election that stops the log's recording ends
+  nothing, and a replay takes none of the archive's sessions. It reads with positional reads, since the archive
+  shrinks a segment file when it truncates the log.
 - **Derivation.** `LogDeriver` runs a `Sequencer` over the log's entries and `QueuePositions` gives each frame
-  its queue position. One bounded replay of the log follows the commit position and keeps a checkpoint in
-  memory every 8 MiB of log. That replay ends when the consensus module stops the log's recording, as it does to
-  extend it in an election, and is started again from the last entry applied.
+  its queue position. One derivation follows the commit position and keeps a checkpoint in
+  memory every 8 MiB of log.
+- **Runs.** The frames of an application message, of a system message and of a heartbeat follow from the log
+  entry, the `clusterSeqNo`, each queue's `groupSeqNo` and the active groups, with no other sequencer state.
+  `FramePredictor` builds them that way, for every group at once, and the derivation compares its frames with
+  the sequencer's for every entry. Where they differ (a rejected message, a system message the sequencer
+  synthesizes a frame behind, a session's close, a new term, a snapshot) it keeps a run: the entry's frames as
+  the sequencer published them, and the counts after it. It keeps one at each checkpoint too, with no frames.
+  The runs are memory, released by a purge as the checkpoints are.
+- **Run bound.** The runs hold at most 64 MiB, counting 512 bytes a run besides its frames. Past that, the
+  first entry the predictor does not derive after a checkpoint starts a run that holds the sequencer's state,
+  no run is kept behind it up to the next checkpoint, and a replay runs a `LogDeriver` over that stretch. A
+  flood of such entries then costs replay rate and one state per checkpoint, not memory per entry.
 - **Checkpoint bound.** At most 1024 are kept. Past that every other one is released and the log between two
-  doubles, so a log nothing purges costs a bounded number of them and a replay derives more log before its
-  first frame: up to 16 MiB of it once the log passes 8 GiB, 32 MiB past 16 GiB.
+  doubles: 16 MiB once the log passes 8 GiB, 32 MiB past 16 GiB. A replay still starts at a run, and the run
+  kept at a released checkpoint stays, so its first frame is no further off. What grows is the stretch a run
+  past the run bound covers, and how far below a purged start a gateway host's derivation begins.
 - **Start.** The member's service hands its Replayer a `DerivationStart` when it starts: log position 0 and
   nothing sequenced, or the cluster snapshot's log position and the state it restored, with the position it
   created each queue at and the node's term length and MTU.
-- **Replay.** The newest checkpoint at or below the requested position is restored, and the frames from that
-  position on are published on a publication created at it, so the replay protocol and the clients are
+- **Replay.** A replay runs no sequencer but over a stretch past the run bound: from the newest run at or below the requested position it publishes
+  each run's kept frames and the predictor's for the log behind them, as far as the derivation has compared.
+  The frames from the requested position on are published on a publication created at it, so the replay protocol and the clients are
   unchanged. A position at a fragment boundary inside a frame above the MTU is served as the archive serves it.
-- **Tip and scans.** A queue's tip is where the derivation has brought it, and a scan for a snapshot's cut derives
-  the frames from the last checkpoint at or before where it starts.
+- **Tip and scans.** A queue's tip is where the derivation has brought it, and a scan for a snapshot's cut walks
+  the runs from the last at or before where it starts.
 - **Readiness.** No queue is listed until the derivation has caught up with the commit position as it stood
   when it started, so the Replayer is not ready before then.
 - **Purge.** A purge below a restart-safe cut moves the queue's start, a term at a time as a recording's moves
-  a segment at a time, and releases the checkpoints below it.
+  a segment at a time, and releases the checkpoints and the runs below it.
 - **Gateway host.** One `AeronLogRelay` replaces the relay per group: it replays a member's log over UDP,
   bounded by that member's commit position, runs a `LogDeriver` over it and publishes each relayed group's
   frames on the host's own queue. The host still records those queues and serves them as before, so its
@@ -138,14 +155,20 @@ its queue recordings.
 - **Stall.** On EBS with default writeback at 50k msg/s, two 600 s runs with the flag had no interval of 10 ms or
   more without a new `clusterSeqNo`, where the recorded path had 17 of up to 81 ms, and the archive grew half as fast
   (`ec2-tests.md`, "Archive writes on EBS").
-- **Rate.** On a laptop, off the page cache, 200,000 frames with a 150-byte filler walk at 0.8–1.3 million
-  frames/s derived and 1.8–2.7 million recorded.
+- **Rate.** On a laptop, off the page cache, two million frames with a 150-byte filler on one group and one
+  million on another walk at 2.2–2.3 and 1.5–1.7 million frames/s derived and about 5 million recorded. With a
+  sequencer per replay over an archive replay of the log it was 1.8 and 1.1 million. What is left is reading and
+  counting each entry of every group, about 0.11 µs, and offering each frame, about 0.26 µs, where the archive
+  copies recorded frames in blocks.
 - **Tests.** `DerivedQueueTest`; `DerivedReplayTest`, a client's cold start and live following on a member
   that records nothing; `CheckpointedReplayTest`, which runs a `DerivingReplayer` beside a recording
   member's archive and compares replays fragment for fragment, and scans and tips; and three in
   `ClusterSnapshotTest` on members that record nothing: a gateway restores its snapshot file and catches up, on
   a member that has run throughout, on one restarted from a cluster snapshot, and on one whose queue start a
-  purge has moved. `CheckpointedReplayTest` thins and releases checkpoints, at a spacing and a bound it sets.
+  purge has moved. `CheckpointedReplayTest` thins and releases checkpoints, at a spacing and a bound it sets,
+  compares replays whose runs are past a bound of 0, and fails if a 200 000-frame history keeps 32 runs, which
+  it does once `FramePredictor` and the sequencer encode differently. `RecordingReaderTest` reads segment
+  files it writes: fragments, padding, a recording started inside a term, a truncated and a missing file.
   For a host: `LogRelayTest`; in `DerivedReplayTest`, a client's cold start on a host and its walk on across
   the stop of the member the host read; and three in `ClusterSnapshotTest`: the markers the host reports, its
   purge below the cuts its gateway confirms, and its start from a member restarted from a cluster snapshot.
@@ -185,14 +208,18 @@ Limits of the prototype:
   it whole at each connect. A member's restart purges it.
 - **Checkpoints are memory.** Each holds the sequencer's state, and up to 1024 are kept. They are
   rebuilt at each start by deriving the log from the service's start, and no queue is served before that ends.
-- **A replay costs more.** It derives every group's entries, at about half the recorded path's rate, and its
-  first frame waits for the log between the checkpoint and the position asked for.
+- **A replay costs more.** It reads every group's entries, at a third to a half of the recorded path's rate,
+  and its first frame waits for the log between the run and the position asked for.
+- **The predictor repeats the sequencer's encoding.** A change to one and not the other costs speed, not
+  correctness: every entry on which they differ becomes a run, served from the frames the sequencer published.
 - **No recorded path.** A member with the flag has no queue recording to fall back on, so `clusterctl` and the
   tools that read one (`QueueRecordings`, `SbeLogPrinter` on a queue) find none.
-- **Not run with the flag:** the tests tagged `docker`, the C++ and C# clients, and the multi-host EC2
+- **Not run with the flag:** the tests tagged `docker`, the C# client on Windows, and the multi-host EC2
   tests. The integration and system suites and `ChaosTest` run with it
-  under `-PderiveFromLog`. There `QueueRecordings` reads a member's queues twice, as its log derives them and as
-  its Replayer replays them, and the checks of a member's queue recording are skipped.
+  under `-PderiveFromLog`, the system suite's `Hosted*Test` with the C++ stubs when `HOSTED_PROBE` names them, and
+  `csharp-client-test.sh` under `CSHARP_MEMBER_OPTS=-Dreplayer.deriveFromLog=true`; CI runs each both ways, less
+  the C++ stubs, which it runs neither way. With the flag `QueueRecordings` reads a member's queues twice, as its
+  log derives them and as its Replayer replays them, and the checks of a member's queue recording are skipped.
 
 #### 2b: a second archive for queue recordings
 

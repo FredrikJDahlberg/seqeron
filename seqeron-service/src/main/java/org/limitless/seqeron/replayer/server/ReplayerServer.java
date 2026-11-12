@@ -239,7 +239,7 @@ public final class ReplayerServer {
                 config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(), config.host(), config.groups(),
                 new ConcurrentLinkedQueue<>(), reports, config.idleStrategies(), fatalHandler,
                 CutIntake.ofHost(reports, Long.getLong(PROP_SNAPSHOT_JOIN_MS, DEFAULT_SNAPSHOT_JOIN_MS)),
-                stallTimeoutMs, wrapper, () -> null);
+                stallTimeoutMs, wrapper, () -> null, null);
         } catch (final RuntimeException ex) {
             CloseHelper.quietClose(driver);
             throw ex;
@@ -272,7 +272,7 @@ public final class ReplayerServer {
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake) {
         return launch(memberId, aeronDir, idleStrategies, topologyRows, fatalHandler, cutIntake,
-                      UnaryOperator.identity(), () -> null);
+                      UnaryOperator.identity(), () -> null, null);
     }
 
     /**
@@ -282,15 +282,16 @@ public final class ReplayerServer {
      * @param wrapper         decorates the node's Replayer
      * @param derivationStart where the member's service started, or null until it has: what {@link
      *                        #PROP_DERIVE_FROM_LOG} derives from
+     * @param archiveDir      the member's archive directory, where that reads the log's segment files
      */
     public static ReplayerServer launch(final int memberId, final String aeronDir,
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake,
                                         final UnaryOperator<Replayer> wrapper,
-                                        final Supplier<DerivationStart> derivationStart) {
+                                        final Supplier<DerivationStart> derivationStart, final File archiveDir) {
         return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, List.of(), topologyRows,
                                   null, idleStrategies, fatalHandler, cutIntake,
-                                  NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS, wrapper, derivationStart);
+                                  NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS, wrapper, derivationStart, archiveDir);
     }
 
     private ReplayerServer(final int memberId, final ArchivingMediaDriver driver, final String aeronDir,
@@ -298,7 +299,8 @@ public final class ReplayerServer {
                            final Queue<byte[]> topologyRows, final Queue<RelayedCut> cutReports,
                            final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler,
                            final CutIntake cutIntake, final long relayStallTimeoutMs,
-                           final UnaryOperator<Replayer> wrapper, final Supplier<DerivationStart> derivationStart) {
+                           final UnaryOperator<Replayer> wrapper, final Supplier<DerivationStart> derivationStart,
+                           final File archiveDir) {
         this.memberId = memberId;
         this.driver = driver;
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
@@ -349,7 +351,7 @@ public final class ReplayerServer {
                              () -> deriving[0] == null ? Long.MAX_VALUE : deriving[0].firstCheckpointLogPosition());
         final Replayer recorded = new AeronReplayer(aeron, archive, memberId, trimmer);
         if (archiveEndpoints == null && derive) {
-            deriving[0] = new DerivingReplayer(recorded, aeron, archive, memberId, derivationStart);
+            deriving[0] = new DerivingReplayer(recorded, aeron, archive, archiveDir, memberId, derivationStart);
         }
         final Replayer served = deriving[0] == null ? recorded : deriving[0];
         final ReplayerService replayer = new ReplayerService(wrapper.apply(served), memberId, idleStrategy,

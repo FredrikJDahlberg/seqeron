@@ -37,7 +37,8 @@ Raft log and checks them against its recordings frame for frame and position for
 a client with `replayer.deriveFromLog`, on a member that then records no queue, and beside it off the recording, and prints each rate; `CheckpointedReplayTest`
 runs a `DerivingReplayer` of its own, started from the member's `DerivationStart`, beside a recording member's archive and compares its replay with the archive's fragment for fragment, from the start, mid-history, inside a
 fragmented frame, and on a member restarted from a cluster snapshot, at the same and at another term length, and its
-scans and its tip with the recording's, and holds its checkpoints to their bound and to a purge's release. `ClusterSnapshotTest` runs three of its gateway restarts with the flag on: on a
+scans and its tip with the recording's, and holds its checkpoints to their bound and to a purge's release, its runs to a
+count that a `FramePredictor` out of step with the sequencer exceeds, and its replays to the recording past the run bound. `ClusterSnapshotTest` runs three of its gateway restarts with the flag on: on a
 member that has run throughout, on one restarted from a cluster snapshot, and on one whose queue start a purge has
 moved, read through `InProcessCluster.replayer`. A gateway host with the flag derives its queues from a member's log
 (`AeronLogRelay`): `DerivedReplayTest` cold-starts a client on one and stops the member it reads, and `ClusterSnapshotTest`
@@ -49,7 +50,7 @@ them and as its Replayer replays them, the tests that set the flag themselves ke
 (`InProcessCluster.assumeMembersRecordQueues`) are skipped.
 `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
-JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;
+JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job, with and without `-PderiveFromLog`;
 neither `test` nor `check` runs it. A member stopped in-process is closed rather than killed, and a cut drops frames
 rather than delaying, reordering or duplicating them, so the harnesses stay the evidence for process death and for
 the network faults faulteron injects.

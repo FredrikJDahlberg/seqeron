@@ -1,27 +1,27 @@
 package org.limitless.seqeron.replayer.server;
 
 import io.aeron.Aeron;
-import io.aeron.ChannelUri;
-import io.aeron.ControlledFragmentAssembler;
 import io.aeron.ExclusivePublication;
-import io.aeron.Image;
 import io.aeron.Publication;
-import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
-import io.aeron.archive.client.ArchiveException;
 import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.cluster.ConsensusModule;
 import io.aeron.logbuffer.BufferClaim;
-import io.aeron.logbuffer.ControlledFragmentHandler;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.FrameDescriptor;
-import io.aeron.logbuffer.Header;
+import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
+import org.agrona.ExpandableArrayBuffer;
+import org.agrona.collections.IntArrayList;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -29,6 +29,9 @@ import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
+import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder;
+import org.limitless.seqeron.sequencer.FramePredictor;
 import org.limitless.seqeron.sequencer.LogDeriver;
 import org.limitless.seqeron.sequencer.QueuePositions;
 import org.limitless.seqeron.sequencer.Sequencer;
@@ -36,55 +39,64 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * A member's {@link Replayer} whose queues are not recorded: a queue's history is a {@link LogDeriver} over the Raft
- * log's recording, published at the queue's term length and MTU, which puts each frame at the position the queue's
- * publication put it at (doc/disk-load-plan.md, step 2a).
+ * log's recording, read from its segment files up to the commit position ({@link RecordingReader}) and published at the
+ * queue's term length and MTU, which puts each frame at the position the queue's publication put it at
+ * (doc/disk-load-plan.md, step 2a).
  *
  * <p>To {@link ReplayerService} each queue is one active recording whose id is its group's, which starts where the
  * queue did and has reached where the derivation has brought it.
  *
  * <p>One derivation follows the log for as long as this runs and keeps a checkpoint of it every {@link
- * #CHECKPOINT_LOG_BYTES}: the deriver's state, and where each queue stood. A replay or a scan continues from the last
- * checkpoint at or before the position it starts at. The derivation starts where the member's service says it did
+ * #CHECKPOINT_LOG_BYTES}: the deriver's state, and where each queue stood. It also compares each entry's frames with
+ * a {@link FramePredictor}'s and keeps a {@link Run} where they differ, so a replay or a scan runs no sequencer: it
+ * continues from the last run at or before the position it starts at, with the predictor between runs and the
+ * frames each run kept. The runs are held in memory up to {@link #MAX_RUN_BYTES}; past it a run that an entry the
+ * predictor does not derive starts holds the deriver's state, and a replay runs a sequencer over it up to the next
+ * checkpoint. The derivation starts where the member's service says it did
  * ({@link DerivationStart}): at the log's first entry, or at the cluster snapshot it restored, each queue at the
  * position the service created it at.
  *
  * <p>No queue is listed until the derivation has caught up with the log's commit position as it stood when it
  * started. The checkpoints are held in memory, rebuilt at each start, and released below a purge. Past {@link
  * #MAX_CHECKPOINTS} every other one is released and the log between two doubles, so a log nothing purges costs a
- * bounded number of them and a longer derivation before a replay's first frame. The replay protocol's streams, the
- * counters and the clock are the Replayer's it decorates.
+ * bounded number of them; the runs kept at them stay, so a replay's first frame is no further off. The replay
+ * protocol's streams, the counters and the clock are the Replayer's it decorates.
  *
  * <p>Not thread-safe: every call is from the Replayer's duty-cycle thread.
  */
 public final class DerivingReplayer implements Replayer {
-    /** The stream the archive replays the log, and a cluster snapshot, on to this, beside the replay protocol's. */
-    private static final int LOG_REPLAY_STREAM_ID = 204;
-
     /** How much log lies between two checkpoints at first: the most a replay derives before its first frame. */
     public static final long CHECKPOINT_LOG_BYTES = 8L * 1024 * 1024;
     /** The most checkpoints kept: 8 GiB of log at {@link #CHECKPOINT_LOG_BYTES}, before the log between two doubles. */
     public static final int MAX_CHECKPOINTS = 1024;
+    /**
+     * The most the runs may hold before a stretch of log with an entry the predictor does not derive runs a sequencer.
+     */
+    public static final long MAX_RUN_BYTES = 64L * 1024 * 1024;
+    /** What a run is counted as holding besides its frames. */
+    private static final int RUN_BYTES = 512;
 
-    private static final String LOG_REPLAY_CHANNEL = "aeron:ipc?alias=seqeron-log-derive";
     /** The alias of a derived replay's publication, which an archive's replay does not carry. */
     public static final String DERIVED_ALIAS = "seqeron-replay-derived";
 
     private static final String DERIVED_CHANNEL = "aeron:ipc?alias=" + DERIVED_ALIAS;
     /** How long a derived replay waits for its subscriber, as the archive's replay does. */
     private static final long CONNECT_TIMEOUT_MS = 5_000;
-    /** How long a derived scan may go without a log entry, as the archive's replay of a recorded one. */
+    /** How long a derived scan may go without a log entry, as a scan of a recorded queue. */
     private static final long SCAN_STALL_TIMEOUT_MS = 2_000;
     private static final long FOLLOW_RETRY_MS = 1_000;
-    private static final int FRAGMENT_LIMIT = 64;
-    private static final int FOLLOW_FRAGMENT_LIMIT = 256;
+    private static final int ENTRY_LIMIT = 64;
+    private static final int FOLLOW_ENTRY_LIMIT = 256;
 
     private final Replayer delegate;
     private final Aeron aeron;
     private final AeronArchive archive;
+    private final File archiveDir;
     private final int memberId;
     private final Supplier<DerivationStart> derivationStart;
     private final long checkpointLogBytes;
     private final int maxCheckpoints;
+    private final long maxRunBytes;
     private final Long2ObjectHashMap<DerivedReplay> replays = new Long2ObjectHashMap<>();
     /** The derivation that keeps the checkpoints, or null until the service has started and the log is recorded. */
     private Follower follower;
@@ -110,12 +122,45 @@ public final class DerivingReplayer implements Replayer {
      */
     private record Checkpoint(long logPosition, LogDeriver.State state, boolean reemitMarker, long[] queuePositions) { }
 
+    /** A frame as the sequencer published it. */
+    private record Frame(int groupId, byte[] bytes) { }
+
     /**
+     * A stretch of log a {@link FramePredictor} derives as the sequencer did, behind the frames of the entry before
+     * it, which it does not: the derivation's start, an entry the two differed on, or no entry where a checkpoint
+     * was due.
+     *
+     * @param logPosition     of that entry, or {@code entriesFrom}
+     * @param entriesFrom     where the predicted entries start
+     * @param lead            that entry's frames, or the ones the derivation's start published
+     * @param queuePositions  where each queue stood before {@code lead}, slot {@code groupId - 1}
+     * @param clusterSeqNo    the predictor's state after {@code lead}, with the next two
+     * @param activeGroupMask the groups a frame has reached
+     * @param groupSeqNos     of the last frame on each queue, slot {@code groupId - 1}
+     * @param state           null, or the deriver's after {@code lead}: the runs were past {@link #MAX_RUN_BYTES}, so
+     *                        this one keeps no run for the entries the predictor does not derive up to the next
+     *                        checkpoint, and a {@link LogDeriver} derives it
+     */
+    private record Run(long logPosition, long entriesFrom, List<Frame> lead, long[] queuePositions, long clusterSeqNo,
+                       int activeGroupMask, long[] groupSeqNos, LogDeriver.State state) {
+        long bytes() {
+            long bytes = RUN_BYTES;
+            for (final Frame frame : lead) {
+                bytes += frame.bytes().length;
+            }
+            return bytes;
+        }
+    }
+
+    /**
+     * @param archiveDir      where the member's archive keeps the log's segment files
      * @param derivationStart where the member's service started, or null until it has
      */
-    public DerivingReplayer(final Replayer delegate, final Aeron aeron, final AeronArchive archive, final int memberId,
+    public DerivingReplayer(final Replayer delegate, final Aeron aeron, final AeronArchive archive,
+                            final File archiveDir, final int memberId,
                             final Supplier<DerivationStart> derivationStart) {
-        this(delegate, aeron, archive, memberId, derivationStart, CHECKPOINT_LOG_BYTES, MAX_CHECKPOINTS);
+        this(delegate, aeron, archive, archiveDir, memberId, derivationStart, CHECKPOINT_LOG_BYTES, MAX_CHECKPOINTS,
+             MAX_RUN_BYTES);
     }
 
     /**
@@ -123,16 +168,19 @@ public final class DerivingReplayer implements Replayer {
      *
      * @param checkpointLogBytes the log between two checkpoints at first
      * @param maxCheckpoints     the most kept
+     * @param maxRunBytes        the most the runs may hold
      */
-    public DerivingReplayer(final Replayer delegate, final Aeron aeron, final AeronArchive archive, final int memberId,
-                            final Supplier<DerivationStart> derivationStart, final long checkpointLogBytes,
-                            final int maxCheckpoints) {
+    public DerivingReplayer(final Replayer delegate, final Aeron aeron, final AeronArchive archive,
+                            final File archiveDir, final int memberId, final Supplier<DerivationStart> derivationStart,
+                            final long checkpointLogBytes, final int maxCheckpoints, final long maxRunBytes) {
         this.checkpointLogBytes = checkpointLogBytes;
         this.maxCheckpoints = maxCheckpoints;
+        this.maxRunBytes = maxRunBytes;
         this.derivationStart = derivationStart;
         this.delegate = delegate;
         this.aeron = aeron;
         this.archive = archive;
+        this.archiveDir = archiveDir;
         this.memberId = memberId;
     }
 
@@ -152,12 +200,20 @@ public final class DerivingReplayer implements Replayer {
         return follower != null && follower.isValid() ? follower.checkpoints.size() : 0;
     }
 
+    /** The runs kept, the derivation's start among them: one more for each entry the predictor did not derive. */
+    public int runCount() {
+        return follower == null ? 0 : follower.runs.size();
+    }
+
+    /** How many of the runs kept a {@link LogDeriver} derives, the runs having been past their bound. */
+    public int sequencedRunCount() {
+        return follower == null ? 0 : (int)follower.runs.stream().filter(run -> run.state() != null).count();
+    }
+
     @Override
     public long startReplay(final long recordingId, final long position, final long length, final int streamId) {
         final Queue queue = queueOf(recordingId);
-        final Checkpoint from = checkpointAt(queue, position);
-        final long logSessionId = replayLog(follower.logRecordingId, from.logPosition(), follower.commitCounterId);
-        final Subscription log = logSubscription(logSessionId);
+        final long from = runAt(queue, position);
         final int termId = (int)(position >> Integer.numberOfTrailingZeros(queue.termLength()));
         final ExclusivePublication publication = aeron.addExclusivePublication(
             DERIVED_CHANNEL + "|term-length=" + queue.termLength() + "|mtu=" + queue.mtu() +
@@ -165,13 +221,12 @@ public final class DerivingReplayer implements Replayer {
             streamId);
         // What the client subscribes by, as an archive's replay session id is: its low 32 bits.
         final long replaySessionId = publication.sessionId() & 0xFFFF_FFFFL;
-        replays.put(replaySessionId,
-                    new DerivedReplay(queue, from, position, position + length, logSessionId, log, publication));
+        replays.put(replaySessionId, new DerivedReplay(queue, from, position, position + length, publication));
         Logger.info(
             Logger.CoreComponent.ReplayerService, memberId,
             "replay session %d derives group %d's queue [%d,%d) from the log at %d, where the queue stood at %d",
-            replaySessionId, queue.groupId(), position, position + length, from.logPosition(),
-            from.queuePositions()[queue.groupId() - 1]);
+            replaySessionId, queue.groupId(), position, position + length, follower.run(from).entriesFrom(),
+            follower.run(from).queuePositions()[queue.groupId() - 1]);
         return replaySessionId;
     }
 
@@ -183,23 +238,14 @@ public final class DerivingReplayer implements Replayer {
         return new Queue((int)recordingId, follower.termLength, follower.mtu);
     }
 
-    /** The last checkpoint at which a queue stood at or before {@code position}, which its start is the first of. */
-    private Checkpoint checkpointAt(final Queue queue, final long position) {
-        final Checkpoint from = follower.checkpointAt(queue.groupId(), position);
-        if (from == null) {
+    /** The number of the last run before which a queue stood at or before {@code position}. */
+    private long runAt(final Queue queue, final long position) {
+        final long from = follower.runAt(queue.groupId(), position);
+        if (from < 0) {
             throw new IllegalArgumentException("group " + queue.groupId() + "'s queue is not derived from " + position +
                                                ", before " + follower.queueStarts[queue.groupId() - 1]);
         }
         return from;
-    }
-
-    private long replayLog(final long logRecordingId, final long logPosition, final int commitCounterId) {
-        return archive.startBoundedReplay(logRecordingId, logPosition, AeronArchive.NULL_LENGTH, commitCounterId,
-                                          LOG_REPLAY_CHANNEL, LOG_REPLAY_STREAM_ID);
-    }
-
-    private Subscription logSubscription(final long sessionId) {
-        return aeron.addSubscription(ChannelUri.addSessionId(LOG_REPLAY_CHANNEL, (int)sessionId), LOG_REPLAY_STREAM_ID);
     }
 
     /** Starts the follower once the service has handed over its start and the log is being recorded. */
@@ -218,7 +264,7 @@ public final class DerivingReplayer implements Replayer {
             return;
         }
         try {
-            follower = new Follower(start, log[0], commitCounterId);
+            follower = new Follower(start, log, commitCounterId);
             recordAnnouncements();
         } catch (final RuntimeException ex) {
             Logger.info(Logger.CoreComponent.ReplayerService, memberId, "replays are not derived: %s", ex.toString());
@@ -258,18 +304,18 @@ public final class DerivingReplayer implements Replayer {
         }
     }
 
-    /** The id and the start position of the log's active recording, or null. */
+    /** The id, start position, term length and segment file length of the log's active recording, or null. */
     private long[] activeLogRecording() {
         final long[][] active = { null };
-        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", ConsensusModule.Configuration.logStreamId(),
-                                     (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
-                                      startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
-                                      mtuLength, sessionId, streamId, strippedChannel, originalChannel,
-                                      sourceIdentity) -> {
-                                         if (stopTimestamp == AeronArchive.NULL_TIMESTAMP) {
-                                             active[0] = new long[] { recordingId, startPosition };
-                                         }
-                                     });
+        archive.listRecordingsForUri(
+            0, Integer.MAX_VALUE, "", ConsensusModule.Configuration.logStreamId(),
+            (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp, startPosition, stopPosition,
+             initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
+             originalChannel, sourceIdentity) -> {
+                if (stopTimestamp == AeronArchive.NULL_TIMESTAMP) {
+                    active[0] = new long[] { recordingId, startPosition, termBufferLength, segmentFileLength };
+                }
+            });
         return active[0];
     }
 
@@ -332,36 +378,67 @@ public final class DerivingReplayer implements Replayer {
     private final class Follower implements Sequencer.FrameSink {
         private final int termLength;
         private final int mtu;
-        private final long logRecordingId;
+        /** The log's recording: its id, start position, term length and segment file length. */
+        private final long[] logRecording;
         private final int commitCounterId;
         private final List<Checkpoint> checkpoints = new ArrayList<>();
         private final long[] queuePositions;
         /** Where each queue's history starts: where the service created it, or where it was purged to. */
         private final long[] queueStarts;
-        private long logSessionId;
-        /** The log's replay, or null when the archive refused one. */
-        private Subscription log;
-        /** Whether the replay's image has been seen: once it has, its absence is the replay's end. */
-        private boolean attached;
-        private long resumeAtMs;
+        private final RecordingReader log;
         private final LogDeriver deriver = new LogDeriver(memberId, this);
-        private final ControlledFragmentAssembler entries =
-            new ControlledFragmentAssembler((buffer, offset, length, header) -> {
-                deriver.onLogEntry(buffer, offset, length);
-                return ControlledFragmentHandler.Action.CONTINUE;
-            });
-        /** Where the last whole entry applied ends in the log. */
-        private long entryEnd;
-        /**
-         * Ends a poll at the entry a checkpoint is due after: a poll's limit may fall inside an entry above the MTU.
-         */
-        private final ControlledFragmentHandler handler = (buffer, offset, length, header) -> {
-            entries.onFragment(buffer, offset, length, header);
-            if ((header.flags() & FrameDescriptor.END_FRAG_FLAG) == 0) {
-                return ControlledFragmentHandler.Action.CONTINUE;
+        /** The runs kept, and how many a purge has released before them: a run's number counts those. */
+        private final List<Run> runs = new ArrayList<>();
+        private long runsReleased;
+        private long runBytes;
+        /** Whether the last run is one a {@link LogDeriver} derives, which no run is kept behind. */
+        private boolean sequencedRun;
+        private final FramePredictor predictor = new FramePredictor();
+        private final SequencedHeaderDecoder queueHeader = new SequencedHeaderDecoder();
+        /** Of the last frame on each queue, and the groups a frame has reached. */
+        private final long[] groupSeqNos = new long[FrameLayer.MAX_GROUPS];
+        private int activeGroupMask;
+        /** The frames of the entry being applied, and where each queue stood before it. */
+        private final ExpandableArrayBuffer entryFrames = new ExpandableArrayBuffer();
+        private final IntArrayList entryFrameGroups = new IntArrayList();
+        private final IntArrayList entryFrameEnds = new IntArrayList();
+        private final long[] entryQueuePositions = new long[FrameLayer.MAX_GROUPS];
+        /** How many of the entry's frames the predictor has published, and whether one differed. */
+        private int predicted;
+        private boolean differed;
+        private final Sequencer.FrameSink comparison = new Sequencer.FrameSink() {
+            @Override
+            public void activate(final int[] groupIds) {
             }
-            entryEnd = header.position();
-            return checkpointDue() ? ControlledFragmentHandler.Action.BREAK : ControlledFragmentHandler.Action.CONTINUE;
+
+            @Override
+            public void publish(final int groupId, final DirectBuffer buffer, final int length) {
+                final int i = predicted++;
+                if (i >= entryFrameGroups.size() || entryFrameGroups.getInt(i) != groupId) {
+                    differed = true;
+                    return;
+                }
+                final int from = i == 0 ? 0 : entryFrameEnds.getInt(i - 1);
+                differed |= !Arrays.equals(entryFrames.byteArray(), from, entryFrameEnds.getInt(i), buffer.byteArray(),
+                                           0, length);
+            }
+        };
+        /** Where the last entry applied ends in the log. */
+        private long entryEnd;
+        /** Ends a poll at the entry a checkpoint is due after. */
+        private final RecordingReader.MessageHandler handler = (buffer, offset, length, endPosition) -> {
+            startEntry();
+            deriver.onLogEntry(buffer, offset, length);
+            if (!sequencedRun) {
+                predicted = 0;
+                differed = false;
+                predictor.onLogEntry(buffer, offset, length, -1, comparison);
+                if (differed || predicted != entryFrameGroups.size()) {
+                    addRun(entryEnd, endPosition);
+                }
+            }
+            entryEnd = endPosition;
+            return !checkpointDue();
         };
         /** The commit position when this started: its queue positions are no tip before it has derived that far. */
         private final long caughtUpAt;
@@ -369,10 +446,10 @@ public final class DerivingReplayer implements Replayer {
         /** The log between two checkpoints, which doubles each time they are thinned. */
         private long checkpointSpacing = checkpointLogBytes;
 
-        Follower(final DerivationStart start, final long logRecordingId, final int commitCounterId) {
+        Follower(final DerivationStart start, final long[] logRecording, final int commitCounterId) {
             this.termLength = start.termLength();
             this.mtu = start.mtu();
-            this.logRecordingId = logRecordingId;
+            this.logRecording = logRecording;
             this.commitCounterId = commitCounterId;
             this.queuePositions = start.queueStarts().clone();
             this.queueStarts = start.queueStarts().clone();
@@ -381,28 +458,56 @@ public final class DerivingReplayer implements Replayer {
             checkpoints.add(
                 new Checkpoint(start.logPosition(), start.state(), start.restored(), start.queueStarts().clone()));
             entryEnd = start.logPosition();
-            logSessionId = replayLog(logRecordingId, entryEnd, commitCounterId);
-            log = logSubscription(logSessionId);
-            resumeAtMs = delegate.monotonicMs() + CONNECT_TIMEOUT_MS;
+            log = logReader(entryEnd);
+            startEntry();
             deriver.restore(start.state(), start.restored());
+            addRun(entryEnd, entryEnd);
+        }
+
+        private void startEntry() {
+            entryFrameGroups.clear();
+            entryFrameEnds.clear();
+            System.arraycopy(queuePositions, 0, entryQueuePositions, 0, queuePositions.length);
+        }
+
+        /** Keeps a run behind the frames collected since {@link #startEntry}, from where the sequencer stands. */
+        private void addRun(final long logPosition, final long entriesFrom) {
+            final List<Frame> lead = new ArrayList<>(entryFrameGroups.size());
+            for (int i = 0, from = 0; i < entryFrameGroups.size(); from = entryFrameEnds.getInt(i++)) {
+                final byte[] bytes = new byte[entryFrameEnds.getInt(i) - from];
+                entryFrames.getBytes(from, bytes);
+                lead.add(new Frame(entryFrameGroups.getInt(i), bytes));
+            }
+            sequencedRun = entriesFrom > logPosition && runBytes > maxRunBytes;
+            runs.add(new Run(logPosition, entriesFrom, lead, entryQueuePositions.clone(), deriver.clusterSeqNo(),
+                             activeGroupMask, groupSeqNos.clone(), sequencedRun ? deriver.state() : null));
+            runBytes += runs.getLast().bytes();
+            predictor.restore(deriver.clusterSeqNo(), activeGroupMask, groupSeqNos);
+        }
+
+        /** The run of a number, or null if it is released or not kept yet. */
+        Run run(final long number) {
+            return number < runsReleased || number >= runsReleased + runs.size()
+                ? null
+                : runs.get((int)(number - runsReleased));
         }
 
         /**
-         * Replays the log again from the last entry applied. A replay ends when the consensus module stops the log's
-         * recording, as it does to extend it in an election.
+         * The number of the last run before which group {@code groupId}'s queue stood at or before {@code position}.
          */
-        private void resume() {
-            CloseHelper.quietClose(log);
-            log = null;
-            attached = false;
-            resumeAtMs = delegate.monotonicMs() + FOLLOW_RETRY_MS;
-            try {
-                logSessionId = replayLog(logRecordingId, entryEnd, commitCounterId);
-                log = logSubscription(logSessionId);
-            } catch (final ArchiveException ex) {
-                Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                            "the log's replay from %d is not resumed yet: %s", entryEnd, ex.getMessage());
+        long runAt(final int groupId, final long position) {
+            for (int i = runs.size() - 1; i >= 0; i--) {
+                if (runs.get(i).queuePositions()[groupId - 1] <= position) {
+                    return runsReleased + i;
+                }
             }
+            return -1;
+        }
+
+        /** A reader of the log's recording from an entry's start. */
+        RecordingReader logReader(final long position) {
+            return new RecordingReader(archiveDir, logRecording[0], logRecording[1], (int)logRecording[2],
+                                       (int)logRecording[3], position);
         }
 
         /** Whether the derivation has caught up with the log, so that where it has brought a queue is its tip. */
@@ -410,27 +515,23 @@ public final class DerivingReplayer implements Replayer {
             return caughtUp;
         }
 
-        /** The last checkpoint at which group {@code groupId}'s queue stood at or before {@code position}. */
-        Checkpoint checkpointAt(final int groupId, final long position) {
-            for (int i = checkpoints.size() - 1; i >= 0; i--) {
-                if (checkpoints.get(i).queuePositions()[groupId - 1] <= position) {
-                    return checkpoints.get(i);
-                }
-            }
-            return null;
-        }
-
         /** Moves a queue's start, and releases the checkpoints no replay can continue from any more. */
         void purge(final int groupId, final long newStart) {
             queueStarts[groupId - 1] = newStart;
-            while (checkpoints.size() > 1 && isBelowStarts(checkpoints.get(1))) {
+            while (checkpoints.size() > 1 && isBelowStarts(checkpoints.get(1).queuePositions())) {
                 checkpoints.removeFirst();
             }
+            int released = 0;
+            while (released + 1 < runs.size() && isBelowStarts(runs.get(released + 1).queuePositions())) {
+                runBytes -= runs.get(released++).bytes();
+            }
+            runs.subList(0, released).clear();
+            runsReleased += released;
         }
 
-        private boolean isBelowStarts(final Checkpoint checkpoint) {
+        private boolean isBelowStarts(final long[] positions) {
             for (int i = 0; i < queueStarts.length; i++) {
-                if (checkpoint.queuePositions()[i] > queueStarts[i]) {
+                if (positions[i] > queueStarts[i]) {
                     return false;
                 }
             }
@@ -452,23 +553,18 @@ public final class DerivingReplayer implements Replayer {
         }
 
         int doWork() {
-            final Image image = log == null ? null : log.imageBySessionId((int)logSessionId);
-            if (image == null) {
-                if (attached || delegate.monotonicMs() >= resumeAtMs) {
-                    resume();
-                }
-                return 0;
-            }
-            attached = true;
-            final int fragments = image.controlledPoll(handler, FOLLOW_FRAGMENT_LIMIT);
-            if (checkpointDue() && entryEnd == image.position()) {
+            final int entries =
+                log.poll(handler, aeron.countersReader().getCounterValue(commitCounterId), FOLLOW_ENTRY_LIMIT);
+            if (checkpointDue()) {
                 checkpoints.add(new Checkpoint(entryEnd, deriver.state(), false, queuePositions.clone()));
+                startEntry();
+                addRun(entryEnd, entryEnd); // so that a replay's first frame is no further off than from a checkpoint
                 if (checkpoints.size() > maxCheckpoints) {
                     thin();
                 }
             }
             caughtUp |= entryEnd >= caughtUpAt;
-            return fragments;
+            return entries;
         }
 
         @Override
@@ -479,42 +575,136 @@ public final class DerivingReplayer implements Replayer {
         public void publish(final int groupId, final DirectBuffer buffer, final int length) {
             final long start = QueuePositions.frameStart(queuePositions[groupId - 1], length, termLength, mtu);
             queuePositions[groupId - 1] = start + QueuePositions.framedLength(length, mtu);
+            groupSeqNos[groupId - 1] = queueHeader.wrap(buffer, MessageHeaderDecoder.ENCODED_LENGTH).groupSeqNo();
+            activeGroupMask |= 1 << (groupId - 1);
+            final int from = entryFrameEnds.isEmpty() ? 0 : entryFrameEnds.getInt(entryFrameEnds.size() - 1);
+            entryFrames.putBytes(from, buffer, 0, length);
+            entryFrameGroups.addInt(groupId);
+            entryFrameEnds.addInt(from + length);
         }
     }
 
-    /** One replay: the archive's replay of the log in, the requested queue's frames out. */
+    /**
+     * One group's frames from a run on: the run's own, then a {@link FramePredictor}'s for the log behind it, as far as
+     * the follower has compared them, or a {@link LogDeriver}'s where the run holds its state.
+     */
+    private final class RunWalker implements AutoCloseable {
+        private final int groupId;
+        private final Sequencer.FrameSink sink;
+        private final BooleanSupplier wantsMore;
+        private final FramePredictor predictor = new FramePredictor();
+        private LogDeriver deriver;
+        private final UnsafeBuffer leadFrame = new UnsafeBuffer();
+        private final RecordingReader log;
+        private long runNumber;
+        private Run run;
+        /** Where the next entry starts in the log. */
+        private long entryStart;
+        private boolean entered;
+        private final RecordingReader.MessageHandler handler = this::onLogEntry;
+
+        /**
+         * @param wantsMore whether the sink takes another entry's frames in this poll
+         */
+        RunWalker(final int groupId, final long runNumber, final Sequencer.FrameSink sink,
+                  final BooleanSupplier wantsMore) {
+            this.groupId = groupId;
+            this.runNumber = runNumber;
+            this.sink = sink;
+            this.wantsMore = wantsMore;
+            this.run = follower.run(runNumber);
+            this.entryStart = run.entriesFrom();
+            this.log = follower.logReader(entryStart);
+        }
+
+        /**
+         * @return the entries read
+         * @throws UncheckedIOException if the log is gone, or the runs below this were released
+         */
+        int poll(final int entryLimit) {
+            if (follower.run(runNumber) == null) {
+                throw new UncheckedIOException(new IOException("the queue is purged past the run"));
+            }
+            if (!entered) {
+                entered = true;
+                enter();
+                if (!wantsMore.getAsBoolean()) {
+                    return 1;
+                }
+            }
+            return log.poll(handler, follower.entryEnd, entryLimit);
+        }
+
+        private boolean onLogEntry(final DirectBuffer buffer, final int offset, final int length,
+                                   final long endPosition) {
+            for (Run next; (next = follower.run(runNumber + 1)) != null && next.logPosition() <= entryStart;) {
+                runNumber++;
+                run = next;
+                enter();
+            }
+            entryStart = endPosition;
+            if (endPosition > run.entriesFrom()) {
+                if (run.state() != null) {
+                    deriver.onLogEntry(buffer, offset, length);
+                } else {
+                    predictor.onLogEntry(buffer, offset, length, 1 << (groupId - 1), sink);
+                }
+            }
+            return wantsMore.getAsBoolean();
+        }
+
+        private void enter() {
+            for (final Frame frame : run.lead()) {
+                if (frame.groupId() == groupId) {
+                    leadFrame.wrap(frame.bytes());
+                    sink.publish(groupId, leadFrame, frame.bytes().length);
+                }
+            }
+            if (run.state() != null) {
+                if (deriver == null) {
+                    deriver = new LogDeriver(memberId, sink); // the sink takes its own group's frames alone
+                }
+                deriver.restore(run.state(), false);
+            } else {
+                predictor.restore(run.clusterSeqNo(), run.activeGroupMask(), run.groupSeqNos());
+            }
+        }
+
+        @Override
+        public void close() {
+            log.close();
+        }
+    }
+
+    /** One replay: the log's entries in, the requested queue's frames out. */
     private final class DerivedReplay implements Sequencer.FrameSink {
         private final Queue queue;
         private final long startPosition;
         private final long endPosition;
         /** Where the queue stands after the last frame derived, offered or pending or before the replay's start. */
         private long derivedPosition;
-        private final long logSessionId;
-        private final Subscription log;
+        private final RunWalker walker;
         private final ExclusivePublication publication;
-        private final LogDeriver deriver = new LogDeriver(memberId, this);
         /** The frames the publication has not taken yet. */
         private final ArrayDeque<byte[]> pending = new ArrayDeque<>();
         /** How much of the first pending frame is not to be published: a replay may start inside a fragmented one. */
         private int pendingOffset;
         private final UnsafeBuffer pendingBuffer = new UnsafeBuffer();
         private final BufferClaim claim = new BufferClaim();
-        private final ControlledFragmentHandler handler = new ControlledFragmentAssembler(this::onLogEntry);
         private final long connectDeadlineMs = delegate.monotonicMs() + CONNECT_TIMEOUT_MS;
         private boolean connected;
         private boolean started;
         private boolean closed;
 
-        DerivedReplay(final Queue queue, final Checkpoint from, final long startPosition, final long endPosition,
-                      final long logSessionId, final Subscription log, final ExclusivePublication publication) {
+        DerivedReplay(final Queue queue, final long from, final long startPosition, final long endPosition,
+                      final ExclusivePublication publication) {
             this.queue = queue;
             this.startPosition = startPosition;
             this.endPosition = endPosition;
-            this.derivedPosition = from.queuePositions()[queue.groupId() - 1];
-            this.logSessionId = logSessionId;
-            this.log = log;
+            this.derivedPosition = follower.run(from).queuePositions()[queue.groupId() - 1];
             this.publication = publication;
-            deriver.restore(from.state(), from.reemitMarker());
+            this.walker = new RunWalker(queue.groupId(), from, this,
+                                        () -> pending.isEmpty() && derivedPosition < this.endPosition && !closed);
         }
 
         int doWork() {
@@ -547,15 +737,14 @@ public final class DerivingReplayer implements Replayer {
                 close();
                 return work + 1;
             }
-            final Image image = log.imageBySessionId((int)logSessionId);
-            return image == null ? work : work + image.controlledPoll(handler, FRAGMENT_LIMIT);
-        }
-
-        private ControlledFragmentHandler.Action onLogEntry(final DirectBuffer buffer, final int offset,
-                                                            final int length, final Header header) {
-            deriver.onLogEntry(buffer, offset, length);
-            return pending.isEmpty() && derivedPosition < endPosition ? ControlledFragmentHandler.Action.CONTINUE
-                                                                      : ControlledFragmentHandler.Action.BREAK;
+            try {
+                return work + walker.poll(ENTRY_LIMIT);
+            } catch (final UncheckedIOException ex) {
+                Logger.info(Logger.CoreComponent.ReplayerService, memberId, "group %d's derived replay is closed: %s",
+                            queue.groupId(), ex.getMessage());
+                close();
+                return work;
+            }
         }
 
         @Override
@@ -643,51 +832,37 @@ public final class DerivingReplayer implements Replayer {
             }
             closed = true;
             pending.clear();
-            CloseHelper.quietCloseAll(publication, log);
-            try {
-                archive.stopReplay(logSessionId);
-            } catch (final RuntimeException ex) {
-                // the archive has ended it already
-            }
+            CloseHelper.quietCloseAll(publication, walker);
         }
     }
 
-    /** One scan: the queue's frames from a position, derived from a checkpoint at or before it. */
+    /** One scan: the queue's frames from a position, derived from a run at or before it. */
     private final class DerivedScan implements Sequencer.FrameSink {
         private final Queue queue;
         private final long fromPosition;
         private final long endPosition;
         private final FrameVisitor visitor;
-        private final LogDeriver deriver = new LogDeriver(memberId, this);
         private final SequencedFrameDecoder frame = new SequencedFrameDecoder();
         private long derivedPosition;
         private ScanEnd ended;
 
-        DerivedScan(final Queue queue, final Checkpoint from, final long fromPosition, final long endPosition,
+        DerivedScan(final Queue queue, final long from, final long fromPosition, final long endPosition,
                     final FrameVisitor visitor) {
             this.queue = queue;
             this.fromPosition = fromPosition;
             this.endPosition = endPosition;
             this.visitor = visitor;
-            this.derivedPosition = from.queuePositions()[queue.groupId() - 1];
-            deriver.restore(from.state(), from.reemitMarker());
+            this.derivedPosition = follower.run(from).queuePositions()[queue.groupId() - 1];
         }
 
         /** Reads the log until the scan ends, or delivers nothing for {@link #SCAN_STALL_TIMEOUT_MS}. */
-        ScanEnd run(final Subscription log, final int logSessionId) {
-            final ControlledFragmentHandler handler =
-                new ControlledFragmentAssembler((buffer, offset, length, header) -> {
-                    deriver.onLogEntry(buffer, offset, length);
-                    return ended == null ? ControlledFragmentHandler.Action.CONTINUE
-                                         : ControlledFragmentHandler.Action.BREAK;
-                });
+        ScanEnd run(final RunWalker log) {
             long deadlineMs = delegate.monotonicMs() + SCAN_STALL_TIMEOUT_MS;
             while (ended == null) {
                 if (derivedPosition >= endPosition) {
                     return ScanEnd.TIP;
                 }
-                final Image image = log.imageBySessionId(logSessionId);
-                if (image != null && image.controlledPoll(handler, FRAGMENT_LIMIT) > 0) {
+                if (log.poll(ENTRY_LIMIT) > 0) {
                     deadlineMs = delegate.monotonicMs() + SCAN_STALL_TIMEOUT_MS;
                 } else if (delegate.monotonicMs() > deadlineMs) {
                     return ScanEnd.STALLED;
@@ -735,16 +910,12 @@ public final class DerivingReplayer implements Replayer {
     public ScanEnd scanQueueRecording(final long recordingId, final long fromPosition, final long endPosition,
                                       final FrameVisitor visitor) {
         final Queue queue = queueOf(recordingId);
-        final Checkpoint from = checkpointAt(queue, fromPosition);
-        final long logSessionId = replayLog(follower.logRecordingId, from.logPosition(), follower.commitCounterId);
-        try (Subscription log = logSubscription(logSessionId)) {
-            return new DerivedScan(queue, from, fromPosition, endPosition, visitor).run(log, (int)logSessionId);
-        } finally {
-            try {
-                archive.stopReplay(logSessionId);
-            } catch (final RuntimeException ex) {
-                // the archive has ended it already
-            }
+        final long from = runAt(queue, fromPosition);
+        final DerivedScan scan = new DerivedScan(queue, from, fromPosition, endPosition, visitor);
+        try (RunWalker log = new RunWalker(queue.groupId(), from, scan, () -> scan.ended == null)) {
+            return scan.run(log);
+        } catch (final UncheckedIOException ex) {
+            return ScanEnd.UNREADABLE;
         }
     }
 

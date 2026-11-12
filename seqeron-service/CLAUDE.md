@@ -79,8 +79,9 @@ newest confirmed file whose records match its trailer once a replay from the fil
 a file from a purged log fails it — then resumes after the cut; an instance with no such file replays its queue from `groupSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
 
 **With `replayer.deriveFromLog` a member records no queue** (`doc/disk-load-plan.md`, step 2a; a prototype, off by
-default). Its Replayer is a `DerivingReplayer`, which derives each queue from the Raft log's recording through a
-`LogDeriver`, and a gateway host with the flag relays a member's log (`AeronLogRelay`, `LogRelay`) where it relays
+default). Its Replayer is a `DerivingReplayer`, which derives each queue from the Raft log's recording, read from the
+archive's segment files (`RecordingReader`): a `LogDeriver` follows the log once, and a replay rebuilds frames with a
+`FramePredictor` wherever the two agreed, and a gateway host with the flag relays a member's log (`AeronLogRelay`, `LogRelay`) where it relays
 queue recordings. Everything in this file describes the flag off; the plan lists what differs and the limits.
 
 ## The replay protocol — two sides, two namespaces

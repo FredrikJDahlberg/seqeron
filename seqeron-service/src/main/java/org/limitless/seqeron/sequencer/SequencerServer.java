@@ -443,7 +443,7 @@ public final class SequencerServer {
                 ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, topologyRows, fatalHandler,
                                       new CutIntake(cuts, safeLog, Long.getLong(PROP_SNAPSHOT_JOIN_MS,
                                                                                 DEFAULT_SNAPSHOT_JOIN_MS)),
-                                      replayerWrapper, derivationStart::get),
+                                      replayerWrapper, derivationStart::get, archiveDir),
                 safeLog, stopping, derivationStart::get);
         } catch (final RuntimeException ex) {
             CloseHelper.quietCloseAll(container, driver, safeLog);
