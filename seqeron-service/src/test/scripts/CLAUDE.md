@@ -38,7 +38,8 @@ and fails if a replacement stops its duty cycle.
 **The C# harnesses.** `csharp-client-test.sh` drives the C# client tier: `Seqeron.ClusterProbe`
 (`seqeron-client/src/test/csharp-probe`), the C# twin of the probe's `confirm` and `follow`, then the C# examples, its
 gateway pair through a handover, `SnapshotApp` restored from a round it confirmed, and last a `follow` that must fail
-on a member restarted at a cut. It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`.
+on a member restarted at a cut. It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`, once as
+is and once with `CSHARP_MEMBER_OPTS=-Dreplayer.deriveFromLog=true`, on members that record no queue.
 `csharp-windows-test.sh` runs the same C# client on Windows, where it is deployed: one member in WSL1 (three elect
 without end there) and the C# clients beside a gateway host on Windows, on one `windows-latest` runner (CI's
 `windows.yml`). The C++ client is the hosted stub, driven by the `Hosted*Test` system tests through the probes in `seqeron-client/src/test/cpp-probe` when `HOSTED_PROBE` names `hosted_probe`.
