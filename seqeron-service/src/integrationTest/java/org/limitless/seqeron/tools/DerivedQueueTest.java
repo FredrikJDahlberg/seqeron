@@ -136,7 +136,7 @@ class DerivedQueueTest {
         cluster.startAll(1, 0);
         final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
         final long until;
-        try (ConfirmProducer producer = new ConfirmProducer(cluster.aeronDir(member), member, 30_000, PACING_NS)) {
+        try (ConfirmProducer producer = new ConfirmProducer(cluster.aeronDir(member), member, 60_000, PACING_NS)) {
             while (!producer.isDrained() && !producer.isStalled()) {
                 producer.doWork();
                 Tests.yield();
