@@ -90,7 +90,11 @@ class ReplaySlotsTest {
             for (int i = 0; i < 4; i++) {
                 final Client holder = new Client(aeron);
                 holders.add(holder);
-                assertEquals(ReplayingDecoder.TEMPLATE_ID, holder.ask(), "holder " + i + " is served");
+                if (i == 0) {
+                    holder.askUntilServed(); // a Replayer that derives its queues is not ready before it has
+                } else {
+                    assertEquals(ReplayingDecoder.TEMPLATE_ID, holder.ask(), "holder " + i + " is served");
+                }
                 holder.attach(); // and never reads it
             }
             final Client fifth = new Client(aeron);
@@ -122,7 +126,11 @@ class ReplaySlotsTest {
             for (int i = 0; i < 4; i++) {
                 final Client holder = new Client(aeron);
                 clients.add(holder);
-                assertEquals(ReplayingDecoder.TEMPLATE_ID, holder.ask(), "holder " + i + " is served");
+                if (i == 0) {
+                    holder.askUntilServed(); // a Replayer that derives its queues is not ready before it has
+                } else {
+                    assertEquals(ReplayingDecoder.TEMPLATE_ID, holder.ask(), "holder " + i + " is served");
+                }
                 holder.attach(); // and stops reading, its client alive
             }
             final Client fifth = new Client(aeron);
@@ -138,6 +146,7 @@ class ReplaySlotsTest {
     @Test
     @InterruptAfter(60)
     void eachQueuesBacklogIsFoundInItsMembersCountersAgainstItsOwnRecording() {
+        InProcessCluster.assumeMembersRecordQueues();
         final int member = cluster.awaitLeader();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
              AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()

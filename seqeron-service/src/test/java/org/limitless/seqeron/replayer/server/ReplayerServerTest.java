@@ -1,6 +1,7 @@
 package org.limitless.seqeron.replayer.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -111,5 +112,15 @@ class ReplayerServerTest {
     void anAeronDirectoryTheDriverHasYetToCreateIsOnItsParentsFileSystem(@TempDir final Path parent)
         throws IOException {
         assertEquals(Files.getFileStore(parent).type(), NodeDriver.fileSystemType(parent.resolve("aeron/node-0")));
+    }
+
+    @Test
+    void writebackIsDefaultOnlyWhileBothTimersAreTheKernels(@TempDir final Path vmDir) throws IOException {
+        Files.writeString(vmDir.resolve("dirty_expire_centisecs"), "3000\n");
+        Files.writeString(vmDir.resolve("dirty_writeback_centisecs"), "500\n");
+        assertTrue(NodeDriver.isDefaultWriteback(vmDir));
+
+        Files.writeString(vmDir.resolve("dirty_expire_centisecs"), "50\n");
+        assertFalse(NodeDriver.isDefaultWriteback(vmDir));
     }
 }

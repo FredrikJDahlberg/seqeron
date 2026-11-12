@@ -114,6 +114,11 @@ final class FaultableReplayer implements Replayer {
     }
 
     @Override
+    public int doWork() {
+        return delegate.doWork();
+    }
+
+    @Override
     public String pollArchive() {
         return delegate.pollArchive();
     }

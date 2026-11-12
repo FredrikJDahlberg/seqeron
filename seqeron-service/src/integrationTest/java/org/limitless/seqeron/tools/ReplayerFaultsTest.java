@@ -63,6 +63,10 @@ class ReplayerFaultsTest {
         cluster.startAll();
         member = cluster.awaitLeader();
         replayer = cluster.replayer(member);
+        // A request before the Replayer is ready is answered ReplayPending, which these tests read as a fault's.
+        try (Aeron aeron = aeron()) {
+            awaitCounterAbove(aeron, SeqeronCounters.REPLAYER_READY_TYPE_ID, 0);
+        }
     }
 
     @AfterEach

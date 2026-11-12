@@ -1,11 +1,13 @@
 package org.limitless.seqeron.sequencer;
 
+import io.aeron.ChannelUri;
 import io.aeron.ChannelUriStringBuilder;
 import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
 import io.aeron.FragmentAssembler;
 import io.aeron.Image;
 import io.aeron.Publication;
+import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.client.ArchiveException;
 import io.aeron.archive.codecs.SourceLocation;
@@ -15,6 +17,7 @@ import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
+import io.aeron.logbuffer.BlockHandler;
 import io.aeron.logbuffer.Header;
 import io.aeron.protocol.DataHeaderFlyweight;
 import java.nio.file.Files;
@@ -22,6 +25,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
 import org.agrona.BitUtil;
 import org.agrona.CloseHelper;
@@ -34,6 +38,7 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.replayer.server.CutHandover;
 import org.limitless.seqeron.replayer.server.DefaultQueueRows;
+import org.limitless.seqeron.replayer.server.DerivationStart;
 import org.limitless.seqeron.replayer.server.NodeDriver;
 import org.limitless.seqeron.replayer.server.RestartSafeLog;
 import org.limitless.seqeron.sbe.sequencer.SequencerStateDecoder;
@@ -60,7 +65,7 @@ public final class SequencerService implements ClusteredService {
     private static final String QUEUE_FAULT_TRIGGER_FILE = "queue-stall-fault";
 
     /** Correlation id of the one repeating heartbeat timer; rescheduling it moves its deadline. */
-    private static final long HEARTBEAT_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
+    static final long HEARTBEAT_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
 
     /** Where a restored queue's publication starts in its term ids; any value serves, positions being what count. */
     private static final int INITIAL_TERM_ID = 0;
@@ -85,6 +90,7 @@ public final class SequencerService implements ClusteredService {
     /** This member's record of its snapshots, and where the cuts it takes are handed to its Replayer. */
     private final RestartSafeLog safeLog;
     private final Queue<CutHandover> cuts;
+    private final AtomicReference<DerivationStart> derivationStart;
 
     /** The term length and MTU the node publishes its queues with, which a restored queue must match to keep its positions. */
     private final int nodeTermLength;
@@ -104,6 +110,15 @@ public final class SequencerService implements ClusteredService {
 
     // Each group's queue, slot groupId - 1; null until activation opens it.
     private final ExclusivePublication[] queuePubs = new ExclusivePublication[FrameLayer.MAX_GROUPS];
+
+    private static final BlockHandler DISCARD = (buffer, offset, length, sessionId, termId) -> { };
+
+    /** Whether the archive records each queue; else this drains it, and its history is derived from the log. */
+    private final boolean recordQueues;
+    // Each unrecorded queue's own subscriber, slot groupId - 1: it keeps the queue connected, so that every offer
+    // lands and the queue's positions are the ones the log gives.
+    private final Subscription[] queueDrainSubs = new Subscription[FrameLayer.MAX_GROUPS];
+    private final Image[] queueDrains = new Image[FrameLayer.MAX_GROUPS];
 
     // Queue recording liveness, slot groupId - 1
     private final int[] queueRecordingCounterIds = new int[FrameLayer.MAX_GROUPS];
@@ -133,19 +148,25 @@ public final class SequencerService implements ClusteredService {
      *                       queue. Must not block: it signals a shutdown and returns.
      * @param safeLog        this member's {@code restart-safe.log}
      * @param cuts           receives each cluster snapshot this member takes, for its Replayer
+     * @param derivationStart receives where this service starts, for its Replayer
      * @param nodeTermLength the IPC term length of the node's driver, which its queues are published with
      * @param nodeMtu        the IPC MTU of the node's driver
      * @param stallTimeoutMs how long a queue's recording may make no progress under back-pressure before this node
      *                       terminates
+     * @param recordQueues   whether the archive records each queue; false when the Replayer derives a queue's history
+     *                       from the log (doc/disk-load-plan.md, step 2a)
      */
     public SequencerService(final int memberId, final AeronArchive.Context archiveContext,
                             final Queue<byte[]> topologyRows, final Runnable fatalHandler, final RestartSafeLog safeLog,
-                            final Queue<CutHandover> cuts, final int nodeTermLength, final int nodeMtu,
-                            final long stallTimeoutMs) {
+                            final Queue<CutHandover> cuts, final AtomicReference<DerivationStart> derivationStart,
+                            final int nodeTermLength, final int nodeMtu, final long stallTimeoutMs,
+                            final boolean recordQueues) {
+        this.recordQueues = recordQueues;
         this.queue = new QueuePublisher(new QueueActions(), TimeUnit.MILLISECONDS.toNanos(stallTimeoutMs));
         this.topologyRows = topologyRows;
         this.safeLog = safeLog;
         this.cuts = cuts;
+        this.derivationStart = derivationStart;
         this.nodeTermLength = nodeTermLength;
         this.nodeMtu = nodeMtu;
         this.rows = new DefaultQueueRows(topologyRows::add);
@@ -194,6 +215,9 @@ public final class SequencerService implements ClusteredService {
                 throw refuseStart("[SequencerService] Refusing to start from the snapshot: " + ex + ". Invalidate it "
                                   + "with clusterctl invalidate-latest-snapshot to start from the one before.");
             }
+        } else {
+            derivationStart.set(new DerivationStart(0, new LogDeriver.State(List.of(), new long[0]), false,
+                                                    new long[FrameLayer.MAX_GROUPS], nodeTermLength, nodeMtu));
         }
     }
 
@@ -229,18 +253,29 @@ public final class SequencerService implements ClusteredService {
             throw failure[0];
         }
         updateCounters();
+        final LogDeriver.State restored = LogDeriver.stateOf(
+            sequencer, cluster.clientSessions().stream().mapToLong(ClientSession::id).toArray());
+        final long[] queueStarts = new long[FrameLayer.MAX_GROUPS];
         if (sequencer.isActive()) {
             final int[] groupIds = sequencer.activeGroups();
             rows.onActivate(groupIds);
             sequencer.replayTopologyRows(topologyRows::add);
-            queue.activate(groupIds, groupId -> QueueStart.decide(
-                true, sequencer.markerPosition(groupId), sequencer.queueTermLength(groupId),
-                sequencer.queueMtu(groupId), nodeTermLength, nodeMtu));
+            queue.activate(groupIds, groupId -> {
+                final QueueStart.Decision start =
+                    QueueStart.decide(true, sequencer.markerPosition(groupId), sequencer.queueTermLength(groupId),
+                                      sequencer.queueMtu(groupId), nodeTermLength, nodeMtu);
+                queueStarts[groupId - 1] = start.position();
+                return start;
+            });
             for (final int groupId : groupIds) {
-                purgeOlderRecordings(groupId);
+                if (recordQueues) {
+                    purgeOlderRecordings(groupId);
+                }
             }
             sequencer.reemitMarker();
         }
+        derivationStart.set(
+            new DerivationStart(cluster.logPosition(), restored, true, queueStarts, nodeTermLength, nodeMtu));
         Logger.info(Logger.CoreComponent.SequencerService, memberId,
                     "restored the Sequencer at clusterSeqNo=%d, round %d", sequencer.clusterSeqNo(),
                     sequencer.snapshotRound());
@@ -396,7 +431,7 @@ public final class SequencerService implements ClusteredService {
      * waits for activation, before which there is no queue.
      */
     private void injectQueueRecordingFault() {
-        if (queueFaultTrigger == null || !Files.exists(queueFaultTrigger)) {
+        if (queueFaultTrigger == null || !recordQueues || !Files.exists(queueFaultTrigger)) {
             return;
         }
         for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
@@ -551,6 +586,7 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onTerminate(final Cluster cluster) {
+        CloseHelper.quietCloseAll(queueDrainSubs);
         CloseHelper.quietCloseAll(queuePubs);
         CloseHelper.quietClose(aeronArchive);
         closeCounters();
@@ -583,11 +619,21 @@ public final class SequencerService implements ClusteredService {
                       .build()
                 : FrameLayer.QUEUE_CHANNEL;
             queuePubs[groupId - 1] = cluster.context().aeron().addExclusivePublication(channel, streamId);
-            aeronArchive.startRecording(FrameLayer.QUEUE_CHANNEL, streamId, SourceLocation.LOCAL);
+            if (recordQueues) {
+                aeronArchive.startRecording(FrameLayer.QUEUE_CHANNEL, streamId, SourceLocation.LOCAL);
+            } else {
+                queueDrainSubs[groupId - 1] = cluster.context().aeron().addSubscription(
+                    ChannelUri.addSessionId(FrameLayer.QUEUE_CHANNEL, queuePubs[groupId - 1].sessionId()), streamId);
+            }
         }
 
         @Override
         public boolean attachRecording(final int groupId) {
+            if (!recordQueues) {
+                queueDrains[groupId - 1] =
+                    queueDrainSubs[groupId - 1].imageBySessionId(queuePubs[groupId - 1].sessionId());
+                return queueDrains[groupId - 1] != null;
+            }
             final int counterId = RecordingPos.findCounterIdBySession(
                 counters, queuePubs[groupId - 1].sessionId(), aeronArchive.archiveId());
             if (counterId == CountersReader.NULL_COUNTER_ID) {
@@ -600,7 +646,14 @@ public final class SequencerService implements ClusteredService {
 
         @Override
         public long offerFrame(final int groupId, final DirectBuffer buffer, final int length) {
-            return queuePubs[groupId - 1].offer(buffer, 0, length);
+            final long result = queuePubs[groupId - 1].offer(buffer, 0, length);
+            if (!recordQueues && result > 0) {
+                final Image drain = queueDrains[groupId - 1];
+                while (drain.position() < result && !drain.isClosed()) {
+                    drain.blockPoll(DISCARD, Integer.MAX_VALUE); // a block ends with its term
+                }
+            }
+            return result;
         }
 
         @Override
@@ -626,11 +679,17 @@ public final class SequencerService implements ClusteredService {
 
         @Override
         public boolean recordingActive(final int groupId) {
+            if (!recordQueues) {
+                return !queueDrains[groupId - 1].isClosed();
+            }
             return RecordingPos.isActive(counters, queueRecordingCounterIds[groupId - 1], queueRecordingIds[groupId - 1]);
         }
 
         @Override
         public long recordedPosition(final int groupId) {
+            if (!recordQueues) {
+                return queueDrains[groupId - 1].position();
+            }
             return counters.getCounterValue(queueRecordingCounterIds[groupId - 1]);
         }
 

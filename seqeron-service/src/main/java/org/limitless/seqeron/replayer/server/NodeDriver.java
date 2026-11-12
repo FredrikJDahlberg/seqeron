@@ -41,9 +41,6 @@ public final class NodeDriver {
     /** {@link AeronQueueRelay}'s session with a member's archive. */
     static final int RELAY_ARCHIVE_RESPONSE_STREAM_ID = 122;
 
-    /** {@code clusterctl trim-log}'s session with a member's archive. */
-    public static final int CLUSTERCTL_ARCHIVE_RESPONSE_STREAM_ID = 123;
-
     /** IPC term length when {@code aeron.ipc.term.buffer.length} is not set, rather than Aeron's 64 MiB. */
     private static final int DEFAULT_IPC_TERM_BUFFER_LENGTH = 16 * 1024 * 1024;
 
@@ -165,6 +162,37 @@ public final class NodeDriver {
         } catch (final IOException ex) {
             // The file system cannot be read; nothing to warn about.
         }
+    }
+
+    /**
+     * Warns, on Linux, when the kernel's writeback timers are its defaults: it then flushes about 30 s of dirty
+     * archive data at once, and a recorder write waiting behind the flush stops the member's commits
+     * (doc/ec2-tests.md, "Archive writes on EBS").
+     * @param component who is launching the member
+     * @param memberId  its node id
+     */
+    public static void warnIfDefaultWriteback(final Logger.Component component, final int memberId) {
+        if (!SystemUtil.isLinux()) {
+            return;
+        }
+        try {
+            if (isDefaultWriteback(Path.of("/proc/sys/vm"))) {
+                Logger.log(component, Logger.Severity.Warn, Logger.CoreEventCode.Info, memberId,
+                           "vm.dirty_expire_centisecs and vm.dirty_writeback_centisecs are the kernel's defaults: "
+                               + "its writeback bursts can stall the Raft log's recording — set them to 50 and 20");
+            }
+        } catch (final IOException | NumberFormatException ex) {
+            // The settings cannot be read; nothing to warn about.
+        }
+    }
+
+    /**
+     * Whether both writeback timers are the kernel's defaults, 30 s and 5 s.
+     * @param vmDir the kernel's {@code vm} settings, {@code /proc/sys/vm}
+     */
+    static boolean isDefaultWriteback(final Path vmDir) throws IOException {
+        return Integer.parseInt(Files.readString(vmDir.resolve("dirty_expire_centisecs")).trim()) == 3000 &&
+            Integer.parseInt(Files.readString(vmDir.resolve("dirty_writeback_centisecs")).trim()) == 500;
     }
 
     /**

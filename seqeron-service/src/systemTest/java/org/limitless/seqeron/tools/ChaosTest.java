@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.replayer.server.ReplayerServer;
 
 /**
  * A randomized fault loop against a live three-member cluster with a consumer replica on every
@@ -55,6 +56,8 @@ class ChaosTest {
     private static final long DRIVER_LOSS_GRACE_SECS = 15;
     private static final long MARK_FILE_SETTLE_SECS = 12;
     private static final long QUEUE_STALL_DEADLINE_SECS = 10;
+    private static final boolean DERIVED = Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG);
+    private static final String DELIVERED = "frames delivered in order:";
 
     @TempDir
     Path baseDir;
@@ -139,7 +142,8 @@ class ChaosTest {
     private static List<Fault> menu() {
         final String only = System.getenv("ONLY_FAULT");
         if (only == null || only.isEmpty()) {
-            return List.of(Fault.values());
+            // A member that derives its queues has no queue recording to stop.
+            return Stream.of(Fault.values()).filter(f -> !DERIVED || f != Fault.QUEUE_STALL).toList();
         }
         return List.of(Fault.valueOf(only.replaceFirst("^fault_", "").replace('-', '_').toUpperCase()));
     }
@@ -436,6 +440,9 @@ class ChaosTest {
             replica.stop();
         }
         sleep(3);
+        if (DERIVED) {
+            return verifyDerived();
+        }
         // Frozen so the 1 Hz heartbeat cannot land between the dumps, which are not atomic.
         final List<ClusterProcesses.Child> paused = new ArrayList<>();
         final long[] highWater = new long[ClusterProcesses.MEMBERS];
@@ -456,6 +463,42 @@ class ChaosTest {
         assertTrue(highWater[0] == highWater[1] && highWater[1] == highWater[2],
                    "nodes diverged: high-water " + highWater[0] + " / " + highWater[1] + " / " + highWater[2]);
         return "all 3 nodes recorded groupSeqNo 1.." + highWater[0];
+    }
+
+    /**
+     * With no queue recording to dump: a replica cold-started on each member replays its queue from groupSeqNo 1
+     * off the Replayer, and all must deliver the same number of frames in order.
+     */
+    private String verifyDerived() {
+        final ClusterProcesses.Child[] cold = new ClusterProcesses.Child[ClusterProcesses.MEMBERS];
+        final long[] delivered = new long[ClusterProcesses.MEMBERS];
+        for (int m = 0; m < ClusterProcesses.MEMBERS; m++) {
+            cold[m] = cluster.probe("cold-" + m, m, "follow", "probe.clientId=9");
+        }
+        for (int m = 0; m < ClusterProcesses.MEMBERS; m++) {
+            cold[m].awaitLine("Caught up", scaled(180));
+        }
+        // Frozen so the 1 Hz heartbeat cannot land between the counts. A replica reports before it closes its client.
+        try {
+            for (int m = 0; m < ClusterProcesses.MEMBERS; m++) {
+                cluster.memberLog(m).pause();
+            }
+            sleep(1);
+            for (int m = 0; m < ClusterProcesses.MEMBERS; m++) {
+                cold[m].signal("TERM");
+            }
+            for (int m = 0; m < ClusterProcesses.MEMBERS; m++) {
+                cold[m].awaitLine(DELIVERED, scaled(30));
+                delivered[m] = Long.parseLong(cold[m].lastLine(DELIVERED).replaceAll(".*" + DELIVERED, "").trim());
+            }
+        } finally {
+            for (int m = 0; m < ClusterProcesses.MEMBERS; m++) {
+                cluster.memberLog(m).resume();
+            }
+        }
+        assertTrue(delivered[0] > 0 && delivered[0] == delivered[1] && delivered[1] == delivered[2],
+                   "replicas diverged: delivered " + delivered[0] + " / " + delivered[1] + " / " + delivered[2]);
+        return "all 3 nodes served " + delivered[0] + " frames in order";
     }
 
     private static long highWater(final int m, final Path dump) throws IOException {

@@ -158,7 +158,7 @@ each stream. An alias changes no matching: IPC publications and subscriptions ma
 | alias | streams |
 |---|---|
 | `seqeron-queue` | the queues, 2000 + `groupId` (2001–2016) |
-| `seqeron-replay` | the replay protocol, 201–203, and the Replayer's own replays, 204 and 207 |
+| `seqeron-replay` | the replay protocol, 201–203, and the Replayer's own replays, 204 and 207, and a log trim's request and answer, 208 and 209 |
 | `seqeron-archive` | archive control, 100, and its responses: 120–122 in a member or gateway host |
 | `seqeron-ingress` | a co-located producer's cluster ingress, 101 |
 
@@ -318,7 +318,11 @@ attached to a member's driver uses that driver's IPC term length and sets none o
 - 2 × peak bytes per second × the longest stall to absorb. The window is the room a stalled consumer has.
   The archive is the queue's one tethered consumer, so a recorder stall longer than window / rate
   back-pressures the sequencer; an untethered queue subscriber that falls a window behind is dropped and
-  heals through replay. At 16 MiB the queue's window is 8 MiB: 0.4 s at 20 MB/s.
+  heals through replay. At 16 MiB the queue's window is 8 MiB: 0.4 s at 20 MB/s. A shorter recorder stall still
+  stops the sequencer, by another path: the same thread records the Raft log, and a member commits and reads
+  no further than its own log recording (`ec2-tests.md`, "Archive writes on EBS"). No term length absorbs that.
+`vm.dirty_expire_centisecs=50` and `vm.dirty_writeback_centisecs=20` keep each kernel flush small, and a
+member on Linux whose two timers are the kernel's defaults warns at start.
 
 Two things keep the recorder inside the window. Every log buffer is a memory-mapped file in the driver's
 Aeron directory, so on Linux it belongs on tmpfs, such as `/dev/shm`: on a disk, writing back its dirty pages

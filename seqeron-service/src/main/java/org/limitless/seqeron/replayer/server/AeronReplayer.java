@@ -45,6 +45,8 @@ public final class AeronReplayer implements Replayer {
     private final int memberId;
     private final ExclusivePublication controlPub;
     private final Subscription requestSub;
+    /** A member's log trim, which runs on this thread, or null. */
+    private final LogTrimmer trimmer;
 
     /** The counter {@link #recordingPosition} last found, while it still counts that recording. */
     private int recordingCounterId = CountersReader.NULL_COUNTER_ID;
@@ -53,11 +55,21 @@ public final class AeronReplayer implements Replayer {
     private final Long2LongHashMap replayCounterIds = new Long2LongHashMap(CountersReader.NULL_COUNTER_ID);
 
     public AeronReplayer(final Aeron aeron, final AeronArchive archive, final int memberId) {
+        this(aeron, archive, memberId, null);
+    }
+
+    AeronReplayer(final Aeron aeron, final AeronArchive archive, final int memberId, final LogTrimmer trimmer) {
+        this.trimmer = trimmer;
         this.aeron = aeron;
         this.archive = archive;
         this.memberId = memberId;
         this.controlPub = aeron.addExclusivePublication(ReplayProtocol.IPC_CHANNEL, ReplayProtocol.CONTROL_STREAM_ID);
         this.requestSub = aeron.addSubscription(ReplayProtocol.IPC_CHANNEL, ReplayProtocol.REQUEST_STREAM_ID);
+    }
+
+    @Override
+    public int doWork() {
+        return trimmer == null ? 0 : trimmer.doWork();
     }
 
     @Override

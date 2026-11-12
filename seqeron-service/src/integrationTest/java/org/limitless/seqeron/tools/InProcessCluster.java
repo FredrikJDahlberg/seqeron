@@ -5,6 +5,7 @@ import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.ElectionState;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.test.Tests;
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Collections;
@@ -21,10 +22,12 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.MutableLong;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
+import org.junit.jupiter.api.Assumptions;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
+import org.limitless.seqeron.replayer.server.DerivationStart;
 import org.limitless.seqeron.replayer.server.RelayedCut;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredEncoder;
@@ -248,6 +251,11 @@ final class InProcessCluster implements AutoCloseable {
         }
     }
 
+    /** Where member {@code m}'s service started, as its Replayer is handed it. */
+    DerivationStart derivationStart(final int m) {
+        return nodes.get(m).derivationStart();
+    }
+
     boolean isRunning(final int m) {
         return nodes.get(m) != null;
     }
@@ -292,6 +300,17 @@ final class InProcessCluster implements AutoCloseable {
     /** Member {@code m}'s Aeron directory, or the gateway host's for {@link #GATEWAY_HOST}. */
     String aeronDir(final int m) {
         return baseDir.resolve("aeron-" + m).toString();
+    }
+
+    /** Member {@code m}'s archive directory. */
+    File archiveDir(final int m) {
+        return baseDir.resolve("archive-" + m).toFile();
+    }
+
+    /** Skips a test of a member's queue recording when the suite runs members that record none (-PderiveFromLog). */
+    static void assumeMembersRecordQueues() {
+        Assumptions.assumeFalse(Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG),
+                                "members record no queue with " + ReplayerServer.PROP_DERIVE_FROM_LOG);
     }
 
     /** Each running member's driver directory, and the gateway host's if launched, by name. */

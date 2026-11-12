@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -39,6 +40,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SystemFrame;
+import org.limitless.seqeron.replayer.server.Replayer;
+import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /**
@@ -58,15 +61,19 @@ class ClusterSnapshotTest {
     private InProcessCluster cluster;
     private Boolean gatewayRow;
     private String joinMs;
+    private String deriveFromLog;
 
     @BeforeEach
     void remember() {
+        // Each test here sets the flag it runs with, whatever the suite's.
+        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         joinMs = System.getProperty(JOIN_PROPERTY);
         watcher.dataCollector().add(baseDir);
     }
 
     @AfterEach
     void stopCluster() {
+        restoreProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
         if (cluster != null) {
             cluster.close();
         }
@@ -620,6 +627,253 @@ class ClusterSnapshotTest {
     private long memberStart(final int m) {
         return QueueFrames.recordings(cluster.aeronDir(m), InProcessCluster.GROUP_ID)
             .stream().filter(QueueFrames.Span::active).findFirst().orElseThrow().startPosition();
+    }
+
+    /**
+     * Where member {@code m}'s Replayer has group 1's queue start, or -1 while it lists none. Read off its thread,
+     * which a wait that polls it can afford.
+     */
+    private long listedStart(final int m) {
+        final List<Replayer.RecordingSpan> spans = cluster.replayer(m).listQueueRecordings(InProcessCluster.GROUP_ID);
+        return spans.isEmpty() ? -1 : spans.getFirst().startPosition();
+    }
+
+    /** The newest snapshot file a gateway instance has confirmed, or null. */
+    private String newestSnapshot() throws IOException {
+        final Path directory = baseDir.resolve("gateway-snapshots");
+        if (!Files.isDirectory(directory)) {
+            return null;
+        }
+        try (Stream<Path> files = Files.list(directory)) {
+            return files.map(file -> file.getFileName().toString())
+                .filter(name -> name.endsWith(".snapshot"))
+                .max((a, b) -> a.length() != b.length() ? a.length() - b.length() : a.compareTo(b))
+                .orElse(null);
+        }
+    }
+
+    private void awaitNewerSnapshot() throws IOException {
+        final String newest = newestSnapshot();
+        for (int i = 0; i < 600 && Objects.equals(newest, newestSnapshot()); i++) {
+            Tests.sleep(50);
+        }
+        assertFalse(Objects.equals(newest, newestSnapshot()), "the gateway confirmed no further snapshot in 30 s");
+    }
+
+    @Test
+    @InterruptAfter(180)
+    void aGatewayRestartedOnAMemberThatRecordsNoQueueRestoresItsSnapshotOffTheLog() throws Exception {
+        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
+        aGatewayRestartedOnItsMemberRestoresItsConfirmedSnapshotAndCatchesUp();
+    }
+
+    @Test
+    @InterruptAfter(180)
+    void aMemberThatRecordsNoQueueRestartsAtItsCutAndAGatewayRestoresOnIt() throws Exception {
+        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
+        gatewayRow = true;
+        start("200", 1);
+        final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
+        final int other = (member + 1) % InProcessCluster.MEMBERS;
+        // The gateway runs on another member throughout, so its newest file is of a cut the restarted member holds.
+        try (GatewayInstance gateway = new GatewayInstance(other)) {
+            gateway.awaitCaughtUp();
+            awaitSafe(member);
+            assertEquals(0, listedStart(member), "the queue starts at its first frame before the restart");
+            cluster.stop(member);
+            cluster.start(member);
+            for (int i = 0; i < 600 && listedStart(member) <= 0; i++) {
+                Tests.sleep(50);
+            }
+            assertTrue(listedStart(member) > 0, "the restarted member's queue does not start at a cut");
+            // Two, since the first may be of a round cut before the one the member restarted at.
+            awaitNewerSnapshot();
+            awaitNewerSnapshot();
+        }
+
+        try (GatewayInstance restarted = new GatewayInstance(member)) {
+            restarted.awaitCaughtUp();
+            assertNull(restarted.failure.get(), "doWork threw");
+            assertEquals(1, restarted.restored.get(), "it restored its snapshot's one record");
+        }
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+        assertFalse(cluster.terminated(), "a member terminated");
+    }
+
+    @Test
+    @InterruptAfter(240)
+    void aMemberThatRecordsNoQueueMovesItsStartToTheCutsItsGatewayConfirmsAndServesFromThere() throws Exception {
+        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
+        final String term = setProperty(TERM_PROPERTY, String.valueOf(SMALL_SEGMENT));
+        try {
+            gatewayRow = true;
+            start("200", 1);
+            final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
+            try (GatewayInstance gateway = new GatewayInstance(member);
+                 ConfirmProducer producer =
+                     new ConfirmProducer(cluster.aeronDir(member), member, 1_500, 5_000_000, 1_000)) {
+                gateway.awaitCaughtUp();
+                while (!producer.isDrained() && !producer.isStalled()) {
+                    producer.doWork();
+                    Tests.yield();
+                }
+                assertTrue(producer.isDrained(), "the producer did not drain");
+                for (int i = 0; i < 1200 && listedStart(member) <= 0; i++) {
+                    Tests.sleep(50);
+                }
+            }
+            final long start = listedStart(member);
+            assertTrue(start > 0, "the queue still starts at 0");
+            assertEquals(0, start % SMALL_SEGMENT, "and its start moves a term at a time");
+
+            try (GatewayInstance restarted = new GatewayInstance(member)) {
+                restarted.awaitCaughtUp();
+                assertNull(restarted.failure.get(), "doWork threw");
+                assertEquals(1, restarted.restored.get(), "it restored its snapshot's one record");
+            }
+            assertFalse(cluster.fatal(), "a member raised a fatal");
+            assertFalse(cluster.terminated(), "a member terminated");
+        } finally {
+            restoreProperty(TERM_PROPERTY, term);
+        }
+    }
+
+    @Test
+    @InterruptAfter(180)
+    void aGatewayHostThatDerivesItsQueuesReportsEachMarkerAtItsStartInItsOwnRecording() throws Exception {
+        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
+        aGatewayHostRelayReportsEachMarkerAtItsStartInTheHostsOwnRecording();
+    }
+
+    @Test
+    @InterruptAfter(240)
+    void aGatewayHostThatDerivesItsQueuesPurgesThemBelowTheCutsItsGatewayConfirms() throws Exception {
+        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
+        final long start = hostStartAfterTraffic(true, true);
+        assertTrue(start > 0, "the host's recording still starts at 0");
+        assertEquals(0, start % SMALL_SEGMENT, "and a purge leaves it at a segment boundary");
+        assertFalse(cluster.fatal(), "a member or the host raised a fatal");
+    }
+
+    /** Enough frames of {@link #LOG_FILLER} bytes to carry the Raft log past its first segment of a 64 MiB term. */
+    private static final int LOG_FRAMES = 90_000;
+    private static final int LOG_FILLER = 1_000;
+    private static final int LOG_TERM = 64 * 1024 * 1024;
+
+    @Test
+    @InterruptAfter(300)
+    void aMemberTrimsItsLogOnceItsCutsAreRestartSafeAndAGatewayRestoresOnIt() throws Exception {
+        aMemberTrimsItsLog(false);
+    }
+
+    /**
+     * The log still derives the queue from the start a purge moved it to, and the member has announced the checkpoint
+     * there to a host that could not start from the service's own start at log position 0.
+     */
+    @Test
+    @InterruptAfter(300)
+    void aMemberThatRecordsNoQueueTrimsItsLogAboveWhatItsQueuesNeedAndStartsAHost() throws Exception {
+        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
+        aMemberTrimsItsLog(true);
+    }
+
+    private void aMemberTrimsItsLog(final boolean startHost) throws Exception {
+        final String segment = setProperty(SEGMENT_PROPERTY, String.valueOf(LOG_TERM));
+        try {
+            gatewayRow = true;
+            start("200", 1);
+        } finally {
+            restoreProperty(SEGMENT_PROPERTY, segment);
+        }
+        cluster.awaitLeader();
+        final int member = 0; // the member a host reads first
+        try (GatewayInstance gateway = new GatewayInstance(member);
+             ConfirmProducer producer =
+                 new ConfirmProducer(cluster.aeronDir(member), member, LOG_FRAMES, 0, LOG_FILLER)) {
+            gateway.awaitCaughtUp();
+            while (!producer.isDrained() && !producer.isStalled()) {
+                producer.doWork();
+                Tests.yield();
+            }
+            assertTrue(producer.isDrained(), "the producer did not drain");
+            // Two more, so that the older of the two snapshots the trim keeps is above the traffic.
+            awaitSafeRounds(member, safeLog(member).safe().size() + 2);
+        }
+        for (int i = 0; i < 600 && firstTermStart(member) == 0; i++) {
+            Tests.sleep(50);
+        }
+        assertTrue(firstTermStart(member) > 0, "the member purged no segment of its log");
+        assertEquals(0, trimLog(member), "a request finds the work done");
+        // A recording member's Replayer lists through its archive session, which is its own thread's alone.
+        assertTrue((startHost ? listedStart(member) : memberStart(member)) > 0, "the queue still starts at 0");
+
+        try (GatewayInstance restarted = new GatewayInstance(member)) {
+            restarted.awaitCaughtUp();
+            assertNull(restarted.failure.get(), "doWork threw");
+            assertEquals(1, restarted.restored.get(), "it restored its snapshot's one record");
+        }
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+        assertFalse(cluster.terminated(), "a member terminated");
+        if (!startHost) {
+            return;
+        }
+
+        cluster.startGatewayHost();
+        final String host = cluster.aeronDir(InProcessCluster.GATEWAY_HOST);
+        List<QueueFrames.Frame> frames = List.of();
+        for (int i = 0; i < 600 && frames.size() < 5; i++) {
+            Tests.sleep(50);
+            frames = QueueFrames.readFrom(host, InProcessCluster.GROUP_ID, 0, 5);
+        }
+        assertEquals(5, frames.size(), "the host's queue holds " + frames);
+        assertTrue(frames.getFirst().groupSeqNo() > LOG_FRAMES / 2, "it starts above the trimmed log");
+        for (int i = 1; i < frames.size(); i++) {
+            assertEquals(frames.get(i - 1).groupSeqNo() + 1, frames.get(i).groupSeqNo(),
+                         "a gap after " + frames.get(i - 1));
+        }
+        assertFalse(cluster.fatal(), "a member or the host raised a fatal");
+        assertFalse(cluster.terminated(), "a member terminated");
+    }
+
+    /** The host's queues then start at that member's cut, and its Replayer resolves from the snapshot's rows. */
+    @Test
+    @InterruptAfter(180)
+    void aGatewayHostThatDerivesItsQueuesStartsThemAtTheCutOfAMemberRestartedFromASnapshot() throws Exception {
+        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
+        gatewayRow = true;
+        start("200", 1);
+        cluster.awaitLeader();
+        final int member = 0; // the member a host reads first
+        awaitSafe(member);
+        cluster.stop(member);
+        cluster.start(member);
+        for (int i = 0; i < 600 && listedStart(member) <= 0; i++) {
+            Tests.sleep(50);
+        }
+        assertTrue(listedStart(member) > 0, "the restarted member's queue does not start at a cut");
+
+        cluster.startGatewayHost();
+        final String host = cluster.aeronDir(InProcessCluster.GATEWAY_HOST);
+        List<QueueFrames.Frame> frames = List.of();
+        for (int i = 0; i < 600 && frames.size() < 5; i++) {
+            Tests.sleep(50);
+            frames = QueueFrames.readFrom(host, InProcessCluster.GROUP_ID, 0, 5);
+        }
+        assertEquals(5, frames.size(), "the host's queue holds " + frames);
+        assertEquals(SystemFrame.SNAPSHOT_STARTED, frames.getFirst().systemEventType(),
+                     "the marker is its first frame");
+        assertTrue(frames.getFirst().groupSeqNo() > 1, "and it is not the first frame of the queue");
+        for (int i = 1; i < frames.size(); i++) {
+            assertEquals(frames.get(i - 1).groupSeqNo() + 1, frames.get(i).groupSeqNo(),
+                         "a gap after " + frames.get(i - 1));
+        }
+
+        // The host's Replayer resolves the gateway's queue and replays it, which opens on the cut's marker.
+        try (GatewayInstance gateway = new GatewayInstance(InProcessCluster.GATEWAY_HOST)) {
+            final RuntimeException failure = gateway.awaitFailure();
+            assertTrue(failure.getMessage().contains("expected 1"), failure.getMessage());
+        }
+        assertFalse(cluster.fatal(), "a member or the host raised a fatal");
     }
 
     private static final int GATEWAY_SOURCE_ID = 40;

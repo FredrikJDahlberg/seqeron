@@ -105,6 +105,7 @@ class SbeLogPrinterTest {
     @Test
     @DisplayName("every recording is dumped, with the probe frames named and numbered")
     void dumpsEveryRecording() throws IOException {
+        InProcessCluster.assumeMembersRecordQueues();
         final Dump dump = dump(SbeLogPrinter.NO_STREAM_FILTER, true);
         assertTrue(dump.dumped());
         assertTrue(dump.count("[Catalog] Recording ID") >= 2, "one recording per queue stream:\n" + dump.stdout());
@@ -117,6 +118,7 @@ class SbeLogPrinterTest {
     @Test
     @DisplayName("naming a stream dumps its newest recording alone")
     void aStreamFilterSelectsOneQueue() throws IOException {
+        InProcessCluster.assumeMembersRecordQueues();
         final Dump first = dump(GROUP_1_STREAM, true);
         final Dump second = dump(GROUP_2_STREAM, true);
         assertEquals(1, first.count("[Catalog] Recording ID"));
@@ -137,6 +139,7 @@ class SbeLogPrinterTest {
     @Test
     @DisplayName("--oneline puts each message on a line of its own")
     void oneLineCollapsesEachMessage() throws IOException {
+        InProcessCluster.assumeMembersRecordQueues();
         final Dump multi = dump(GROUP_1_STREAM, false);
         final Dump single = dump(GROUP_1_STREAM, true);
         assertEquals(COUNT, single.count("ProbeMarker"));

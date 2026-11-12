@@ -171,9 +171,18 @@ jobs:
 
   # Members launched in the test's own JVM, on Aeron's test kit; the one Java suite with an Aeron runtime.
   integration:
-    name: java integration
+    name: java integration (${{ matrix.queues }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - queues: recorded
+            flags: ''
+          # Members that record no queue and derive it from their Raft log (doc/disk-load-plan.md, step 2a).
+          - queues: derived
+            flags: '-PderiveFromLog'
     steps:
       - uses: actions/checkout@v7
 
@@ -192,23 +201,32 @@ jobs:
           restore-keys: gradle-integration-
 
       - name: Integration tests
-        run: ./gradlew :seqeron-service:integrationTest
+        run: ./gradlew :seqeron-service:integrationTest ${{ matrix.flags }}
 
       # SystemTestWatcher copies a failed test's Aeron directories, archives and mark files to build/test-output.
       - name: Upload results
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: integration-test-results
+          name: integration-test-results-${{ matrix.queues }}
           path: |
             seqeron-service/build/reports/tests/integrationTest/
             seqeron-service/build/test-output/
 
   # Members, probes and clusterctl as child JVMs off the uber jar: the harnesses, ported to JUnit.
   system:
-    name: java system
+    name: java system (${{ matrix.queues }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - queues: recorded
+            flags: ''
+          # Members that record no queue and derive it from their Raft log (doc/disk-load-plan.md, step 2a).
+          - queues: derived
+            flags: '-PderiveFromLog'
     steps:
       - uses: actions/checkout@v7
 
@@ -227,13 +245,13 @@ jobs:
           restore-keys: gradle-system-
 
       - name: System tests
-        run: ./gradlew :seqeron-service:systemTest
+        run: ./gradlew :seqeron-service:systemTest ${{ matrix.flags }}
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: system-test-results
+          name: system-test-results-${{ matrix.queues }}
           path: |
             seqeron-service/build/reports/tests/systemTest/
             seqeron-service/build/system-test/

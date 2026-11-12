@@ -24,6 +24,7 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
@@ -36,6 +37,7 @@ import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.replayer.server.CutHandover;
 import org.limitless.seqeron.replayer.server.CutIntake;
+import org.limitless.seqeron.replayer.server.DerivationStart;
 import org.limitless.seqeron.replayer.server.NodeDriver;
 import org.limitless.seqeron.replayer.server.Replayer;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
@@ -148,6 +150,7 @@ public final class SequencerServer {
     private final ReplayerServer replayer;
     private final RestartSafeLog safeLog;
     private final AtomicBoolean stopping;
+    private final Supplier<DerivationStart> derivationStart;
 
     /** Which UDP frames a node's driver drops, for test harnesses. */
     @FunctionalInterface
@@ -203,12 +206,19 @@ public final class SequencerServer {
     }
 
     private SequencerServer(final ClusteredMediaDriver driver, final ClusteredServiceContainer container,
-                            final ReplayerServer replayer, final RestartSafeLog safeLog, final AtomicBoolean stopping) {
+                            final ReplayerServer replayer, final RestartSafeLog safeLog, final AtomicBoolean stopping,
+                            final Supplier<DerivationStart> derivationStart) {
+        this.derivationStart = derivationStart;
         this.driver = driver;
         this.container = container;
         this.replayer = replayer;
         this.safeLog = safeLog;
         this.stopping = stopping;
+    }
+
+    /** Where this member's service started, as its Replayer is handed it; null until the service has started. */
+    public DerivationStart derivationStart() {
+        return derivationStart.get();
     }
 
     public static void main(final String[] args) {
@@ -329,6 +339,7 @@ public final class SequencerServer {
         }
         NodeDriver.warnUnlessTmpfs(Logger.CoreComponent.SequencerServer, memberId, aeronDir);
         NodeDriver.warnIfTmpfs(Logger.CoreComponent.SequencerServer, memberId, config.baseDir());
+        NodeDriver.warnIfDefaultWriteback(Logger.CoreComponent.SequencerServer, memberId);
 
         final AeronArchive.Context localArchiveCtx = new AeronArchive.Context()
                                                          .lock(NoOpLock.INSTANCE)
@@ -402,9 +413,11 @@ public final class SequencerServer {
         final Queue<byte[]> topologyRows = new ConcurrentLinkedQueue<>();
         final Queue<CutHandover> cuts = new ConcurrentLinkedQueue<>();
         final RestartSafeLog safeLog = RestartSafeLog.open(clusterDir.toPath());
+        final AtomicReference<DerivationStart> derivationStart = new AtomicReference<>();
         final SequencerService service =
             new SequencerService(memberId, localArchiveCtx.clone(), topologyRows, fatalHandler, safeLog, cuts,
-                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(), queueStallTimeoutMs);
+                                 derivationStart, driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(),
+                                 queueStallTimeoutMs, !Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG));
 
         final ClusteredServiceContainer.Context serviceCtx =
             new ClusteredServiceContainer.Context()
@@ -430,8 +443,8 @@ public final class SequencerServer {
                 ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, topologyRows, fatalHandler,
                                       new CutIntake(cuts, safeLog, Long.getLong(PROP_SNAPSHOT_JOIN_MS,
                                                                                 DEFAULT_SNAPSHOT_JOIN_MS)),
-                                      replayerWrapper),
-                safeLog, stopping);
+                                      replayerWrapper, derivationStart::get, archiveDir),
+                safeLog, stopping, derivationStart::get);
         } catch (final RuntimeException ex) {
             CloseHelper.quietCloseAll(container, driver, safeLog);
             throw ex;

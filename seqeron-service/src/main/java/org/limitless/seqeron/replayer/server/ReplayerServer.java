@@ -86,6 +86,11 @@ public final class ReplayerServer {
     private static final String PROP_GROUPS = "replayer.groups";
     private static final String PROP_SNAPSHOT_JOIN_MS = "replayer.snapshotJoinMs";
     private static final String PROP_QUEUE_STALL_TIMEOUT_MS = "replayer.queueStallTimeoutMs";
+    /**
+     * Prototype: a member records no queue and serves its replays off the Raft log ({@link DerivingReplayer}), and a
+     * gateway host derives its queues from such a member's log ({@link AeronLogRelay}).
+     */
+    public static final String PROP_DERIVE_FROM_LOG = "replayer.deriveFromLog";
 
     /** Above a member's, since a host's purge cannot be undone (doc/snapshot.md §10.6). */
     static final long DEFAULT_SNAPSHOT_JOIN_MS = 10_000;
@@ -101,6 +106,8 @@ public final class ReplayerServer {
     private final Aeron aeron;
     private final AeronArchive archive;
     private final List<AeronQueueRelay> relays;
+    /** A gateway host's one relay when its members record no queue, in place of {@link #relays}. */
+    private final AeronLogRelay logRelay;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final Thread replayerThread;
     private final Thread relayThread;
@@ -232,7 +239,7 @@ public final class ReplayerServer {
                 config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(), config.host(), config.groups(),
                 new ConcurrentLinkedQueue<>(), reports, config.idleStrategies(), fatalHandler,
                 CutIntake.ofHost(reports, Long.getLong(PROP_SNAPSHOT_JOIN_MS, DEFAULT_SNAPSHOT_JOIN_MS)),
-                stallTimeoutMs, wrapper);
+                stallTimeoutMs, wrapper, () -> null, null);
         } catch (final RuntimeException ex) {
             CloseHelper.quietClose(driver);
             throw ex;
@@ -265,22 +272,26 @@ public final class ReplayerServer {
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake) {
         return launch(memberId, aeronDir, idleStrategies, topologyRows, fatalHandler, cutIntake,
-                      UnaryOperator.identity());
+                      UnaryOperator.identity(), () -> null, null);
     }
 
     /**
      * As above, serving through {@code wrapper}'s decoration of the node's {@link AeronReplayer}. Test harnesses
      * only: a Replayer that fails or stalls on cue.
      *
-     * @param wrapper decorates the node's Replayer
+     * @param wrapper         decorates the node's Replayer
+     * @param derivationStart where the member's service started, or null until it has: what {@link
+     *                        #PROP_DERIVE_FROM_LOG} derives from
+     * @param archiveDir      the member's archive directory, where that reads the log's segment files
      */
     public static ReplayerServer launch(final int memberId, final String aeronDir,
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake,
-                                        final UnaryOperator<Replayer> wrapper) {
+                                        final UnaryOperator<Replayer> wrapper,
+                                        final Supplier<DerivationStart> derivationStart, final File archiveDir) {
         return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, List.of(), topologyRows,
                                   null, idleStrategies, fatalHandler, cutIntake,
-                                  NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS, wrapper);
+                                  NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS, wrapper, derivationStart, archiveDir);
     }
 
     private ReplayerServer(final int memberId, final ArchivingMediaDriver driver, final String aeronDir,
@@ -288,7 +299,8 @@ public final class ReplayerServer {
                            final Queue<byte[]> topologyRows, final Queue<RelayedCut> cutReports,
                            final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler,
                            final CutIntake cutIntake, final long relayStallTimeoutMs,
-                           final UnaryOperator<Replayer> wrapper) {
+                           final UnaryOperator<Replayer> wrapper, final Supplier<DerivationStart> derivationStart,
+                           final File archiveDir) {
         this.memberId = memberId;
         this.driver = driver;
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
@@ -304,23 +316,46 @@ public final class ReplayerServer {
         final IdleStrategy idleStrategy = idleStrategies.get();
         relays = new ArrayList<>();
         int relayedGroups = QueueResolver.EVERY_GROUP;
+        final boolean derive = Boolean.getBoolean(PROP_DERIVE_FROM_LOG);
         if (archiveEndpoints != null) {
             relayedGroups = 0;
+            for (final int groupId : groups) {
+                relayedGroups |= 1 << (groupId - 1);
+            }
+        }
+        logRelay = archiveEndpoints != null && derive
+            ? new AeronLogRelay(aeron, archive, archiveEndpoints, host, memberId, groups, topologyRows, cutReports,
+                                idleStrategies.get(), fatalHandler, relayStallTimeoutMs)
+            : null;
+        if (archiveEndpoints != null && !derive) {
             for (final int groupId : groups) {
                 // The lowest relayed queue is the host's default queue, and it alone feeds the resolver.
                 relays.add(new AeronQueueRelay(aeron, archive, archiveEndpoints, host, memberId, groupId,
                                                relays.isEmpty() ? topologyRows : null, cutReports, idleStrategies.get(),
                                                fatalHandler, relayStallTimeoutMs));
-                relayedGroups |= 1 << (groupId - 1);
             }
         }
-        final IdleStrategy relayIdleStrategy = relays.isEmpty() ? null : idleStrategies.get();
-        relayThread = relays.isEmpty()
+        final IdleStrategy relayIdleStrategy = archiveEndpoints == null ? null : idleStrategies.get();
+        if (archiveEndpoints == null) {
+            relayThread = null;
+        } else if (logRelay != null) {
+            relayThread = new Thread(() -> logRelay.run(running, relayIdleStrategy), "relay-" + memberId);
+        } else {
+            relayThread = new Thread(() -> AeronQueueRelay.run(relays, running, relayIdleStrategy), "relay-" + memberId);
+        }
+        // The derivation needs the log from its first checkpoint, which only it knows, so the trim asks it.
+        final DerivingReplayer[] deriving = { null };
+        final LogTrimmer trimmer = cutIntake == null || cutIntake.log() == null
             ? null
-            : new Thread(() -> AeronQueueRelay.run(relays, running, relayIdleStrategy), "relay-" + memberId);
-        final ReplayerService replayer =
-            new ReplayerService(wrapper.apply(new AeronReplayer(aeron, archive, memberId)), memberId, idleStrategy,
-                                topologyRows, relayedGroups, fatalHandler, cutIntake);
+            : new LogTrimmer(aeron, archive, memberId, cutIntake.log(),
+                             () -> deriving[0] == null ? Long.MAX_VALUE : deriving[0].firstCheckpointLogPosition());
+        final Replayer recorded = new AeronReplayer(aeron, archive, memberId, trimmer);
+        if (archiveEndpoints == null && derive) {
+            deriving[0] = new DerivingReplayer(recorded, aeron, archive, archiveDir, memberId, derivationStart);
+        }
+        final Replayer served = deriving[0] == null ? recorded : deriving[0];
+        final ReplayerService replayer = new ReplayerService(wrapper.apply(served), memberId, idleStrategy,
+                                                             topologyRows, relayedGroups, fatalHandler, cutIntake);
         replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         if (relayThread != null) {
             relayThread.start();
@@ -329,8 +364,8 @@ public final class ReplayerServer {
 
         Logger.info(Logger.CoreComponent.ReplayerServer, memberId, "Running | aeronDir=%s | idle=%s%s", aeronDir,
                     idleStrategy.getClass().getSimpleName(),
-                    relays.isEmpty() ? ""
-                                     : " | gateway host, groups " + groups + " from member archives " +
+                    archiveEndpoints == null ? ""
+                                             : " | gateway host, groups " + groups + " from member archives " +
                             String.join(",", archiveEndpoints));
     }
 
@@ -346,6 +381,7 @@ public final class ReplayerServer {
         final boolean stopped = join(replayerThread) & (relayThread == null || join(relayThread));
         if (stopped) {
             CloseHelper.quietCloseAll(relays);
+            CloseHelper.quietClose(logRelay);
             archive.close();
             aeron.close();
             CloseHelper.quietClose(driver);
