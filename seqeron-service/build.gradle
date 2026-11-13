@@ -90,6 +90,10 @@ testing {
                     if (project.hasProperty('deriveFromLog')) {
                         systemProperty 'replayer.deriveFromLog', 'true'
                     }
+                    // -PexcludeTests leaves out the classes it matches; ci.yml shards HostedSnapshotTest this way.
+                    if (project.hasProperty('excludeTests')) {
+                        filter.excludeTestsMatching project.property('excludeTests')
+                    }
                     doFirst {
                         // The children are separate JVMs, so each gets the agent and its own exec file.
                         def agent = (extensions.getByType(JacocoTaskExtension).asJvmArg =~ /-javaagent:([^=]+)=/)[0][1]

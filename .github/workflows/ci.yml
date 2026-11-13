@@ -214,19 +214,24 @@ jobs:
             seqeron-service/build/test-output/
 
   # Members, probes and clusterctl as child JVMs off the uber jar: the harnesses, ported to JUnit.
+  # HostedSnapshotTest is nearly half the suite, so it runs as a shard of its own beside the rest.
   system:
-    name: java system (${{ matrix.queues }})
+    name: java system (${{ matrix.queues }}, ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        queues: [recorded, derived]
+        shard: [hosted-snapshot, rest]
         include:
-          - queues: recorded
-            flags: ''
           # Members that record no queue and derive it from their Raft log (doc/disk-load-plan.md, step 2a).
           - queues: derived
             flags: '-PderiveFromLog'
+          - shard: hosted-snapshot
+            tests: "--tests '*HostedSnapshotTest'"
+          - shard: rest
+            tests: "-PexcludeTests='*HostedSnapshotTest'"
     steps:
       - uses: actions/checkout@v7
 
@@ -245,13 +250,13 @@ jobs:
           restore-keys: gradle-system-
 
       - name: System tests
-        run: ./gradlew :seqeron-service:systemTest ${{ matrix.flags }}
+        run: ./gradlew :seqeron-service:systemTest ${{ matrix.flags }} ${{ matrix.tests }}
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: system-test-results-${{ matrix.queues }}
+          name: system-test-results-${{ matrix.queues }}-${{ matrix.shard }}
           path: |
             seqeron-service/build/reports/tests/systemTest/
             seqeron-service/build/system-test/
