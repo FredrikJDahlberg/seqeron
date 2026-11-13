@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.aeron.archive.CatalogView;
+import io.aeron.cluster.ClusterControl;
 import io.aeron.cluster.RecordingLog;
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
@@ -27,6 +28,7 @@ import org.limitless.seqeron.replayer.server.RelayedCut;
 import io.aeron.Aeron;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.status.AtomicCounter;
 import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.GroupDirectory;
@@ -163,6 +165,46 @@ class ClusterSnapshotTest {
         assertEquals(own, QueueFrames.readFrom(cluster.aeronDir(leader), InProcessCluster.GROUP_ID, 0, 40),
                      "frame for frame what the leader holds, the replayed snapshot actions' markers included");
 
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+        assertFalse(cluster.terminated(), "a member terminated");
+    }
+
+    /**
+     * Aeron's snapshot action reaches {@code onTakeSnapshot} whether or not a policy is loaded. Its refusal acks with
+     * no recording, which the consensus module takes as a failed snapshot: it records none and returns to active.
+     */
+    @Test
+    @InterruptAfter(120)
+    void aSnapshotToggledWithNoPolicyIsRefusedAndTheClusterSequencesOn() throws Exception {
+        watcher.ignoreErrorsMatching(s -> s.contains("Refusing to take a snapshot"));
+        watcher.ignoreErrorsMatching(s -> s.contains("failed to take snapshot"));
+        start("200", InProcessCluster.NO_SNAPSHOT_POLICY);
+        final int leader = cluster.awaitLeader();
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(leader)))) {
+            final AtomicCounter toggle = ClusterControl.findControlToggle(aeron.countersReader(), 0);
+            assertTrue(ClusterControl.ToggleState.SNAPSHOT.toggle(toggle), "the toggle was not neutral");
+            for (int i = 0; i < 600 && ClusterControl.ToggleState.get(toggle) != ClusterControl.ToggleState.NEUTRAL;
+                 i++) {
+                Tests.sleep(50);
+            }
+            assertEquals(ClusterControl.ToggleState.NEUTRAL, ClusterControl.ToggleState.get(toggle),
+                         "the snapshot action never completed");
+        }
+
+        final int member = (leader + 1) % InProcessCluster.MEMBERS;
+        try (ConfirmProducer producer = new ConfirmProducer(cluster.aeronDir(member), member, 100, 0)) {
+            while (!producer.isDrained() && !producer.isStalled()) {
+                producer.doWork();
+                Tests.yield();
+            }
+            assertTrue(producer.isDrained(), "the cluster stopped sequencing");
+        }
+        for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
+            try (RecordingLog log = new RecordingLog(baseDir.resolve("cluster-" + m).toFile(), false)) {
+                assertTrue(log.entries().stream().noneMatch(e -> e.type == RecordingLog.ENTRY_TYPE_SNAPSHOT),
+                           "member " + m + " recorded a snapshot");
+            }
+        }
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");
     }

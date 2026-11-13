@@ -16,7 +16,8 @@ Every recovery path in this document reduces to one operation: replay the sequen
 newest snapshot the log confirms (§3.4); the snapshot is a file of its own, and the log holds its digest.
 
 The cluster takes snapshots only while a `<snapshots>` policy is loaded; without one `SequencerService.onTakeSnapshot`
-throws, and `clusterctl shutdown` stops the cluster with Aeron's `ABORT`, which takes no snapshot, rather than
+throws. Aeron takes that as a failed snapshot, records none and sequences on, so a snapshot requested through Aeron's
+own `ClusterTool` or control toggle costs each member an error-log entry and nothing else. `clusterctl shutdown` stops the cluster with Aeron's `ABORT`, which takes no snapshot, rather than
 `SHUTDOWN`, which does. Without a policy every member keeps the whole log (§1.1), so any member can serve history
 to its clients without a peer, and the cost is that recovery time and archive size grow with the history the archive holds,
 which suits a deployment that resets it between runs. The 1 Hz heartbeat alone adds about 86,400 frames a day.
@@ -92,12 +93,13 @@ is always connected; client subscriptions are untethered. A client that stops po
 until its driver drops it, within about 0.2 s ([`ops.md`](ops.md), "Untethered subscribers"), well inside the
 stall timeout below.
 
-The retry is bounded. `QueuePublisher` watches the service's subscriber and tells three cases apart:
+The retry is bounded. The service's subscriber has read up to the publication's position, so it never holds a
+frame back, and `QueuePublisher` tells three cases apart:
 
 | queue state | response |
 | --- | --- |
-| slow: back-pressured, the subscriber's position advancing | keep retrying; raise the back-pressure alert after 200 ms |
-| stalled: no progress for `sequencer.queueStallTimeoutMs`, default 5 s | fatal |
+| slow: an offer back-pressured, then landing | keep retrying; raise the back-pressure alert after 200 ms |
+| stalled: one offer back-pressured for `sequencer.queueStallTimeoutMs`, default 5 s | fatal |
 | the subscriber's image gone | fatal at once |
 
 A lost image back-pressures nothing, since the untethered client subscriptions keep the publication
@@ -257,7 +259,10 @@ history, correctly, to many clients at once, and to say so plainly when it canno
   restored cut (§0), and keeps a checkpoint of the sequencer's state every 8 MiB of log. A replay starts at the
   newest checkpoint at or below the position asked for, at the queue's positions, so the replay protocol is the
   one a recording would serve. It lists no queue until the derivation has caught up with the commit position as
-  it stood at the start, and is not ready before then. A gateway host serves its own recordings instead (§3.3).
+  it stood at the start, and is not ready before then. A member has no recorded path to fall back on, so a start
+  the log's recording does not hold ends the duty cycle and exits the node with code 70, and so does a log segment
+  damaged below the commit position, which a replay over it closes on; an archive that will not record the member's
+  announcements is asked again every second. A gateway host serves its own recordings instead (§3.3).
 - **Integrity.** Each client checks that the first frame it dispatches is `groupSeqNo` 1 (or the frame at its
   snapshot's cut, §3.4), and that a resumed
   replay opens on the frame it resumed from; either failing is fatal to the client. A history that is missing or

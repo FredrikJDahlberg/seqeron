@@ -29,8 +29,8 @@ co-located `ReplayerService` serves cold-start/gap replay derived from the log. 
 it spins until the offer lands, since a dropped frame would leave the queue behind the positions the log gives —
 and can only block on an untethered subscriber its driver has not yet dropped. Reliable is not unbounded:
 `QueuePublisher` — the reliable-offer discipline, split off the way `Sequencer` is and unit-tested the same way —
-watches the service's own subscriber, and a node whose subscriber has gone or stopped advancing under
-back-pressure **terminates itself** (`NodeDriver.EXIT_FATAL` = 70). Peers keep quorum, and the restart rebuilds its
+watches the service's own subscriber, and a node whose subscriber has gone, or whose offer stays back-pressured
+for the stall timeout, **terminates itself** (`NodeDriver.EXIT_FATAL` = 70). Peers keep quorum, and the restart rebuilds its
 queues over the log replay it does anyway. The 1 Hz heartbeat runs the same liveness check, because a lost image
 back-pressures nothing at all (the untethered app subscribers keep the publication connected) and would otherwise
 be silent. `QueuePublisher`'s names and messages still say "recording" for that subscriber. A node whose consensus module truncates its log below what it applied terminates itself
@@ -81,9 +81,9 @@ a file from a purged log fails it — then resumes after the cut; an instance wi
 
 **A member records no queue** (`doc/disk-load-plan.md`, step 2a). Its Replayer is a `DerivingReplayer`, which
 derives each queue from the Raft log's recording, read from the archive's segment files (`RecordingReader`) up to
-the commit position: a `LogDeriver` follows the log once from the service's `DerivationStart` and keeps a
-checkpoint every 8 MiB, and a replay rebuilds frames with a `FramePredictor` wherever the two agreed. Each queue
-is listed as one recording at the queue's positions, so the replay protocol and the clients are those of a
+the commit position: a `LogFollower` runs a `LogDeriver` over the log once from the service's `DerivationStart`
+and keeps a checkpoint every 8 MiB (its rules unit-tested over segment files `LogFollowerTest` writes), and a
+replay rebuilds frames with a `FramePredictor` wherever the two agreed. Each queue is listed as one recording at the queue's positions, so the replay protocol and the clients are those of a
 recording. The member's Replayer announces its start on stream 207 (`DerivationAnnouncement`), which its archive
 records for gateway hosts, and its `LogTrimmer` keeps the log from the first checkpoint. The plan lists the limits.
 
