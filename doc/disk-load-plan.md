@@ -162,8 +162,9 @@ its queue recordings.
   copies recorded frames in blocks.
 - **Saturation.** Not measured with the flag. The recorded path's ramps (`ec2-results.md` §3.3) found no ceiling:
   stalls of 2–75 ms ended them at any rate from 40k to 900k msg/s, the size the stall runs above found on the recorded
-  path. `hop-knee.sh` with the flag, two ramps per arm with it and two without in one launch, tells whether it removes
-  them and where the ceiling then is. At 888k msg/s the log alone writes about 200 MB/s, above the volume's provisioned
+  path. `disk-session.sh` (`ec2-tests.md`, §3) runs `hop-knee.sh` twice with the flag and twice without in one launch,
+  which tells whether it removes them and where the ceiling then is; the same launch ramps the flag under the kernel's
+  default writeback and on a default gp3 volume, and replays 4,000,000 frames cold off EBS both ways. At 888k msg/s the log alone writes about 200 MB/s, above the volume's provisioned
   125 MB/s, so each ramp needs the recorder's longest write and the dirty pages beside it to tell a ceiling from the
   volume's. `hop-knee.sh` samples the first with `CounterSampler` and the second with `node.sh meminfo-sampler`.
 - **Tests.** `DerivedQueueTest`; `DerivedReplayTest`, a client's cold start and live following on a member

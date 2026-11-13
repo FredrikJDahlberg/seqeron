@@ -353,6 +353,15 @@ c6in.8xlarge ($6.35/hr) and about $145 on c6id.metal ($20.26/hr), from the insta
 about $13 on c6in.8xlarge. Neither includes the
 rehearsals, so allow the first attempt twice the figure; the soak and the knee ramps run unattended.
 
+The disk session (`disk-session.sh`) measures `disk-load-plan.md`, step 2a, in one launch: two knee ramps (`direct`, 100-byte
+markers, from 50k msg/s in 10 s steps) with the flag and two without, two with it under the kernel's default writeback and
+two with the archive on a default gp3 volume, then test 3's cold replay of 4,000,000 frames, quiet and under load, both ways.
+The ramps take about 26 min, the replays 15–20 and the launch and setup about 25: about 1.2 h on the four Test 1 hosts,
+about $7.50 with the volumes, $15 for a first attempt. Each member's root volume is gp3 at 1,000 MB/s and 4,000 IOPS, above
+the 400 MB/s the recorded arm writes at the top step, and a second 100 GB gp3 at its default 125 MB/s is mounted for
+`DISK_DEFAULT_VOLUME`; an EBS volume's settings change once in 6 hours, so both are set at launch. The members need
+passwordless `sudo`, for the writeback and the cache drops.
+
 ## 4. Image
 
 One Ubuntu 24.04 x86_64 image serves every host. Build it on a c6in.large and save it as an AMI:
@@ -411,6 +420,7 @@ export MULTIHOST_SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" 
 HOP_RATES=20000 MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1 -Daeron.archive.catalog.file.sync.level=1" \
     ./hop-matrix.sh                                            # the sync comparison; run it again without the option
 REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and again with REPLAY_LOAD_DURING=1
+DISK_DEFAULT_VOLUME=/mnt/gp3-default ./disk-session.sh         # the disk session
 ```
 
 To run either arm on members that record no queue (`disk-load-plan.md`, step 2a), set

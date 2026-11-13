@@ -31,6 +31,8 @@
 #                                                    MULTIHOST_DIGEST_UPTO caps the last groupSeqNo digested
 #   node.sh drop-caches                              write back dirty pages and drop the page cache (Linux, sudo), so a
 #                                                    replay after it reads its log or recording from the disk
+#   node.sh writeback <default|even>                 the kernel's writeback timers (Linux, sudo): default's 30 s expiry
+#                                                    and 5 s wakeup, or the image's 0.5 s and 0.2 s; none off Linux
 #   node.sh sample <label>                        one line of /proc counters: time in ms, per-CPU steal, context
 #                                                    switches, each java and bench process's utime+stime ticks, and the
 #                                                    NIC's ENA allowance and drop counters (ethtool -S)
@@ -264,6 +266,20 @@ queue-digest)
         "-Ddigest.aeronDir=$(seqeron_aeron_dir "$1")" "-Ddigest.upTo=${MULTIHOST_DIGEST_UPTO:-9223372036854775807}" || status=$?
     cat "${LOG_DIR}/queue-digest.log"
     exit "${status}"
+    ;;
+writeback)
+    if [[ ! -e /proc/sys/vm/dirty_expire_centisecs ]]; then
+        echo "writeback: no /proc/sys/vm, not set" >&2
+        exit 0
+    fi
+    case "$1" in
+    default) sudo -n sysctl -q vm.dirty_expire_centisecs=3000 vm.dirty_writeback_centisecs=500 ;;
+    even) sudo -n sysctl -q vm.dirty_expire_centisecs=50 vm.dirty_writeback_centisecs=20 ;;
+    *)
+        echo "ERROR: writeback takes default or even" >&2
+        exit 2
+        ;;
+    esac
     ;;
 sample)
     steal="$(awk '/^cpu[0-9]/ { printf "%s%d", (n++ ? "," : ""), $9 }' /proc/stat)"
