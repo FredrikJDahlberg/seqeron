@@ -102,6 +102,7 @@ system tests below. Coverage is a JaCoCo report at `build/reports/jacoco/test/`,
 `./gradlew test`, which leaves the Aeron-dependent classes at zero. `./gradlew :seqeron-service:jacocoMergedReport`
 merges the unit, integration and system suites, and the system suite's member JVMs, into
 `seqeron-service/build/reports/jacoco/jacocoMergedReport/`; run the suites first, in one Gradle invocation.
+`coverage.yml` runs it weekly.
 
 ## Integration tests
 
@@ -189,7 +190,7 @@ Docker VM, check faulteron out beside this repository and run them after `./grad
 
 | test | what it asserts |
 | --- | --- |
-| `DockerFailoverSoakTest` | Multi-round containerized failover soak. `ROUNDS` (15) kills under continuous `ProbeMarker` load, restoring the killed member between them, so each rejoin replays a Raft log that grew under the previous rounds. Every round is a genuine leadership change, a long-lived observer on each surviving node keeps delivering in order across all of them, and a cold-start probe replays the whole multi-tenure history at the end. `ROUNDS=3` for a quick local run; CI runs it in `failover.yml` |
+| `DockerFailoverSoakTest` | Multi-round containerized failover soak. `ROUNDS` (15) kills under continuous `ProbeMarker` load, restoring the killed member between them, so each rejoin replays a Raft log that grew under the previous rounds. Every round is a genuine leadership change, a long-lived observer on each surviving node keeps delivering in order across all of them, and a cold-start probe replays the whole multi-tenure history at the end. `ROUNDS=3` for a quick local run; CI does not run it, since `ChaosTest`'s kill-leader leg covers it |
 | `PartitionLeaderTest` | the leader, cut off from its peers while a `ClusterProbe confirm` producer streams through it, dropped packets; the majority elected a new leader; the old one rejoined as a follower; the PendingSends producer saw every frame once |
 | `AsymmetricPartitionTest` | with only the link between the leader and one follower cut (`--peer`), the cut-off follower, which stands for election, does not depose the leader; a producer on the other follower stays exact; the follower catches up once healed |
 | `UnrepairedFollowerTest` | with 5% of one follower's log DATA dropped and its NAKs (`REPAIR=nak`, the default) or the leader's retransmissions to it (`REPAIR=retransmit`) gone, the follower falls behind with no election: a ping through its queue passes before the fault, times out under it, and passes after the heal; a producer on the other follower stays exact |
@@ -211,7 +212,7 @@ distribution that has a JDK 21. The drivers in
 | Script | Purpose |
 |--------|---------|
 | `start-three-node-cluster.sh` | Start a local 3-node Raft cluster with a per-node `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_NO_CONSUMERS=1` leaves out the replicas, for a caller that runs its own |
-| `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `groupSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, a `GatewayApp` pair handed over when its active instance is killed, and a `SnapshotApp` restart that restores from a round it confirmed; last, a member restarted at a cut, where a cold start with no snapshot file must fail from its poll. Rerun on every Aeron upgrade (spec V-1); CI runs it in `chaos.yml` on every pull request. Needs the .NET SDK (`DOTNET` names one off the `PATH`). `CSHARP_MEMBER_OPTS` adds JVM flags to every member: `-Dreplayer.deriveFromLog=true` runs it on members that record no queue, which CI does as a second leg |
+| `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `groupSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, a `GatewayApp` pair handed over when its active instance is killed, and a `SnapshotApp` restart that restores from a round it confirmed; last, a member restarted at a cut, where a cold start with no snapshot file must fail from its poll. Rerun on every Aeron upgrade (spec V-1); CI runs it in `chaos.yml` on every pull request. Needs the .NET SDK (`DOTNET` names one off the `PATH`). `CSHARP_MEMBER_OPTS` adds JVM flags to every member: `-Dreplayer.deriveFromLog=true` runs it on members that record no queue |
 | `csharp-windows-test.sh` | The C# client on Windows, where it is deployed, against a member on Linux, on one host: the member in WSL1, which shares Windows' network stack, and on Windows a gateway host with the C# probe and examples beside it. UDP ingress through `PendingSends`, a cold start through the gateway host, and the C# gateway pair handed over. One member, because three cannot hold Raft's heartbeats under WSL1's system-call translation; the leader kill is `csharp-client-test.sh`'s. Runs in Git Bash; CI runs it in `windows.yml` |
 
 ## Examples

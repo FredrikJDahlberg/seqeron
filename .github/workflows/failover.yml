@@ -1,9 +1,10 @@
 name: failover
 
-# Containerized three-node failover test: docker/compose.yml runs one cluster member per container,
-# so the harness loses a leader by killing its container rather than signalling a JVM that shares a
-# host with its peers. The runner image already carries Docker and the Compose v2 plugin, and a
-# GitHub runner is a VM rather than a container, so its daemon needs no privileged setup.
+# Network faults against docker/compose.yml, one cluster member per container. The runner image already carries
+# Docker and the Compose v2 plugin, and a GitHub runner is a VM rather than a container, so its daemon needs no
+# privileged setup. DockerFailoverSoakTest is not run here: chaos (kill-leader) kills the leader under load with a
+# replica following every member and checks the members' queues agree at the end, and a container adds nothing to a
+# process-level fault.
 on:
   push:
     branches: [main]
@@ -13,68 +14,12 @@ on:
 permissions:
   contents: read
 
-# A failover run costs minutes; superseded PR pushes should not keep paying for them.
+# A run costs minutes; superseded PR pushes should not keep paying for them.
 concurrency:
   group: failover-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  failover:
-    name: docker failover
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Cache Gradle
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-java-${{ hashFiles('*.gradle', 'versions.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: gradle-java-
-
-      # docker/Dockerfile copies the distribution rather than building it — a Gradle stage inside the
-      # image would miss the runner cache restored above.
-      - name: Build operator distribution
-        run: ./gradlew operatorDist
-
-      - uses: docker/setup-buildx-action@v4
-
-      # Built here rather than by `compose up --build` so the layer cache persists between runs;
-      # load: true puts the tag in the runner's daemon, where compose finds it.
-      - name: Build node image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/Dockerfile
-          tags: seqeron/node:local
-          load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # TIMEOUT_SCALE covers the CPU steal of a shared 4-vCPU runner: three members with embedded
-      # media drivers plus their co-located replayers is an oversubscribed host, and Aeron's
-      # liveness timeouts measure wall clock.
-      - name: Failover soak
-        run: ./gradlew :seqeron-service:networkFaultTest --tests '*DockerFailoverSoakTest'
-        env:
-          COMPOSE_BUILD: '0'
-          TIMEOUT_SCALE: '3'
-
-      - name: Upload node logs
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: failover-logs
-          path: seqeron-service/build/system-test/
-
   # The faults no kill or pause produces, against the same docker/compose.yml cluster: a leader partitioned from its
   # peers while its clients stay connected, one link cut and no other, a follower whose loss repair is gone, a slow
   # and duplicating link, a member whose ballots are dropped, a leader starved of CPU, and a gateway host's relay

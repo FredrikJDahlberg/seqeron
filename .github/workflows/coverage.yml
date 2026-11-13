@@ -1,0 +1,57 @@
+name: coverage
+
+# The unit report leaves every class that needs an Aeron runtime at zero; this one merges all three suites. It
+# enforces no threshold and reruns suites ci.yml already gates on, so it runs weekly rather than on every push.
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: java coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-coverage-${{ hashFiles('**/*.gradle', 'versions.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-coverage-
+
+      # One invocation: the suites share port blocks with themselves, not with each other, and run in turn.
+      - name: Suites and merged report
+        run: ./gradlew :seqeron-client:test :seqeron-service:test :seqeron-service:integrationTest :seqeron-service:systemTest :seqeron-service:jacocoMergedReport --continue
+
+      - name: Summary
+        if: always()
+        run: |
+          python3 -I - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import xml.etree.ElementTree as ET
+          root = ET.parse('seqeron-service/build/reports/jacoco/jacocoMergedReport/jacocoMergedReport.xml').getroot()
+          print('### Merged coverage')
+          for kind in ('LINE', 'BRANCH'):
+              c = next(x for x in root.findall('counter') if x.get('type') == kind)
+              covered, missed = int(c.get('covered')), int(c.get('missed'))
+              print(f'- {kind.lower()}s: {covered} of {covered + missed} ({100 * covered / (covered + missed):.1f}%)')
+          EOF
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: seqeron-service/build/reports/jacoco/jacocoMergedReport/
