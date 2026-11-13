@@ -160,6 +160,12 @@ its queue recordings.
   sequencer per replay over an archive replay of the log it was 1.8 and 1.1 million. What is left is reading and
   counting each entry of every group, about 0.11 µs, and offering each frame, about 0.26 µs, where the archive
   copies recorded frames in blocks.
+- **Saturation.** Not measured with the flag. The recorded path's ramps (`ec2-results.md` §3.3) found no ceiling:
+  stalls of 2–75 ms ended them at any rate from 40k to 900k msg/s, the size the stall runs above found on the recorded
+  path. `hop-knee.sh` with the flag, two ramps per arm with it and two without in one launch, tells whether it removes
+  them and where the ceiling then is. At 888k msg/s the log alone writes about 200 MB/s, above the volume's provisioned
+  125 MB/s, so each ramp needs the recorder's longest write and the dirty pages beside it to tell a ceiling from the
+  volume's. `hop-knee.sh` samples the first with `CounterSampler` and the second with `node.sh meminfo-sampler`.
 - **Tests.** `DerivedQueueTest`; `DerivedReplayTest`, a client's cold start and live following on a member
   that records nothing; `CheckpointedReplayTest`, which runs a `DerivingReplayer` beside a recording
   member's archive and compares replays fragment for fragment, and scans and tips; and three in

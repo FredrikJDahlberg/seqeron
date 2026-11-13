@@ -150,10 +150,14 @@ back-pressure; the bench now counts declines after its warm-up (`declines=`, `wi
   `node.sh sample` on each member before and after every run into `hop-<stamp>.samples`: per-CPU steal, context switches and the
   members' java ticks. A difference between the two lines is that run's, and the safepoint times, in UTC, place a stall in a run
   through the sample's `t` (epoch ms).
-- `hop-matrix.sh` also starts `CounterSampler` on each member (`node.sh counter-sampler`, on CPUs 0-1, `MULTIHOST_COUNTER_MS`
-  default 10, 0 for none): every counter of the member's driver, read off its CnC file, as the changed ones with a wall-clock `t`,
-  in `counter-sampler.log` under the rate's logs. It shows which counter, commit position or agent's maximum cycle time moves
-  or stops in a stall. Each rate's logs are fetched when the rate ends.
+- `hop-matrix.sh` and `hop-knee.sh` also start `CounterSampler` on each member (`node.sh counter-sampler`, on CPUs 0-1,
+  `MULTIHOST_COUNTER_MS` default 10, 0 for none): every counter of the member's driver, read off its CnC file, as the changed
+  ones with a wall-clock `t`, in `counter-sampler.log` under the rate's or the ramp's logs. It shows which counter, commit
+  position or agent's maximum cycle time moves or stops in a stall. Each rate's or ramp's logs are fetched when it ends, and a
+  knee step's line gives its start (`started`, epoch s).
+- `hop-knee.sh` also starts `node.sh meminfo-sampler` on each member host: the kernel's dirty and writeback pages from
+  `/proc/meminfo`, every `MULTIHOST_MEMINFO_MS` (default 100), with a wall-clock `t`, in `meminfo-sampler.log` under the
+  ramp's logs. Beside `CounterSampler`'s recorder write times, it tells a stall on the kernel's writeback from one in the process.
 - `MULTIHOST_ARCHIVE_DIR` puts each member's `archive-<id>` there, linked into `data/`, and `node.sh wipe` removes it; the
   cluster directory stays under `MULTIHOST_BASE_DIR`. Set it to `/dev/shm/…` to take the archive's disk out of a run.
 - `hop-knee.sh` ramps the rate on one fresh cluster per arm, payload and run, in steps of `KNEE_SECONDS`, and ends each ramp in a
