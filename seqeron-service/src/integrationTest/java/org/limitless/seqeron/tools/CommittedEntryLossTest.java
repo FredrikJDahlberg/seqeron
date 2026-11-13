@@ -57,6 +57,9 @@ class CommittedEntryLossTest {
     @BeforeEach
     void startCluster() {
         watcher.dataCollector().add(baseDir);
+        // A restarted follower can ask for catchup while the leader's earlier replay to it still exists; the driver
+        // refuses the second as a session id clash and the follower asks again (see FailoverPropertyTest).
+        watcher.ignoreErrorsMatching(s -> s.contains("clashing sessionId") && s.contains("alias=catchup-followerId-"));
         cluster = new InProcessCluster(baseDir);
         cluster.startAll();
     }
