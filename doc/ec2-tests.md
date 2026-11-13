@@ -1,6 +1,6 @@
 # Tests on EC2
 
-Three measurements that a laptop, a Docker bridge or a shared 4-vCPU CI runner cannot make: they need separate hosts
+Four measurements that a laptop, a Docker bridge or a shared 4-vCPU CI runner cannot make: they need separate hosts
 on a real network, dedicated cores, or both. This document says what each one answers, what it costs, how long it
 runs and how far its result carries to bare metal, and how to run it with the scripts in
 `seqeron-service/src/test/scripts/multihost`.
@@ -328,6 +328,30 @@ Forcing the archive and catalog adds about 6.5 ms at the median and 9 ms at p99,
 The three arms agree within 2% with sync on, so the idle strategy's 60 µs does not show. The p99.9 is 9.5–12.6 ms and the maxima
 12.8–31 ms; with sync off the maxima are 0.2–3.4 ms.
 
+### Test 4: a trading day
+
+Tests 1 and 3 hold one rate per run. `trading-day.sh` replays a day's shape instead: `TradingDayBench`, on the leader's
+host, sends 50-byte messages through an `Application` on the leader's driver at a rate a profile gives, phase by phase,
+and times each from its scheduled send until it comes back sequenced. Sends follow the schedule, not the replies, so a
+stall shows as latency, and `behind_max` shows where the bench itself fell behind. Arrivals are Poisson. Orders and
+trades are not told apart: their messages are all about 50 bytes (ITCH 5.0 Trade 44, OUCH 5.0 Enter Order 47).
+
+A profile is a line per phase, `<name> <seconds> <from msg/s> <to msg/s>`, the rate moving linearly across the phase.
+Two ship in `seqeron-service/src/test/resources`, with quiet stretches compressed and the auctions in real time:
+
+| Profile | Timetable | Assumed peak | Run | Messages |
+| --- | --- | --- | --- | --- |
+| `trading-day-us.txt` | Nasdaq, 04:00–20:00 ET, crosses at 09:30 and 16:00 | 400k msg/s | 15 min | 183 M |
+| `trading-day-nordic.txt` | Nasdaq Stockholm, 08:45–17:30 CET, uncrosses at 09:00 and 17:29:30, the US open at 15:30 | 200k msg/s | 10 min | 49 M |
+
+No public figure gives a venue's peak order rate, so the peaks are placeholders: `DAY_SCALE` multiplies every rate, and a
+deployment's own peak replaces them. A rate counts new orders, cancels and trades. For scale, the US consolidated quote
+feed's 1 s peak is 865k msg/s across every venue (UTP, May 2026), but it counts top-of-book quotes, not order messages.
+At a cancel-to-trade ratio near 20 (ESMA and the SEC, 2013) each trade comes with about 40 order messages: Nasdaq's
+Nordic and Baltic share trading averages about 700k trades a day (April 2026), about 29 M messages, and Nasdaq's 2–3 B
+matched shares a day (2025), at an assumed 100 shares a trade, about 1 B. With the queue recorded, the US profile adds
+about 27 GB to each member's archive and the Nordic one about 7 GB.
+
 ## 2. Instances and cost
 
 | Role | Instance | vCPU / cores | Network | $/hr |
@@ -457,6 +481,7 @@ export MULTIHOST_SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" 
 HOP_RATES=20000 MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1 -Daeron.archive.catalog.file.sync.level=1" \
     ./hop-matrix.sh                                            # the sync comparison; run it again without the option
 REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and again with REPLAY_LOAD_DURING=1
+DAY_RUNS=2 ./trading-day.sh                                    # test 4; DAY_PROFILE=…/trading-day-nordic.txt for the other
 DISK_DEFAULT_VOLUME=/mnt/gp3-default ./disk-session.sh         # the disk session
 ```
 
