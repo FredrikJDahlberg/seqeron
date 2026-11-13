@@ -255,8 +255,7 @@ The steps, each checked before the next:
    `clusterctl.md`, `fault-tolerance.md`, `building.md` and the `CLAUDE.md` files. This document then records 2a as
    done and 2b as retired.
 
-Open after the release, from the limits above: an operator tool that prints a member's queue through its Replayer,
-where `SbeLogPrinter` read a recording; start-up time on a long log, since the checkpoints are rebuilt at each start;
+Open after the release, from the limits above: start-up time on a long log, since the checkpoints are rebuilt at each start;
 the announcement recording's growth per purge; the gateway host's short first cold follow in `replay-remote.sh`; and
 the throughput drop under the kernel's default writeback.
 

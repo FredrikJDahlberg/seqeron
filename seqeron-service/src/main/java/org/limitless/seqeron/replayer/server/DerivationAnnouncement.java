@@ -15,9 +15,9 @@ import org.limitless.seqeron.sequencer.LogDeriver;
  * @param start           where the member's service started, or the cut its queues were purged to
  * @param commitCounterId the id of the commit position counter on the member's driver
  */
-record DerivationAnnouncement(DerivationStart start, int commitCounterId) {
+public record DerivationAnnouncement(DerivationStart start, int commitCounterId) {
     static final String CHANNEL = "aeron:ipc?alias=seqeron-derivation-start|term-length=1m";
-    static final int STREAM_ID = 207;
+    public static final int STREAM_ID = 207;
 
     private static final int VERSION = 1;
     private static final int HEADER_LENGTH = 5 * Integer.BYTES + Long.BYTES + 1 + FrameLayer.MAX_GROUPS * Long.BYTES;
@@ -53,7 +53,7 @@ record DerivationAnnouncement(DerivationStart start, int commitCounterId) {
     }
 
     /** @return the last announcement {@code messages} holds all of, or null if this version reads none */
-    static DerivationAnnouncement decode(final List<byte[]> messages) {
+    public static DerivationAnnouncement decode(final List<byte[]> messages) {
         DerivationAnnouncement last = null;
         for (int from = 0; from < messages.size();) {
             final DerivationAnnouncement next = decodeFirst(messages.subList(from, messages.size()));

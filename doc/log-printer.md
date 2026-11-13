@@ -1,7 +1,8 @@
 # Log printer
 
-Every member's archive holds each group's queue, and its Raft log holds every ingress frame the cluster
-accepted. `SbeLogPrinter` reads either as JSON, decoded against the SBE schemas. It is how
+A member's archive holds its Raft log, every ingress frame the cluster accepted, and a gateway host's holds its
+recording of each group's queue it relays. `SbeLogPrinter` reads either as JSON, decoded against the SBE schemas, and
+derives a group's queue from a member's log. It is how
 an operator inspects what the cluster sequenced, how an engineer debugs a consumer against the frames it
 was given, and how an application's own payloads are exported to a decoder that understands them.
 
@@ -9,7 +10,7 @@ It reads an archive directory (`archive.catalog` and the segment files under `ar
 on a running cluster: a recording still being written is printed up to its current end.
 
 ```bash
-./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 2001 --oneline
+./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --queue 1 --oneline
 ```
 
 Gradle runs it too, taking the same options as `-P` properties:
@@ -60,6 +61,13 @@ with nothing repeated. No queue holds the whole log; the Raft log does. The sele
 ids change across restarts. Without `--stream` the older generations are printed as well. The printer
 exits non-zero when the stream names no recording.
 
+`--queue 1` prints group 1's queue wherever the archive holds it. A gateway host's archive records it, and the
+newest recording prints as `--stream 2001` prints it. A member's records no queue, so the printer derives the queue
+from its Raft log as the member's Replayer does: from the start the member last announced, its service's start or the
+cut a purge moved it to, through the log's last entry. The frames are the ones the member's Replayer serves, under a
+`[Derived]` line in place of the `[Catalog]` one. A running member's log is read to its end, which can hold entries
+not yet committed. `--stream` and `--queue` are not combined.
+
 ## Output
 
 Each message is preceded by a line naming it, since the JSON carries field values only, and a message
@@ -86,7 +94,7 @@ something that can: it writes that protocol's payloads to standard output, raw a
 decoder that holds their schema ([`seqeron-protocol-spec.md`](seqeron-protocol-spec.md) §13.1).
 
 ```bash
-./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 2001 \
+./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --queue 1 \
     -o 2 2>frames.log | order-decode
 ```
 
