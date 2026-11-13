@@ -15,7 +15,8 @@ the stall timeout, each queue's backlog
 is matched to its own recording, and a backlog past a quarter of the window holds a second replay. That backlog is the
 gateway host's: `GatedChecksum` holds its archive's recorder, which a member's cannot spare, since it records the Raft
 log too. `ScanDeadlineTest` drives `AeronReplayer.scan` on a bare driver, since an archive's
-replay always connects. `PausedWalkTest` stops polling a client mid-walk, under and past its 5 s replay stall
+replay always connects. `LogTrimmerAllocationTest` holds `LogTrimmer.doWork`, which the Replayer calls on every turn of
+its duty cycle, to allocating nothing while idle, measured before C2 compiles it. `PausedWalkTest` stops polling a client mid-walk, under and past its 5 s replay stall
 timeout, under a flood that evicts it from the queue, and with its `Replaying` unread past the archive's connect
 timeout, and holds it to converging in order without being caught up short of the queue's tip, and a mid-walk
 pause to starting no other replay. `ClusterClockStepTest` steps the leader's consensus clock back under a stream, through

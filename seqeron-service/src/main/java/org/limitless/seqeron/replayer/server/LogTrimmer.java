@@ -6,10 +6,13 @@ import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.client.ArchiveException;
 import io.aeron.cluster.RecordingLog;
+import io.aeron.logbuffer.FragmentHandler;
+import io.aeron.logbuffer.Header;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.util.Clocks;
@@ -46,6 +49,8 @@ public final class LogTrimmer {
     private final Subscription requests;
     private final ExclusivePublication replies;
     private final UnsafeBuffer reply = new UnsafeBuffer(new byte[REPLY_HEADER_LENGTH + 256]);
+    /** Built once: {@link #doWork} runs on every turn of the Replayer's duty cycle. */
+    private final FragmentHandler requestHandler = this::onRequest;
     private int trimmedAtSafeCount;
 
     /**
@@ -66,14 +71,7 @@ public final class LogTrimmer {
     }
 
     int doWork() {
-        int work = requests.poll((buffer, offset, length, header) -> {
-            if (length >= REQUEST_LENGTH) {
-                final long correlationId = buffer.getLong(offset);
-                final int failures =
-                    trim(buffer.getByte(offset + Long.BYTES) != 0, line -> offerReply(correlationId, LINE, line));
-                offerReply(correlationId, failures, "");
-            }
-        }, 1);
+        int work = requests.poll(requestHandler, 1);
         final int safeCount = safeLog.safeCount();
         if (safeCount != trimmedAtSafeCount) {
             trimmedAtSafeCount = safeCount;
@@ -81,6 +79,15 @@ public final class LogTrimmer {
             ++work;
         }
         return work;
+    }
+
+    private void onRequest(final DirectBuffer buffer, final int offset, final int length, final Header header) {
+        if (length >= REQUEST_LENGTH) {
+            final long correlationId = buffer.getLong(offset);
+            final int failures =
+                trim(buffer.getByte(offset + Long.BYTES) != 0, line -> offerReply(correlationId, LINE, line));
+            offerReply(correlationId, failures, "");
+        }
     }
 
     private void offerReply(final long correlationId, final int failures, final String line) {
