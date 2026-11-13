@@ -1,8 +1,8 @@
 # Disk load: findings and plan
 
 A review of what a member and a gateway host write to disk, how a slow write reaches a client, and the
-changes that would reduce both. Step 2a exists as a prototype, off by default, step 3's warning
-and step 4 are in, and nothing else here is implemented. Step 1 is confirmed, and bounds what step 2 is worth:
+changes that would reduce both. Step 2a is done: members derive their queues from the log and record none
+("Release" below). Step 3's warning and step 4 are in, 2b is retired, and step 5 is not implemented. Step 1 is confirmed, and bounds what step 2 is worth:
 it reduces the bytes written and leaves the stall to step 3.
 
 ## 1. What is written
@@ -50,7 +50,7 @@ msg/s, sampled with `CounterSampler`:
 
 ### Step 2: stop writing the queue to the durable volume
 
-Two ways, 2a preferred. 2b is the smaller change and is superseded by 2a.
+Two ways. 2a is done; 2b, the smaller change, is retired.
 
 #### 2a: no queue recording; the Replayer derives history from the log
 
@@ -81,7 +81,7 @@ every member's queue the same. The log is then the one copy on disk, whatever th
   position counter) and the host derives its queues as a member's Replayer does. Members' log positions
   agree by construction, so failing over to another member needs no term-length or MTU condition.
 - **Retention.** Queue purging goes. The log must be kept back to the oldest cut a client may restore from,
-  so the restart-safe cut becomes the log's trim point, which is step 4. The prototype restates
+  so the restart-safe cut becomes the log's trim point, which is step 4. The implementation restates
   `snapshot.md` §10 against the log ("Retention" below).
 - **Restart.** A member no longer rewrites its whole queue history while it replays the log.
 
@@ -91,15 +91,15 @@ Costs and open questions:
   `SessionCloseEvent`, `NewLeadershipTermEvent`, `ClusterActionRequest`) and reads the commit position
   counter. The codecs are public, in `io.aeron.cluster.codecs`, at the version `versions.properties` pins.
 - A group's replay reads every group's log entries and builds each of its frames: more CPU per replayed
-  byte than an archive replay, off the live path. The prototype walks a queue at a third to a half of the
+  byte than an archive replay, off the live path. A derived replay walks a queue at a third to a half of the
   recorded path's rate, which a snapshot start shortens with the log it has to read.
 - Addressing: a derived replay keeps queue positions ("Release" below).
 
-Prototype. With `replayer.deriveFromLog`, a member records no queue and its Replayer is a `DerivingReplayer`,
-which is to `ReplayerService` what `AeronReplayer` is over recordings: each queue is one recording, named by
-its group, that starts where the queue did and has reached where the derivation has. There is no recorded
-path to fall back on. A gateway host takes the same flag, and then relays a member's log where it relayed
-its queue recordings.
+Implementation. A member records no queue and its Replayer is a `DerivingReplayer`, which is to
+`ReplayerService` what `AeronReplayer` is over recordings: each queue is one recording, named by its group, that
+starts where the queue did and has reached where the derivation has. There is no recorded path to fall back on.
+A gateway host relays a member's log. It was measured as a prototype behind a flag, `replayer.deriveFromLog`,
+which the measurements below compare with the recorded path; the release removed the flag.
 
 - **Live path.** As above. `QueuePublisher` is unchanged: its liveness check and stall bound read the
   service's own subscriber where they read the recording.
@@ -166,22 +166,15 @@ its queue recordings.
   p99.9 of at most 0.74 ms but for one step. Without the flag the same ramps held, with a p99.9 of 2–3.7 ms at every
   rate from the recorder's writes. What is left with the flag is young GC: a 1–3 ms pause every 6–9 s whatever the
   rate. On gp3 at its default 125 MB/s the flag's ceiling is 582k msg/s, where the log writes about 130 MB/s.
-- **Tests.** `DerivedQueueTest`; `DerivedReplayTest`, a client's cold start and live following on a member
-  that records nothing; `CheckpointedReplayTest`, which runs a `DerivingReplayer` beside a recording
-  member's archive and compares replays fragment for fragment, and scans and tips; and three in
-  `ClusterSnapshotTest` on members that record nothing: a gateway restores its snapshot file and catches up, on
-  a member that has run throughout, on one restarted from a cluster snapshot, and on one whose queue start a
-  purge has moved. `CheckpointedReplayTest` thins and releases checkpoints, at a spacing and a bound it sets,
-  compares replays whose runs are past a bound of 0, and fails if a 200 000-frame history keeps 32 runs, which
-  it does once `FramePredictor` and the sequencer encode differently. `RecordingReaderTest` reads segment
-  files it writes: fragments, padding, a recording started inside a term, a truncated and a missing file.
-  For a host: `LogRelayTest`; in `DerivedReplayTest`, a client's cold start on a host and its walk on across
-  the stop of the member the host read; and three in `ClusterSnapshotTest`: the markers the host reports, its
-  purge below the cuts its gateway confirms, and its start from a member restarted from a cluster snapshot.
-  For retention, one more there: a member trims its log past its first segment, a gateway then restores on
-  it, and a host starts on it above the trimmed log.
+- **Tests.** `DerivedQueueTest`, `DerivedReplayTest` and `CheckpointedReplayTest` compare derived queues and
+  replays with recordings the test has a member's archive make (`InProcessCluster.withQueueRecordings()`), fragment
+  for fragment, and `CheckpointedReplayTest` thins and releases checkpoints and fails if a 200 000-frame history keeps
+  32 runs. `RecordingReaderTest` reads segment files it writes: fragments, padding, a recording started inside a term,
+  a truncated and a missing file. `LogRelayTest` holds a host's decisions, and `ClusterSnapshotTest` a member's and a
+  host's restarts, purges and trims, a host's start above a trimmed log, and its stop once every member has trimmed
+  past it.
 
-Retention. `snapshot.md` §10 with the flag on, where it differs:
+Retention. `snapshot.md` §10 on the recorded path and on the derived one, where they differ:
 
 | §10 | recorded | derived |
 | --- | --- | --- |
@@ -197,7 +190,7 @@ Retention. `snapshot.md` §10 with the flag on, where it differs:
 The restart-safety rules (§10.8), the client rules (§10.6) and the cut lookup (§10.3) are unchanged: they read
 the Replayer's listing, and a derived queue is listed as one recording.
 
-Limits of the prototype:
+Limits:
 
 - **A gateway host still records the queues it derives.** Its disk writes are unchanged. Its disk is not on the
   commit path (§2), so the stall is unaffected.
@@ -215,15 +208,11 @@ Limits of the prototype:
   and its first frame waits for the log between the run and the position asked for.
 - **The predictor repeats the sequencer's encoding.** A change to one and not the other costs speed, not
   correctness: every entry on which they differ becomes a run, served from the frames the sequencer published.
-- **No recorded path.** A member with the flag has no queue recording to fall back on, so `clusterctl` and the
-  tools that read one (`QueueRecordings`, `SbeLogPrinter` on a queue) find none.
-- **Not run with the flag:** the tests tagged `docker`, the C# client on Windows, and the multi-host EC2
-  tests but `hop-knee.sh` and `replay-remote.sh`. The integration and system suites and `ChaosTest` run with it
-  under `-PderiveFromLog`, the system suite's `Hosted*Test` with the C++ stubs when `HOSTED_PROBE` names them, and
-  `csharp-client-test.sh` under `CSHARP_MEMBER_OPTS=-Dreplayer.deriveFromLog=true`; CI runs each both ways, less
-  `csharp-client-test.sh`, which it runs without the flag, and the C++ stubs, which it runs neither way. With the
-  flag `QueueRecordings` reads a member's queues twice, as its log derives them and as its Replayer replays them,
-  and the checks of a member's queue recording are skipped.
+- **No recorded path.** A member has no queue recording to fall back on. `SbeLogPrinter --queue` derives a
+  queue from an archive's log, and `QueueRecordings` reads a member's queues twice, as its log derives them and as
+  its Replayer replays them.
+- **Not run on derived members:** the multi-host EC2 tests but `hop-knee.sh` and `replay-remote.sh`, and in CI the
+  system suite's `Hosted*Test` with the C++ stubs, which need `HOSTED_PROBE`.
 
 Release: derived queues only. Members always derive their queues, and the recorded path is retired, kept on the
 `recorded-queues` branch (tag `recorded-queues-final`) cut from `main` with the `LogTrimmer` fix.
@@ -236,7 +225,7 @@ Release: derived queues only. Members always derive their queues, and the record
   fatal, as a queue relay left behind does: the log is trimmed past it, so no retry can succeed and a restart from a
   snapshot can. The decision is `LogRelay`'s, under a unit test.
 
-The steps, each checked before the next:
+The steps, each checked before the next, are done:
 
 1. **Safekeeping.** Branch `recorded-queues` and tag `recorded-queues-final` from `main`, pushed. Check: the tag
    resolves on GitHub.
@@ -261,6 +250,9 @@ the throughput drop under the kernel's default writeback.
 
 #### 2b: a second archive for queue recordings
 
+Retired: since 2a a member records no queue, so a second archive would hold nothing. A gateway host still records
+the queues it derives, off the commit path (§2).
+
 Run a second `Archive` in the member's JVM, with its own directory, control stream ids and recorder thread.
 `SequencerService` and the Replayer use it; the consensus module keeps the first for the log.
 
@@ -282,7 +274,7 @@ length below Aeron's 128 MiB default so a purge follows the cut closely. Since t
 - `vm.dirty_expire_centisecs=50` and `vm.dirty_writeback_centisecs=20` are the one setting measured clean on
   EBS: 0 of 15 runs stalled. A member on Linux warns at start while both are the kernel's defaults
   (`NodeDriver.warnIfDefaultWriteback`).
-- Step 2a's flag still needs it: under the kernel's defaults a member with the flag had a 12 ms p99.9 at 582k msg/s,
+- Step 2a still needs it: under the kernel's defaults a deriving member had a 12 ms p99.9 at 582k msg/s,
   and in one ramp sequenced 680k of the 909k msg/s offered (`ec2-tests.md`).
 - Local NVMe for the log is untested, and belongs to the deferred metal runs.
 
@@ -290,7 +282,7 @@ length below Aeron's 128 MiB default so a purge follows the cut closely. Since t
 
 Done. A member's Replayer runs the trim each time a snapshot becomes restart-safe (`LogTrimmer`,
 `snapshot.md` §10.7), and `clusterctl trim-log` asks it to and prints its answer. This bounds space and
-recovery time, not the write rate. With step 2a's flag the trim stops at the log position of the derivation's
+recovery time, not the write rate. Since step 2a the trim stops at the log position of the derivation's
 first checkpoint, and trims nothing until the derivation has started.
 
 ### Step 5: keep `groupMask` narrow

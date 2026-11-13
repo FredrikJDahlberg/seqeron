@@ -31,10 +31,10 @@ cluster copies through unopened; what it means is the business of the producers 
   ┌─ cluster member ─────────────────────────────────────────────────┐
   │                                                                  │
   │  Aeron Cluster ──▶ Sequencer ──▶ a queue per group (aeron:ipc) ──┼──▶ consumers on this host:
-  │  (Raft log)                       │                              │      live, untethered
-  │      ▲                            ▼                              │
-  │      │                      Aeron Archive ──▶ Replayer ──────────┼──▶ consumers on this host:
-  │      │                                                           │      history and gaps
+  │  (Raft log)                                                      │      live, untethered
+  │      │                                                           │
+  │      ├──▶ Aeron Archive ──▶ Replayer (derives the queues) ───────┼──▶ consumers on this host:
+  │      │    (records the log)                                      │      history and gaps
   └──────┼───────────────────────────────────────────────────────────┘
          │ Raft replication
          ▼
@@ -45,8 +45,8 @@ A deployment is a cluster of **members** — one for development, three or more,
 production — each running one JVM: the Aeron Cluster consensus
 module, the sequencer, an embedded media driver, an Aeron Archive and a Replayer. Clients run in their own
 processes beside a member and attach to its media driver. A **gateway host** is a host that runs clients
-but no member; its own Replayer relays a member's queues onto local ones, so its clients see exactly what
-they would see on a member.
+but no member; its own Replayer relays a member's Raft log and derives the queues onto local ones, so its
+clients see exactly what they would see on a member.
 
 ### The cluster member
 
@@ -59,14 +59,16 @@ they would see on a member.
   carries every system message and the application messages addressed to its group. Every member publishes
   its own, leader and follower alike, and since every member applies the same committed log in the same
   order, each queue carries the same frames in the same order on every member, from `groupSeqNo` 1 or from the cut a
-  restarted member restored at. Recording positions are each node's own.
-- **The archive** records the queues. Each member therefore holds a complete copy of each, written
-  locally, with no cross-node replication and no leader-only recording. A queue is created once, when the
-  first topology load activates the groups, and survives leadership changes, so a member's recording of it
-  is one continuous run across every leader it has seen.
-- **The Replayer** serves history out of those recordings to the clients on its host: a cold start from
-  `groupSeqNo` 1, or a resume after a gap. It is off the live path, and nothing reads the archive except
-  through it.
+  restarted member restored at. Queue positions are each node's own. A queue is created once, when the first
+  topology load activates the groups, and survives leadership changes, so it is one continuous run across every
+  leader the member has seen.
+- **The archive** records the Raft log, and nothing else of the member's: the log is the one copy of history on
+  disk, whatever the number of groups, and every member holds all of it.
+- **The Replayer** serves history to the clients on its host: a cold start from `groupSeqNo` 1, or a resume
+  after a gap. It derives each queue from the log's recording by running a sequencer of its own over it, which
+  gives the frames the member's queue carried by the same determinism that makes every member's queue the same,
+  and keeps a checkpoint every 8 MiB of log so a replay can start mid-history. It is off the live path, and
+  nothing reads the archive except through it.
 
 ### The client tier
 
@@ -94,8 +96,9 @@ All three speak the same protocol.
    the queue's `groupSeqNo`, and republishes it as a `Sequenced` message on the member's queue. The payload is copied, never decoded or
    re-encoded.
 4. The queue offer is reliable: it retries until the message is published, since a dropped message would leave
-   a permanent hole. Only the archive's recording can hold it back, as the queue's one tethered subscriber.
-5. The archive records the message.
+   a hole between the queue and the history the log gives. Only a consumer its driver has not yet dropped can
+   hold it back.
+5. The archive has already recorded the Raft log entry, which is what a replay derives the message from.
 6. Each client on the host reads the message off the queue, checks that its `clusterSeqNo` is the next one,
    and dispatches it. A consumer that falls behind is dropped by the media driver rather than slowing
    the queue, and heals by replay.
@@ -103,7 +106,7 @@ All three speak the same protocol.
    is the message known to be sequenced.
 
 A cold start runs steps 6 and 7 against a replay first. The client asks its member's Replayer for the
-recording from its start, delivers the replay in order, keeps any live messages that arrive meanwhile, and
+queue from its start, delivers the replay in order, keeps any live messages that arrive meanwhile, and
 switches to the queue when the two meet.
 
 ## Messages
@@ -194,8 +197,8 @@ sent them; authentication belongs at the system's external edges.
 | failure | what happens | recovery |
 | --- | --- | --- |
 | leader lost | Aeron Cluster elects a new leader; the sequencer emits `LeadershipChanged` | the stream continues at the next `clusterSeqNo`; producers resend what the old leader had not committed |
-| member lost | the others keep quorum | the member restarts and replays the full log, rebuilding its recording |
-| a member's archive stops recording | the member terminates (exit 70) rather than sequence history it cannot keep | as for a lost member |
+| member lost | the others keep quorum | the member restarts and replays the log, rebuilding its queues |
+| a member cannot publish its queue | the member terminates (exit 70) rather than drop a frame | as for a lost member |
 | a member's log is truncated below what it applied (an Aeron Cluster 1.53.2 fault) | the member terminates (exit 70) rather than go on from state the log no longer has | as for a lost member |
 | slow consumer | its media driver drops it within about 0.2 s; the queue is not held back | it resumes over the gap from the Replayer |
 | message missed on the queue | the next message reveals the gap | the client resumes from the last message it delivered, holding live messages meanwhile |
@@ -219,8 +222,9 @@ encrypted, authenticated layer.
 ## Snapshots
 
 Without a `<snapshots>` policy the cluster takes no snapshots, and a member's recovery time and archive size
-grow with the history its archive holds, so it suits a deployment that resets the archive between runs. With one, a cluster snapshot is also an application round: a restarted member records each
-queue from the round's cut, and purging moves each recording's start forward while it runs. Neither member can
+grow with the history its archive holds, so it suits a deployment that resets the archive between runs. With one, a cluster snapshot is also an application round: a restarted member starts each
+queue from the round's cut, purging moves each queue's start forward while it runs, and the member trims its
+log below what its snapshots and queues need. Neither member can
 then serve history from `groupSeqNo` 1, so every consumer of its queues must be able to restart from a snapshot
 file.
 
@@ -268,9 +272,10 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 | payload | 8,874 bytes per message; larger payloads are split by the application |
 | node recovery | full-log replay without a `<snapshots>` policy, so time and archive size grow with the history the archive holds (the heartbeat alone is about 86,400 messages a day); with one, a replay of the log since a cluster snapshot |
 | queue history | with a `<snapshots>` policy, purged on each member and each gateway host below its newest restart-safe cut |
-| Raft log | with a `<snapshots>` policy, trimmed by each member below its two newest restart-safe snapshots; otherwise it grows |
-| gateway relay | one cut off from every member while they purge past it stops relaying until its host restarts |
-| concurrent replays | four per member, one while its queue recording falls behind; more clients wait |
+| Raft log | with a `<snapshots>` policy, trimmed by each member below its two newest restart-safe snapshots and the derivation's first checkpoint; otherwise it grows |
+| replay rate | a member derives a replay from the log, at a third to a half of the rate an archive replays a recording, and rebuilds its checkpoints at each start before it serves |
+| gateway relay | one cut off from every member while they trim their logs past it stops until its host restarts |
+| concurrent replays | four per member; on a gateway host, one while a queue recording falls behind; more clients wait |
 | ingress confirmation | within one producer process: a restarted producer starts with nothing pending |
 | faults | crash, not Byzantine; network faults are injected in CI, but a standalone media driver is never killed |
 | durability | majority replication, no fsync: a power loss across a majority of hosts can lose committed messages |

@@ -17,12 +17,12 @@ newest snapshot the log confirms (§3.4); the snapshot is a file of its own, and
 
 The cluster takes snapshots only while a `<snapshots>` policy is loaded; without one `SequencerService.onTakeSnapshot`
 throws, and `clusterctl shutdown` stops the cluster with Aeron's `ABORT`, which takes no snapshot, rather than
-`SHUTDOWN`, which does. Without a policy every member records the whole sequenced stream (§1.1), so any member can
-serve history to its clients without a peer, and the cost is that recovery time and archive size grow with the history the archive holds,
+`SHUTDOWN`, which does. Without a policy every member keeps the whole log (§1.1), so any member can serve history
+to its clients without a peer, and the cost is that recovery time and archive size grow with the history the archive holds,
 which suits a deployment that resets it between runs. The 1 Hz heartbeat alone adds about 86,400 frames a day.
 
-With a policy, a member restarts from the newest cluster snapshot that its `restart-safe.log` names, and its queue
-recording starts at that snapshot's cut rather than at `groupSeqNo` 1. What lies below the cut is in the
+With a policy, a member restarts from the newest cluster snapshot that its `restart-safe.log` names, and its queues
+start at that snapshot's cut rather than at `groupSeqNo` 1. What lies below the cut is in the
 applications' own snapshot files, so a consumer that cannot restore from one (a bare `ReplayerStreamReceiver` has no
 way to write it) cannot follow a restarted member. A cut is named only when every co-located application that joined
 its round has confirmed its file, so a member that dies between a cut and that mark restarts from the snapshot before
@@ -35,17 +35,18 @@ procedure: a failed component restarts and replays.
 
 ## 1. Cluster nodes
 
-### 1.1 Every node records a complete copy
+### 1.1 Every node holds a complete copy
 
 `SequencerService` runs on every member, leader and follower alike, and republishes every sequenced frame on
-the member's queue of each group the frame reaches (`aeron:ipc`, stream 2000 + `groupId`), which the member's
-Aeron Archive records. Every member applies the same committed log in the same order, so each queue
-carries the same frames in the same order on every member (spec **F-2**); recording positions are each node's own. There is no cross-member replication of recordings and no
-leader-only archive.
+the member's queue of each group the frame reaches (`aeron:ipc`, stream 2000 + `groupId`). Nothing records the
+queue: the member's Aeron Archive records the Raft log, and its Replayer derives each queue's history from that
+recording with a sequencer of its own (§3.1). Every member applies the same committed log in the same order, so
+each queue carries the same frames in the same order on every member (spec **F-2**), and a derivation of it the
+same again. There is no cross-member replication of queues and no leader-only archive.
 
-The queue publications and their recordings are created once, when the first topology load activates the
-groups (spec §7.4), and survive leadership changes, since `aeron:ipc` has no port to conflict on. A member's
-recording of a queue is therefore one continuous run across every leader tenure it has seen.
+The queue publications are created once, when the first topology load activates the groups (spec §7.4), and
+survive leadership changes, since `aeron:ipc` has no port to conflict on. A member's queue is therefore one
+continuous run across every leader tenure it has seen.
 
 So any member can serve its history, or a gap, to its own clients, and losing a member loses no history. Without
 a `<snapshots>` policy that history starts at `groupSeqNo` 1; with one it starts at the member's newest safe cut (§0).
@@ -54,8 +55,8 @@ a `<snapshots>` policy that history starts at `groupSeqNo` 1; with one it starts
 
 Aeron Cluster runs the election. On every new term, each member's sequencer synthesizes a
 `LeadershipChanged` frame carrying the new `leadershipTermId` — one per term, including a term the same
-member wins again. The frame is sequenced and recorded like any other, so every recording holds a complete
-history of leadership, and a client can tell the current leader from the log alone.
+member wins again. The frame is sequenced like any other, so every queue holds a complete history of
+leadership, and a client can tell the current leader from the log alone.
 
 **Producer sessions survive a failover**:
 
@@ -82,23 +83,24 @@ leader and takes the first every time; a leader stopped with `SIGTERM` leaves ea
 The session survives either way, so neither side sees a fault.
 §5 describes how a producer detects and resends those frames.
 
-### 1.3 A node that cannot record terminates itself
+### 1.3 A node that cannot publish its queue terminates itself
 
-A dropped frame would leave a permanent gap in a member's recording, so `QueuePublisher.emit` retries the queue
-offer until it succeeds. Only the local archive can back-pressure that offer for long: the recording is the
-queue's one tethered subscriber, and client subscriptions are untethered. A client that stops polling holds
-the window only until its driver drops it, within about 0.2 s ([`ops.md`](ops.md), "Untethered
-subscribers"), well inside the stall timeout below.
+A dropped frame would leave a member's queue behind the positions its log gives, which a client joins the live
+queue by and a replay derives, so `QueuePublisher.emit` retries the queue offer until it succeeds. The queue's
+one tethered subscriber is the service's own, which reads past each frame as it is offered, so the publication
+is always connected; client subscriptions are untethered. A client that stops polling holds the window only
+until its driver drops it, within about 0.2 s ([`ops.md`](ops.md), "Untethered subscribers"), well inside the
+stall timeout below.
 
-The retry is bounded. `QueuePublisher` watches the archive's recording position and tells three cases apart:
+The retry is bounded. `QueuePublisher` watches the service's subscriber and tells three cases apart:
 
-| archive state | response |
+| queue state | response |
 | --- | --- |
-| slow: back-pressured, recording position advancing | keep retrying; raise the back-pressure alert after 200 ms |
+| slow: back-pressured, the subscriber's position advancing | keep retrying; raise the back-pressure alert after 200 ms |
 | stalled: no progress for `sequencer.queueStallTimeoutMs`, default 5 s | fatal |
-| recording gone | fatal at once |
+| the subscriber's image gone | fatal at once |
 
-A stopped recording back-pressures nothing, since the untethered client subscriptions keep the publication
+A lost image back-pressures nothing, since the untethered client subscriptions keep the publication
 connected, so the 1 Hz heartbeat also calls `QueuePublisher.checkRecordingAlive`. If the consensus module
 refuses the heartbeat timer for 1 s without a break, that is fatal too; otherwise the cluster clock would
 stop with no visible signal.
@@ -108,7 +110,7 @@ with code 70 (`NodeDriver.EXIT_FATAL`); [`ops.md`](ops.md) has the operator's pr
 a cluster callback that throws has already had its log position advanced, and `AgentRunner` keeps the agent
 running, so the frame would be silently dropped (spec §9.4).
 
-How the process ends depends on where the condition is found. Inside a retry — a stalled recording, an
+How the process ends depends on where the condition is found. Inside a retry — a stalled queue, an
 offer no retry can clear, a refused timer — the service thread cannot leave it, and a graceful shutdown
 waits for that thread, so the process halts at once and a failed leader is replaced within the election
 timeout. From the heartbeat check the callback returns, and the member shuts down gracefully. Any shutdown
@@ -116,10 +118,11 @@ after a fatal, including a Replayer's, is halted 15 s after it began (`FATAL_SHU
 it closes the archive that may be what failed. A halted member leaves its mark files active, and a restart
 is refused until their liveness timeout (about 10 s) has passed.
 
-The remaining members hold identical recordings and keep quorum, and an election moves leadership if the
+The remaining members hold the same log and keep quorum, and an election moves leadership if the
 failed member led. In a three-member cluster a second failure loses quorum. A restarted member replays the
-log, from the start or from its newest safe snapshot (§0), and rebuilds its recording. Start-up has the same bound — the recording must be live within 5 s
-(`QUEUE_RECORDING_START_TIMEOUT_MS`) — so a member that exits 70 again at once still has broken storage.
+log, from the start or from its newest safe snapshot (§0), and rebuilds its queues. Start-up has the same bound —
+each queue's subscriber must connect within 5 s (`QUEUE_RECORDING_START_TIMEOUT_MS`) — so a member that exits 70
+again at once still has a broken driver.
 
 ### 1.4 A node whose applied log is truncated takes itself down
 
@@ -132,9 +135,9 @@ shows either.
 
 Raft never truncates an applied entry, so the consensus module's truncation event says when it happens: the log cut
 below the position the node has applied. `SequencerServer` exits 70 on it. The restart
-replays the log the others kept and rebuilds the member's recording.
+replays the log the others kept and rebuilds the member's queues from it.
 
-It cannot undo what was read before. The member's earlier recording, and the restarted follower's, hold frames at
+It cannot undo what was read before. The member's queue, and the restarted follower's, carried frames at
 clusterSeqNos the log now gives to others, and a client that consumed them acted on history the cluster discarded.
 
 ### 1.5 Shutdown and restart
@@ -142,7 +145,7 @@ clusterSeqNos the log now gives to others, and a client that consumed them acted
 `clusterctl shutdown` runs on the leader. It publishes a `ClusterStopped` marker, waits (best effort) for it
 on the queue, then calls `ClusterTool.abort`. `SequencerServer` connects
 `ConsensusModule.Context.terminationHook` to a shutdown barrier, so each member closes its archive and
-flushes the recording before exiting. `clusterctl start` publishes `ClusterStarted` and waits for it on the
+flushes the log's recording before exiting. `clusterctl start` publishes `ClusterStarted` and waits for it on the
 queue, confirming that a leader is elected and ingress is accepted. [`clusterctl.md`](clusterctl.md) has both
 procedures.
 
@@ -245,25 +248,29 @@ and after a gap.
 
 ### 3.1 `ReplayerService` (one per node)
 
-The Replayer is not on the live path; clients use it only to catch up. Its job is to serve one recording,
-correctly, to many clients at once, and to say so plainly when it cannot.
+The Replayer is not on the live path; clients use it only to catch up. Its job is to serve each queue's
+history, correctly, to many clients at once, and to say so plainly when it cannot.
 
-- **One recording.** It serves only the member's active queue recording. Every start of the member replays the
-  log into a new recording, from `clusterSeqNo` 1 or, under a `<snapshots>` policy, from the restored cut (§0),
-  so the active one holds all the log the member keeps, and an older one is a prefix of it that nothing reads.
+- **Derived from the log.** On a member it serves each queue as one recording that its derivation of the Raft
+  log's recording holds (`DerivingReplayer`): it runs a sequencer of its own over the log up to the commit
+  position, from where the member's service started, `clusterSeqNo` 1 or, under a `<snapshots>` policy, the
+  restored cut (§0), and keeps a checkpoint of the sequencer's state every 8 MiB of log. A replay starts at the
+  newest checkpoint at or below the position asked for, at the queue's positions, so the replay protocol is the
+  one a recording would serve. It lists no queue until the derivation has caught up with the commit position as
+  it stood at the start, and is not ready before then. A gateway host serves its own recordings instead (§3.3).
 - **Integrity.** Each client checks that the first frame it dispatches is `groupSeqNo` 1 (or the frame at its
   snapshot's cut, §3.4), and that a resumed
-  replay opens on the frame it resumed from; either failing is fatal to the client. A member's recording that
-  is missing or corrupt therefore stops the clients that read it rather than feeding them a short history.
+  replay opens on the frame it resumed from; either failing is fatal to the client. A history that is missing or
+  corrupt therefore stops the clients that read it rather than feeding them a short one.
 - **Archive errors.** A request whose archive call throws is answered `ReplayPending`, without touching live
   delivery; the client's resend is the retry. The Replayer's own calls wait a second after one throws, and every
   error is counted (`seqeron_replayer_archive_errors_total`) and logged once per episode. The archive
   control session is read every duty cycle, because the archive closes a session whose pings go unread; a
   session it closes anyway cannot be reopened, so that ends the duty cycle.
 - **Slots.** At most `MAX_CONCURRENT_REPLAYS` = 4 replays run at once, and a freed slot goes to a waiting
-  client at once. While the queue's recording trails the queue by more than a quarter of the publication window,
-  a new replay starts only when none is running: replays compete with the recorder for the disk, and the
-  recorder is what holds the sequencer back. A slot frees when its replay's publication is gone: when the
+  client at once. On a gateway host, while a queue's recording trails the queue by more than a quarter of the
+  publication window, a new replay starts only when none is running: replays compete with the recorder for the
+  disk, and the recorder holds the relay back. A slot frees when its replay's publication is gone: when the
   client closes its replay subscription at the replay's end, or when the driver times out a client that died
   mid-replay. A replay that its subscriber reads nothing of for 10 s, from a client alive but stuck, is stopped,
   which frees its slot (spec §10, R-3). Many concurrent replays happen mainly when a member restarts and all
@@ -281,11 +288,11 @@ correctly, to many clients at once, and to say so plainly when it cannot.
 `ReplayerStreamReceiver`, in every language, is the Aeron adapter; its decisions are in `ReplayerRecovery`,
 which is unit-tested directly, case for case across the languages.
 
-- **Cold start.** It walks the active recording from its start to the tip the Replayer reported when it
+- **Cold start.** It walks the queue's history from its start to the tip the Replayer reported when it
   answered, unless it restores a snapshot first (§3.4).
 - **Gap.** A live frame whose `groupSeqNo` is ahead of the next expected one clears `isCaughtUp()` and
   requests a resume at the position of the last delivered frame, repairing only the gap. If the resumed
-  replay's first frame is not the expected `groupSeqNo` — the member restarted, and its recording changed —
+  replay's first frame is not the expected `groupSeqNo` — the member restarted, and its queue's history changed —
   the client falls back to a full walk. A frame is a duplicate by its `clusterSeqNo`, which increases along a
   queue but not by one (spec **F-6**).
 - **Eviction.** A client that stops polling the queue for longer than its driver's untethered window allows is
@@ -299,14 +306,14 @@ which is unit-tested directly, case for case across the languages.
 - **`isCaughtUp()` is not latched.** It can clear again on a later gap; the gateway fences (§2.1) and the
   leader gate (§4) depend on that.
 - **The first frame is 1.** Without a snapshot to restore, the first frame a client ever delivers must have
-  `groupSeqNo` 1, or recovery stops and the receiver's next poll throws: the member's recording must reach the
+  `groupSeqNo` 1, or recovery stops and the receiver's next poll throws: the member's history must reach the
   start of the queue, which under a `<snapshots>` policy it does not after a restart (§0).
 - **One replay subscription per replay.** The replay stream (201) is shared by every client on the member,
   and an Aeron publication runs at its slowest tethered subscriber. A client therefore subscribes to it only
   for the duration of its replay, filtered to that replay's session id. A subscription held open between
   replays would never be polled for other clients' sessions, and would stop their replays about 32 MiB in,
   half of a 64 MiB term.
-- **Stalled replays.** A bounded replay of a recording still being written does not close its image at the
+- **Stalled replays.** A bounded replay of a history still being written does not close its image at the
   bound, so an open, attached, stalled image would go unnoticed. A replay that makes no progress for 5 s
   (`REPLAY_STALL_TIMEOUT_MS`), or whose image never attaches, is requested again. A resume, and a walk that
   has delivered a frame, are retried by re-anchoring through `requestResume()`, so the anchor check above
@@ -315,26 +322,28 @@ which is unit-tested directly, case for case across the languages.
 ### 3.3 Gateway host
 
 A gateway host runs clients but no member (`start-gateway-host.sh`). Its `ReplayerServer` runs its own media
-driver and archive, and a relay copies a member's queue onto the host's own: one archive replay of the
-member's active recording, over UDP, that follows it live. Clients on the host then recover exactly as §3.1
-and §3.2 describe, against the host's archive. The relay's decisions are in `QueueRelay`, which is unit-tested
-directly.
+driver and archive, and a relay derives the member's queues onto the host's own: one archive replay of a
+member's Raft log over UDP, bounded by that member's commit position, through a sequencer of its own, as a
+member's Replayer derives them. The host's archive records those queues, and clients on the host then recover
+exactly as §3.1 and §3.2 describe, against the host's recordings. The relay's decisions are in `LogRelay`, which
+is unit-tested directly.
 
-- **The next frame only.** The relay republishes a frame only if its `clusterSeqNo` is one past the last it
-  published, and drops anything at or below it, so the host's queue holds each frame once, in order, whichever
-  member it came from.
+- **Start.** A member's Replayer announces where its service started, and the state it started from, on a
+  stream its archive records (`DerivationAnnouncement`, stream 207). The relay's derivation starts where the
+  first member it reads announces, so the host's queues start at `groupSeqNo` 1, at that member's cut, or at the
+  checkpoint below the start a purge moved it to.
 - **Member lost.** Nothing received for 3 s (`SOURCE_TIMEOUT_MS`, three cluster heartbeats), an ended
   replay, or an archive request unanswered for 1 s moves the relay to the next member in
-  `SEQERON_ARCHIVE_ENDPOINTS`. It resumes there at the recording position its last frame ended at, since
-  every member's active recording starts at `clusterSeqNo` 1 (without a `<snapshots>` policy) and its positions
-  follow from the frames. If the
-  frame at that position is not the next one, it replays that member's recording from its start and skips
-  what it already has; a member that has recorded less than the relay has published is passed over. After
-  every member has failed in a row, it waits 500 ms before trying again.
-- **Restart.** A restarted relay starts a new local recording and relays the log from `clusterSeqNo` 1, as a
-  member's full-log replay does, so the host's new recording starts at `clusterSeqNo` 1, as a client checks
-  (§3.1). The cost is the whole history over the network per restart. Under a `<snapshots>` policy it starts
-  again from the cut it restored at instead ([`snapshot.md`](snapshot.md) §10).
+  `SEQERON_ARCHIVE_ENDPOINTS`. It resumes there at the end of the last log entry it applied: members' log
+  positions agree by construction, whatever their IPC term length or MTU. A member whose log does not hold that
+  position, trimmed past it or not yet reached, is passed over. After every member has failed in a row, it waits
+  500 ms before trying again.
+- **History lost.** Once every member's log has been found to start past the position, they trimmed it while
+  the relay was away, and no retry can serve it: the relay logs `FATAL: every member archive's log recording
+  starts past position …` and the process exits with code 70. A connected relay holds its member's trim back,
+  since the archive refuses to purge log a replay reads.
+- **Restart.** A restarted relay starts new local recordings and derives again from a member's announced start
+  ([`snapshot.md`](snapshot.md) §10). The cost is the log from that start over the network per restart.
 - **The local recording.** A local queue that refuses a frame is not spun on: the frame is offered again next
   cycle, and the member's replay waits under Aeron flow control. A local recording that stops, or makes no
   progress for `replayer.queueStallTimeoutMs` (default 5 s) while the queue is back-pressured, exits the process
@@ -346,20 +355,20 @@ directly.
 
 A client whose façade has a `SnapshotListener` restores before it dispatches anything
 ([`snapshot.md`](snapshot.md) §7). It takes the newest confirmed file in its snapshot directory, one it named
-only after its source's sequenced `SnapshotEnd` matched it, replays its member's recording from the file's cut
+only after its source's sequenced `SnapshotEnd` matched it, replays its member's queue from the file's cut
 to see that the frame there is the round's `SnapshotStarted`, reads the file's records, and resumes after the
-cut as it would after a gap. A file whose cut the recording does not hold gives way to the next older one;
-with none left, it walks the recording as §3.2 describes.
+cut as it would after a gap. A file whose cut the member's history does not hold gives way to the next older
+one; with none left, it walks the history as §3.2 describes.
 
 - **One replay before the records.** The check of the cut is a replay whose first frame decides it; the
   records then come from the local file, and the resume after them is an ordinary one.
-- **After the restore**, every fallback that would walk the recording resumes at the snapshot instead: the
+- **After the restore**, every fallback that would walk the history resumes at the snapshot instead: the
   history before its cut is no longer this client's to replay.
 - **A crash.** A file is named only once its round is confirmed and the file forced to disk, and an older one
   is deleted only after that, so a crash costs at most the round in flight. A file torn regardless has no
   trailer and gives way to an older file.
 - **A purged log.** Its rounds start again at 1, so a file from before the purge may name a round the new log
-  also has. Its cut is a different frame, or none, in the new recording, so the check of the cut rejects it.
+  also has. Its cut is a different frame, or none, in the new history, so the check of the cut rejects it.
 - **A damaged file.** A file whose records do not match its trailer gives way to an older file, the instance
   keeping two, before the listener sees any of it. A `formatVersion` or header version the build does not
   read fences the client with `SNAPSHOT_UNRESTORABLE`; a restart repeats it until the build is fixed or the
@@ -369,8 +378,8 @@ with none left, it walks the recording as §3.2 describes.
 - **Divergence.** At every later round each instance compares its own serialization with the sequenced end.
   One that differs is fenced with `SNAPSHOT_DIVERGED` (spec §16 A-7). Its file of that round is never
   confirmed, so its restart restores the round before, or walks, and rebuilds the state from the log.
-- **After a member restart.** The member records its queue again from `clusterSeqNo` 1. A client whose cut the
-  new recording has not reached is answered `ReplayPending` and waits for it.
+- **After a member restart.** The member derives its queue again from where its service started. A client whose
+  cut the derivation has not reached is answered `ReplayPending` and waits for it.
 
 ## 4. Leader-only work
 
@@ -442,17 +451,17 @@ three client-tier harnesses are scripts under `seqeron-service/src/test/scripts`
 
 | test | what it does, and what must hold |
 | --- | --- |
-| `ChaosTest` | randomized faults against three members and a `TestGateway` pair, reproducible from its printed seed: kill and restart the leader or a follower, `SIGKILL` a follower, `SIGSTOP`/`SIGCONT` a member, drop one live queue frame (§3.2), stop a member's queue recording (§1.3, asserting the member exits). After each round there must be one leader, the pair must still serve, and consumers must still deliver in order. At the end every member's recording must be gap-free, strictly increasing in `clusterSeqNo`, and at the same high mark on all three (§1.1) |
+| `ChaosTest` | randomized faults against three members and a `TestGateway` pair, reproducible from its printed seed: kill and restart the leader or a follower, `SIGKILL` a follower, `SIGSTOP`/`SIGCONT` a member, drop one live queue frame (§3.2). After each round there must be one leader, the pair must still serve, and consumers must still deliver in order. At the end a replica cold-started on each member must replay its queue from `groupSeqNo` 1 in order, and all three must deliver the same number of frames (§1.1) |
 | `FailoverProcessTest` | a leader kill with a replay consumer, and the confirmed-ingress check of §5 |
 | `GapRecoveryTest` | a caught-up consumer drops one live frame after a leader failover, and must resume and keep delivering (§3.2) |
 | `PausedSubscriberTest` | a caught-up consumer is `SIGSTOP`ped while more than two queue windows go by; its member must stay up, with no queue-stall fatal (§1.3), and once resumed the consumer must heal the gap its eviction left (§3.2) |
 | `SessionReplaceTest` | a `TestApplication` on a follower is `SIGSTOP`ped past its session timeout, then the other two members are, so its member has no quorum; each time it must open a new session rather than fence (§2.1, §4), and the cluster heartbeat must keep reaching it while an attempt is pending. Then both `TestGateway` instances are paused past their session timeout: the standby, designated while its own session was lost, must replace it and serve rather than fence (§2.1) |
-| `ReplayerRestartTest` | member 0's `SequencerServer` is killed under a caught-up client; the client must fail fast, and a fresh cold start must be served from the member's new recording alone (§3.1) |
+| `ReplayerRestartTest` | member 0's `SequencerServer` is killed under a caught-up client; the client must fail fast, and a fresh cold start must be served from the member's new derivation alone (§3.1) |
 | `GatewayHostTest` | a gateway host whose relay reads the leader, which is then killed; a `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to another member. The host is then restarted, and a cold start there must catch up from its new recording (§3.3) |
 | `SnapshotTest` | the `TestGateway` pair on three members with snapshot rounds every 2 s. The standby restarts and restores, the active instance is killed and the restored one takes over, and the killed one returns as a hot standby, restoring from the file it confirmed while it served. Each restore must report the state the client traffic implies, and no instance may be fenced, so every round is also compared against the restored state (§3.4) |
 | `csharp-client-test.sh` | the C# client against three members: confirmed ingress across a leader kill (§5), a cold start from `clusterSeqNo` 1 (§3.2), a C# gateway pair handed over when its active instance is killed (§2.2, §2.3), an application replica restored from a snapshot it confirmed (§3.4), and a cold start with no snapshot file on a member restarted at a cut, which must fail from its poll (§3.2) |
 | `csharp-windows-test.sh` | the C# client on Windows beside a gateway host, against one member in WSL1: confirmed ingress (§5), a cold start through the gateway host (§3.2, §3.3), and the C# gateway pair handed over (§2.2, §2.3). One member, because three cannot hold Raft's heartbeats under WSL1; the leader kill is `csharp-client-test.sh`'s |
-| `DockerFailoverSoakTest` | `ROUNDS` (default 15) leader kills against `docker/compose.yml` under continuous `ProbeMarker` load, restoring each killed member before the next. Every round must change leadership and the killed member must rejoin; an observer on each surviving member must deliver in `clusterSeqNo` order throughout; and a cold start at the end must replay the whole multi-tenure history from one recording and reach live. Needs Docker and `./gradlew operatorDist` (`networkFaultTest`); CI does not run it, since `ChaosTest`'s kill-leader leg covers it, and `ROUNDS=3` is a quick local run |
+| `DockerFailoverSoakTest` | `ROUNDS` (default 15) leader kills against `docker/compose.yml` under continuous `ProbeMarker` load, restoring each killed member before the next. Every round must change leadership and the killed member must rejoin; an observer on each surviving member must deliver in `clusterSeqNo` order throughout; and a cold start at the end must replay the whole multi-tenure history and reach live. Needs Docker and `./gradlew operatorDist` (`networkFaultTest`); CI does not run it, since `ChaosTest`'s kill-leader leg covers it, and `ROUNDS=3` is a quick local run |
 | `ReplayColdStartTest` | times a cold `ClusterProbe follow` from launch to caught up against a preloaded archive, quiet and under load. `REPLAY_PRELOAD=400000` builds the case that used to hang, which must converge in well under a second; failing to catch up indicates a replay stall (§3.2), not a slow machine |
 
 `failover.yml` runs the faults no kill or pause produces, against the same `docker/compose.yml` cluster: a
@@ -477,5 +486,5 @@ starved of CPU, and a gateway host whose relay's member link is unrepaired, jitt
 - **Producer authentication.** The cluster checks well-formedness, not identity (spec §7). Authentication
   belongs at the system's external edges.
 - **Snapshots under cluster faults.** `SnapshotTest` kills the leader and restores its clients against
-  the member's new recording, but the property test injects replay faults and no failover or publisher change
+  the member's new history, but the property test injects replay faults and no failover or publisher change
   mid-round. A round missed because its publisher died mid-round is covered by unit tests only.

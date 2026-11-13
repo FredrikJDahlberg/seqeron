@@ -164,7 +164,7 @@ back-pressure; the bench now counts declines after its warm-up (`declines=`, `wi
   `knee` line: the last rate below the first step whose p99 exceeds `KNEE_P99_US` (default 10 ms), that loses a marker or whose
   leader moved. The limit is a choice, not a measurement; the step lines are in `hop-matrix.sh`'s format.
 - `hop-matrix.sh` runs the order check once per rate, before the cluster goes down: `node.sh queue-digest` (`QueueDigest`) reads each
-  member's recordings of group 1's queue off its archive, fails on a gap in `groupSeqNo`, and prints a CRC-32C over the frames with
+  member's group 1 queue through its Replayer, fails on a gap in `groupSeqNo`, and prints a CRC-32C over the frames with
   a checkpoint every 65536; `hop-order-check.py` compares the three, and when the members stopped at different frames (the 1 Hz
   heartbeat keeps adding them) they are digested again up to the last frame all hold. The verdict is a `# order` line of the results,
   and `hop-analyze.py` fails a result set whose line is not `order=PASS`. It covers the rate's runs together, not each one.
@@ -391,10 +391,11 @@ about $13 on c6in.8xlarge. Neither includes the
 rehearsals, so allow the first attempt twice the figure; the soak and the knee ramps run unattended.
 
 The disk session (`disk-session.sh`) measures `disk-load-plan.md`, step 2a, in one launch: two knee ramps (`direct`, 100-byte
-markers, from 50k msg/s in 10 s steps) with the flag and two without, two with it under the kernel's default writeback and
-two with the archive on a default gp3 volume, then test 3's cold replay of 4,000,000 frames, quiet and under load, both ways.
-The ramps take about 26 min, the replays 15–20 and the launch and setup about 25: about 1.2 h on the four Test 1 hosts,
-about $7.50 with the volumes, $15 for a first attempt. Each member's root volume is gp3 at 1,000 MB/s and 4,000 IOPS, above
+markers, from 50k msg/s in 10 s steps), two under the kernel's default writeback and two with the archive on a default gp3
+volume, then test 3's cold replay of 4,000,000 frames, quiet and under load. The figures here are of the session as it ran
+before the release, when it also ran each knee and replay on members that recorded their queues: the ramps took about 26
+min, the replays 15–20 and the launch and setup about 25, about 1.2 h on the four Test 1 hosts, about $7.50 with the
+volumes, $15 for a first attempt. Each member's root volume is gp3 at 1,000 MB/s and 4,000 IOPS, above
 the 400 MB/s the recorded arm writes at the top step, and a second 100 GB gp3 at its default 125 MB/s is mounted for
 `DISK_DEFAULT_VOLUME`; an EBS volume's settings change once in 6 hours, so both are set at launch. The members need
 passwordless `sudo`, for the writeback and the cache drops. Its parts ran in 45 min of the hosts' time, about $5.
@@ -460,10 +461,8 @@ REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and aga
 DISK_DEFAULT_VOLUME=/mnt/gp3-default ./disk-session.sh         # the disk session
 ```
 
-To run either arm on members that record no queue (`disk-load-plan.md`, step 2a), set
-`MULTIHOST_MEMBER_OPTS=-Dreplayer.deriveFromLog=true`, and the same in `MULTIHOST_HOST_OPTS` for a gateway host
-(`replay-remote.sh`, `hop-gate-edge.sh`), which then relays a member's Raft log. The order check reads each such member's
-queue through its Replayer. `REPLAY_COLD=1` drops every member's page cache before each replay phase, so the replay reads
+Members record no queue (`disk-load-plan.md`, step 2a), and a gateway host relays a member's Raft log. The order check
+reads each member's queue through its Replayer. `REPLAY_COLD=1` drops every member's page cache before each replay phase, so the replay reads
 its log or recording from EBS; it needs passwordless `sudo` on the members.
 
 Each script's header lists its variables. Results and every host's logs land under `build/multihost` on the driver

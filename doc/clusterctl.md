@@ -35,7 +35,7 @@ The defaults match `SequencerServer`'s, so a default single-member cluster needs
 | `activate <gatewayId>` | yes | ask the cluster to make a gateway instance active |
 | `request-snapshot` | yes | start an application snapshot round |
 | `load-topology <file>` | yes | publish the deployment's topology document |
-| `trim-log [--dry-run]` | no | have this member purge its Raft log and snapshot recordings below its two newest restart-safe snapshots |
+| `trim-log [--dry-run]` | no | have this member purge its Raft log and snapshot recordings below its two newest restart-safe snapshots and what its queues need |
 | `counters` | no | list this member's operator counters |
 | `help` | no | print usage |
 | `snapshot` | — | refused: the cluster takes no Aeron snapshots (`request-snapshot` is the application kind) |
@@ -193,7 +193,10 @@ Replayer reads the member's `recording.log` and `restart-safe.log` and purges th
 1. It keeps the two newest snapshots that `restart-safe.log` names and the log from the older one. With fewer than two
    it does nothing and exits 0.
 2. It purges every snapshot recording older than the two, the consensus module's and the service's.
-3. It purges each log recording's segments below the older snapshot's log position, at the segment boundary at or below it.
+3. It purges each log recording's segments below the lower of the older snapshot's log position and the first
+   checkpoint the Replayer keeps, which its queues are derived from, at the segment boundary at or below it. Until
+   the Replayer's derivation has started, it prints
+   `the log is kept whole until the queues are derived from it` and purges no log.
 
 It is safe to repeat: a recording already gone counts as done. The archive refuses a log purge while a replay reads
 below the position or while another delete runs; the command prints the refusal, leaves the log as it was and exits 1,

@@ -12,8 +12,8 @@ hosts that run applications but no member.
 
 | process | runs | does |
 | --- | --- | --- |
-| `SequencerServer` | once per member | the member: Aeron Cluster's consensus module, the sequencer, an embedded media driver, the archive that records the queue, and the Replayer |
-| `ReplayerServer` | once per gateway host | the Replayer alone, with its own media driver and archive, relaying a member's queue onto the host's own |
+| `SequencerServer` | once per member | the member: Aeron Cluster's consensus module, the sequencer, an embedded media driver, the archive that records the Raft log, and the Replayer |
+| `ReplayerServer` | once per gateway host | the Replayer alone, with its own media driver and archive, relaying a member's Raft log and deriving the queues onto the host's own |
 | `ClientProxy` | once per hosted client, beside a member or on a gateway host | the host of a hosted façade: runs the `Application`, `Gateway` or `Consumer` for a C++ stub over `aeron:ipc` ([Client proxy](#client-proxy)) |
 | an application | beside a member or on a gateway host | the client tier, attached to that host's media driver |
 | `clusterctl` | on demand, on a member | starts and stops the cluster, designates gateways, loads the topology, requests snapshot rounds |
@@ -24,15 +24,17 @@ next `clusterSeqNo` and the Raft consensus timestamp, and synthesizes the frames
 (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`, `SnapshotStarted`, `SessionClosed`). It has no Aeron dependency
 and is unit-tested directly. `SequencerService` is its Aeron adapter and holds no replicated state of its
 own. Every member publishes every sequenced frame on the node-local queue of each group it reaches (`aeron:ipc`,
-stream 2000 + `groupId`), which its archive records. The queues open when the first `load-topology` activates
+stream 2000 + `groupId`), and nothing records it. The queues open when the first `load-topology` activates
 the groups, and the cluster sequences nothing before it.
 
-The Replayer serves that recording to the clients on its host, for a cold start, a gap or the check of a
-snapshot's cut, and is the only component that reads the archive. Its decisions are pure classes
-(`Replayer`, `ReplaySlotAllocator`); `AeronReplayer` is the only part that touches Aeron. On a gateway host the relay (`QueueRelay`, `AeronQueueRelay`) copies a member's
-queues over UDP, those of the groups in `replayer.groups`, and moves to the next member when that one is lost
-([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)).
-The host's Replayer also purges those recordings as rounds are confirmed, and `replayer.snapshotJoinMs` (default
+The Replayer serves the queues' history to the clients on its host, for a cold start, a gap or the check of a
+snapshot's cut, and is the only component that reads the archive. On a member it derives that history from the
+Raft log's recording (`DerivingReplayer`), running a sequencer of its own over the log, so the log is the one
+copy on disk. Its decisions are pure classes (`Replayer`, `ReplaySlotAllocator`). On a gateway host the relay
+(`LogRelay`, `AeronLogRelay`) replays a member's log over UDP, derives the queues of the groups in
+`replayer.groups` from it, publishes them on the host's own and records them, and moves to the next member when
+that one is lost ([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)).
+The host's Replayer serves and purges those recordings as rounds are confirmed, and `replayer.snapshotJoinMs` (default
 10000) is how long after a cut an instance on the host has to join its round ([`ops.md`](ops.md), "Cluster
 snapshots"). The two instances of a gateway never run on one host.
 
@@ -112,7 +114,7 @@ a developer wants:
 ```bash
 ./seqeron-service/src/main/scripts/start-cluster.sh
 # [cluster.sh] SequencerServer is running
-# [ReplayerService/0] ready — queue recording 0 live and verified from clusterSeqNo 1; serving replay
+# [ReplayerService/0] ready — group 1's queue recording 1 live; serving replay
 # [ClusterProbe/0] Caught up — following live
 ```
 
@@ -184,7 +186,7 @@ The sequenced stream itself has no port: the queue is `aeron:ipc` on each member
 | `sequencer.leaderHeartbeatIntervalMs` | `200`                  | how often the leader heartbeats its followers |
 | `sequencer.leaderHeartbeatTimeoutMs` | `2000`                  | how long a follower waits for a leader heartbeat before it starts an election ([`ops.md`](ops.md), "Consensus timeouts") |
 | `sequencer.electionTimeoutMs` | `1000`                         | how long an election stage waits on the other members |
-| `sequencer.queueStallTimeoutMs` | `5000`, at least `1000`      | how long a queue's recording may make no progress under back-pressure before the member exits 70 ([`ops.md`](ops.md), "A node that terminates itself") |
+| `sequencer.queueStallTimeoutMs` | `5000`, at least `1000`      | how long a queue may make no progress under back-pressure before the member exits 70 ([`ops.md`](ops.md), "A node that terminates itself") |
 | `aeron.cluster.max.sessions` | `64`, rather than Aeron's 10   | the most client sessions the cluster holds at once ([`ops.md`](ops.md), "Cluster sessions") |
 
 The Replayer runs in the member's JVM, on its media driver, and takes no configuration of its own.
@@ -194,7 +196,7 @@ The Replayer runs in the member's JVM, on its media driver, and takes no configu
 A member keeps its archive and cluster directories across restarts (`deleteArchiveOnStart=false`,
 `deleteDirOnStart=false`), rejoins, and replays the Raft log from `clusterSeqNo` 1, or from the newest cluster
 snapshot its `restart-safe.log` names when a `<snapshots>` policy is loaded (`snapshot.md` §10). Without a policy
-every member's recording is a complete copy of history, and `clusterctl shutdown` stops the cluster with `ABORT`,
+every member's log is a complete copy of history, and `clusterctl shutdown` stops the cluster with `ABORT`,
 which takes no snapshot. To start clean, delete the
 `archive-<id>` and `cluster-<id>` directories under `baseDir`, or run `purgelog.sh`.
 
@@ -205,8 +207,8 @@ restarts once its driver's heartbeat is older than `aeron.driver.timeout` (10 s)
 mark files already impose.
 
 A leader failover is not a break in a queue. Each queue publication is created once, at activation, and never
-re-created on a leadership change, since `aeron:ipc` has no port to collide on, so a member's recording of it is
-one continuous run across every leader tenure. [`fault-tolerance.md`](fault-tolerance.md) covers each failure
+re-created on a leadership change, since `aeron:ipc` has no port to collide on, so a member's queue is one
+continuous run across every leader tenure. [`fault-tolerance.md`](fault-tolerance.md) covers each failure
 and its recovery.
 
 ## Scripts
@@ -223,7 +225,7 @@ Prometheus and Grafana provisioning). `./gradlew operatorDistZip` archives it as
 | script | purpose |
 |--------|---------|
 | `start-cluster.sh` | start a single-member cluster and a `ClusterProbe follow` consumer in the background; Ctrl-C stops both. `SEQERON_TOPOLOGY` names a topology document to load once the member runs; without one the consumer waits for a `load-topology`. `SEQERON_NO_CONSUMERS=1` leaves out the consumer, for a caller that runs its own |
-| `start-gateway-host.sh` | make a host that runs no member able to run clients: `ReplayerServer` in gateway-host mode, relaying a member's queues onto the host's own. `SEQERON_GROUPS` (required: the `groupId`s whose queues it relays, comma-separated), `SEQERON_NODE_ID` (3), `SEQERON_ARCHIVE_ENDPOINTS` (the three localhost members), `SEQERON_HOST` (`localhost`) |
+| `start-gateway-host.sh` | make a host that runs no member able to run clients: `ReplayerServer` in gateway-host mode, relaying a member's log and deriving its queues onto the host's own. `SEQERON_GROUPS` (required: the `groupId`s whose queues it derives, comma-separated), `SEQERON_NODE_ID` (3), `SEQERON_ARCHIVE_ENDPOINTS` (the three localhost members), `SEQERON_HOST` (`localhost`) |
 | `start-client-proxy.sh` | run the host of one hosted client, `ClientProxy`, beside a member or gateway host; the arguments are its `-Dproxy.*=` properties ([Client proxy](#client-proxy)) |
 | `stop-cluster.sh` | stop everything the start scripts launched, and any `SEQERON_EXTRA_PROCESSES="label\|pattern;…"` a caller adds |
 | `clusterctl.sh <command>` | the cluster's life cycle — see [Operating it](#operating-it) |

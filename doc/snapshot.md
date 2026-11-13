@@ -333,28 +333,27 @@ is also an application round (§10.8). §10.1 to §10.5 bound a member's restart
 its queue starting again at the cut; §10.6 purges the queue while the member runs, which does change what a
 client can walk; §10.7 trims the Raft log, which Aeron does not do; §10.8 is the cut they share.
 
-**What the member's replay is for.** It rebuilds two things: the `Sequencer`'s state, and the member's queue
-recording, which the Replayer serves. An Aeron cluster snapshot replaces the first. The second is history,
-which a snapshot cannot regenerate; what lies below the cut is in the applications' own snapshots (§10.8), so
-the recording starts again at the cut rather than being kept.
+**What the member's replay is for.** It rebuilds two things: the `Sequencer`'s state, and the member's queues,
+whose history its Replayer derives from the Raft log. An Aeron cluster snapshot replaces the first. The second is
+history, which a snapshot cannot regenerate; what lies below the cut is in the applications' own snapshots
+(§10.8), so the queue starts again at the cut, and so does the derivation of it.
 
 ### 10.1 Rules
 
 - **Equal state, not equal bytes.** As in Aeron, replicas that applied the same frames hold equivalent state:
   every instance of an application, both instances of a gateway, every member's `Sequencer`. A snapshot of one
   restores another. What the instances share is the cut's `clusterSeqNo`, which every queue and every member
-  carries; a recording position is a node's own address for it. Nothing relies on two nodes' positions
+  carries; a queue position is a node's own address for it. Nothing relies on two nodes' positions
   agreeing, and the queue need not be byte-identical for a file to be valid (§10.8).
-- **A queue starts at a cut.** A member's queue recording starts at the cut of the set it restores, or at
-  `groupSeqNo` 1 with none. It is created at the position the marker started at when the node's settings are
-  the ones the snapshot names, so its positions then agree with the recording it replaces and with every
-  peer's, and a lookup by position finds the frame at once; otherwise it starts at position 0 and the cut is
+- **A queue starts at a cut.** A member's queue starts at the cut of the set it restores, or at `groupSeqNo` 1
+  with none. It is created at the position the marker started at when the node's settings are the ones the
+  snapshot names, so its positions then agree with the queue it replaces and with every peer's, and a lookup by position finds the frame at once; otherwise it starts at position 0 and the cut is
   found by `clusterSeqNo` (§10.3).
 - **Replicated state holds no recording id.** It does carry each queue's marker position and the publication's
   term length and MTU, which are the node's own; they only decide whether a restored queue keeps its positions
   (§10.3), and nothing else depends on them.
 - **Each snapshot stands alone.** Which was taken first never matters; the one ordering is at start (§10.5).
-- **A recording is valid only with the Raft log it came from.** `purgelog.sh` removes both or neither.
+- **An archive is valid only with the cluster directory it came from.** `purgelog.sh` removes both or neither.
 - **Snapshots are seldom.** Each is taken once `X` bytes have accumulated since the last, the policy's
   `bytes` (§10.6), sized from the measured replay rate so that replaying `X` takes no longer
   than the restart a deployment accepts; at a minute, that is hours of traffic. A restart then replays at
@@ -377,30 +376,32 @@ the recording starts again at the cut rather than being kept.
 
 ### 10.3 The queue
 
-A queue's recording is not one run from `groupSeqNo` 1 across every restart (§10.8). It starts at a cut, and a
-restart starts it again at the cut of the set it restores. Nothing of the old recording is trusted or
-extended, so its tail is not verified.
+A queue is not one run from `groupSeqNo` 1 across every restart (§10.8). It starts at a cut, and a restart
+starts it again at the cut of the set it restores. Nothing records a member's queue: its history is the Raft
+log from where the service started, which the member's Replayer derives (`disk-load-plan.md`, step 2a).
 
 | | |
 | --- | --- |
-| **genesis** | With no snapshot, a new recording from `groupSeqNo` 1, as today. |
-| **restore** | With the term length and `mtu` the snapshot names equal to the node's, each queue publication is created at the position its marker started at, which the `Sequencer`'s snapshot carries, with `ChannelUriStringBuilder.initialPosition(position, initialTermId, termLength)`. The archive records from there, so positions agree with the recording before and with the peers'. With either differing, the publication is created at position 0 and the member's positions are its own; nothing is refused, because a file names its cut by `clusterSeqNo` (§10.8). |
-| **finding a cut** | The Replayer is asked for a cut by its `clusterSeqNo`, with the file's position as a hint (§10.8). It keeps each cut it has recorded, with its position (§10.6), and answers from that. A cut below the recording's first frame is refused (R-2), one above its tip is `ReplayPending`, and one between that is not kept, as after a Replayer restart, is found by reading the recording for the marker, which §10.6 bounds, and kept. |
+| **genesis** | With no snapshot, the queue from `groupSeqNo` 1, derived from log position 0. |
+| **restore** | With the term length and `mtu` the snapshot names equal to the node's, each queue publication is created at the position its marker started at, which the `Sequencer`'s snapshot carries, with `ChannelUriStringBuilder.initialPosition(position, initialTermId, termLength)`, so positions agree with the queue before and with the peers'. With either differing, the publication is created at position 0 and the member's positions are its own; nothing is refused, because a file names its cut by `clusterSeqNo` (§10.8). The service hands its Replayer a `DerivationStart`: the snapshot's log position, the state it restored and each queue's start, so the derivation gives the same positions. |
+| **finding a cut** | The Replayer is asked for a cut by its `clusterSeqNo`, with the file's position as a hint (§10.8). It keeps each cut it has seen, with its position (§10.6), and answers from that. A cut below the queue's start is refused (R-2), one above its tip is `ReplayPending`, and one between that is not kept, as after a Replayer restart, is found by reading the history for the marker, which §10.6 bounds, and kept. |
 | **first frame** | The marker, re-encoded from the round's state, in place of the `LeadershipChanged` that activation offers first today. |
-| **old recording** | Purged with `purgeRecording` once the new one is recording, so the Replayer finds one recording per queue. |
-| **emit** | The log replays from the set's position and every frame after the marker is offered, as live. Nothing is held back: the recording is new, and what it records again is what the old one held above the cut, frame for frame. |
+| **emit** | The log replays from the set's position and every frame after the marker is offered, as live. |
 | **fallback** | An older set, after `invalidate-latest-snapshot` (§10.2), restores the same way at its own cut and replays forward: at most `2X`. |
-| **live** | As today: a recording that stops exits the member with 70 (`QueuePublisher`). |
+| **live** | A queue that cannot be published exits the member with 70 (`QueuePublisher`). |
 | **faults** | A full disk or an archive error while the set is written terminates the member, as Aeron does for its own services (`ClusteredServiceAgent.onTakeSnapshot`, `ArchiveException.STORAGE_SPACE`). The restart restores the last good set. |
-| **a gateway host** | Its relay starts at the member's recording start (§10.6) and records into a new local recording, as a member's restart does. |
+| **a gateway host** | Its relay derives from where the member it reads announces (§10.6) and records into new local recordings, as a member's restart starts its queues again. |
 
 The decision is a pure class over whether a snapshot exists and whether the term length and MTU it names are the
-node's: genesis, restore at the marker's position, or restore at 0. It is unit-tested as `QueueRelay` is.
+node's: genesis, restore at the marker's position, or restore at 0. It is unit-tested as `LogRelay` is.
 
 ### 10.4 The Replayer
 
 The Replayer holds no replicated state, so the cluster snapshot has nothing of it, and it keeps no index of
-snapshots: the recording is bounded at the cut (§10.3) and purged (§10.6), so nothing of it grows with uptime.
+snapshots. On a member its derivation keeps checkpoints of the `Sequencer`'s state in memory, rebuilt at each
+start from where the service started; a queue's history is bounded at the cut (§10.3) and purged (§10.6), and a
+purge releases the checkpoints below it, so nothing of it grows with uptime. A gateway host's recordings are
+bounded the same way.
 
 ### 10.5 A member's start
 
@@ -408,20 +409,23 @@ snapshots: the recording is bounded at the cut (§10.3) and purged (§10.6), so 
    (§10.8).
 1. **Sequencer.** `onStart` restores the snapshot, which gives the cut and each queue's marker position, term
    length and MTU; with none, the start is genesis.
-2. **Queue.** Create each queue publication at its cut and purge the previous recording (§10.3); at genesis,
-   record from `groupSeqNo` 1. Settings that differ from the snapshot's start the recording at position 0.
+2. **Queue.** Create each queue publication at its cut (§10.3); at genesis, from `groupSeqNo` 1. Settings that
+   differ from the snapshot's start the queue at position 0. Hand the Replayer the `DerivationStart`.
 3. **Sequencer.** The log replays from the snapshot, every frame after the marker offered, and sequencing goes
    live.
-4. **Replayer.** Ready once each queue is recording and the old recording is purged.
+4. **Replayer.** Derives the log from the `DerivationStart`, and is ready once its derivation has caught up with
+   the commit position as it stood when it started.
 
-Step 4 waits for step 2 so that the Replayer never serves the recording being replaced.
+Step 4 waits for step 2 so that the Replayer never serves a history that starts anywhere but the queue's start.
 
 ### 10.6 Purging history
 
-A restart bounds a recording at the cut (§10.3); between restarts it grows with traffic. Purging bounds it
-while the member runs. A recording is a run of segment files from a start position: `purgeSegments` drops whole
-files from the front, and every position above stays where it is, so a file's `cutPosition` (§4.1), a client's
-resume and `QueueRelay`'s resume keep working. A client reads history from `groupSeqNo` 1 only when it walks,
+A restart bounds a queue's history at the cut (§10.3); between restarts it grows with traffic. Purging bounds
+it while the member runs. On a member a purge moves the queue's start forward and releases the derivation's
+checkpoints below it, and the log below the first checkpoint kept is then the trim's (§10.7). On a gateway host
+a recording is a run of segment files from a start position, and `purgeSegments` drops whole files from the
+front. Either way every position above stays where it is, so a file's `cutPosition` (§4.1) and a client's resume
+keep working. A client reads history from `groupSeqNo` 1 only when it walks,
 and it walks only with no usable snapshot: in a young log, before its first confirmed round. Once every
 instance holds a confirmed file, history below the oldest cut a file may name is never read.
 
@@ -438,76 +442,82 @@ instance holds a confirmed file, history below the oldest cut a file may name is
 - A round is an Aeron snapshot (§10.8). The `Sequencer` reports one due on `interval`, on `bytes` or on an
   unanswered `SnapshotRequested`, and the leader's service sets the `ClusterControl` toggle (§10.2).
 
-A recording then holds at most about `bytes` plus one round's wait, plus one segment, at any traffic rate.
+A queue's history then holds at most about `bytes` plus one round's wait, plus one segment or term, at any
+traffic rate.
 
-**Purging.** Each node's Replayer purges its own queue recordings, on a member and on a gateway host alike:
+**Purging.** Each node's Replayer purges its own queues, on a member and on a gateway host alike:
 
-- **It learns each cut as it is recorded**, with its position: on a member from `SequencerService`, which
-  emits the marker, and on a gateway host from each relay, once it has published the marker. After a restart it starts again from the cut it
-  restored at.
-- **It purges whole segments** wholly below its floor, rounded down to a segment boundary
+- **It learns each cut as it is published**, with its position: on a member from `SequencerService`, which
+  emits the marker, and on a gateway host from its relay, once a local queue has taken the marker. After a
+  restart it starts again from the cut it restored at.
+- **The floor** is the newest restart-safe cut (§10.8), on a member and on a gateway host alike: every instance on
+  the node that joined the round has confirmed its file for it. A host's instances are the gateways and
+  applications that read its recordings.
+- **On a member it moves the queue's start** to the term boundary at or below its floor, as a recording's start
+  moves a segment at a time; nothing is deleted.
+- **On a gateway host it purges whole segments** wholly below its floor, rounded down to a segment boundary
   (`purgeSegments` takes nothing else). The archive refuses a purge below a segment a replay session is
   reading, and a second delete on a recording while one runs; both are an error response, which the Replayer
-  retries at its next duty cycle and does not treat as a fault. On a member and on a gateway host alike the
-  floor is the newest restart-safe cut (§10.8): every instance on the node that joined the round has confirmed
-  its file for it. A host's instances are the gateways and applications that read its recordings.
-- **One round per `clusterSeqNo`.** A host has one relay per relayed group, and each sees the round's marker
-  at its own time. The first relay to report the cut opens the round; the others' reports only record the
-  cut's position in their group. When the round is restart-safe, each group's floor is that cut's position in
+  retries at its next duty cycle and does not treat as a fault.
+- **One round per `clusterSeqNo`.** A host's relay reports the round's marker once per relayed group, as each
+  local queue takes it. The first report opens the round; the others only record the cut's position in their
+  group. When the round is restart-safe, each group's floor is that cut's position in
   its own recording, looked up by `clusterSeqNo` (§10.3). A group whose relay has not reached the marker gets
-  no floor that round. A relay's report opens a round only when the relay is live: a marker it replays while
+  no floor that round. A relay's report opens a round only when the relay is live: a marker it derives while
   catching up to the member's recorded position, as after a host restart, is only recorded, so the host never
   opens a round for a cut its instances may have confirmed in an earlier run.
-- **A gateway host's relay** holds the purge of the member it reads, so only a relay disconnected from every member
-  while they purged past it is left behind. It stops with a fatal rather than cycling through the members, and its
-  restart relays from a member's recording start into a new recording (§10.3).
+- **A gateway host's relay** holds the log trim of the member it reads, since the archive refuses to purge log a
+  replay reads, so only a relay disconnected from every member while they trimmed past it is left behind. It stops
+  with a fatal once every member's log starts past its position, rather than cycling through the members, and its
+  restart derives from a member's announced start into new recordings (§10.3).
 - **Nodes need not agree.** No client starts at the purge point: one restores at its file's cut, which is the
   same frame on every node, so each node may keep more than another.
-- **The Raft log** below the older of the two cluster snapshots kept (§10.2) is trimmed by the member
-  (§10.7).
+- **The Raft log** below the lower of the older of the two cluster snapshots kept (§10.2) and the first checkpoint
+  the derivation keeps, which is at or below every queue's start, is trimmed by the member (§10.7).
 
 What changes for clients:
 
 - **A file whose cut is still retained restores as §7 describes.** Nothing changes.
-- **A file older than the retained history** names a `cutPosition` below the recording's start, which the
+- **A file older than the retained history** names a `cutPosition` below the queue's start, which the
   Replayer refuses (spec R-2), and an older file is tried, as for a file from another log.
-- **A walk on a truncated recording is fatal.** With no usable file the client walks, and the first frame
+- **A walk on a truncated history is fatal.** With no usable file the client walks, and the first frame
   is not `groupSeqNo` 1 (`FirstFrameNotOne`). The client is fenced until a peer's file is copied into its
-  directory (§4.1), as it is today on a recording that does not reach the start of the queue.
+  directory (§4.1), as it is on any history that does not reach the start of the queue.
 - **Every application takes part.** With `<snapshots>` present, the loader requires `snapshot="true"` on
   every row, gateways and applications: a restart discards the queue below the cut. An application whose only
   output leaves the cluster is no exception: it has a row, and its instance that may publish submits the
   round's `SnapshotEnd`, the one frame it sends. A process with no row has no snapshot, and is fenced once its
-  node's recording starts at a cut.
+  node's queue starts at a cut.
 
 What changes on the nodes:
 
-- **`ReplayerService.checkReady`** serves a recording whatever its first frame, since a member's restart
-  starts its recording at a cut (§10.3) rather than at `groupSeqNo` 1.
-- **A gateway host's relay** starts from the member's recording start rather than `groupSeqNo` 1, and
-  replays from that start where it does today. Its own recording then starts where the member's does, and its
-  Replayer purges it the same way.
+- **`ReplayerService.checkReady`** serves a queue whatever its first frame, since a member's restart starts
+  its queue at a cut (§10.3) rather than at `groupSeqNo` 1.
+- **A gateway host's relay** derives from where the member it reads announces rather than `groupSeqNo` 1: that
+  member's start, or the checkpoint below the start a purge moved it to. Its own recordings start there, and its
+  Replayer purges them the same way.
 
 A new member or a lost disk takes the cluster snapshot and the Raft log from Aeron's `ClusterBackup`, which
-replicates both from a running cluster, restores at the cut and records its queues from there (§10.3). It
-copies no queue, which is not in the cluster's recording log and needs none; the clients' snapshot files come
+replicates both from a running cluster, restores at the cut and derives its queues from there (§10.3). It
+has no queue to copy; the clients' snapshot files come
 from a peer (§4.1).
 
 **Tests.** `SequencerTest` covers the byte trigger beside the interval. `ReplayerRecoveryTest`, in every
-language and the same order, covers a file whose cut is below the recording's start giving way to an older
-one, and a file whose cut is at another position in this recording than its `cutPosition` restoring by
-`cutClusterSeqNo` (§10.8). `QueueRelay` covers a start at a member's recording start above `groupSeqNo` 1, and a
-resume on a member whose positions differ, which republishes no frame twice and misses none. The restart-safe
+language and the same order, covers a file whose cut is below the queue's start giving way to an older
+one, and a file whose cut is at another position in this queue than its `cutPosition` restoring by
+`cutClusterSeqNo` (§10.8). `LogRelayTest` covers a relay that resumes at the log position on another member, and
+one that stops once every member's log starts past it. The restart-safe
 class (§10.8) covers a source that never joins, one that joins and never confirms, one that confirms late, and a
 replayed action. The queue
 decision class (§10.3) covers genesis, a restore at the marker's position and a restore at 0 on differing term
-length or MTU. The Replayer's cut lookup covers a cut it has kept, one below the recording, one above its tip
-and one it must read for. In the integration suite, `ClusterSnapshotTest` restarts a member from its restart-safe
+length or MTU. The Replayer's cut lookup covers a cut it has kept, one below the queue's start, one above its tip
+and one it must read for, on a member's derived queue (`CutLookupTest`). In the integration suite, `ClusterSnapshotTest` restarts a member from its restart-safe
 snapshot with its queue at the cut, one with no safe snapshot from its whole log, one with another IPC term length at
 position 0, and one whose log was trimmed; it asserts that no `ClusterHeartbeat` gap across a round nears the
 shortest queue-silence watchdog, and covers a gateway's confirmations holding or releasing the cut, a gateway host's
-relay, purge and restart, and a relay left behind by members purging past it. `QueueRecordings` reads each archive's
-recordings directly, so a gap or repeat a client would hide fails the test. `FailoverPropertyTest` does not yet run
+relay, purge and restart, and a relay left behind by members trimming their logs past it. `QueueRecordings` reads
+each member's queues as its log derives them and as its Replayer replays them, and a host's recordings directly, so
+a gap or repeat a client would hide fails the test. `FailoverPropertyTest` does not yet run
 with snapshots and purging on, and no test kills a member between a round's cut and its mark.
 
 ### 10.7 Trimming the Raft log
@@ -524,8 +534,8 @@ that policy does, with the count fixed at two (§10.2):
 - **Purge the log below it.** `purgeSegments` on each log recording the recording log names, at the segment
   boundary at or below that position, through the member archive's local control. The archive refuses a
   position below the end of the recording's first segment, and one a replay is reading; a refusal leaves the
-  log as it was, to be trimmed by the next run. A member that derives its queues from the log
-  (`disk-load-plan.md`, step 2a) purges no further than the log its derivation's first checkpoint starts at.
+  log as it was, to be trimmed by the next run. A member purges no further than its derivation's first
+  checkpoint, which every queue's history is derived from, and purges no log until its derivation has started.
 - **Purge older snapshots.** `purgeRecording` on every snapshot recording, the consensus module's and the
   service's, older than the two.
 - **Per member, and safe to repeat.** Each member trims its own archive; a run that fails leaves more than
@@ -543,7 +553,7 @@ that policy does, with the count fixed at two (§10.2):
 - **A lagging member can outlive the log it needs.** A follower that was down past the trim horizon needs log
   its leader may have purged, which neither the spec nor Aeron's sources settle; the integration suite
   covers it. Such a member is rebuilt from `ClusterBackup`, which keeps what the members trim.
-- **Not the queue.** Its history is §10.6's.
+- **Not the queue's start.** §10.6 moves it, and the first checkpoint below it bounds this trim.
 
 ### 10.8 One cut for the cluster and the clients
 
@@ -560,12 +570,12 @@ Inside `SequencerService.onTakeSnapshot`:
 Nothing waits for an application. While the consensus module is in `State.SNAPSHOT` it polls no ingress,
 timers or service messages (`ConsensusModuleAgent.consensusWork`), so producers are held back for as long as the
 `Sequencer` takes to write its state. The applications serialize as §4 says, each on dispatching `R`, while
-the queue and its recording carry the frames after it: an application that falls behind is dropped from the
+the queue carries the frames after it: an application that falls behind is dropped from the
 live feed and heals by replay (§4, §12).
 
 **Restart-safe.** The cluster snapshot is in `recording.log` once the service acks, before any application
 has a file for `R`. A member restarting from it starts its queue at `R` (§10.3), so a co-located application
-whose newest file is older is below the recording's start and fenced (spec R-2, §10.6). A cut is therefore
+whose newest file is older is below the queue's start and fenced (spec R-2, §10.6). A cut is therefore
 restarted from only once it is *restart-safe* on that member: every co-located application that joined the
 round has confirmed its file for it, durable under its name (§4.1). A file that is only written is not enough,
 since a restore takes confirmed files alone (§7 step 1).
@@ -601,7 +611,7 @@ file (§5).
 `SequencerService` hands the Replayer each cut it emits, in-process, which it already imports: the round, its
 `clusterSeqNo`, the marker's position and the snapshot's log position. A pure class (the expected sources,
 who has joined, who has confirmed, and the join window) decides when the cut is restart-safe, unit-tested as
-`QueueRelay` is. It then appends the snapshot's log position to `restart-safe.log` in the member's cluster
+`LogRelay` is. It then appends the snapshot's log position to `restart-safe.log` in the member's cluster
 directory, forced to disk, and the Replayer's purge floor moves to the cut (§10.6). A restart of the member or
 of the Replayer drops a round in flight, which stays unsafe.
 
@@ -613,8 +623,8 @@ the log still begins at its first term, which the archive's catalog says: the fi
 position 0 until `trim-log` purges a segment (§10.7). Otherwise the member does not start.
 
 **A replica that is down.** It joins nothing and is not expected, so the cut is restart-safe without it and
-the member's history is not held for it. The cost falls on the replica. The member's recording now starts at
-the cut, so when the replica returns its newest file is cut below the recording's start, the Replayer refuses
+the member's history is not held for it. The cost falls on the replica. The member's queue now starts at
+the cut, so when the replica returns its newest file is cut below the queue's start, the Replayer refuses
 it (spec R-2), the walk finds a first frame that is not `groupSeqNo` 1, and it is fenced until a peer's file is
 copied in (§4.1, §10.6). That includes a replica that was down only across the round. The peers' replicas ran
 the same state machine and confirmed the round, so a file exists; copying it is the operator's step until the
@@ -645,7 +655,7 @@ round.
 | applications, gateways | Their own files (§4.1), cut at `R`. Every source takes part, as in §10.6. |
 | member | `restart-safe.log`: the log positions of the snapshots whose cut was restart-safe. Local to the member, in no replicated state. |
 | Replayer | The round in flight, in memory. |
-| queue | Nothing. A restored member's recording starts at `R`; running members purge below their floor (§10.6). |
+| queue | Nothing. A restored member's queue starts at `R`; running members purge below their floor (§10.6). |
 
 **History.** The queue is bounded by the cut, so history is the Raft log: every ingress frame with its
 consensus timestamp. `ClusterBackup` replicates it with the snapshots into the backup's own archive, which
@@ -687,29 +697,26 @@ state, so any instance's file restores any other. It holds for seqeron's replica
 - **Only a confirmed file is a peer's to copy** (§5), so an instance that diverged cannot pass its state on.
 
 **Positions.** A file names its cut by `cutClusterSeqNo` (§4.1), which every queue and every member shares. Its
-`cutPosition` is a position in the recording its writer had, a hint to the node that reads it:
+`cutPosition` is a position in the queue its writer had, a hint to the node that reads it:
 
 - The `Sequencer` snapshot carries, per queue, the position the marker started at, and the queue publication's
-  term length and MTU. They decide whether the restored recording can keep the positions it had. A frame's
+  term length and MTU. They decide whether the restored queue can keep the positions it had. A frame's
   position follows from the frames before it, but only at equal term length and MTU (CLAUDE.md), so a node
-  whose settings now differ is not refused; its recording starts at position 0.
+  whose settings now differ is not refused; its queue starts at position 0.
 - With equal settings each queue publication is created at the marker's position with
   `ChannelUriStringBuilder.initialPosition(position, initialTermId, termLength)`, as Aeron does for its own
-  replay publications (`ArchiveConductor`), and a recording of it starts there: the catalog keeps a
-  `startPosition` per recording, and a replay from the start position of one is ordinary. Positions then agree
-  with the recording before and with the peers', which is what makes the hint right and the lookup free.
+  replay publications (`ArchiveConductor`), and a derived replay is published from the same positions. Positions
+  then agree with the queue before and with the peers', which is what makes the hint right and the lookup free.
 - `ReplayRequest` gains `cutClusterSeqNo`, set by a restore and absent otherwise. The Replayer finds the
   frame as §10.3 says and replays from it; `fromPosition` is the hint it tries first. The restoring client
   takes the position of the first frame it reads as its anchor, so §7 step 3 verifies what it received and
   step 5 and the paragraph after it resume at that position, not at the file's. It is the only change to §7.
-- A gateway host's relay already resumes on another member at the same position and falls back to that
-  recording's start when the frame there is not the next one (CLAUDE.md). Positions that differ make the
-  fallback the common case: a longer replay, bounded by §10.6, and no republished or missed frame, since it
-  republishes only the frame after the last one it published.
+- A gateway host's relay resumes on another member at a log position, which members agree on whatever their
+  queue positions, so positions that differ cost it nothing.
 - Its first frame is the marker, re-encoded from the round's state. That replaces the `LeadershipChanged`
   that activation offers first today; a restoring client takes its leader and term from its file's header
   (§7 step 4) and gets the next `LeadershipChanged` from the replay.
-- `ReplayerService.checkReady` serves a recording whatever its first frame, as in §10.6.
+- `ReplayerService.checkReady` serves a queue whatever its first frame, as in §10.6.
 
 ## 11. Offloaded snapshots
 
@@ -753,10 +760,10 @@ Under §10.8 these change, and add:
 - **A round can be unsafe** (§10.8): a joined replica that never confirms leaves the member on its previous
   restart-safe cut, with the history from it and the sets it had. A crash between a cut and its mark costs the
   round the same way.
-- **The queue is bounded by the cut:** a member's recording holds the frames since the last restart-safe set,
+- **The queue is bounded by the cut:** a member's queue holds the frames since the last restart-safe set,
   not the uptime. The Raft log grows as before until `trim-log` (§10.7), and `ClusterBackup` keeps it for audit.
 - **A member's restart is bounded** by the log since its last restart-safe set, and a client's by the same, since the
-  recording starts at the cut instead of `groupSeqNo` 1.
+  queue starts at the cut instead of `groupSeqNo` 1.
 - **The files are the only copy of an application's state,** and "no file" is a fence, not a full replay:
   there is no queue to walk. A replica that was down across a round needs a peer's file (§10.8).
 - **Log volume is unchanged:** `SnapshotRound`, `SnapshotJoined` and `SnapshotConfirmed` are node-local and
