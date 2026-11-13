@@ -159,14 +159,13 @@ its queue recordings.
   million on another walk at 2.2–2.3 and 1.5–1.7 million frames/s derived and about 5 million recorded. With a
   sequencer per replay over an archive replay of the log it was 1.8 and 1.1 million. What is left is reading and
   counting each entry of every group, about 0.11 µs, and offering each frame, about 0.26 µs, where the archive
-  copies recorded frames in blocks.
-- **Saturation.** Not measured with the flag. The recorded path's ramps (`ec2-results.md` §3.3) found no ceiling:
-  stalls of 2–75 ms ended them at any rate from 40k to 900k msg/s, the size the stall runs above found on the recorded
-  path. `disk-session.sh` (`ec2-tests.md`, §3) runs `hop-knee.sh` twice with the flag and twice without in one launch,
-  which tells whether it removes them and where the ceiling then is; the same launch ramps the flag under the kernel's
-  default writeback and on a default gp3 volume, and replays 4,000,000 frames cold off EBS both ways. At 888k msg/s the log alone writes about 200 MB/s, above the volume's provisioned
-  125 MB/s, so each ramp needs the recorder's longest write and the dirty pages beside it to tell a ceiling from the
-  volume's. `hop-knee.sh` samples the first with `CounterSampler` and the second with `node.sh meminfo-sampler`.
+  copies recorded frames in blocks. Off EBS with the page cache dropped, a member's cold replay of 4,000,000
+  frames took 5.3 s with the flag and 5.2 s without, and 10.8 and 6.8 s under load (`ec2-tests.md`).
+- **Saturation.** With 100-byte messages on gp3 at 1,000 MB/s (`ec2-tests.md`, "Saturation with and without the
+  queue recording"), a member with the flag held 909k msg/s, the top of the ramp, with a p99 of at most 0.23 ms and a
+  p99.9 of at most 0.74 ms but for one step. Without the flag the same ramps held, with a p99.9 of 2–3.7 ms at every
+  rate from the recorder's writes. What is left with the flag is young GC: a 1–3 ms pause every 6–9 s whatever the
+  rate. On gp3 at its default 125 MB/s the flag's ceiling is 582k msg/s, where the log writes about 130 MB/s.
 - **Tests.** `DerivedQueueTest`; `DerivedReplayTest`, a client's cold start and live following on a member
   that records nothing; `CheckpointedReplayTest`, which runs a `DerivingReplayer` beside a recording
   member's archive and compares replays fragment for fragment, and scans and tips; and three in
@@ -222,7 +221,7 @@ Limits of the prototype:
 - **No recorded path.** A member with the flag has no queue recording to fall back on, so `clusterctl` and the
   tools that read one (`QueueRecordings`, `SbeLogPrinter` on a queue) find none.
 - **Not run with the flag:** the tests tagged `docker`, the C# client on Windows, and the multi-host EC2
-  tests. The integration and system suites and `ChaosTest` run with it
+  tests but `hop-knee.sh` and `replay-remote.sh`. The integration and system suites and `ChaosTest` run with it
   under `-PderiveFromLog`, the system suite's `Hosted*Test` with the C++ stubs when `HOSTED_PROBE` names them, and
   `csharp-client-test.sh` under `CSHARP_MEMBER_OPTS=-Dreplayer.deriveFromLog=true`; CI runs each both ways, less
   the C++ stubs, which it runs neither way. With the flag `QueueRecordings` reads a member's queues twice, as its
@@ -251,6 +250,8 @@ length below Aeron's 128 MiB default so a purge follows the cut closely. Since t
 - `vm.dirty_expire_centisecs=50` and `vm.dirty_writeback_centisecs=20` are the one setting measured clean on
   EBS: 0 of 15 runs stalled. A member on Linux warns at start while both are the kernel's defaults
   (`NodeDriver.warnIfDefaultWriteback`).
+- Step 2a's flag still needs it: under the kernel's defaults a member with the flag had a 12 ms p99.9 at 582k msg/s,
+  and in one ramp sequenced 680k of the 909k msg/s offered (`ec2-tests.md`).
 - Local NVMe for the log is untested, and belongs to the deferred metal runs.
 
 ### Step 4: trim the log automatically
