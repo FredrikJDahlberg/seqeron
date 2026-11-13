@@ -6,7 +6,7 @@
 # Each run is a fresh cluster, and each repeat runs the arms in turn, in the opposite order every other repeat. Both
 # arms are off the cluster, on a gateway host on MULTIHOST_CLIENT, so the gate closes at the leadership change and
 # reopens once it is caught up, whoever leads; a client on the leader's member would not lead again, and both pay the
-# gateway host's queue relay and UDP ingress, so the arms' times are not the matrix's and are not judged. hosted is
+# gateway host's log relay and UDP ingress, so the arms' times are not the matrix's and are not judged. hosted is
 # hosted_hop_bench through a host inside the gateway host; direct is hop_bench of the tag (MULTIHOST_DIRECT_BENCH, on
 # the fourth host), an app::Application on the gateway host's driver. The arm floods for HOP_EDGE_FLOOD_MS, the
 # leader's member is stopped (SIGSTOP) HOP_EDGE_BEFORE_S seconds into the flood for HOP_EDGE_PAUSE_S seconds, and the
@@ -31,8 +31,6 @@
 #   HOP_EDGE_HOST_OPTS   extra JVM properties for the host, space-separated    (default none: the host's defaults, which
 #                        drop its command window's worth at an edge; HostedCppStubTest's throttles are
 #                        -Dproxy.commandWindow=1024 -Dproxy.pendingCapacity=4 -Dproxy.placePerCycle=2)
-#   MULTIHOST_HOST_OPTS  extra JVM flags for the host in both arms: -Dreplayer.deriveFromLog=true beside members that
-#                        record no queue
 #   HOP_EDGE_SPIN        proxy.spin of the host: the fourth host has too few cores to spin it  (default false)
 #   MULTIHOST_BENCH_CPUS taskset CPU list for hosted_hop_bench (default unpinned)
 #
@@ -53,7 +51,6 @@ BEFORE_S="${HOP_EDGE_BEFORE_S:-5}"
 PAUSE_S="${HOP_EDGE_PAUSE_S:-4.5}"
 SPIN="${HOP_EDGE_SPIN:-false}"
 read -r -a HOST_OPTS <<< "${HOP_EDGE_HOST_OPTS:-}"
-read -r -a FLAG_OPTS <<< "${MULTIHOST_HOST_OPTS:-}"
 GATEWAY_NODE=3
 HOST_CLASS=org.limitless.seqeron.replayer.server.ReplayerServer
 
@@ -63,7 +60,7 @@ RESULTS="${MULTIHOST_RESULTS}/hop-edge-$(date -u +%Y%m%dT%H%M%SZ).txt"
     echo "# hop-gate-edge $(date -u +%Y-%m-%dT%H:%M:%SZ) members=${MULTIHOST_MEMBERS} client=${MULTIHOST_CLIENT}" \
          "flood_ms=${FLOOD_MS} before_s=${BEFORE_S} pause_s=${PAUSE_S} settle_ms=${SETTLE_MS} arms=${ARMS[*]}"
     echo "# MULTIHOST_IDLE=${MULTIHOST_IDLE:-backoff} MULTIHOST_MEMBER_OPTS=${MULTIHOST_MEMBER_OPTS:-}" \
-         "host_opts=${HOST_OPTS[*]-} MULTIHOST_HOST_OPTS=${MULTIHOST_HOST_OPTS:-} spin=${SPIN}"
+         "host_opts=${HOST_OPTS[*]-} spin=${SPIN}"
 } > "${RESULTS}"
 
 paused_host="" paused_name=""
@@ -96,7 +93,7 @@ run_arm() {
     fi
     node "${MULTIHOST_CLIENT}" start --cpus "${MULTIHOST_HOST_CPUS:-}" gateway-host "${HOST_CLASS}" \
         -Dreplayer.memberId="${GATEWAY_NODE}" -Dreplayer.groups=1 -Dreplayer.host="${MULTIHOST_CLIENT}" \
-        -Dreplayer.baseDir='{data}' ${host_opts[@]+"${host_opts[@]}"} ${FLAG_OPTS[@]+"${FLAG_OPTS[@]}"}
+        -Dreplayer.baseDir='{data}' ${host_opts[@]+"${host_opts[@]}"}
     node "${MULTIHOST_CLIENT}" wait-log gateway-host "$([[ "${arm}" == hosted ]] && echo "host ready" || echo "serving replay")" 60 || {
         echo "ERROR: the gateway host not ready after 60 s" >&2
         exit 1

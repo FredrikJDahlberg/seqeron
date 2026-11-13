@@ -171,18 +171,9 @@ jobs:
 
   # Members launched in the test's own JVM, on Aeron's test kit; the one Java suite with an Aeron runtime.
   integration:
-    name: java integration (${{ matrix.queues }})
+    name: java integration
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - queues: recorded
-            flags: ''
-          # Members that record no queue and derive it from their Raft log (doc/disk-load-plan.md, step 2a).
-          - queues: derived
-            flags: '-PderiveFromLog'
     steps:
       - uses: actions/checkout@v7
 
@@ -201,14 +192,14 @@ jobs:
           restore-keys: gradle-integration-
 
       - name: Integration tests
-        run: ./gradlew :seqeron-service:integrationTest ${{ matrix.flags }}
+        run: ./gradlew :seqeron-service:integrationTest
 
       # SystemTestWatcher copies a failed test's Aeron directories, archives and mark files to build/test-output.
       - name: Upload results
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: integration-test-results-${{ matrix.queues }}
+          name: integration-test-results
           path: |
             seqeron-service/build/reports/tests/integrationTest/
             seqeron-service/build/test-output/
@@ -216,18 +207,14 @@ jobs:
   # Members, probes and clusterctl as child JVMs off the uber jar: the harnesses, ported to JUnit.
   # HostedSnapshotTest is nearly half the suite, so it runs as a shard of its own beside the rest.
   system:
-    name: java system (${{ matrix.queues }}, ${{ matrix.shard }})
+    name: java system (${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        queues: [recorded, derived]
         shard: [hosted-snapshot, rest]
         include:
-          # Members that record no queue and derive it from their Raft log (doc/disk-load-plan.md, step 2a).
-          - queues: derived
-            flags: '-PderiveFromLog'
           - shard: hosted-snapshot
             tests: "--tests '*HostedSnapshotTest'"
           - shard: rest
@@ -250,13 +237,13 @@ jobs:
           restore-keys: gradle-system-
 
       - name: System tests
-        run: ./gradlew :seqeron-service:systemTest ${{ matrix.flags }} ${{ matrix.tests }}
+        run: ./gradlew :seqeron-service:systemTest ${{ matrix.tests }}
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: system-test-results-${{ matrix.queues }}-${{ matrix.shard }}
+          name: system-test-results-${{ matrix.shard }}
           path: |
             seqeron-service/build/reports/tests/systemTest/
             seqeron-service/build/system-test/
