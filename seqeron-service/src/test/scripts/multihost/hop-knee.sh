@@ -7,6 +7,9 @@
 #
 # A step saturates when its p99 exceeds KNEE_P99_US, when it loses a marker or fails, or when the leader moved during
 # it. last_ok is the highest rate below the first saturated step; saturated_at is none when KNEE_MAX was reached first.
+# Each step line ends in started=<epoch s>. Each member's driver counters are sampled every MULTIHOST_COUNTER_MS
+# (default 10, 0 for none) by CounterSampler, into its counter-sampler.log in the ramp's logs, fetched when it ends, and
+# each member host's dirty and writeback pages every MULTIHOST_MEMINFO_MS (default 100) into its meminfo-sampler.log.
 #
 #   KNEE_START     first rate, msg/s                    (default 20000)
 #   KNEE_FACTOR    percent each step raises the rate    (default 125)
@@ -76,6 +79,14 @@ for payload in ${PAYLOADS}; do
             mh_log "ramp ${mode} payload ${payload} run ${run}: fresh cluster"
             cluster_up "${RESOURCES}/topology-test-hosted-quiet.xml"
             block_leader="$(await_leader 60)"
+            if [[ "${MULTIHOST_COUNTER_MS:-10}" != 0 ]]; then
+                for id in 0 1 2; do
+                    node "${MEMBERS[$id]}" counter-sampler "${id}"
+                done
+            fi
+            for host in $(printf '%s\n' "${MEMBERS[@]}" | sort -u); do
+                node "${host}" meminfo-sampler
+            done
             rate="${START}"
             last_ok=none
             saturated_at=none
@@ -89,8 +100,9 @@ for payload in ${PAYLOADS}; do
                     break
                 fi
                 mh_log "${mode} payload ${payload} run ${run}: ${rate} msg/s (${count} markers)"
+                started="$(date +%s)"
                 line="$(run_mode "${mode}" "${block_leader}" "${rate}" "${count}" "${payload}")"
-                echo "mode=${mode} repeat=${run} leader=${block_leader} ${line}" | tee -a "${RESULTS}"
+                echo "mode=${mode} repeat=${run} leader=${block_leader} ${line} started=${started}" | tee -a "${RESULTS}"
                 reason="$(saturated "${line}" "${count}")"
                 if [[ -n "${reason}" ]]; then
                     saturated_at="${rate}"
@@ -102,11 +114,10 @@ for payload in ${PAYLOADS}; do
             done
             echo "knee mode=${mode} payload=${payload} repeat=${run} last_ok=${last_ok}" \
                  "saturated_at=${saturated_at} reason=${reason}" | tee -a "${RESULTS}"
-            for host in $(all_hosts); do
-                node "${host}" stop > /dev/null
-            done
+            cluster_down
         done
     done
 done
+trap - EXIT
 
 mh_log "results in ${RESULTS}"

@@ -150,11 +150,15 @@ back-pressure; the bench now counts declines after its warm-up (`declines=`, `wi
   `node.sh sample` on each member before and after every run into `hop-<stamp>.samples`: per-CPU steal, context switches and the
   members' java ticks. A difference between the two lines is that run's, and the safepoint times, in UTC, place a stall in a run
   through the sample's `t` (epoch ms).
-- `hop-matrix.sh` also starts `CounterSampler` on each member (`node.sh counter-sampler`, on CPUs 0-1, `MULTIHOST_COUNTER_MS`
-  default 10, 0 for none): every counter of the member's driver, read off its CnC file, as the changed ones with a wall-clock `t`,
-  in `counter-sampler.log` under the rate's logs. It shows which counter, commit position or agent's maximum cycle time moves
-  or stops in a stall. Each rate's logs are fetched when the rate ends.
-- `MULTIHOST_ARCHIVE_DIR` puts each member's `archive-<id>` there, linked into `data/`, and `node.sh wipe` removes it; the
+- `hop-matrix.sh` and `hop-knee.sh` also start `CounterSampler` on each member (`node.sh counter-sampler`, on CPUs 0-1,
+  `MULTIHOST_COUNTER_MS` default 10, 0 for none): every counter of the member's driver, read off its CnC file, as the changed
+  ones with a wall-clock `t`, in `counter-sampler.log` under the rate's or the ramp's logs. It shows which counter, commit
+  position or agent's maximum cycle time moves or stops in a stall. Each rate's or ramp's logs are fetched when it ends, and a
+  knee step's line gives its start (`started`, epoch s).
+- `hop-knee.sh` also starts `node.sh meminfo-sampler` on each member host: the kernel's dirty and writeback pages from
+  `/proc/meminfo`, every `MULTIHOST_MEMINFO_MS` (default 100), with a wall-clock `t`, in `meminfo-sampler.log` under the
+  ramp's logs. Beside `CounterSampler`'s recorder write times, it tells a stall on the kernel's writeback from one in the process.
+- `MULTIHOST_ARCHIVE_DIR` puts each member's `archive-<id>` there, linked into `data/`, and `node.sh wipe` removes those; the
   cluster directory stays under `MULTIHOST_BASE_DIR`. Set it to `/dev/shm/…` to take the archive's disk out of a run.
 - `hop-knee.sh` ramps the rate on one fresh cluster per arm, payload and run, in steps of `KNEE_SECONDS`, and ends each ramp in a
   `knee` line: the last rate below the first step whose p99 exceeds `KNEE_P99_US` (default 10 ms), that loses a marker or whose
@@ -254,6 +258,43 @@ kernel still flushes in bursts, of half the bytes. Intervals of 5–9 ms occur i
 the recorded one, at a sampling interval that resolves no finer. Two runs on one host: no stall rate, and no figure for a higher
 rate or a larger payload, where the log alone writes what both wrote here.
 
+**Saturation with and without the queue recording.** `disk-session.sh` on three c6in.8xlarge members, `direct`, 100-byte
+markers, two ramps per arm from 50k to 909k msg/s in 25% steps of 10 s, `CounterSampler` every 10 ms and
+`node.sh meminfo-sampler` every 100 ms. Each member's root volume is gp3 at 1,000 MB/s and 4,000 IOPS, and the writeback even,
+unless the row says otherwise:
+
+| arm | highest step held | p99 | p99.9, from the second step | max | leader's longest write |
+| --- | --- | --- | --- | --- | --- |
+| with the flag | 909k, the top, in both ramps | 0.10–0.23 ms | 0.12–0.74 ms; 1.8 ms once | 0.9–3.7 ms | 2.3–3.0 ms |
+| without it | 909k in both ramps | 0.12–0.20 ms to 582k; 0.4–1.8 ms at 727k and 909k | 2.1–3.7 ms at every step | 3.4–6.2 ms | 6.3–6.4 ms |
+| with it, the kernel's default writeback | 909k and 727k | 0.10–0.14 ms to 727k; 5.2 ms and 2.7 s at 909k | 0.12–0.16 ms to 466k; 0.5–12 ms above | 0.9–15 ms; 2.8 s once | 1.4–2.2 ms |
+| with it, the archive on gp3 at its default 125 MB/s | 582k in both ramps | 0.12–0.14 ms to 582k; 22–28 ms at 727k | 0.13–0.37 ms; 2.6 and 3.7 ms once each | 1.0–9.0 ms; 37–44 ms at 727k | 37–44 ms |
+
+Without the flag the tail is the recorder's. Both arms write about 0.28 MB per millisecond of write time, but that arm writes
+twice the bytes, 379 MB/s against 205 MB/s at 909k, and its leader's longest write passes 5.9 ms by the fourth step.
+With the flag the maxima are young GC: a member allocates 40–98 MB/s whatever the rate, so a `G1CollectForAllocation` pause
+comes every 6–9 s, about 2 ms below 150k msg/s and 0.8 ms above. A pause on the leader holds every message in flight; one on a
+follower is covered by the other. The first step of each ramp, on a fresh cluster, collects more often.
+
+On the default volume, single writes of 37–44 ms at 727k msg/s, about 163 MB/s of log, held the leader's commit position for
+44 ms, the one step where a commit stall shows above the sampler's 10 ms. Under the kernel's default writeback, the second ramp's
+909k step sequenced 680k msg/s of the 909k offered, so latency grew to 2.7 s; the commit position kept moving, the leader's
+longest write was 2.2 ms, no flush coincided, and the same step held 909k in the other ramp. The 12 ms p99.9 at 582k had no slow
+write on the leader either. Neither is explained by what the session samples; per-CPU time would show whether the kernel's
+flusher took a member's cores.
+
+**Cold replay off EBS.** Test 3 at 4,000,000 frames of 193 bytes, every member's page cache dropped before each phase, in the
+same launch. A member's archive held 1,152 MB with the flag and 2,304 MB without:
+
+| arm | member's own replay (IPC), quiet | under load | through a gateway host, quiet | under load |
+| --- | --- | --- | --- | --- |
+| with the flag | 5.3 s | 10.8 s | 1.5 s | 2.1 s |
+| without it | 5.2 s | 6.8 s | 1.4 s | 2.1 s |
+
+A gateway host's time is its catch-up after it began serving, about 1.5 s in. In all four of its phases, both arms, the host's
+first cold follow delivered 2.6–3.5 million of the 4 million frames and the second caught up; `replay-remote.sh` retries, and the
+shortfall is not traced.
+
 ### Test 2: the network-fault suite without CPU steal
 
 `failover.yml` runs `networkFaultTest` with `TIMEOUT_SCALE: '3'` to cover the CPU steal of a shared 4-vCPU runner,
@@ -349,6 +390,15 @@ c6in.8xlarge ($6.35/hr) and about $145 on c6id.metal ($20.26/hr), from the insta
 about $13 on c6in.8xlarge. Neither includes the
 rehearsals, so allow the first attempt twice the figure; the soak and the knee ramps run unattended.
 
+The disk session (`disk-session.sh`) measures `disk-load-plan.md`, step 2a, in one launch: two knee ramps (`direct`, 100-byte
+markers, from 50k msg/s in 10 s steps) with the flag and two without, two with it under the kernel's default writeback and
+two with the archive on a default gp3 volume, then test 3's cold replay of 4,000,000 frames, quiet and under load, both ways.
+The ramps take about 26 min, the replays 15–20 and the launch and setup about 25: about 1.2 h on the four Test 1 hosts,
+about $7.50 with the volumes, $15 for a first attempt. Each member's root volume is gp3 at 1,000 MB/s and 4,000 IOPS, above
+the 400 MB/s the recorded arm writes at the top step, and a second 100 GB gp3 at its default 125 MB/s is mounted for
+`DISK_DEFAULT_VOLUME`; an EBS volume's settings change once in 6 hours, so both are set at launch. The members need
+passwordless `sudo`, for the writeback and the cache drops. Its parts ran in 45 min of the hosts' time, about $5.
+
 ## 4. Image
 
 One Ubuntu 24.04 x86_64 image serves every host. Build it on a c6in.large and save it as an AMI:
@@ -407,6 +457,7 @@ export MULTIHOST_SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" 
 HOP_RATES=20000 MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1 -Daeron.archive.catalog.file.sync.level=1" \
     ./hop-matrix.sh                                            # the sync comparison; run it again without the option
 REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and again with REPLAY_LOAD_DURING=1
+DISK_DEFAULT_VOLUME=/mnt/gp3-default ./disk-session.sh         # the disk session
 ```
 
 To run either arm on members that record no queue (`disk-load-plan.md`, step 2a), set

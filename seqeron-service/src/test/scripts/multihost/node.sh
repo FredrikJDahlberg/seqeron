@@ -23,11 +23,16 @@
 #   node.sh logs                                     this host's logs as a tar stream on stdout
 #   node.sh counter-sampler <memberId>               start CounterSampler on member <memberId>'s driver, its changed
 #                                                    counters every MULTIHOST_COUNTER_MS in <run>/logs/counter-sampler.log
+#   node.sh meminfo-sampler                          start sampling this host's dirty and writeback pages (/proc/meminfo)
+#                                                    every MULTIHOST_MEMINFO_MS into <run>/logs/meminfo-sampler.log, a
+#                                                    line "t=<epoch ms> dirty_kb=<n> writeback_kb=<n>"; none off Linux
 #   node.sh queue-digest <memberId>                  QueueDigest on member <memberId>'s archive: one line per recording of
 #                                                    group 1's queue, for hop-order-check.py; exits 1 on a gap;
 #                                                    MULTIHOST_DIGEST_UPTO caps the last groupSeqNo digested
 #   node.sh drop-caches                              write back dirty pages and drop the page cache (Linux, sudo), so a
 #                                                    replay after it reads its log or recording from the disk
+#   node.sh writeback <default|even>                 the kernel's writeback timers (Linux, sudo): default's 30 s expiry
+#                                                    and 5 s wakeup, or the image's 0.5 s and 0.2 s; none off Linux
 #   node.sh sample <label>                        one line of /proc counters: time in ms, per-CPU steal, context
 #                                                    switches, each java and bench process's utime+stime ticks, and the
 #                                                    NIC's ENA allowance and drop counters (ethtool -S)
@@ -42,7 +47,8 @@
 #   MULTIHOST_HOST_OPTS     extra JVM flags for a gateway host, space-separated
 #   MULTIHOST_ARCHIVE_DIR   where a member's archive-<id> lives, linked into data/  (default inside data/)
 #   MULTIHOST_COUNTER_MS    CounterSampler's interval; 0 starts none          (default 10)
-#   MULTIHOST_COUNTER_CPUS  taskset CPU list for it                           (default 0-1)
+#   MULTIHOST_COUNTER_CPUS  taskset CPU list for it and meminfo-sampler       (default 0-1)
+#   MULTIHOST_MEMINFO_MS    meminfo-sampler's interval                        (default 100)
 #   MULTIHOST_BENCH_IDLE   hop_bench's SEQERON_IDLE_STRATEGY             (default busyspin)
 #   MULTIHOST_HOP_BENCH     the hosted_hop_bench binary                   (default cmake-build-release/hosted_hop_bench)
 #   MULTIHOST_DIRECT_BENCH  hop_bench built on the tag, for the direct arm (required for it)
@@ -224,7 +230,8 @@ stop)
 wipe)
     stop_all
     rm -rf "${DATA_DIR}" "${LOG_DIR}"
-    [[ -n "${MULTIHOST_ARCHIVE_DIR:-}" ]] && rm -rf "${MULTIHOST_ARCHIVE_DIR}"
+    # The archives only: the directory may be a mount point its user cannot remove.
+    [[ -n "${MULTIHOST_ARCHIVE_DIR:-}" ]] && rm -rf "${MULTIHOST_ARCHIVE_DIR}"/archive-*
     for id in 0 1 2 3; do
         rm -rf "$(seqeron_aeron_dir "${id}")"
     done
@@ -236,12 +243,44 @@ counter-sampler)
     java_main start --cpus "${MULTIHOST_COUNTER_CPUS:-0-1}" counter-sampler org.limitless.seqeron.tools.CounterSampler \
         "-Dsampler.aeronDir=$(seqeron_aeron_dir "$1")" "-Dsampler.intervalMs=${MULTIHOST_COUNTER_MS:-10}"
     ;;
+meminfo-sampler)
+    if [[ ! -r /proc/meminfo ]]; then
+        echo "meminfo-sampler: no /proc/meminfo, not started" >&2
+        exit 0
+    fi
+    interval="$(awk -v ms="${MULTIHOST_MEMINFO_MS:-100}" 'BEGIN { printf "%.3f", ms / 1000 }')"
+    detach meminfo-sampler "${MULTIHOST_COUNTER_CPUS:-0-1}" bash -c '
+        while :; do
+            while read -r key value _; do
+                case "${key}" in
+                Dirty:) dirty="${value}" ;;
+                Writeback:) writeback="${value}" ;;
+                esac
+            done < /proc/meminfo
+            echo "t=$(date +%s%3N) dirty_kb=${dirty} writeback_kb=${writeback}"
+            sleep "$1"
+        done' meminfo-sampler "${interval}"
+    ;;
 queue-digest)
     status=0
     java_main run --cpus "${MULTIHOST_COUNTER_CPUS:-0-1}" queue-digest org.limitless.seqeron.tools.QueueDigest \
         "-Ddigest.aeronDir=$(seqeron_aeron_dir "$1")" "-Ddigest.upTo=${MULTIHOST_DIGEST_UPTO:-9223372036854775807}" || status=$?
     cat "${LOG_DIR}/queue-digest.log"
     exit "${status}"
+    ;;
+writeback)
+    if [[ ! -e /proc/sys/vm/dirty_expire_centisecs ]]; then
+        echo "writeback: no /proc/sys/vm, not set" >&2
+        exit 0
+    fi
+    case "$1" in
+    default) sudo -n sysctl -q vm.dirty_expire_centisecs=3000 vm.dirty_writeback_centisecs=500 ;;
+    even) sudo -n sysctl -q vm.dirty_expire_centisecs=50 vm.dirty_writeback_centisecs=20 ;;
+    *)
+        echo "ERROR: writeback takes default or even" >&2
+        exit 2
+        ;;
+    esac
     ;;
 sample)
     steal="$(awk '/^cpu[0-9]/ { printf "%s%d", (n++ ? "," : ""), $9 }' /proc/stat)"

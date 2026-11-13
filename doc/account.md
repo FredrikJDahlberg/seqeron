@@ -98,7 +98,9 @@ done
 ```
 
 Pick a zone in every list and set `AZ`. A cluster placement group can fail with `InsufficientInstanceCapacity`; retry
-later, or try the next zone and start the session again from §6.
+later, or try the next zone and start the session again from §6. A second subnet, `10.0.1.0/24` in us-east-1b
+(`seqeron-bench-1b`), shares the first one's route table for that case. Launching the three members in one
+`run-instances --count 3` starts all of them or none, at addresses the subnet assigns, which `MULTIHOST_MEMBERS` then names.
 
 **The vCPU quota.** The quota is "Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances", code `L-1216C47A`,
 counted in vCPUs, which are hardware threads: a c6in.8xlarge is 32 vCPUs on 16 cores. Whether it counts the vCPUs the
