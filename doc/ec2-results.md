@@ -1,11 +1,30 @@
 # Benchmark results: three-member cluster on EC2
 
-Measurements of 8 November 2026 on a three-member cluster of c6in.8xlarge hosts: the latency of the sequencing loop at
-20k, 50k and 100k msg/s, the rate at which it saturates, the cost of forcing the archive to disk, and replay over a
-network. [`ec2-tests.md`](ec2-tests.md) is the plan and the method; this document is what one session measured, and what
-it does not establish.
+Measurements on a three-member cluster of c6in.8xlarge hosts, in two sessions. On 8 November 2026, with members that
+recorded their queues: the latency of the sequencing loop at 20k, 50k and 100k msg/s, the rate at which it saturates, the
+cost of forcing the archive to disk, and replay over a network (§3). On 11 and 13 November, the disk writes, with members
+that derive their queues from the Raft log and record none, as this release does, beside members that record them: stalls
+on EBS, saturation and cold replay (§4). The derived runs were made before the release, behind the flag
+`replayer.deriveFromLog`. [`ec2-tests.md`](ec2-tests.md) is the plan and the method; this document is what the sessions
+measured, and what they do not establish.
 
 ## 1. Summary
+
+Derived queues, as released (§4):
+
+| Question | Result | Confidence |
+| --- | --- | --- |
+| Stalls on EBS, default writeback, 49k msg/s | None of 10 ms or more in two 600 s runs; recorded members had 17, up to 81 ms | Three runs on one host, whose three members share a kernel. |
+| Saturation of 100-byte messages, gp3 at 1,000 MB/s | **909k msg/s held**, the top of the ramp; p99 at most 0.23 ms, p99.9 at most 0.74 ms but 1.8 ms once | Two ramps, one launch. The ceiling was not reached; what is left is young GC. |
+| The same under the kernel's default writeback | 909k and 727k; one step sequenced 680k of the 909k offered, with a 2.7 s tail | Two ramps. Unexplained. |
+| The same with the archive on gp3 at its default 125 MB/s | **582k msg/s**; at 727k, writes of 37–44 ms hold commits | Two ramps. |
+| Cold replay of 4,000,000 frames off EBS | 5.3 s on the member, 10.8 s under load; 1.5 and 2.1 s through a gateway host once it serves | One run each. Recorded members: 5.2, 6.8, 1.4 and 2.1 s. |
+
+Plan on this: on a volume provisioned well above the log's write rate and with even writeback, up to about 900k msg/s of
+100-byte messages with a sub-millisecond p99.9; on a default gp3 volume, under 580k msg/s.
+
+Recorded queues, 8 November (§3). The release removed that path. The loop latency below was not measured again on derived
+members, and its 2–3 ms p99.9 from 50k msg/s is the size §4.2 measured from the recorder's writes on recorded members:
 
 | Question | Result | Confidence |
 | --- | --- | --- |
@@ -16,10 +35,9 @@ it does not establish.
 | Saturation of 100-byte messages | Not found. One ramp reached 888k msg/s without saturating; the other stopped at 568k on a 30 ms stall | Two ramps that disagree. A stall decides the verdict, not a capacity limit. |
 | Replay of 2.3 GB | 1.1–1.4 GB/s local, 0.61 GB/s over the UDP relay | One run each; a fourth run did not complete, cause unconfirmed. |
 
-Plan on this: a few tens of µs through the loop up to about 20k msg/s; a 2–3 ms p99.9 from 50k msg/s that has not been
-explained; and no forced writes unless 6.5 ms is acceptable.
+Plan on this: a few tens of µs through the loop up to about 20k msg/s, and no forced writes unless 6.5 ms is acceptable.
 
-## 2. Set-up
+## 2. Set-up, 8 November
 
 | | |
 | --- | --- |
@@ -45,7 +63,7 @@ stream against the same cluster.
 480,000 measured markers at 20k msg/s and 1.2 million at 50k msg/s; every run is 30 s.
 Payload is 18 bytes unless stated.
 
-## 3. Results
+## 3. Recorded queues, 8 November
 
 ### 3.1 Latency, 20k msg/s, no forced writes
 
@@ -79,7 +97,8 @@ Eight runs per arm, interleaved; leader member 1 at 50k and member 2 at 100k. La
   the direct client shows the same tail.
 - **The archive's writes are the candidate.** An earlier session traced multi-millisecond waits of the archive recorder
   to the kernel's writeback of dirty archive pages (`ec2-tests.md`, "Archive writes on EBS"). The writeback timers set
-  here shortened those waits to 5–8 ms, and this p99.9 is what remains. This session did not trace it again.
+  here shortened those waits to 5–8 ms, and this p99.9 is what remains. This session did not trace it again; §4.2 measured
+  a p99.9 of the same size on recorded members and none on derived ones.
 
 **The hosted façade against the direct client.** The hosted median minus the direct median, per percentile:
 
@@ -180,10 +199,72 @@ relay serves it. Preloads of 400,000 and 4,000,000 messages, quiet and with a pr
   to be the cause. Commit `6e938ab4` restarts the remote follow until it has delivered the preload and postdates the
   image, so it may be the fault it fixed. Not rerun.
 
-## 4. What this does not show
+## 4. Derived queues, 11 and 13 November
+
+### 4.1 Stalls on EBS, 11 November
+
+The set-up of `ec2-tests.md`, "The path is the log's recording": one c6in.8xlarge held three unpinned members, each archive on
+its own gp3 volume with the kernel's default writeback, at 49k msg/s for 600 s, three runs in one launch, `CounterSampler` every
+3 ms. A derived member's archive holds the Raft log alone:
+
+| run | intervals of 10 ms or more without a new `clusterSeqNo`, all members | longest | recorder's longest write | archive growth | dirty pages, peak |
+| --- | --- | --- | --- | --- | --- |
+| derived | 0 | 7 ms | 3.4 ms | 3.7 GB | 619 MB |
+| recorded | 17, 3 of them on the leader | 81 ms | 79 ms | 7.3 GB | 1270 MB |
+| derived, after the recorded run | 0 | 9 ms | 9.0 ms | 3.7 GB | 615 MB |
+
+A blocked write on a follower holds that follower alone; the leader's longest write was 0.6 and 1.4 ms in the derived runs. The
+kernel still flushes in bursts, of half the bytes. Intervals of 5–9 ms occur in every run, 67–79 in a derived run and 118 in
+the recorded one, at a sampling interval that resolves no finer. Two runs on one host: no stall rate, and no figure for a higher
+rate or a larger payload, where the log alone writes what both wrote here.
+
+### 4.2 Saturation, 13 November
+
+`disk-session.sh` on three c6in.8xlarge members, `direct`, 100-byte markers, two ramps per arm from 50k to 909k msg/s in
+25% steps of 10 s, `CounterSampler` every 10 ms and `node.sh meminfo-sampler` every 100 ms. Each member's root volume is gp3 at 1,000 MB/s and 4,000 IOPS, and the writeback even,
+unless the row says otherwise:
+
+| arm | highest step held | p99 | p99.9, from the second step | max | leader's longest write |
+| --- | --- | --- | --- | --- | --- |
+| derived | 909k, the top, in both ramps | 0.10–0.23 ms | 0.12–0.74 ms; 1.8 ms once | 0.9–3.7 ms | 2.3–3.0 ms |
+| recorded | 909k in both ramps | 0.12–0.20 ms to 582k; 0.4–1.8 ms at 727k and 909k | 2.1–3.7 ms at every step | 3.4–6.2 ms | 6.3–6.4 ms |
+| derived, the kernel's default writeback | 909k and 727k | 0.10–0.14 ms to 727k; 5.2 ms and 2.7 s at 909k | 0.12–0.16 ms to 466k; 0.5–12 ms above | 0.9–15 ms; 2.8 s once | 1.4–2.2 ms |
+| derived, the archive on gp3 at its default 125 MB/s | 582k in both ramps | 0.12–0.14 ms to 582k; 22–28 ms at 727k | 0.13–0.37 ms; 2.6 and 3.7 ms once each | 1.0–9.0 ms; 37–44 ms at 727k | 37–44 ms |
+
+On recorded members the tail is the recorder's. Both arms write about 0.28 MB per millisecond of write time, but that arm writes
+twice the bytes, 379 MB/s against 205 MB/s at 909k, and its leader's longest write passes 5.9 ms by the fourth step.
+On derived members the maxima are young GC: a member allocates 40–98 MB/s whatever the rate, so a `G1CollectForAllocation` pause
+comes every 6–9 s, about 2 ms below 150k msg/s and 0.8 ms above. A pause on the leader holds every message in flight; one on a
+follower is covered by the other. The first step of each ramp, on a fresh cluster, collects more often.
+
+On the default volume, single writes of 37–44 ms at 727k msg/s, about 163 MB/s of log, held the leader's commit position for
+44 ms, the one step where a commit stall shows above the sampler's 10 ms. Under the kernel's default writeback, the second ramp's
+909k step sequenced 680k msg/s of the 909k offered, so latency grew to 2.7 s; the commit position kept moving, the leader's
+longest write was 2.2 ms, no flush coincided, and the same step held 909k in the other ramp. The 12 ms p99.9 at 582k had no slow
+write on the leader either. Neither is explained by what the session samples; per-CPU time would show whether the kernel's
+flusher took a member's cores.
+
+### 4.3 Cold replay off EBS, 13 November
+
+Test 3 at 4,000,000 frames of 193 bytes, every member's page cache dropped before each phase, in the same launch as §4.2. A
+member's archive held 1,152 MB derived and 2,304 MB recorded:
+
+| arm | member's own replay (IPC), quiet | under load | through a gateway host, quiet | under load |
+| --- | --- | --- | --- | --- |
+| derived | 5.3 s | 10.8 s | 1.5 s | 2.1 s |
+| recorded | 5.2 s | 6.8 s | 1.4 s | 2.1 s |
+
+A gateway host's time is its catch-up after it began serving, about 1.5 s in. In all four of its phases, both arms, the host's
+first cold follow delivered 2.6–3.5 million of the 4 million frames and the second caught up; `replay-remote.sh` retries, and the
+shortfall is not traced.
+
+## 5. What this does not show
 
 - **One launch.** `ec2-tests.md` requires a second launch before a result decides anything, because placement and
   neighbours vary between launches by more than between runs. Nothing here has had one.
+- **Derived members' latency below saturation.** §4 ran the ramps from 50k msg/s with 100-byte markers and the direct
+  client alone; the loop latency at 20k–100k msg/s, the hosted façade and forced writes were measured on recorded
+  members only (§3).
 - **One payload for latency.** 18 bytes at 20k–100k msg/s and 100 bytes in the ramps. A 1 KiB or 8 KiB payload, where the
   stub's copy would show, was not run.
 - **One producer.** A sequencer exists to merge many, and the producer sweep (1, 4 and 16 sessions) was not run.
@@ -195,9 +276,10 @@ relay serves it. Preloads of 400,000 and 4,000,000 messages, quiet and with a pr
   msg/s and above, and are the first thing to trace before these results size a deployment: the recorder's maximum
   write time (`CounterSampler`) and an off-CPU trace of the recorder thread, as in the earlier session.
 
-## 5. Data
+## 6. Data
 
-The raw results are not in the repository. The run stamps below identify them, in the `build/multihost` directory of the
+The raw results are not in the repository, and the stamps of §4's runs are not recorded here. The stamps below identify
+§3's, in the `build/multihost` directory of the
 driver host and in a copy taken at the end of the session:
 
 | Set | Stamp |

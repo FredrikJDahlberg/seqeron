@@ -32,15 +32,14 @@ import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.replayer.server.AeronReplayer;
 import org.limitless.seqeron.replayer.server.DerivingReplayer;
 import org.limitless.seqeron.replayer.server.Replayer;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /**
  * A replay derived from the Raft log is the archive's replay of the queue's recording, fragment for fragment, from
  * wherever it starts (doc/disk-load-plan.md, step 2a): from mid-history, which continues from a checkpoint, and on a
  * member that started from a cluster snapshot, whose derivation starts at the snapshot. A {@link DerivingReplayer}
- * of the test's own runs over the archive of a member that records its queues, and each derived replay is read
- * beside the recorded one.
+ * of the test's own runs over a member's archive, which the test has record the member's queues, and each derived
+ * replay is read beside the recorded one.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class CheckpointedReplayTest {
@@ -63,7 +62,6 @@ class CheckpointedReplayTest {
     private int insideFrames;
     private String ipcTerm;
     private String joinMs;
-    private String deriveFromLog;
     private long checkpointLogBytes = DerivingReplayer.CHECKPOINT_LOG_BYTES;
     private int maxCheckpoints = DerivingReplayer.MAX_CHECKPOINTS;
     private long maxRunBytes = DerivingReplayer.MAX_RUN_BYTES;
@@ -78,8 +76,6 @@ class CheckpointedReplayTest {
 
     @BeforeEach
     void remember() {
-        // The members record their queues, whatever the suite's flag: the derivation is compared with them.
-        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         ipcTerm = System.getProperty(IPC_TERM_PROPERTY);
         joinMs = System.getProperty(JOIN_PROPERTY);
         watcher.dataCollector().add(baseDir);
@@ -92,7 +88,6 @@ class CheckpointedReplayTest {
         }
         restore(IPC_TERM_PROPERTY, ipcTerm);
         restore(JOIN_PROPERTY, joinMs);
-        restore(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
     }
 
     private static void restore(final String property, final String value) {
@@ -107,6 +102,7 @@ class CheckpointedReplayTest {
     @InterruptAfter(240)
     void aReplayFromMidHistoryContinuesFromACheckpoint() {
         cluster = new InProcessCluster(baseDir);
+        cluster.withQueueRecordings();
         cluster.startAll();
         final int leader = cluster.awaitLeader();
         send(leader, 200_000, FILLER);
@@ -125,6 +121,7 @@ class CheckpointedReplayTest {
         checkpointLogBytes = 256 * 1024;
         maxRunBytes = 0;
         cluster = new InProcessCluster(baseDir);
+        cluster.withQueueRecordings();
         cluster.startAll();
         final int leader = cluster.awaitLeader();
         for (int i = 0; i < 8; i++) {
@@ -145,6 +142,7 @@ class CheckpointedReplayTest {
         maxCheckpoints = 8;
         purge = true;
         cluster = new InProcessCluster(baseDir);
+        cluster.withQueueRecordings();
         cluster.startAll();
         final int leader = cluster.awaitLeader();
         final int member = (leader + 1) % InProcessCluster.MEMBERS;
@@ -162,6 +160,7 @@ class CheckpointedReplayTest {
     @InterruptAfter(240)
     void aReplayFromInsideAFragmentedFrameStartsWithItsNextFragment() {
         cluster = new InProcessCluster(baseDir);
+        cluster.withQueueRecordings();
         cluster.startAll();
         final int leader = cluster.awaitLeader();
         send(leader, 3_000, 8_000);
@@ -185,6 +184,7 @@ class CheckpointedReplayTest {
     private void restartFromASnapshot(final String termLength) {
         System.setProperty(JOIN_PROPERTY, "200");
         cluster = new InProcessCluster(baseDir);
+        cluster.withQueueRecordings();
         cluster.startAll(1, 0);
         final int leader = cluster.awaitLeader();
         final int member = (leader + 1) % InProcessCluster.MEMBERS;
@@ -213,9 +213,10 @@ class CheckpointedReplayTest {
 
     /**
      * Derives replays of each of the member's queues, from its recording's start and from two frames further in, and
-     * holds each to the archive's replay of the recording.
+     * holds each to the archive's replay of the recording. A member the test restarted recorded from wherever its queue
+     * had reached, at or past where the queue starts.
      * @param checkpoints how many the derivation must have kept first
-     * @return where each group's recording starts
+     * @return where each group's queue starts
      */
     private long[] assertDerivedIsRecorded(final int member, final int checkpoints) {
         final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
@@ -259,8 +260,11 @@ class CheckpointedReplayTest {
                                                              return true;
                                                          }));
                 final String queue = "member " + member + "'s queue of group " + groupId;
-                assertEquals(span.startPosition(), deriving.listQueueRecordings(groupId).getFirst().startPosition(),
+                final long derivedStart = deriving.listQueueRecordings(groupId).getFirst().startPosition();
+                assertEquals(cluster.derivationStart(member).queueStarts()[groupId - 1], derivedStart,
                              queue + ": where it starts");
+                assertTrue(span.startPosition() >= derivedStart,
+                           queue + ": the recording starts at " + span.startPosition() + ", before the queue");
                 // First: a scan ends where the derivation has brought the queue, and a heartbeat may just have moved
                 // the tip.
                 assertDerivedTipIsRecorded(recorded, deriving, span.recordingId(), groupId, queue);
@@ -287,7 +291,7 @@ class CheckpointedReplayTest {
                                             tip, queue);
                     insideFrames++;
                 }
-                starts[InProcessCluster.GROUP_IDS.indexOf(groupId)] = span.startPosition();
+                starts[InProcessCluster.GROUP_IDS.indexOf(groupId)] = derivedStart;
                 middles.addLong(frames.getLong(frames.size() / 2));
             }
             runs = deriving.runCount();

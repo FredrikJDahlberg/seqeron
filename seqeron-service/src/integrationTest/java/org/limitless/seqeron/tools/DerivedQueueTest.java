@@ -39,15 +39,16 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.sequencer.LogDeriver;
 import org.limitless.seqeron.sequencer.QueuePositions;
 import org.limitless.seqeron.sequencer.Sequencer;
 
 /**
  * A member's queues derived from its Raft log alone (doc/disk-load-plan.md, step 2a): {@link LogDeriver} over the log's
- * recording, read up to the commit position, must give the frames the member recorded on each queue, byte for byte and
- * at the same positions. Each run also reports how fast the derivation is with the archive out of the way.
+ * recording, read up to the commit position, must give the frames the sequencer published on each queue, byte for byte
+ * and at the same positions. The reference is a recording of each queue the test has a member's archive make from the
+ * start, and every member's queues are that member's, frame for frame: each member derives from its own log. Each run
+ * also reports how fast the derivation is with the archive out of the way.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class DerivedQueueTest {
@@ -66,7 +67,6 @@ class DerivedQueueTest {
 
     private InProcessCluster cluster;
     private String ipcTerm;
-    private String deriveFromLog;
 
     /** One frame of a queue: where it starts, and its bytes. */
     private record Frame(long position, byte[] bytes) { }
@@ -78,8 +78,6 @@ class DerivedQueueTest {
 
     @BeforeEach
     void remember() {
-        // The members record their queues, whatever the suite's flag: the derivation is compared with them.
-        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         ipcTerm = System.getProperty(IPC_TERM_PROPERTY);
         watcher.dataCollector().add(baseDir);
     }
@@ -94,9 +92,6 @@ class DerivedQueueTest {
         } else {
             System.setProperty(IPC_TERM_PROPERTY, ipcTerm);
         }
-        if (deriveFromLog != null) {
-            System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
-        }
     }
 
     /** Frames above the MTU on 256 KiB terms: fragments, term-end padding, a leader stop and a full-log restart. */
@@ -105,6 +100,7 @@ class DerivedQueueTest {
     void theLogDerivesEachQueueAcrossALeaderStop() throws Exception {
         System.setProperty(IPC_TERM_PROPERTY, "256k");
         cluster = new InProcessCluster(baseDir);
+        cluster.withQueueRecordings();
         cluster.startAll();
         final int leader = cluster.awaitLeader();
         final int member = (leader + 1) % InProcessCluster.MEMBERS;
@@ -125,7 +121,7 @@ class DerivedQueueTest {
             until = producer.lastClusterSeqNo();
         }
         cluster.start(leader);
-        assertEachMemberDerivesItsQueues(until);
+        assertEachMemberDerivesItsQueues(member, until);
     }
 
     /** Small frames through snapshot rounds, whose markers come from the log's snapshot actions. */
@@ -133,6 +129,7 @@ class DerivedQueueTest {
     @InterruptAfter(180)
     void theLogDerivesEachQueueAcrossSnapshotRounds() {
         cluster = new InProcessCluster(baseDir);
+        cluster.withQueueRecordings();
         cluster.startAll(1, 0);
         final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
         final long until;
@@ -144,36 +141,45 @@ class DerivedQueueTest {
             assertTrue(producer.isDrained(), "the producer still held " + producer.held() + " frame(s)");
             until = producer.lastClusterSeqNo();
         }
-        final int markers = assertEachMemberDerivesItsQueues(until);
+        final int markers = assertEachMemberDerivesItsQueues(member, until);
         assertTrue(markers >= 2, "the run crossed " + markers + " snapshot round(s), not two");
     }
 
-    /** @return the snapshot markers in the default queue up to {@code untilClusterSeqNo} */
-    private int assertEachMemberDerivesItsQueues(final long untilClusterSeqNo) {
+    /**
+     * @param reference the member whose recordings are whole: one the test did not restart
+     * @return the snapshot markers in the default queue up to {@code untilClusterSeqNo}
+     */
+    private int assertEachMemberDerivesItsQueues(final int reference, final long untilClusterSeqNo) {
+        final Recorded[] recorded = new Recorded[FrameLayer.MAX_GROUPS];
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(reference)));
+             AeronArchive archive = connectArchive(aeron)) {
+            for (final int groupId : InProcessCluster.GROUP_IDS) {
+                recorded[groupId - 1] = readQueue(aeron, archive, reference, groupId, untilClusterSeqNo);
+            }
+        }
         int markers = 0;
         for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
-            markers = assertDerivesItsQueues(m, untilClusterSeqNo);
+            markers = assertDerivesItsQueues(m, recorded, untilClusterSeqNo);
         }
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");
         return markers;
     }
 
-    private int assertDerivesItsQueues(final int member, final long untilClusterSeqNo) {
+    private static AeronArchive connectArchive(final Aeron aeron) {
+        return AeronArchive.connect(new AeronArchive.Context()
+                                        .aeron(aeron)
+                                        .ownsAeronClient(false)
+                                        .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                        .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+                                        .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                        .controlResponseStreamId(RESPONSE_STREAM_ID));
+    }
+
+    private int assertDerivesItsQueues(final int member, final Recorded[] recorded, final long untilClusterSeqNo) {
         final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
-        final AeronArchive archive =
-            AeronArchive.connect(new AeronArchive.Context()
-                                     .aeron(aeron)
-                                     .ownsAeronClient(false)
-                                     .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
-                                     .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
-                                     .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
-                                     .controlResponseStreamId(RESPONSE_STREAM_ID));
+        final AeronArchive archive = connectArchive(aeron);
         try {
-            final Recorded[] recorded = new Recorded[FrameLayer.MAX_GROUPS];
-            for (final int groupId : InProcessCluster.GROUP_IDS) {
-                recorded[groupId - 1] = readQueue(aeron, archive, member, groupId, untilClusterSeqNo);
-            }
             final Derived derived = new Derived(recorded);
             final ExpandableArrayBuffer log = new ExpandableArrayBuffer(1 << 20);
             final int logLength = deriveLog(aeron, archive, member, untilClusterSeqNo, derived, log);
@@ -185,7 +191,7 @@ class DerivedQueueTest {
                 final List<Frame> actual = derived.frames.get(groupId - 1);
                 final String queue = "member " + member + "'s queue of group " + groupId;
                 assertTrue(actual.size() >= expected.size(),
-                           queue + ": the log derives " + actual.size() + " frame(s), the recording holds " +
+                           queue + ": the log derives " + actual.size() + " frame(s), the reference holds " +
                                expected.size());
                 for (int i = 0; i < expected.size(); i++) {
                     assertArrayEquals(expected.get(i).bytes(), actual.get(i).bytes(), queue + ": frame " + (i + 1));

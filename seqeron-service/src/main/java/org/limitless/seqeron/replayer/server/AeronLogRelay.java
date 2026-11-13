@@ -39,17 +39,20 @@ import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The Aeron adapter for {@link LogRelay}: on a gateway host whose members record no queue, reads a member's Raft log
- * over UDP with one replay bounded by the member's commit position, runs a {@link LogDeriver} over it, and publishes
- * the frames of each relayed group onto this host's own queue, which the local archive records and
- * {@link ReplayerService} serves (doc/disk-load-plan.md, step 2a). It does for every relayed group what an
- * {@link AeronQueueRelay} does for one.
+ * The Aeron adapter for {@link LogRelay}: on a gateway host, reads a member's Raft log over UDP with one replay
+ * bounded by the member's commit position, runs a {@link LogDeriver} over it, and publishes the frames of each relayed
+ * group onto this host's own queue, which the local archive records and {@link ReplayerService} serves exactly as it
+ * does on a member (doc/disk-load-plan.md, step 2a). Nothing on the member changes: its archive already takes remote
+ * clients, and a replay costs its sequencer nothing.
  *
  * <p>The derivation starts where the first member read says its service did ({@link DerivationAnnouncement}), so the
  * host's queues start at {@code groupSeqNo} 1 or at that member's cut. A frame a local queue does not take is kept and
  * offered again next cycle, and the log is not read while one is kept.
  */
 final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
+    /** Stream the member's archive replays to this relay on, on an ephemeral port of its own. */
+    static final int REPLAY_STREAM_ID = 206;
+
     private static final long ARCHIVE_MESSAGE_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
     private static final long RECORDING_START_TIMEOUT_MS = 10_000;
     private static final long RESOLVE_TIMEOUT_MS = 1_000;
@@ -94,7 +97,7 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
     private boolean fatal;
 
     /**
-     * Creates the local queues and starts the local archive recording them, as {@link AeronQueueRelay} does for one.
+     * Creates the local queues and starts the local archive recording them.
      *
      * @param groups       the groups whose queues this relays, ascending: the first is the host's default queue
      * @param topologyRows where to hand a copy of each topology row the default queue carries
@@ -304,7 +307,7 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
     private void startReplay() {
         final DerivationAnnouncement announcement = readAnnouncement();
         if (announcement == null) {
-            dropSource("it announces no derivation start: it records its queues, or has not started");
+            dropSource("it announces no derivation start: it has not started");
             return;
         }
         final long[] log = activeRecording(ConsensusModule.Configuration.logStreamId());
@@ -314,6 +317,13 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
         }
         final DerivationStart start = announcement.start();
         final long from = relay.replayFrom(start.logPosition(), log[1], source.getRecordingPosition(log[0]), nowMs);
+        if (from == LogRelay.HISTORY_LOST) {
+            closeSource();
+            fatal("every member archive's log recording starts past position " + relay.position() +
+                  ", which they trimmed while this relay was away; a restart derives from a member's start into new "
+                  + "recordings");
+            return;
+        }
         if (from == LogRelay.NOT_SUITABLE) {
             dropSource("its log's recording, from " + log[1] + ", does not hold position " +
                        (relay.position() == LogRelay.NOT_SUITABLE ? start.logPosition() : relay.position()));
@@ -324,7 +334,7 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
             deriver.restore(start.state(), start.restored());
             deriver.replayTopologyRows(topologyRows::add);
         }
-        replay = aeron.addSubscription("aeron:udp?endpoint=" + host + ":0", AeronQueueRelay.REPLAY_STREAM_ID);
+        replay = aeron.addSubscription("aeron:udp?endpoint=" + host + ":0", REPLAY_STREAM_ID);
         imageSeen = false;
         final ControlledFragmentAssembler entries =
             new ControlledFragmentAssembler((buffer, offset, length, header) -> {
@@ -341,7 +351,7 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
         };
         replaySessionId =
             source.startBoundedReplay(log[0], from, AeronArchive.NULL_LENGTH, announcement.commitCounterId(),
-                                      resolvedChannel(replay), AeronQueueRelay.REPLAY_STREAM_ID);
+                                      resolvedChannel(replay), REPLAY_STREAM_ID);
         Logger.info(Logger.CoreComponent.QueueRelay, nodeId,
                     "following member archive %s: its log's recording %d from position %d",
                     archiveEndpoints.get(relay.sourceIndex()), log[0], from);
@@ -363,10 +373,9 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
             buffer.getBytes(offset, message);
             messages.add(message);
         });
-        try (Subscription subscription =
-                 aeron.addSubscription("aeron:udp?endpoint=" + host + ":0", AeronQueueRelay.REPLAY_STREAM_ID)) {
-            final long sessionId = source.startReplay(recording[0], recording[1], length, resolvedChannel(subscription),
-                                                      AeronQueueRelay.REPLAY_STREAM_ID);
+        try (Subscription subscription = aeron.addSubscription("aeron:udp?endpoint=" + host + ":0", REPLAY_STREAM_ID)) {
+            final long sessionId =
+                source.startReplay(recording[0], recording[1], length, resolvedChannel(subscription), REPLAY_STREAM_ID);
             final long deadlineMs = Clocks.monotonicMs() + ANNOUNCEMENT_TIMEOUT_MS;
             final long end = recording[1] + length;
             while ((subscription.imageCount() == 0 || subscription.imageAtIndex(0).position() < end) &&

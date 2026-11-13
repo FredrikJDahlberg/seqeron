@@ -66,6 +66,7 @@ class ReplaySlotsTest {
     void startCluster() {
         watcher.dataCollector().add(baseDir);
         cluster = new InProcessCluster(baseDir);
+        cluster.withQueueRecordings(); // what the tests of AeronReplayer read, as a gateway host's archive would hold
         cluster.startAll();
     }
 
@@ -146,7 +147,6 @@ class ReplaySlotsTest {
     @Test
     @InterruptAfter(60)
     void eachQueuesBacklogIsFoundInItsMembersCountersAgainstItsOwnRecording() {
-        InProcessCluster.assumeMembersRecordQueues();
         final int member = cluster.awaitLeader();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
              AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()

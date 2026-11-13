@@ -18,9 +18,7 @@
 #   REPLAY_COLD          1 drops every member's page cache before each phase (node.sh drop-caches: Linux, sudo), so
 #                        the replay reads from the disk                (default 0)
 #
-# With MULTIHOST_MEMBER_OPTS=-Dreplayer.deriveFromLog=true the members record no queue (doc/disk-load-plan.md, step
-# 2a): the local phase replays off member 1's Raft log, and the gateway host needs the flag too, in
-# MULTIHOST_HOST_OPTS, to relay member 0's log.
+# The local phase replays off member 1's Raft log, and the gateway host relays a member's log.
 #
 # Usage:
 #   MULTIHOST_MEMBERS=10.0.0.11,10.0.0.12,10.0.0.13 MULTIHOST_CLIENT=10.0.0.14 ./replay-remote.sh

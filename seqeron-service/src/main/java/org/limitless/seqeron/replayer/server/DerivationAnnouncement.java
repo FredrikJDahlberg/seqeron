@@ -7,17 +7,17 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.sequencer.LogDeriver;
 
 /**
- * What a member that records no queue tells a gateway host, which cannot read its driver: where a derivation of its
- * queues may start and which counter bounds a replay of its log (doc/disk-load-plan.md, step 2a). The member
- * publishes one when it starts and one after each purge, on a stream its archive records, and the recording is
- * active for as long as the counter id holds.
+ * What a member tells a gateway host, which cannot read its driver: where a derivation of its queues may start and
+ * which counter bounds a replay of its log (doc/disk-load-plan.md, step 2a). The member publishes one when it starts
+ * and one after each purge, on a stream its archive records, and the recording is active for as long as the counter
+ * id holds.
  *
  * @param start           where the member's service started, or the cut its queues were purged to
  * @param commitCounterId the id of the commit position counter on the member's driver
  */
-record DerivationAnnouncement(DerivationStart start, int commitCounterId) {
+public record DerivationAnnouncement(DerivationStart start, int commitCounterId) {
     static final String CHANNEL = "aeron:ipc?alias=seqeron-derivation-start|term-length=1m";
-    static final int STREAM_ID = 207;
+    public static final int STREAM_ID = 207;
 
     private static final int VERSION = 1;
     private static final int HEADER_LENGTH = 5 * Integer.BYTES + Long.BYTES + 1 + FrameLayer.MAX_GROUPS * Long.BYTES;
@@ -53,7 +53,7 @@ record DerivationAnnouncement(DerivationStart start, int commitCounterId) {
     }
 
     /** @return the last announcement {@code messages} holds all of, or null if this version reads none */
-    static DerivationAnnouncement decode(final List<byte[]> messages) {
+    public static DerivationAnnouncement decode(final List<byte[]> messages) {
         DerivationAnnouncement last = null;
         for (int from = 0; from < messages.size();) {
             final DerivationAnnouncement next = decodeFirst(messages.subList(from, messages.size()));

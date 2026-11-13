@@ -40,9 +40,6 @@ final class ClusterProcesses implements AutoCloseable {
     // Set when the build measures coverage; each child then writes an exec file named for its log.
     private static final String JACOCO_AGENT = System.getProperty("seqeron.jacocoAgent");
     private static final String JACOCO_CHILDREN = System.getProperty("seqeron.jacocoChildren");
-    /** Set by -PderiveFromLog: the members record no queue, and a gateway host relays their logs. */
-    private static final String DERIVE_FROM_LOG =
-        "-D" + ReplayerServer.PROP_DERIVE_FROM_LOG + "=" + Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG);
     private static final String JAVA = Path.of(System.getProperty("java.home"), "bin", "java").toString();
     // seqeron-home.sh's SEQERON_JAVA_OPTS.
     static final List<String> JAVA_OPTS = List.of(
@@ -77,18 +74,12 @@ final class ClusterProcesses implements AutoCloseable {
      * on its own archive and directory.
      */
     Child startMember(final int m, final String logName) {
-        return startMember(m, logName, false);
-    }
-
-    /** As {@link #startMember(int, String)}; {@code faultInjection} arms the queue-stall trigger file. */
-    Child startMember(final int m, final String logName, final boolean faultInjection) {
         final String hosts = String.join(",", "localhost", "localhost", "localhost");
         killed[m] = false;
-        members[m] =
-            launch(logName,
-                   List.of("-Xlog:gc", DERIVE_FROM_LOG, "-Dsequencer.memberId=" + m, "-Dsequencer.baseDir=" + baseDir,
-                           "-Dsequencer.aeronDir=" + aeronDir(m), "-Dsequencer.hosts=" + hosts, "-jar", JAR),
-                   faultInjection ? Map.of("SEQERON_FAULT_INJECTION", "1") : Map.of());
+        members[m] = launch(logName,
+                            List.of("-Xlog:gc", "-Dsequencer.memberId=" + m, "-Dsequencer.baseDir=" + baseDir,
+                                    "-Dsequencer.aeronDir=" + aeronDir(m), "-Dsequencer.hosts=" + hosts, "-jar", JAR),
+                            Map.of());
         return members[m];
     }
 
@@ -128,7 +119,7 @@ final class ClusterProcesses implements AutoCloseable {
         }
         final List<String> args = new ArrayList<>(
             List.of("-Dreplayer.memberId=" + id, "-Dreplayer.baseDir=" + baseDir, "-Dreplayer.aeronDir=" + aeronDir(id),
-                    "-Dreplayer.archiveEndpoints=" + endpoints, "-Dreplayer.groups=1", DERIVE_FROM_LOG));
+                    "-Dreplayer.archiveEndpoints=" + endpoints, "-Dreplayer.groups=1"));
         properties.forEach(property -> args.add("-D" + property));
         args.addAll(List.of("-cp", JAR, ReplayerServer.class.getName()));
         return launch(logName, args);
@@ -247,11 +238,6 @@ final class ClusterProcesses implements AutoCloseable {
                                                           ClusterCtl.class.getName()));
         args.addAll(List.of(arguments));
         return launch(name, args);
-    }
-
-    /** Dumps member {@code m}'s archive through {@code SbeLogPrinter}, to the process's log. */
-    Child logPrinter(final String name, final int m) {
-        return logPrinter(name, baseDir.resolve("archive-" + m).toString());
     }
 
     /** Runs {@code SbeLogPrinter} with the given arguments. */

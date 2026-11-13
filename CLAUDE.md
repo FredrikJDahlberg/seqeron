@@ -66,7 +66,7 @@ Never commit code without permission.
 
 See [README.md](README.md). **seqeron** is the sequencing tier: an Aeron
 Cluster (Raft) replicated state machine that assigns a global, gap-free total order to messages from
-external producers, plus the replayer that serves history off each node's recording and the client-side
+external producers, plus the replayer that serves history derived from each node's Raft log and the client-side
 plumbing that follows the ordered stream.
 
 This repository is that tier **alone**: it contains no application edges and no application schemas.

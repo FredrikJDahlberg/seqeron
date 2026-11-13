@@ -148,11 +148,6 @@ class QueuePublisherTest {
         }
 
         @Override
-        public long recordingId(final int groupId) {
-            return 7;
-        }
-
-        @Override
         public void queueBackPressureAlert() {
             ++alerts;
         }
