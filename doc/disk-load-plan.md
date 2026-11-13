@@ -93,7 +93,7 @@ Costs and open questions:
 - A group's replay reads every group's log entries and builds each of its frames: more CPU per replayed
   byte than an archive replay, off the live path. The prototype walks a queue at a third to a half of the
   recorded path's rate, which a snapshot start shortens with the log it has to read.
-- Whether a derived replay keeps position addressing or moves to `groupSeqNo`. The prototype keeps positions.
+- Addressing: a derived replay keeps queue positions ("Release" below).
 
 Prototype. With `replayer.deriveFromLog`, a member records no queue and its Replayer is a `DerivingReplayer`,
 which is to `ReplayerService` what `AeronReplayer` is over recordings: each queue is one recording, named by
@@ -227,6 +227,41 @@ Limits of the prototype:
   `csharp-client-test.sh`, which it runs without the flag, and the C++ stubs, which it runs neither way. With the
   flag `QueueRecordings` reads a member's queues twice, as its log derives them and as its Replayer replays them,
   and the checks of a member's queue recording are skipped.
+
+Release: derived queues only. Members always derive their queues, and the recorded path is retired, kept on the
+`recorded-queues` branch (tag `recorded-queues-final`) cut from `main` with the `LogTrimmer` fix.
+
+- **No flag.** A member records no queue: `replayer.deriveFromLog` goes, and with it `SequencerService`'s queue
+  recording and purge, `AeronQueueRelay` and `QueueRelay`. A gateway host always relays a member's log
+  (`AeronLogRelay`) and still records and serves the queues it derives through `AeronReplayer`.
+- **Positions.** Replays keep queue-position addressing, so the replay protocol and the three clients do not change.
+- **A host left behind stops.** A gateway host whose members' logs no longer hold the position it needs stops with a
+  fatal, as a queue relay left behind does: the log is trimmed past it, so no retry can succeed and a restart from a
+  snapshot can. The decision is `LogRelay`'s, under a unit test.
+
+The steps, each checked before the next:
+
+1. **Safekeeping.** Branch `recorded-queues` and tag `recorded-queues-final` from `main`, pushed. Check: the tag
+   resolves on GitHub.
+2. **The host's fatal**, as a commit of its own. Check: its unit test fails first.
+3. **Members always derive:** the removals above, and the chaos queue-stall fault, which needs a queue recording to
+   stall. Check: the unit suite.
+4. **Tests.** `DerivedQueueTest` and `CheckpointedReplayTest` record the queue from the test, through the member's
+   archive, as the reference a derived replay is compared with frame for frame. `QueueRecordings` reads a member's
+   queues through its Replayer alone. `-PderiveFromLog` and the tests of a member's queue recording go; any that check
+   more than the recording are ported. Check: the integration and system suites and `ChaosTest`.
+5. **CI and scripts.** The recorded and derived legs of the integration, system, chaos and C# client jobs become one
+   each, and `failover.yml`'s Docker suite then runs on derived members. The multi-host and C# scripts lose their
+   derive options, and `disk-session.sh` its recorded parts. Check: CI green, the Docker network faults included.
+6. **Docs.** `overview.md`, `running-a-cluster.md`, `ops.md` (even writeback stays required; a default gp3 volume
+   holds about 580k msg/s of 100-byte messages), `snapshot.md` §10 against the log ("Retention" above),
+   `clusterctl.md`, `fault-tolerance.md`, `building.md` and the `CLAUDE.md` files. This document then records 2a as
+   done and 2b as retired.
+
+Open after the release, from the limits above: an operator tool that prints a member's queue through its Replayer,
+where `SbeLogPrinter` read a recording; start-up time on a long log, since the checkpoints are rebuilt at each start;
+the announcement recording's growth per purge; the gateway host's short first cold follow in `replay-remote.sh`; and
+the throughput drop under the kernel's default writeback.
 
 #### 2b: a second archive for queue recordings
 
