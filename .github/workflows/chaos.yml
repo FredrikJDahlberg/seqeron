@@ -92,18 +92,12 @@ jobs:
   # The C# client tier against a live cluster: ingress over UDP and IPC, confirmed ingress across a leader
   # kill, a cold start, and the C# examples, built from the packed package, through a gateway handover. On
   # Aeron.NET, which trails Aeron, so an Aeron upgrade's pull request is where this matters (spec V-1).
+  # Not on derived queues too: the client receives the same frames either way, and the integration, system and
+  # chaos derived legs cover the members.
   csharp-client:
-    name: C# client (${{ matrix.queues }})
+    name: C# client
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - queues: recorded
-            member_opts: ''
-          - queues: derived
-            member_opts: '-Dreplayer.deriveFromLog=true'
     steps:
       - uses: actions/checkout@v7
 
@@ -130,12 +124,10 @@ jobs:
 
       - name: C# client run
         run: ./seqeron-service/src/test/scripts/csharp-client-test.sh
-        env:
-          CSHARP_MEMBER_OPTS: ${{ matrix.member_opts }}
 
       - name: Upload C# client logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: csharp-client-logs-${{ matrix.queues }}
+          name: csharp-client-logs
           path: logs/csharp-client/

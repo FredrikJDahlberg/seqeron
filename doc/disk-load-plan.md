@@ -218,8 +218,9 @@ Limits of the prototype:
   tests. The integration and system suites and `ChaosTest` run with it
   under `-PderiveFromLog`, the system suite's `Hosted*Test` with the C++ stubs when `HOSTED_PROBE` names them, and
   `csharp-client-test.sh` under `CSHARP_MEMBER_OPTS=-Dreplayer.deriveFromLog=true`; CI runs each both ways, less
-  the C++ stubs, which it runs neither way. With the flag `QueueRecordings` reads a member's queues twice, as its
-  log derives them and as its Replayer replays them, and the checks of a member's queue recording are skipped.
+  `csharp-client-test.sh`, which it runs without the flag, and the C++ stubs, which it runs neither way. With the
+  flag `QueueRecordings` reads a member's queues twice, as its log derives them and as its Replayer replays them,
+  and the checks of a member's queue recording are skipped.
 
 #### 2b: a second archive for queue recordings
 
