@@ -53,9 +53,6 @@ public final class QueuePublisher {
         /** How far the archive has recorded that queue; only meaningful while {@link #recordingActive}. */
         long recordedPosition(int groupId);
 
-        /** Which recording that is, for the operator's log line. */
-        long recordingId(int groupId);
-
         /** The {@code seqeron.sequencer.queueBackPressureAlerts} counter. */
         void queueBackPressureAlert();
 
@@ -175,7 +172,7 @@ public final class QueuePublisher {
      *
      * <p>{@code offer}, not {@code tryClaim}: a claim saves one copy, only below the queue's MTU, of a frame the
      * cluster has already logged, replicated and archived, and an aborted claim pads this node's recording
-     * alone, moving its positions off the other members' that {@code QueueRelay} resumes at.
+     * alone, moving its positions off the ones a derivation from the log gives.
      * @param groupId the queue's group
      * @param buffer  holding the frame from offset 0
      * @param length  of the frame
@@ -255,8 +252,7 @@ public final class QueuePublisher {
     }
 
     private String stoppedRecording(final int groupId) {
-        return "the local archive stopped recording group " + groupId + "'s queue (recording " +
-               actions.recordingId(groupId) + ")";
+        return "group " + groupId + "'s queue stopped draining";
     }
 
     /** Whether this node has already been given up on — see {@link #fatalFailure}. */

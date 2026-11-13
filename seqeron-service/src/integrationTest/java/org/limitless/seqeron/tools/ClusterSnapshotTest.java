@@ -41,7 +41,6 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.server.Replayer;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /**
@@ -61,19 +60,15 @@ class ClusterSnapshotTest {
     private InProcessCluster cluster;
     private Boolean gatewayRow;
     private String joinMs;
-    private String deriveFromLog;
 
     @BeforeEach
     void remember() {
-        // Each test here sets the flag it runs with, whatever the suite's.
-        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         joinMs = System.getProperty(JOIN_PROPERTY);
         watcher.dataCollector().add(baseDir);
     }
 
     @AfterEach
     void stopCluster() {
-        restoreProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
         if (cluster != null) {
             cluster.close();
         }
@@ -663,14 +658,12 @@ class ClusterSnapshotTest {
     @Test
     @InterruptAfter(180)
     void aGatewayRestartedOnAMemberThatRecordsNoQueueRestoresItsSnapshotOffTheLog() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         aGatewayRestartedOnItsMemberRestoresItsConfirmedSnapshotAndCatchesUp();
     }
 
     @Test
     @InterruptAfter(180)
     void aMemberThatRecordsNoQueueRestartsAtItsCutAndAGatewayRestoresOnIt() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         gatewayRow = true;
         start("200", 1);
         final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
@@ -703,7 +696,6 @@ class ClusterSnapshotTest {
     @Test
     @InterruptAfter(240)
     void aMemberThatRecordsNoQueueMovesItsStartToTheCutsItsGatewayConfirmsAndServesFromThere() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         final String term = setProperty(TERM_PROPERTY, String.valueOf(SMALL_SEGMENT));
         try {
             gatewayRow = true;
@@ -741,14 +733,12 @@ class ClusterSnapshotTest {
     @Test
     @InterruptAfter(180)
     void aGatewayHostThatDerivesItsQueuesReportsEachMarkerAtItsStartInItsOwnRecording() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         aGatewayHostRelayReportsEachMarkerAtItsStartInTheHostsOwnRecording();
     }
 
     @Test
     @InterruptAfter(240)
     void aGatewayHostThatDerivesItsQueuesPurgesThemBelowTheCutsItsGatewayConfirms() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         final long start = hostStartAfterTraffic(true, true);
         assertTrue(start > 0, "the host's recording still starts at 0");
         assertEquals(0, start % SMALL_SEGMENT, "and a purge leaves it at a segment boundary");
@@ -773,7 +763,6 @@ class ClusterSnapshotTest {
     @Test
     @InterruptAfter(300)
     void aMemberThatRecordsNoQueueTrimsItsLogAboveWhatItsQueuesNeedAndStartsAHost() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         aMemberTrimsItsLog(true);
     }
 
@@ -839,7 +828,6 @@ class ClusterSnapshotTest {
     @Test
     @InterruptAfter(180)
     void aGatewayHostThatDerivesItsQueuesStartsThemAtTheCutOfAMemberRestartedFromASnapshot() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         gatewayRow = true;
         start("200", 1);
         cluster.awaitLeader();

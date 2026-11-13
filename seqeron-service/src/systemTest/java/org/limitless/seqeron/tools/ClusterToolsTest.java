@@ -1,7 +1,6 @@
 package org.limitless.seqeron.tools;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -17,7 +16,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 
 /**
  * The operator tools as an operator runs them: {@code clusterctl}, {@code ClusterProbe} and {@code SbeLogPrinter} as
@@ -220,16 +218,6 @@ class ClusterToolsTest {
         final Run dump = printer(archive.toString(), "--oneline");
         assertEquals(0, dump.status());
         dump.assertContains("[Catalog] Recording ID");
-        if (Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG)) {
-            return; // the member recorded no queue, so its archive holds no sequenced frame
-        }
-        dump.assertContains("ProbeMarker");
-        dump.assertContains("ClusterStopped");
-
-        final Run only = printer("--schema", "frame", archive.toString(), "--oneline");
-        assertEquals(0, only.status());
-        only.assertContains("ClusterStopped");
-        assertFalse(only.output().contains("ProbeMarker ="), "the probe schema is not loaded");
     }
 
     @Test

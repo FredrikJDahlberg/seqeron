@@ -38,7 +38,7 @@ public final class NodeDriver {
     /** {@link ReplayerServer}'s. */
     static final int REPLAYER_ARCHIVE_RESPONSE_STREAM_ID = 120;
 
-    /** {@link AeronQueueRelay}'s session with a member's archive. */
+    /** {@link AeronLogRelay}'s session with a member's archive. */
     static final int RELAY_ARCHIVE_RESPONSE_STREAM_ID = 122;
 
     /** IPC term length when {@code aeron.ipc.term.buffer.length} is not set, rather than Aeron's 64 MiB. */

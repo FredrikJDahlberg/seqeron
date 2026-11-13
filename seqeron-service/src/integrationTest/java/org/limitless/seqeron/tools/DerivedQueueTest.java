@@ -39,7 +39,6 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.sequencer.LogDeriver;
 import org.limitless.seqeron.sequencer.QueuePositions;
 import org.limitless.seqeron.sequencer.Sequencer;
@@ -66,7 +65,6 @@ class DerivedQueueTest {
 
     private InProcessCluster cluster;
     private String ipcTerm;
-    private String deriveFromLog;
 
     /** One frame of a queue: where it starts, and its bytes. */
     private record Frame(long position, byte[] bytes) { }
@@ -78,8 +76,6 @@ class DerivedQueueTest {
 
     @BeforeEach
     void remember() {
-        // The members record their queues, whatever the suite's flag: the derivation is compared with them.
-        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         ipcTerm = System.getProperty(IPC_TERM_PROPERTY);
         watcher.dataCollector().add(baseDir);
     }
@@ -93,9 +89,6 @@ class DerivedQueueTest {
             System.clearProperty(IPC_TERM_PROPERTY);
         } else {
             System.setProperty(IPC_TERM_PROPERTY, ipcTerm);
-        }
-        if (deriveFromLog != null) {
-            System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
         }
     }
 

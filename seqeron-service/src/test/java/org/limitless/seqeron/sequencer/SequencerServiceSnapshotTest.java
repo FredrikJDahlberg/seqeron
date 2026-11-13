@@ -2,7 +2,6 @@ package org.limitless.seqeron.sequencer;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import io.aeron.archive.client.AeronArchive;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.concurrent.atomic.AtomicReference;
@@ -24,8 +23,8 @@ class SequencerServiceSnapshotTest {
         // with no policy keeps its full-log replay (doc/snapshot.md §10.2).
         try (RestartSafeLog log = RestartSafeLog.open(clusterDir)) {
             final SequencerService service = new SequencerService(
-                0, new AeronArchive.Context(), new ArrayDeque<>(),
-                () -> { }, log, new ArrayDeque<>(), new AtomicReference<>(), 1 << 24, 4096, NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS, true);
+                0, new ArrayDeque<>(), () -> { }, log, new ArrayDeque<>(), new AtomicReference<>(), 1 << 24, 4096,
+                NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS);
 
             assertThrows(IllegalStateException.class, () -> service.onTakeSnapshot(null));
             org.junit.jupiter.api.Assertions.assertFalse(log.isCut(0), "no cut was recorded");

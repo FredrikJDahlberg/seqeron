@@ -27,7 +27,6 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.replayer.server.DerivingReplayer;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 
 /**
  * A client's cold start served off the Raft log (doc/disk-load-plan.md, step 2a): with {@code replayer.deriveFromLog} a
@@ -54,22 +53,13 @@ class DerivedReplayTest {
 
     private InProcessCluster cluster;
 
-    private String deriveFromLog;
-
     @BeforeEach
     void collect() {
-        // Each test here sets the flag it runs with, whatever the suite's.
-        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         watcher.dataCollector().add(baseDir);
     }
 
     @AfterEach
     void stopCluster() {
-        if (deriveFromLog == null) {
-            System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
-        } else {
-            System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
-        }
         if (cluster != null) {
             cluster.close();
         }
@@ -78,7 +68,6 @@ class DerivedReplayTest {
     @Test
     @InterruptAfter(240)
     void aColdStartWalksEachQueueOffTheLog() {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         walkEachQueue(true);
     }
 
@@ -95,7 +84,6 @@ class DerivedReplayTest {
     @Test
     @InterruptAfter(240)
     void aGatewayHostDerivesItsQueuesFromAMembersLogAndGoesOnFromTheNextMembers() {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         cluster = new InProcessCluster(baseDir);
         cluster.startAll();
         final long tip = send(cluster.awaitLeader(), HOST_HISTORY_FRAMES);

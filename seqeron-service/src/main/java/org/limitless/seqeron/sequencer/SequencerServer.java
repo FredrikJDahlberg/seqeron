@@ -134,7 +134,7 @@ public final class SequencerServer {
 
     /**
      * How long the graceful shutdown after a fatal may take before the process is halted: it closes the archive
-     * that may be what failed. A healthy one fits inside ChaosTest's 10s queue-stall deadline.
+     * that may be what failed.
      */
     private static final long FATAL_SHUTDOWN_BACKSTOP_MS = 15_000;
 
@@ -415,9 +415,8 @@ public final class SequencerServer {
         final RestartSafeLog safeLog = RestartSafeLog.open(clusterDir.toPath());
         final AtomicReference<DerivationStart> derivationStart = new AtomicReference<>();
         final SequencerService service =
-            new SequencerService(memberId, localArchiveCtx.clone(), topologyRows, fatalHandler, safeLog, cuts,
-                                 derivationStart, driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(),
-                                 queueStallTimeoutMs, !Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG));
+            new SequencerService(memberId, topologyRows, fatalHandler, safeLog, cuts, derivationStart,
+                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(), queueStallTimeoutMs);
 
         final ClusteredServiceContainer.Context serviceCtx =
             new ClusteredServiceContainer.Context()

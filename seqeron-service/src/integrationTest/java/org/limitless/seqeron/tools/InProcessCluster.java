@@ -307,10 +307,9 @@ final class InProcessCluster implements AutoCloseable {
         return baseDir.resolve("archive-" + m).toFile();
     }
 
-    /** Skips a test of a member's queue recording when the suite runs members that record none (-PderiveFromLog). */
+    /** Skips a test of a member's queue recording: members record none. */
     static void assumeMembersRecordQueues() {
-        Assumptions.assumeFalse(Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG),
-                                "members record no queue with " + ReplayerServer.PROP_DERIVE_FROM_LOG);
+        Assumptions.abort("members record no queue");
     }
 
     /** Each running member's driver directory, and the gateway host's if launched, by name. */

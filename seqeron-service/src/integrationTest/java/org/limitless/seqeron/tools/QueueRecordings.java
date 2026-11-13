@@ -31,7 +31,6 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
@@ -121,7 +120,7 @@ final class QueueRecordings {
                                      .controlResponseStreamId(RESPONSE_STREAM_ID));
         try {
             final List<Recording> recordings = new ArrayList<>();
-            if (Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG) && commitPositionCounterId(aeron) >= 0) {
+            if (commitPositionCounterId(aeron) >= 0) {
                 recordings.addAll(derive(name, aeron, archive, untilClusterSeqNo));
                 for (final int groupId : InProcessCluster.GROUP_IDS) {
                     recordings.add(serve(name, aeron, groupId, untilClusterSeqNo));

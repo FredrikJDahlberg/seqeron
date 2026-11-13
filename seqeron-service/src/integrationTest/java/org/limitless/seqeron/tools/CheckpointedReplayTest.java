@@ -32,7 +32,6 @@ import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.replayer.server.AeronReplayer;
 import org.limitless.seqeron.replayer.server.DerivingReplayer;
 import org.limitless.seqeron.replayer.server.Replayer;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /**
@@ -63,7 +62,6 @@ class CheckpointedReplayTest {
     private int insideFrames;
     private String ipcTerm;
     private String joinMs;
-    private String deriveFromLog;
     private long checkpointLogBytes = DerivingReplayer.CHECKPOINT_LOG_BYTES;
     private int maxCheckpoints = DerivingReplayer.MAX_CHECKPOINTS;
     private long maxRunBytes = DerivingReplayer.MAX_RUN_BYTES;
@@ -78,8 +76,6 @@ class CheckpointedReplayTest {
 
     @BeforeEach
     void remember() {
-        // The members record their queues, whatever the suite's flag: the derivation is compared with them.
-        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         ipcTerm = System.getProperty(IPC_TERM_PROPERTY);
         joinMs = System.getProperty(JOIN_PROPERTY);
         watcher.dataCollector().add(baseDir);
@@ -92,7 +88,6 @@ class CheckpointedReplayTest {
         }
         restore(IPC_TERM_PROPERTY, ipcTerm);
         restore(JOIN_PROPERTY, joinMs);
-        restore(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
     }
 
     private static void restore(final String property, final String value) {
