@@ -191,7 +191,7 @@ Retention. `snapshot.md` §10 with the flag on, where it differs:
 | what holds a queue's history | its recording | the log from the first checkpoint kept, which is at or below the queue's start |
 | the log kept (§10.7) | from the older of the two newest restart-safe snapshots, for a restart | from the lower of that and the first checkpoint kept, which the member's Replayer tells its trim |
 | a host's start (§10.3, §10.6) | the member's recording start | the member's last announcement |
-| a host left behind by a purge (§10.6) | fatal | the member is dropped and the next tried, without end |
+| a host left behind by a purge (§10.6) | fatal | fatal, once every member's log starts past its position |
 | a new member (§10.6) | copies no queue | has none to copy |
 
 The restart-safety rules (§10.8), the client rules (§10.6) and the cut lookup (§10.3) are unchanged: they read
@@ -207,9 +207,6 @@ Limits of the prototype:
   to the cut itself would bound that, but a client that is down across one round, on a node where no other
   instance joins it, would then find its file's cut below the start and be fenced (`snapshot.md` §10.6), where
   a recording leaves it up to a segment.
-- **A host with no suitable member does not stop.** A member is unsuitable when its log no longer holds the
-  position the host needs: its announced start for a host's first read, the host's own position after. The
-  relay moves to the next member and retries, where a queue relay left behind stops with a fatal.
 - **The announcement recording grows** by one announcement, the sequencer's state, per purge, and a host reads
   it whole at each connect. A member's restart purges it.
 - **Checkpoints are memory.** Each holds the sequencer's state, and up to 1024 are kept. They are

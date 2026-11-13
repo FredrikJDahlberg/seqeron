@@ -53,6 +53,64 @@ class LogRelayTest {
         assertEquals(LogRelay.NOT_SUITABLE, relay.replayFrom(0, 8192, 10_000, 0));
     }
 
+    /** The relay has applied up to 4352 on member 0 and lost it; member 1 is next. */
+    private void appliedUpTo4352() {
+        relay.replayFrom(4096, 0, 10_000, 0);
+        relay.onEntry(4352, 0);
+        relay.onSourceLost(0);
+    }
+
+    @Test
+    @DisplayName("members whose logs start past the position are left in turn, and the last one ends the relay")
+    void membersTrimmedPastTheRelayLeaveNothingToRelay() {
+        appliedUpTo4352();
+        for (int member = 0; member < 3; member++) {
+            assertEquals(member < 2 ? LogRelay.NOT_SUITABLE : LogRelay.HISTORY_LOST,
+                         relay.replayFrom(0, 8192, 20_000, 0), "member " + member);
+            relay.onSourceLost(0);
+        }
+        assertEquals(4352, relay.position());
+    }
+
+    @Test
+    @DisplayName("a member that cannot be reached, or has not reached the position, is still to be tried")
+    void onlyAMemberTrimmedPastCounts() {
+        appliedUpTo4352();
+        assertEquals(LogRelay.NOT_SUITABLE, relay.replayFrom(0, 8192, 20_000, 0));
+        relay.onSourceLost(0);
+        relay.onSourceLost(0); // the next member did not connect
+        assertEquals(LogRelay.NOT_SUITABLE, relay.replayFrom(0, 8192, 20_000, 0), "one member was never examined");
+        relay.onSourceLost(0);
+        assertEquals(LogRelay.NOT_SUITABLE, relay.replayFrom(0, 0, 4000, 0), "behind, not trimmed past");
+        relay.onSourceLost(0);
+        assertEquals(LogRelay.NOT_SUITABLE, relay.replayFrom(0, 8192, 20_000, 0));
+    }
+
+    @Test
+    @DisplayName("an entry applied clears what was found of the members")
+    void progressClearsTheMembersTrimmedPast() {
+        appliedUpTo4352();
+        relay.replayFrom(0, 8192, 20_000, 0);
+        relay.onSourceLost(0);
+        relay.replayFrom(0, 8192, 20_000, 0);
+        relay.onSourceLost(0);
+        assertEquals(4352, relay.replayFrom(0, 0, 20_000, 0));
+        relay.onEntry(4480, 0);
+        relay.onSourceLost(0);
+        assertEquals(LogRelay.NOT_SUITABLE, relay.replayFrom(0, 8192, 20_000, 0));
+        relay.onSourceLost(0);
+        assertEquals(LogRelay.NOT_SUITABLE, relay.replayFrom(0, 8192, 20_000, 0));
+    }
+
+    @Test
+    @DisplayName("before the start is fixed, a member whose log starts past its own announced start is only left")
+    void theFirstReadNeverEndsTheRelay() {
+        for (int member = 0; member < 6; member++) {
+            assertEquals(LogRelay.NOT_SUITABLE, relay.replayFrom(4096, 8192, 20_000, 0), "member " + member % 3);
+            relay.onSourceLost(0);
+        }
+    }
+
     @Test
     @DisplayName("it is live from the first entry recorded after its connect, and stays live across members")
     void liveOncePastWhatWasRecordedAtTheConnect() {

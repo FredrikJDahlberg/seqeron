@@ -314,6 +314,13 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
         }
         final DerivationStart start = announcement.start();
         final long from = relay.replayFrom(start.logPosition(), log[1], source.getRecordingPosition(log[0]), nowMs);
+        if (from == LogRelay.HISTORY_LOST) {
+            closeSource();
+            fatal("every member archive's log recording starts past position " + relay.position() +
+                  ", which they trimmed while this relay was away; a restart derives from a member's start into new "
+                  + "recordings");
+            return;
+        }
         if (from == LogRelay.NOT_SUITABLE) {
             dropSource("its log's recording, from " + log[1] + ", does not hold position " +
                        (relay.position() == LogRelay.NOT_SUITABLE ? start.logPosition() : relay.position()));
