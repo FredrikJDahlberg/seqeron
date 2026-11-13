@@ -243,57 +243,8 @@ stalled the same way on its own recorder, for 63 ms while the other two sequence
 (18 and 25 ms) its own recording advanced while a follower's recorder was blocked; this run does not explain them. The three
 archives shared one kernel, so their flushes coincided: the run shows the mechanism, not a stall rate.
 
-**With no queue recording the stall is gone at this rate.** The same host, volumes, rate and length, three runs in one launch,
-`CounterSampler` every 3 ms. With `replayer.deriveFromLog` (`disk-load-plan.md`, step 2a) a member's archive holds the Raft log
-alone:
-
-| run | intervals of 10 ms or more without a new `clusterSeqNo`, all members | longest | recorder's longest write | archive growth | dirty pages, peak |
-| --- | --- | --- | --- | --- | --- |
-| derived | 0 | 7 ms | 3.4 ms | 3.7 GB | 619 MB |
-| recorded | 17, 3 of them on the leader | 81 ms | 79 ms | 7.3 GB | 1270 MB |
-| derived, after the recorded run | 0 | 9 ms | 9.0 ms | 3.7 GB | 615 MB |
-
-A blocked write on a follower holds that follower alone; the leader's longest write was 0.6 and 1.4 ms in the derived runs. The
-kernel still flushes in bursts, of half the bytes. Intervals of 5–9 ms occur in every run, 67–79 in a derived run and 118 in
-the recorded one, at a sampling interval that resolves no finer. Two runs on one host: no stall rate, and no figure for a higher
-rate or a larger payload, where the log alone writes what both wrote here.
-
-**Saturation with and without the queue recording.** `disk-session.sh` on three c6in.8xlarge members, `direct`, 100-byte
-markers, two ramps per arm from 50k to 909k msg/s in 25% steps of 10 s, `CounterSampler` every 10 ms and
-`node.sh meminfo-sampler` every 100 ms. Each member's root volume is gp3 at 1,000 MB/s and 4,000 IOPS, and the writeback even,
-unless the row says otherwise:
-
-| arm | highest step held | p99 | p99.9, from the second step | max | leader's longest write |
-| --- | --- | --- | --- | --- | --- |
-| with the flag | 909k, the top, in both ramps | 0.10–0.23 ms | 0.12–0.74 ms; 1.8 ms once | 0.9–3.7 ms | 2.3–3.0 ms |
-| without it | 909k in both ramps | 0.12–0.20 ms to 582k; 0.4–1.8 ms at 727k and 909k | 2.1–3.7 ms at every step | 3.4–6.2 ms | 6.3–6.4 ms |
-| with it, the kernel's default writeback | 909k and 727k | 0.10–0.14 ms to 727k; 5.2 ms and 2.7 s at 909k | 0.12–0.16 ms to 466k; 0.5–12 ms above | 0.9–15 ms; 2.8 s once | 1.4–2.2 ms |
-| with it, the archive on gp3 at its default 125 MB/s | 582k in both ramps | 0.12–0.14 ms to 582k; 22–28 ms at 727k | 0.13–0.37 ms; 2.6 and 3.7 ms once each | 1.0–9.0 ms; 37–44 ms at 727k | 37–44 ms |
-
-Without the flag the tail is the recorder's. Both arms write about 0.28 MB per millisecond of write time, but that arm writes
-twice the bytes, 379 MB/s against 205 MB/s at 909k, and its leader's longest write passes 5.9 ms by the fourth step.
-With the flag the maxima are young GC: a member allocates 40–98 MB/s whatever the rate, so a `G1CollectForAllocation` pause
-comes every 6–9 s, about 2 ms below 150k msg/s and 0.8 ms above. A pause on the leader holds every message in flight; one on a
-follower is covered by the other. The first step of each ramp, on a fresh cluster, collects more often.
-
-On the default volume, single writes of 37–44 ms at 727k msg/s, about 163 MB/s of log, held the leader's commit position for
-44 ms, the one step where a commit stall shows above the sampler's 10 ms. Under the kernel's default writeback, the second ramp's
-909k step sequenced 680k msg/s of the 909k offered, so latency grew to 2.7 s; the commit position kept moving, the leader's
-longest write was 2.2 ms, no flush coincided, and the same step held 909k in the other ramp. The 12 ms p99.9 at 582k had no slow
-write on the leader either. Neither is explained by what the session samples; per-CPU time would show whether the kernel's
-flusher took a member's cores.
-
-**Cold replay off EBS.** Test 3 at 4,000,000 frames of 193 bytes, every member's page cache dropped before each phase, in the
-same launch. A member's archive held 1,152 MB with the flag and 2,304 MB without:
-
-| arm | member's own replay (IPC), quiet | under load | through a gateway host, quiet | under load |
-| --- | --- | --- | --- | --- |
-| with the flag | 5.3 s | 10.8 s | 1.5 s | 2.1 s |
-| without it | 5.2 s | 6.8 s | 1.4 s | 2.1 s |
-
-A gateway host's time is its catch-up after it began serving, about 1.5 s in. In all four of its phases, both arms, the host's
-first cold follow delivered 2.6–3.5 million of the 4 million frames and the second caught up; `replay-remote.sh` retries, and the
-shortfall is not traced.
+The measurements of 11 and 13 November, the stall with no queue recording, saturation and cold replay off EBS, are in
+[`ec2-results.md`](ec2-results.md) §4.
 
 ### Test 2: the network-fault suite without CPU steal
 

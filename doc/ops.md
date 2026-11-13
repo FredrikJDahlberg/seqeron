@@ -329,7 +329,7 @@ member on Linux whose two timers are the kernel's defaults warns at start. They 
 writes only its log: under the kernel's defaults a member at 909k msg/s of 100-byte messages sequenced 680k in one
 ramp, with a 2.7 s tail, and its p99.9 rose above 466k msg/s. The archive's volume bounds the rate too: on gp3 at
 its default 125 MB/s a member holds about 580k msg/s of 100-byte messages, where the log writes about 130 MB/s
-(`ec2-tests.md`, "Saturation with and without the queue recording").
+(`ec2-results.md` §4.2).
 
 Two things keep the stalls short. Every log buffer is a memory-mapped file in the driver's
 Aeron directory, so on Linux it belongs on tmpfs, such as `/dev/shm`: on a disk, writing back its dirty pages
