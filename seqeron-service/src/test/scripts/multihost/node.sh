@@ -230,7 +230,8 @@ stop)
 wipe)
     stop_all
     rm -rf "${DATA_DIR}" "${LOG_DIR}"
-    [[ -n "${MULTIHOST_ARCHIVE_DIR:-}" ]] && rm -rf "${MULTIHOST_ARCHIVE_DIR}"
+    # The archives only: the directory may be a mount point its user cannot remove.
+    [[ -n "${MULTIHOST_ARCHIVE_DIR:-}" ]] && rm -rf "${MULTIHOST_ARCHIVE_DIR}"/archive-*
     for id in 0 1 2 3; do
         rm -rf "$(seqeron_aeron_dir "${id}")"
     done

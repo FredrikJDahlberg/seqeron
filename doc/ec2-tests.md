@@ -158,7 +158,7 @@ back-pressure; the bench now counts declines after its warm-up (`declines=`, `wi
 - `hop-knee.sh` also starts `node.sh meminfo-sampler` on each member host: the kernel's dirty and writeback pages from
   `/proc/meminfo`, every `MULTIHOST_MEMINFO_MS` (default 100), with a wall-clock `t`, in `meminfo-sampler.log` under the
   ramp's logs. Beside `CounterSampler`'s recorder write times, it tells a stall on the kernel's writeback from one in the process.
-- `MULTIHOST_ARCHIVE_DIR` puts each member's `archive-<id>` there, linked into `data/`, and `node.sh wipe` removes it; the
+- `MULTIHOST_ARCHIVE_DIR` puts each member's `archive-<id>` there, linked into `data/`, and `node.sh wipe` removes those; the
   cluster directory stays under `MULTIHOST_BASE_DIR`. Set it to `/dev/shm/…` to take the archive's disk out of a run.
 - `hop-knee.sh` ramps the rate on one fresh cluster per arm, payload and run, in steps of `KNEE_SECONDS`, and ends each ramp in a
   `knee` line: the last rate below the first step whose p99 exceeds `KNEE_P99_US` (default 10 ms), that loses a marker or whose
