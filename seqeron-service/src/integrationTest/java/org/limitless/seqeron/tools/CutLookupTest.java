@@ -69,6 +69,7 @@ class CutLookupTest {
         watcher.ignoreErrorsMatching(s -> s.contains("does not point to a valid frame"));
         watcher.dataCollector().add(baseDir);
         cluster = new InProcessCluster(baseDir);
+        cluster.withQueueRecordings(); // what the tests of AeronReplayer read, as a gateway host's archive would hold
         cluster.startAll();
     }
 
@@ -109,7 +110,6 @@ class CutLookupTest {
     @Test
     @InterruptAfter(60)
     void aScanPastWhatTheRecordingWillHoldStallsAtItsDeadlineRatherThanBlocking() {
-        InProcessCluster.assumeMembersRecordQueues();
         final int member = cluster.awaitLeader();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
              AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()
@@ -154,7 +154,6 @@ class CutLookupTest {
     @Test
     @InterruptAfter(60)
     void aScanOfARecordingStillGrowingRunsPastItsDeadlineWhileFramesKeepArriving() {
-        InProcessCluster.assumeMembersRecordQueues();
         final int member = cluster.awaitLeader();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
              AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()

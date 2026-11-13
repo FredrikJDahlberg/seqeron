@@ -22,8 +22,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.zip.CRC32C;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
-import org.agrona.ExpandableArrayBuffer;
-import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.LongArrayList;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.status.CountersReader;
@@ -31,19 +29,14 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
-import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
-import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
-import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
-import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
 import org.limitless.seqeron.sequencer.LogDeriver;
 import org.limitless.seqeron.sequencer.Sequencer;
 
 /**
  * The recordings of the in-process cluster's queues on each archive, read straight off the archive rather than through
  * {@code ReplayerRecovery}, which drops a repeated frame and replays over a gap: what a client sees can be whole while
- * a recording is not. A member that records no queue ({@code replayer.deriveFromLog}) is read twice, each as one
- * active recording per queue: what its Raft log derives, bounded by its commit position, and what its Replayer
- * replays.
+ * a recording is not. A member, which records no queue, is read twice, each as one active recording per queue: what
+ * its Raft log derives, bounded by its commit position, and what its Replayer replays.
  */
 final class QueueRecordings {
     private static final int RESPONSE_STREAM_ID = 123; // beside NodeDriver's archive response streams
@@ -281,8 +274,8 @@ final class QueueRecordings {
             while (reader.lastClusterSeqNo < untilClusterSeqNo) {
                 final String reached = describe(reader.recording) + " reached clusterSeqNo " + reader.lastClusterSeqNo +
                     " of " + untilClusterSeqNo;
-                final long[] replay =
-                    ask(control, requests, clientId, ++requestId, groupId, lastPosition[0], deadline, reached);
+                final long[] replay = QueueFrames.ask(control, requests, clientId, ++requestId, groupId,
+                                                      lastPosition[0], deadline, reached);
                 if (replay[0] == ReplayProtocol.NO_REPLAY_NEEDED) {
                     Tests.sleep(50);
                     continue;
@@ -309,51 +302,6 @@ final class QueueRecordings {
             }
         }
         return reader.recording;
-    }
-
-    /** Sends a replay request, and again every 500 ms, until it is answered with a replay: its session and end. */
-    private static long[] ask(final Subscription control, final Publication requests, final long clientId,
-                              final long requestId, final int groupId, final long fromPosition, final long deadline,
-                              final String reached) {
-        final MutableDirectBuffer buffer = new ExpandableArrayBuffer(64);
-        final ReplayRequestEncoder request = new ReplayRequestEncoder();
-        request.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder())
-            .clientId(clientId)
-            .requestId(requestId)
-            .fromPosition(fromPosition)
-            .queueId(groupId)
-            .cutClusterSeqNo(ReplayProtocol.NO_CUT);
-        final int length = MessageHeaderEncoder.ENCODED_LENGTH + request.encodedLength();
-        final MessageHeaderDecoder header = new MessageHeaderDecoder();
-        final ReplayingDecoder replaying = new ReplayingDecoder();
-        final long[] replay = { 0, 0 };
-        final boolean[] answered = { false };
-        final FragmentHandler onReply = (buf, offset, len, unused) -> {
-            header.wrap(buf, offset);
-            if (header.templateId() == ReplayingDecoder.TEMPLATE_ID) {
-                replaying.wrap(buf, offset + MessageHeaderDecoder.ENCODED_LENGTH, header.blockLength(),
-                               header.version());
-                if (replaying.clientId() == clientId && replaying.requestId() == requestId) {
-                    replay[0] = replaying.replaySessionId();
-                    replay[1] = replaying.catchUpPosition();
-                    answered[0] = true;
-                }
-            }
-        };
-        long resendAt = 0;
-        while (!answered[0]) {
-            if (System.nanoTime() > deadline) {
-                fail(reached + ": no replay answered");
-            }
-            if (System.nanoTime() >= resendAt) {
-                requests.offer(buffer, 0, length);
-                resendAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
-            }
-            if (control.poll(onReply, 10) == 0) {
-                Tests.sleep(1);
-            }
-        }
-        return replay;
     }
 
     /** The id and start of the log's active recording: a restarted member's consensus module extends it. */

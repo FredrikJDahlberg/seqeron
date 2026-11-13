@@ -45,10 +45,6 @@ testing {
                     if (project.hasProperty('knownAeronFaults')) {
                         systemProperty 'seqeron.knownAeronFaults', 'true'
                     }
-                    // -PderiveFromLog runs the suite on members that record no queue (doc/disk-load-plan.md, step 2a).
-                    if (project.hasProperty('deriveFromLog')) {
-                        systemProperty 'replayer.deriveFromLog', 'true'
-                    }
                     shouldRunAfter tasks.named('test')
                 }
             }
@@ -86,10 +82,6 @@ testing {
                     }
                     systemProperty 'seqeron.gatewayTopology',
                                    file('src/test/resources/topology-test-gateway.xml').absolutePath
-                    // -PderiveFromLog starts every member and gateway host with replayer.deriveFromLog.
-                    if (project.hasProperty('deriveFromLog')) {
-                        systemProperty 'replayer.deriveFromLog', 'true'
-                    }
                     // -PexcludeTests leaves out the classes it matches; ci.yml shards HostedSnapshotTest this way.
                     if (project.hasProperty('excludeTests')) {
                         filter.excludeTestsMatching project.property('excludeTests')

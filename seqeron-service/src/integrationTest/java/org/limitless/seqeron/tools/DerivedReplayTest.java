@@ -29,10 +29,10 @@ import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.replayer.server.DerivingReplayer;
 
 /**
- * A client's cold start served off the Raft log (doc/disk-load-plan.md, step 2a): with {@code replayer.deriveFromLog} a
- * member records no queue and its Replayer derives the replay through {@link DerivingReplayer}, and an unchanged
- * {@link ReplayerStreamReceiver} must walk each queue from groupSeqNo 1 in order, catch up at the queue's tip and
- * follow it live. The same walk off the queue's recording runs beside it, and each prints its rate.
+ * A client's cold start served off the Raft log (doc/disk-load-plan.md, step 2a): a member records no queue and its
+ * Replayer derives the replay through {@link DerivingReplayer}, and an unchanged {@link ReplayerStreamReceiver} must
+ * walk each queue from groupSeqNo 1 in order, catch up at the queue's tip and follow it live, and print its rate. A
+ * gateway host's walk is off its own recording.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class DerivedReplayTest {
@@ -68,13 +68,7 @@ class DerivedReplayTest {
     @Test
     @InterruptAfter(240)
     void aColdStartWalksEachQueueOffTheLog() {
-        walkEachQueue(true);
-    }
-
-    @Test
-    @InterruptAfter(240)
-    void aColdStartWalksEachQueueOffItsRecording() {
-        walkEachQueue(false);
+        walkEachQueue();
     }
 
     /**
@@ -140,16 +134,15 @@ class DerivedReplayTest {
                                         .controlResponseStreamId(RESPONSE_STREAM_ID));
     }
 
-    private void walkEachQueue(final boolean derived) {
+    private void walkEachQueue() {
         cluster = new InProcessCluster(baseDir);
         cluster.startAll();
         final int leader = cluster.awaitLeader();
         final int member = (leader + 1) % InProcessCluster.MEMBERS;
         final long tip = send(leader, HISTORY_FRAMES);
         for (final int groupId : InProcessCluster.GROUP_IDS) {
-            walk(member, groupId, tip, derived);
-            assertEquals(derived, queueRecordings(member, groupId) == 0,
-                         "whether group " + groupId + "'s queue is unrecorded");
+            walk(member, groupId, tip, true);
+            assertEquals(0, queueRecordings(member, groupId), "a member records group " + groupId + "'s queue");
         }
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");
