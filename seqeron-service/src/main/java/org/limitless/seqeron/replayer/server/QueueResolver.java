@@ -1,6 +1,5 @@
 package org.limitless.seqeron.replayer.server;
 
-import java.nio.ByteOrder;
 import java.util.HashMap;
 import java.util.Map;
 import org.agrona.DirectBuffer;
@@ -11,9 +10,7 @@ import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.GroupsRegisteredDecoder;
-import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
-import org.limitless.seqeron.sbe.frame.SequencedSystemDecoder;
-import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder;
+import org.limitless.seqeron.sequencer.DefaultQueueRows;
 
 /**
  * Which queue an instance reads (spec R-6), from the topology rows on the log: the group table, and each gateway
@@ -52,34 +49,13 @@ public final class QueueResolver {
     }
 
     /**
-     * Whether a sequenced frame is a row this resolves from. On the default queue's publish path, so it reads two
-     * fields and allocates nothing.
-     * @param buffer holding the frame
-     * @param offset where it starts
-     * @param length its length
-     * @return true for a {@code GroupsRegistered}, {@code GatewayRegistered} or {@code ApplicationRegistered}
-     */
-    public static boolean isTopologyRow(final DirectBuffer buffer, final int offset, final int length) {
-        if (length < MessageHeaderDecoder.ENCODED_LENGTH + SequencedSystemHeaderDecoder.ENCODED_LENGTH ||
-            buffer.getShort(offset + MessageHeaderDecoder.templateIdEncodingOffset(), ByteOrder.LITTLE_ENDIAN) !=
-                SequencedSystemDecoder.TEMPLATE_ID) {
-            return false;
-        }
-        final int typeOffset =
-            offset + MessageHeaderDecoder.ENCODED_LENGTH + SequencedSystemHeaderDecoder.systemEventTypeEncodingOffset();
-        final int systemEventType = buffer.getShort(typeOffset, ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
-        return systemEventType == SystemFrame.GROUPS_REGISTERED || systemEventType == SystemFrame.GATEWAY_REGISTERED ||
-            systemEventType == SystemFrame.APPLICATION_REGISTERED;
-    }
-
-    /**
      * Takes one sequenced row; anything else is ignored.
      * @param buffer holding the frame
      * @param offset where it starts
      * @param length its length
      */
     void onTopologyRow(final DirectBuffer buffer, final int offset, final int length) {
-        if (!isTopologyRow(buffer, offset, length) || !frame.wrap(buffer, offset, length)) {
+        if (!DefaultQueueRows.isTopologyRow(buffer, offset, length) || !frame.wrap(buffer, offset, length)) {
             return;
         }
         final int body = frame.payloadOffset();

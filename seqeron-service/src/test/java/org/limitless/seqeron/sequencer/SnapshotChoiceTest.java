@@ -16,7 +16,6 @@ import java.util.function.LongUnaryOperator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /** Which cluster snapshot a member starts from. */
 class SnapshotChoiceTest {

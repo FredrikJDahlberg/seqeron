@@ -1,4 +1,4 @@
-package org.limitless.seqeron.replayer.server;
+package org.limitless.seqeron.sequencer;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;

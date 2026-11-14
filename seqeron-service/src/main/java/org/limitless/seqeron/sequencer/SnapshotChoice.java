@@ -8,7 +8,6 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.LongUnaryOperator;
-import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /**
  * Which cluster snapshot a member starts from. A member restarts its queue at the snapshot's

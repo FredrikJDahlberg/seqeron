@@ -24,6 +24,7 @@ import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
+import org.limitless.seqeron.sequencer.DerivationStart;
 import org.limitless.seqeron.sequencer.FramePredictor;
 import org.limitless.seqeron.sequencer.LogDeriver;
 import org.limitless.seqeron.sequencer.QueuePositions;

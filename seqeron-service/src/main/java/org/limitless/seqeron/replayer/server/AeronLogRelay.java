@@ -33,7 +33,10 @@ import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
+import org.limitless.seqeron.sequencer.DefaultQueueRows;
+import org.limitless.seqeron.sequencer.DerivationStart;
 import org.limitless.seqeron.sequencer.LogDeriver;
+import org.limitless.seqeron.sequencer.NodeDriver;
 import org.limitless.seqeron.sequencer.Sequencer;
 import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
@@ -241,7 +244,7 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
             if (!view.wrap(buffer, 0, length)) {
                 return true;
             }
-            if (queue.groupId() == defaultGroupId && QueueResolver.isTopologyRow(buffer, 0, length)) {
+            if (queue.groupId() == defaultGroupId && DefaultQueueRows.isTopologyRow(buffer, 0, length)) {
                 final byte[] row = new byte[length];
                 buffer.getBytes(0, row);
                 topologyRows.add(row);

@@ -10,7 +10,9 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.sequencer.DerivationStart;
 import org.limitless.seqeron.sequencer.LogDeriver;
+import org.limitless.seqeron.sequencer.NodeDriver;
 
 /**
  * A gateway host's log relay's decisions: where a replay of a member's log starts, and when it leaves a member or

@@ -12,6 +12,7 @@ import org.agrona.collections.IntArrayList;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder;
+import org.limitless.seqeron.sequencer.DerivationStart;
 import org.limitless.seqeron.sequencer.FramePredictor;
 import org.limitless.seqeron.sequencer.LogDeriver;
 import org.limitless.seqeron.sequencer.QueuePositions;

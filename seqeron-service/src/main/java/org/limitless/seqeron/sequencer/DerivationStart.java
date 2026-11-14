@@ -1,6 +1,5 @@
-package org.limitless.seqeron.replayer.server;
+package org.limitless.seqeron.sequencer;
 
-import org.limitless.seqeron.sequencer.LogDeriver;
 
 /**
  * Where a member's service started, handed to its Replayer so that a derivation of the queues from the Raft log

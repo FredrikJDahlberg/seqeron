@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.limitless.seqeron.sequencer.RestartSafeLog;
 
 class LogTrimPlanTest {
     private final List<RecordingLog.Entry> entries = new ArrayList<>();

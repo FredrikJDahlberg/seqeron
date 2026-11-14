@@ -35,6 +35,7 @@ import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedEncoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemEncoder;
+import org.limitless.seqeron.sequencer.DerivationStart;
 import org.limitless.seqeron.sequencer.LogDeriver;
 
 /** The checkpoints and runs a derivation keeps over a Raft log, written here as an archive writes its segment files. */

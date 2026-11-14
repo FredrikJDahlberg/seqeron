@@ -10,6 +10,7 @@ import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.sequencer.RestartSafeLog;
 
 /**
  * The Replayer calls {@code LogTrimmer.doWork} on every turn of its duty cycle, so an idle trimmer must not allocate.

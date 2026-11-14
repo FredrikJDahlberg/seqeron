@@ -34,7 +34,7 @@ import org.limitless.seqeron.sbe.replay.ReplayingEncoder;
 import org.limitless.seqeron.sbe.replay.SnapshotConfirmedDecoder;
 import org.limitless.seqeron.sbe.replay.SnapshotJoinedDecoder;
 import org.limitless.seqeron.sbe.replay.SnapshotRoundEncoder;
-import org.limitless.seqeron.sequencer.SequencerService;
+import org.limitless.seqeron.sequencer.CutHandover;
 import org.limitless.seqeron.util.Logger;
 
 /**

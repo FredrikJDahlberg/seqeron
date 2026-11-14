@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.aeron.Aeron;
 import io.aeron.archive.CatalogView;
 import io.aeron.cluster.ClusterControl;
 import io.aeron.cluster.RecordingLog;
@@ -24,26 +25,25 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
-import org.limitless.seqeron.replayer.server.RelayedCut;
-import io.aeron.Aeron;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
-import org.limitless.seqeron.app.ClusterError;
-import org.limitless.seqeron.app.Gateway;
-import org.limitless.seqeron.app.GroupDirectory;
-import org.limitless.seqeron.app.Payload;
-import org.limitless.seqeron.app.SnapshotListener;
-import org.limitless.seqeron.protocol.PortLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.Gateway;
+import org.limitless.seqeron.app.GroupDirectory;
+import org.limitless.seqeron.app.Payload;
+import org.limitless.seqeron.app.SnapshotListener;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SystemFrame;
+import org.limitless.seqeron.replayer.server.RelayedCut;
 import org.limitless.seqeron.replayer.server.Replayer;
-import org.limitless.seqeron.replayer.server.RestartSafeLog;
+import org.limitless.seqeron.sequencer.RestartSafeLog;
 
 /**
  * Cluster snapshots: a round is taken by the cluster's snapshot action, a member restarts from

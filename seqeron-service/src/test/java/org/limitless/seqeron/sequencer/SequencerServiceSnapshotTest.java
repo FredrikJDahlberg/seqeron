@@ -8,8 +8,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.limitless.seqeron.replayer.server.NodeDriver;
-import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /** What {@link SequencerService} decides about a snapshot without an Aeron runtime. */
 class SequencerServiceSnapshotTest {

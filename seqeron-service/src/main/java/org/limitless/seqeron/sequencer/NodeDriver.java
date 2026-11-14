@@ -1,4 +1,4 @@
-package org.limitless.seqeron.replayer.server;
+package org.limitless.seqeron.sequencer;
 
 import io.aeron.archive.Archive;
 import io.aeron.archive.checksum.Checksums;
@@ -35,11 +35,11 @@ public final class NodeDriver {
     /** A member's consensus module, service container and {@code SequencerService}. */
     public static final int SEQUENCER_ARCHIVE_RESPONSE_STREAM_ID = 121;
 
-    /** {@link ReplayerServer}'s. */
-    static final int REPLAYER_ARCHIVE_RESPONSE_STREAM_ID = 120;
+    /** {@code ReplayerServer}'s. */
+    public static final int REPLAYER_ARCHIVE_RESPONSE_STREAM_ID = 120;
 
-    /** {@link AeronLogRelay}'s session with a member's archive. */
-    static final int RELAY_ARCHIVE_RESPONSE_STREAM_ID = 122;
+    /** {@code AeronLogRelay}'s session with a member's archive. */
+    public static final int RELAY_ARCHIVE_RESPONSE_STREAM_ID = 122;
 
     /** IPC term length when {@code aeron.ipc.term.buffer.length} is not set, rather than Aeron's 64 MiB. */
     private static final int DEFAULT_IPC_TERM_BUFFER_LENGTH = 16 * 1024 * 1024;
