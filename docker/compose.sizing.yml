@@ -1,0 +1,23 @@
+# Resource limits for the low-rate sizing runs (doc/plans/low-rate-sizing-plan.md), laid over compose.yml:
+#   docker compose -f docker/compose.yml -f docker/compose.sizing.yml up -d
+# Each value is an environment variable, so a sweep changes one per run; sizing/common.sh sets them.
+# SIZING_JAVA_TOOL_OPTIONS carries the heap and threading flags; the JVM reads it beside the entrypoint's own.
+#
+# /dev/shm counts against the container's memory limit, as an emptyDir of medium Memory does in a pod.
+x-sized: &sized
+  cpus: ${SIZING_CPUS:-2}
+  mem_limit: ${SIZING_MEM:-3g}
+  memswap_limit: ${SIZING_MEM:-3g}
+  shm_size: ${SIZING_SHM:-1g}
+  ipc: shareable
+
+services:
+  node-0:
+    <<: *sized
+    environment: { MEMBER_ID: "0", JAVA_TOOL_OPTIONS: "${SIZING_JAVA_TOOL_OPTIONS:-}" }
+  node-1:
+    <<: *sized
+    environment: { MEMBER_ID: "1", JAVA_TOOL_OPTIONS: "${SIZING_JAVA_TOOL_OPTIONS:-}" }
+  node-2:
+    <<: *sized
+    environment: { MEMBER_ID: "2", JAVA_TOOL_OPTIONS: "${SIZING_JAVA_TOOL_OPTIONS:-}" }
