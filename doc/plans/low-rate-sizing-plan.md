@@ -84,7 +84,52 @@ Thirty minutes at the average rate. Read from `samples.csv`:
 - `data_kb` per hour, times 8,760, for the yearly log size and the volume to provision;
 - `shm_kb` growth, extrapolated to the point every term has cycled, against the `/dev/shm` limit.
 
-Two hours cannot show year-scale effects; it measures the rates to extrapolate from.
+Thirty minutes cannot show year-scale effects; it measures the rates to extrapolate from.
+
+### Step 5: OpenShift session
+
+The platform's own effects, and only those: steps 1 to 4 carry over, since a pod's CPU limit is the same CFS quota
+docker applied. About 2.5 to 3 hours on a managed cluster, which a few hours of preparation beforehand make possible.
+
+**Before the cluster exists** (no cloud cost; the session cannot start without them):
+
+- the manifests: StatefulSet (`podManagementPolicy: Parallel`), headless Service with `publishNotReadyAddresses`,
+  PodDisruptionBudget of one, NetworkPolicy for the port block, anti-affinity across nodes and zones,
+  `fsGroupChangePolicy: OnRootMismatch` on the volume;
+- a readiness check that does not start a JVM each period, since an exec probe runs inside the container's CPU quota;
+- the test script, run from one command, each scenario waiting for the previous member to be current;
+- the image in a registry the cluster can pull from;
+- a rehearsal of the manifests on a local Kubernetes cluster, which catches StatefulSet, DNS, probe and volume
+  mistakes and not OpenShift's security constraints or its network;
+- the account's spend limit and region policy checked: the installer and ROSA call EC2 and IAM actions the policy may
+  not allow.
+
+**Cluster:** ROSA with a hosted control plane, four workers of 4 vCPU and 16 GiB (a 3-CPU pod fits a 4 vCPU worker with
+little to spare once the node's reservations are taken), three of them for the members and one for the load. Self-managed
+OpenShift costs about the same an hour, takes longer to create, and needs a Route53 domain.
+
+| Step | Time | Running total |
+|---|---|---|
+| Create the cluster | 20 min | 0:20 |
+| Deploy; DNS, election and readiness | 20 min | 0:40 |
+| One 5-minute CPU cell at 3 CPUs, order checked | 10 min | 0:50 |
+| Kill the leader pod, then a follower pod | 10 min | 1:00 |
+| Node loss: stop the leader's node, time until the member rejoins | 15 min | 1:15 |
+| Drain a node under the disruption budget | 10 min | 1:25 |
+| Rolling restart, one member at a time | 15 min | 1:40 |
+| Exit 70: the alert fires and the pod restarts | 10 min | 1:50 |
+| NetworkPolicy: the UDP block open, nothing else | 10 min | 2:00 |
+| Slack and a repeat of one failure | 20 min | 2:20 |
+| Teardown | 15 min | 2:35 |
+
+Pass: the order check passes in every scenario, no two members are ever down at once under a drain or rolling restart,
+and the CPU cell shows no throttling.
+
+**The node-loss time depends on the remediation timeout.** A Machine Health Check commonly waits 300 s before it
+replaces a node. Shorten it to 60 to 120 s for the session, record the value used, and state the time at the production
+setting separately: the two give different outages, and the cluster has no tolerance for a second fault during either.
+
+Not repeated here: the soak, the log-size recovery and the CPU and memory sweeps.
 
 ## 4. Not covered here
 
@@ -100,7 +145,7 @@ These need a real cluster, and `docker` cannot reproduce them:
   restarted by the platform, and the event must reach an alert rather than a restart loop.
 - **The network.** UDP across the pod network, and NetworkPolicy on the 70-port block.
 
-One short session on OpenShift on EC2 covers them. The manifests are not part of this plan.
+Step 5 covers them. The manifests it needs are not written yet.
 
 ## 5. Cost
 
@@ -108,9 +153,10 @@ Prices are `ec2-tests.md`'s, us-east-1 on-demand.
 
 | Part | Host | Time | Cost |
 |---|---|---|---|
-| Steps 1 to 3 | 1 × c6in.4xlarge, $0.91/hr | about 5 h | about $5 |
-| Step 4 | same host | 2 h | about $2 |
-| OpenShift session | three workers and a control plane or a managed service | about 5 h | about $10 to 15 (estimate) |
+| Steps 1 to 4 | 1 × c6in.4xlarge, $0.91/hr | about 1.9 h measured | about $1.7 measured |
+| Step 5 | ROSA, 4 × m6i.xlarge, about $2/hr with the platform fee, NAT and volumes | about 2.5 to 3 h | about $5 to 7 (estimate) |
+
+The ROSA hourly figure is from recalled list prices and is not checked. Left running, the cluster costs about $48 a day.
 
 The 4 CPU cells put 12 of the host's 16 vCPUs under three members, with the dockerd and the probes beside them: read
 that cell as an upper bound, not a floor.
