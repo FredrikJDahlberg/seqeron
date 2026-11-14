@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.aeron.Publication;
+import io.aeron.archive.client.ArchiveException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
@@ -558,7 +559,7 @@ class ReplayerServiceTest {
     void aResumeTheArchiveRefusesIsRefusedRatherThanCountedAsAnError() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
-        fakeReplayer.failReplays(new IllegalStateException("archive refused the position"));
+        fakeReplayer.failReplays(new ArchiveException("archive refused the position"));
 
         final Reply reply = request(CLIENT, 1, 2048);
 
@@ -567,6 +568,29 @@ class ReplayerServiceTest {
         // hold that app forever.
         assertEquals(ReplayProtocol.NO_REPLAY_NEEDED, reply.replaySessionId());
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
+    }
+
+    @Test
+    void aResumeThePositionOfWhichTheReplayerDoesNotHoldIsRefused() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        fakeReplayer.failReplays(new IllegalArgumentException("group 1's queue is not derived from 2048"));
+
+        assertEquals(ReplayProtocol.NO_REPLAY_NEEDED, request(CLIENT, 1, 2048).replaySessionId());
+    }
+
+    @Test
+    void aResumeTheDriverCannotStartIsHeldRatherThanRefused() {
+        // A member's Replayer answers from memory, so it always looks reachable: a replay publication the driver
+        // cannot add is no reason to fence the app.
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        fakeReplayer.failReplays(new IllegalStateException("the driver could not add the replay publication"));
+
+        final Reply reply = request(CLIENT, 1, 2048);
+
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId());
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
     }
 
     @Test
@@ -852,6 +876,7 @@ class ReplayerServiceTest {
         // Ordinary: an app's first request can beat its own control subscription, and its resend covers it.
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID));
         assertFalse(loggedOnce(Logger.CoreEventCode.ControlReplyDropped));
+        assertEquals(1, fakeReplayer.controlOfferAttempts(), "nobody can read it, so it is not offered again");
     }
 
     @Test

@@ -121,7 +121,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_sequencer_gateway_promotion_total` | counter | `GatewayActive` frames promoting a standby: on a gateway session closing, or on a designated instance not publishing `GatewayStarted` within 5 s (`GATEWAY_ACTIVATION_TIMEOUT_MS`) |
 | `seqeron_sequencer_gateway_promotion_failed_total` | counter | times a gateway lost its active instance and had no standby to promote |
 | `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap `GatewayActive` is in this cluster's log, else 0 |
-| `seqeron_sequencer_queue_stalled` | gauge | 1 while a queue has been back-pressured for more than 200 ms with the service's own subscriber to it making no progress, else 0; stays 1 when the member terminates for a queue it cannot publish ([below](#a-node-that-terminates-itself)) |
+| `seqeron_sequencer_queue_stalled` | gauge | 1 while a queue offer has been back-pressured for more than 200 ms, else 0; stays 1 when the member terminates for a queue it cannot publish ([below](#a-node-that-terminates-itself)) |
 | `seqeron_sequencer_ingress_messages_total` | counter | ingress frames sequenced; the frames the sequencer synthesizes are not counted |
 | `seqeron_replayer_ready` | gauge | 1 once every queue it serves is listed, and replay requests are served: on a member once its derivation has caught up with the log, on a gateway host once its archive records each queue |
 | `seqeron_replayer_active_slots` | gauge | replays in progress |
@@ -329,7 +329,7 @@ member on Linux whose two timers are the kernel's defaults warns at start. They 
 writes only its log: under the kernel's defaults a member at 909k msg/s of 100-byte messages sequenced 680k in one
 ramp, with a 2.7 s tail, and its p99.9 rose above 466k msg/s. The archive's volume bounds the rate too: on gp3 at
 its default 125 MB/s a member holds about 580k msg/s of 100-byte messages, where the log writes about 130 MB/s
-(`ec2-results.md` §4.2).
+(`ec2-results.md` §2.1).
 
 Two things keep the stalls short. Every log buffer is a memory-mapped file in the driver's
 Aeron directory, so on Linux it belongs on tmpfs, such as `/dev/shm`: on a disk, writing back its dirty pages
@@ -465,8 +465,8 @@ the queue gone, which means its driver is. This is deliberate, not a crash. On a
 subscriber its driver has not yet dropped back-pressures the queue, so a stall that long means the driver is not
 dropping it.
 
-- **The stall timeout** counts only while a frame waits on the queue and nothing reads further: a queue that is slow
-  but advancing never trips it, and the `seqeron_sequencer_queue_stalled` gauge rises after 200 ms as the warning. While it runs, the member sequences nothing, so a long one holds a leader's co-located
+- **The stall timeout** counts while one frame waits on the queue, and each frame that lands restarts it: a queue
+  that is slow but still taking frames never trips it, and the `seqeron_sequencer_queue_stalled` gauge rises after 200 ms as the warning. While it runs, the member sequences nothing, so a long one holds a leader's co-located
   applications up; a short one turns a write stall of the storage into an exit, and a stall that reaches several
   members at once, as one on shared network block storage can, into a loss of quorum. The 5 s default rides out
   such stalls; lower it only where its stalls are measured. It may not go below 1000, which keeps it over twice an

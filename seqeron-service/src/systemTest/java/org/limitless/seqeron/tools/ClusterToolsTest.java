@@ -84,7 +84,7 @@ class ClusterToolsTest {
         help.assertContains("load-topology <file>");
 
         final Run snapshot = clusterctl(0, "snapshot");
-        assertEquals(0, snapshot.status());
+        assertEquals(2, snapshot.status());
         snapshot.assertContains("snapshot: command is not supported");
 
         final Run noGateway = clusterctl(0, "activate");

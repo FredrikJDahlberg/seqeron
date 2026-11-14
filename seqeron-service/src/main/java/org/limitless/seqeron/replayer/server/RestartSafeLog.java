@@ -41,7 +41,8 @@ public final class RestartSafeLog implements AutoCloseable {
     }
 
     /**
-     * Opens the log in a cluster directory, creating it empty if there is none.
+     * Opens the log in a cluster directory, creating it empty if there is none, and drops a last line a crash cut
+     * short so that the next one does not join it.
      * @param clusterDir the member's cluster directory
      * @return the log, positioned to append
      */
@@ -50,6 +51,7 @@ public final class RestartSafeLog implements AutoCloseable {
             Files.createDirectories(clusterDir);
             final Path file = clusterDir.resolve(FILE_NAME);
             final State state = read(file);
+            dropTornLine(file);
             return new RestartSafeLog(
                 clusterDir,
                 FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND),
@@ -89,6 +91,24 @@ public final class RestartSafeLog implements AutoCloseable {
             }
         }
         return new State(cuts, safe);
+    }
+
+    /** Truncates the file to its last newline: what follows is a write a crash cut short. */
+    private static void dropTornLine(final Path file) throws IOException {
+        if (!Files.exists(file)) {
+            return;
+        }
+        final byte[] bytes = Files.readAllBytes(file);
+        int end = bytes.length;
+        while (end > 0 && bytes[end - 1] != '\n') {
+            end--;
+        }
+        if (end < bytes.length) {
+            try (FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE)) {
+                channel.truncate(end);
+                channel.force(true);
+            }
+        }
     }
 
     /** Records that a snapshot was taken at {@code logPosition}; durable on return. */

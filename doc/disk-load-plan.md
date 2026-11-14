@@ -154,14 +154,14 @@ which the measurements below compare with the recorded path; the release removed
   end of the last log entry it applied, whatever that member's term length or MTU.
 - **Stall.** On EBS with default writeback at 50k msg/s, two 600 s runs with the flag had no interval of 10 ms or
   more without a new `clusterSeqNo`, where the recorded path had 17 of up to 81 ms, and the archive grew half as fast
-  (`ec2-results.md` §4.1).
+  (`ec2-results.md` §2.3).
 - **Rate.** On a laptop, off the page cache, two million frames with a 150-byte filler on one group and one
   million on another walk at 2.2–2.3 and 1.5–1.7 million frames/s derived and about 5 million recorded. With a
   sequencer per replay over an archive replay of the log it was 1.8 and 1.1 million. What is left is reading and
   counting each entry of every group, about 0.11 µs, and offering each frame, about 0.26 µs, where the archive
   copies recorded frames in blocks. Off EBS with the page cache dropped, a member's cold replay of 4,000,000
-  frames took 5.3 s with the flag and 5.2 s without, and 10.8 and 6.8 s under load (`ec2-results.md` §4.3).
-- **Saturation.** With 100-byte messages on gp3 at 1,000 MB/s (`ec2-results.md` §4.2), a member with the flag held 909k msg/s, the top of the ramp, with a p99 of at most 0.23 ms and a
+  frames took 5.3 s with the flag and 5.2 s without, and 10.8 and 6.8 s under load (`ec2-results.md` §2.2).
+- **Saturation.** With 100-byte messages on gp3 at 1,000 MB/s (`ec2-results.md` §2.1), a member with the flag held 909k msg/s, the top of the ramp, with a p99 of at most 0.23 ms and a
   p99.9 of at most 0.74 ms but for one step. Without the flag the same ramps held, with a p99.9 of 2–3.7 ms at every
   rate from the recorder's writes. What is left with the flag is young GC: a 1–3 ms pause every 6–9 s whatever the
   rate. On gp3 at its default 125 MB/s the flag's ceiling is 582k msg/s, where the log writes about 130 MB/s.
@@ -274,7 +274,7 @@ length below Aeron's 128 MiB default so a purge follows the cut closely. Since t
   EBS: 0 of 15 runs stalled. A member on Linux warns at start while both are the kernel's defaults
   (`NodeDriver.warnIfDefaultWriteback`).
 - Step 2a still needs it: under the kernel's defaults a deriving member had a 12 ms p99.9 at 582k msg/s,
-  and in one ramp sequenced 680k of the 909k msg/s offered (`ec2-results.md` §4.2).
+  and in one ramp sequenced 680k of the 909k msg/s offered (`ec2-results.md` §2.1).
 - Local NVMe for the log is untested, and belongs to the deferred metal runs.
 
 ### Step 4: trim the log automatically

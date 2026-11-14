@@ -161,21 +161,15 @@ public final class LogTrimmer {
     /** Purges, or with {@code dryRun} reports, a log recording's segments below {@code floor}; 1 if refused. */
     private int trimLogRecording(final long recordingId, final long floor, final boolean dryRun,
                                  final Consumer<String> report) {
-        final long[] summary = new long[4]; // start, stop, term length, segment length
-        if (archive.listRecording(recordingId,
-                                  (controlSessionId, correlationId, id, startTimestamp, stopTimestamp, startPosition,
-                                   stopPosition, initialTermId, segmentFileLength, termBufferLength, mtuLength,
-                                   sessionId, streamId, strippedChannel, originalChannel, sourceIdentity) -> {
-                                      summary[0] = startPosition;
-                                      summary[1] = stopPosition;
-                                      summary[2] = termBufferLength;
-                                      summary[3] = segmentFileLength;
-                                  }) == 0) {
+        final ArchiveRecording recording = ArchiveRecording.of(archive, recordingId);
+        if (recording == null) {
             return 0; // already gone
         }
-        final long end =
-            summary[1] != AeronArchive.NULL_POSITION ? summary[1] : archive.getRecordingPosition(recordingId);
-        final long target = SegmentPurge.target(summary[0], (int)summary[2], (int)summary[3], Math.min(floor, end));
+        final long end = recording.stopPosition() != AeronArchive.NULL_POSITION
+            ? recording.stopPosition()
+            : archive.getRecordingPosition(recordingId);
+        final long target = SegmentPurge.target(recording.startPosition(), recording.termLength(),
+                                                recording.segmentLength(), Math.min(floor, end));
         if (target == SegmentPurge.NOTHING) {
             return 0;
         }

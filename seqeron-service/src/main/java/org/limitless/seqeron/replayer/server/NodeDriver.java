@@ -19,7 +19,7 @@ import org.limitless.seqeron.util.Logger;
  * streams of the archive clients sharing it, and the exit statuses of the process that runs it.
  */
 public final class NodeDriver {
-    /** Exit status of a process that can no longer record its queue or serve replay; restart it. */
+    /** Exit status of a process that can no longer publish its queues or serve replay; restart it. */
     public static final int EXIT_FATAL = 70;
 
     /**
@@ -50,12 +50,13 @@ public final class NodeDriver {
     /**
      * Untethered window-limit and linger timeouts when their Aeron properties are not set, rather than Aeron's 5s
      * each. Until evicted, a stalled subscriber holds the queue's window, and the sequencer and a gateway host's
-     * relay each terminate after {@link #queueStallTimeoutMs} of back-pressure with no recording progress.
+     * relay each terminate after {@link #queueStallTimeoutMs} of back-pressure: one offer on a member, with no
+     * recording progress on a gateway host.
      */
     static final long DEFAULT_UNTETHERED_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(100);
 
     /**
-     * How long a queue's recording may make no progress under back-pressure before the process terminates, when
+     * How long a queue may stay back-pressured before the process terminates, when
      * {@link #queueStallTimeoutMs}'s property is not set. Above a block storage's write stalls, which can reach
      * several members at once.
      */
@@ -63,7 +64,7 @@ public final class NodeDriver {
 
     /**
      * The least stall timeout: over twice the untethered eviction, until which a stalled subscriber holds the window
-     * and the recording cannot advance.
+     * and the queue cannot advance.
      */
     public static final long MIN_QUEUE_STALL_TIMEOUT_MS = 1_000;
 
@@ -142,7 +143,7 @@ public final class NodeDriver {
     }
 
     /**
-     * Warns, on Linux, when a member's {@code baseDir} is on tmpfs: its Raft log and queue recording would not survive
+     * Warns, on Linux, when a member's {@code baseDir} is on tmpfs: its Raft log would not survive
      * the host's restart, and a cluster whose members restart together would lose its log.
      * @param component who is launching the member
      * @param memberId  its node id
@@ -155,7 +156,7 @@ public final class NodeDriver {
         try {
             if ("tmpfs".equals(fileSystemType(Path.of(baseDir)))) {
                 Logger.log(component, Logger.Severity.Warn, Logger.CoreEventCode.Info, memberId,
-                           "the base directory %s is on tmpfs: the Raft log and queue recording in it do not survive "
+                           "the base directory %s is on tmpfs: the Raft log in it does not survive "
                                + "a restart of the host — put it on a disk",
                            baseDir);
             }

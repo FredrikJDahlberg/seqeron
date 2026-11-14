@@ -1296,6 +1296,38 @@ class SequencerTest {
     }
 
     @Test
+    @DisplayName("a standby whose gatewayId is -1 is promoted when the primary's session closes")
+    void standbyWithGatewayIdMinusOneIsPromoted() {
+        final Sequencer seq = activated(new Sequencer(0, frames), frames);
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, -1, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP);
+        final long gatewaySession = 0xA11CEL;
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
+
+        assertTrue(seq.sessionClosed(gatewaySession, TIMESTAMP + 1));
+        assertEquals(-1, promotedOnClose(gatewaySession));
+    }
+
+    @Test
+    @DisplayName("a designated primary whose gatewayId is -1 and never starts is handed over to the standby")
+    void primaryWithGatewayIdMinusOneIsHandedOver() {
+        final Sequencer seq = activated(new Sequencer(0, frames), frames);
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, -1, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP);
+        assertEquals(-1, lastGatewayActive());
+
+        seq.clusterHeartbeat(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertEquals(6, lastGatewayActive());
+        assertEquals(1L, seq.gatewayPromotionCount());
+    }
+
+    @Test
     @DisplayName("an unanswered activation with no sibling to hand over to fails closed")
     void unansweredActivationWithNoSiblingFailsClosed() {
         final Sequencer seq = activated(new Sequencer(0, frames), frames);

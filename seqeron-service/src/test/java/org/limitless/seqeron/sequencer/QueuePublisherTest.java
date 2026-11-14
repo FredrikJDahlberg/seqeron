@@ -84,9 +84,6 @@ class QueuePublisherTest {
         final IntArrayList opened = new IntArrayList();
         boolean recordingActive = true;
         int stoppedGroup; // a group whose recording alone has stopped; 0 for none
-        long recordedPosition;
-        long recordedAdvancePerIdle; // an archive that is slow but still draining
-        long idlesPerAdvance = 1; // ... or one that drains only now and then
         long idles;
 
         int offers;
@@ -127,9 +124,7 @@ class QueuePublisherTest {
         @Override
         public void idle() {
             nowNs += nanosPerIdle;
-            if (++idles % idlesPerAdvance == 0) {
-                recordedPosition += recordedAdvancePerIdle;
-            }
+            ++idles;
         }
 
         @Override
@@ -140,11 +135,6 @@ class QueuePublisherTest {
         @Override
         public boolean recordingActive(final int groupId) {
             return recordingActive && groupId != stoppedGroup;
-        }
-
-        @Override
-        public long recordedPosition(final int groupId) {
-            return recordedPosition;
         }
 
         @Override
@@ -214,8 +204,8 @@ class QueuePublisherTest {
     }
 
     @Test
-    @DisplayName("a recording that stops advancing raises the stall gauge, which the next landed offer clears")
-    void noRecordingProgressRaisesAndClearsTheStallGauge() {
+    @DisplayName("sustained back-pressure raises the stall gauge, which the next landed offer clears")
+    void sustainedBackPressureRaisesAndClearsTheStallGauge() {
         actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(3); // anchor, first observation, then one threshold's worth
 
@@ -227,8 +217,8 @@ class QueuePublisherTest {
     }
 
     @Test
-    @DisplayName("a recording still making no progress at the fatal timeout terminates the node")
-    void noRecordingProgressPastTheFatalTimeoutTerminates() {
+    @DisplayName("an offer still back-pressured at the fatal timeout terminates the node")
+    void backPressurePastTheFatalTimeoutTerminates() {
         actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(8); // five threshold periods past the first observation
 
@@ -242,45 +232,15 @@ class QueuePublisherTest {
     }
 
     @Test
-    @DisplayName("an archive that is slow but still draining is never fatal, however long it back-pressures")
-    void slowButDrainingArchiveIsLeftAlone() {
-        actions.nanosPerIdle = periodOf(STALL_TIMEOUT_NS);
-        actions.recordedAdvancePerIdle = 1; // the recording keeps moving under the back-pressure
-        actions.failedOffers = clockReads(20);
-
-        publisher.emit(GROUP, FRAME, 64);
-
-        assertFalse(publisher.isFatalSignalled(), "this bounds an archive that has stopped, not a busy one");
-        assertEquals(List.of(), actions.stalledGauge);
-        assertTrue(actions.alerts > 0, "the operator is still told it is happening");
-    }
-
-    @Test
-    @DisplayName("intermittent recording progress re-arms the clock: the gauge can raise, the node still lives")
-    void intermittentProgressRaisesTheGaugeButNeverTerminates() {
-        // One idle per threshold period; progress every fourth, so each quiet stretch crosses the stall
-        // threshold but never the fatal timeout, which is measured from the last advance.
-        actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
-        actions.recordedAdvancePerIdle = 1;
-        actions.idlesPerAdvance = 4 * QueuePublisher.SPINS_PER_CLOCK_CHECK;
-        actions.failedOffers = clockReads(40);
-
-        publisher.emit(GROUP, FRAME, 64);
-
-        assertFalse(publisher.isFatalSignalled(), "the fatal timeout runs from the last advance");
-        assertEquals(List.of(true, false), actions.stalledGauge, "raised by a quiet stretch, cleared on landing");
-    }
-
-    @Test
-    @DisplayName("a landed offer starts the next stall on a fresh clock, not the recording position's age")
+    @DisplayName("a landed offer starts the next stall on a fresh clock")
     void nextStallStartsOnAFreshClock() {
         actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(3);
         publisher.emit(GROUP, FRAME, 64);
         assertEquals(List.of(true, false), actions.stalledGauge);
 
-        // Same recording position as before, and more than the fatal timeout since it last moved: it is the
-        // time since THIS stall began that counts, so the next emit may only raise the gauge again.
+        // More than the fatal timeout since the last stall began: it is the time since THIS stall began that
+        // counts, so the next emit may only raise the gauge again.
         actions.nowNs += STALL_TIMEOUT_NS;
         actions.offers = 0;
         publisher.emit(GROUP, FRAME, 64);

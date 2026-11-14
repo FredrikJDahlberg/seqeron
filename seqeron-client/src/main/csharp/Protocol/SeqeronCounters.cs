@@ -64,8 +64,8 @@ public static class SeqeronCounters
     /// <summary>Last type id of the Replayer's block.</summary>
     public const int ReplayerTypeIdMax = 5199;
 
-    /// <summary>1 once the co-located queue recording is visible and replay requests are being served, else
-    /// 0.</summary>
+    /// <summary>1 once every served queue is listed and replay requests are being served, else 0: on a member once
+    /// its derivation has caught up with the log, on a gateway host once its archive records each queue.</summary>
     public const int ReplayerReadyTypeId = 5101;
 
     /// <summary>Current count of in-flight replays.</summary>
@@ -80,8 +80,8 @@ public static class SeqeronCounters
     /// <summary>Count of control replies dropped because an app stopped draining the control stream.</summary>
     public const int ReplayerControlRepliesDroppedCountTypeId = 5107;
 
-    /// <summary>Count of replay requests held pending only because the queue recording trailed the queue while a replay
-    /// ran, resends included.</summary>
+    /// <summary>Count of replay requests held pending only because a gateway host's queue recording trailed the queue
+    /// while a replay ran, resends included; 0 on a member, which records none.</summary>
     public const int ReplayerThrottledRequestsCountTypeId = 5110;
 
     /// <summary>Count of local-archive calls that threw (live delivery is unaffected); a sustained rate means the

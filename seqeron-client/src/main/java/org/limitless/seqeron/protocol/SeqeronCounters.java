@@ -58,7 +58,10 @@ public final class SeqeronCounters {
     /** Last type id of the Replayer's block. */
     public static final int REPLAYER_TYPE_ID_MAX = 5199;
 
-    /** 1 once the co-located queue recording is visible and replay requests are being served, else 0. */
+    /**
+     * 1 once every served queue is listed and replay requests are being served, else 0: on a member once its
+     * derivation has caught up with the log, on a gateway host once its archive records each queue.
+     */
     public static final int REPLAYER_READY_TYPE_ID = 5101;
 
     /** Current count of in-flight replays, out of {@code MAX_CONCURRENT_REPLAYS}. */
@@ -77,8 +80,8 @@ public final class SeqeronCounters {
     public static final int REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5107;
 
     /**
-     * Count of replay requests held pending only because the queue recording trailed the queue while a replay ran,
-     * resends included: a held client resends about every 500 ms.
+     * Count of replay requests held pending only because a gateway host's queue recording trailed the queue while a
+     * replay ran, resends included: a held client resends about every 500 ms. 0 on a member, which records none.
      */
     public static final int REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;
 

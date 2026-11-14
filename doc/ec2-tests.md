@@ -244,7 +244,7 @@ stalled the same way on its own recorder, for 63 ms while the other two sequence
 archives shared one kernel, so their flushes coincided: the run shows the mechanism, not a stall rate.
 
 The measurements of 11 and 13 November, the stall with no queue recording, saturation and cold replay off EBS, are in
-[`ec2-results.md`](ec2-results.md) §4.
+[`ec2-results.md`](ec2-results.md) §2.
 
 ### Test 2: the network-fault suite without CPU steal
 

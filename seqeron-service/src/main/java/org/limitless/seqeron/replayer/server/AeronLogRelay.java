@@ -141,22 +141,16 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
         }
         final long recordingId = RecordingPos.getRecordingId(counters, counterId);
         // An earlier run's recordings: this one starts again from a member's start (doc/snapshot.md §10.3).
-        final List<Long> older = new ArrayList<>();
-        localArchive.listRecordingsForUri(0, Integer.MAX_VALUE, "", streamId,
-                                          (controlSessionId, correlationId, id, startTimestamp, stopTimestamp,
-                                           startPosition, stopPosition, initialTermId, segmentFileLength,
-                                           termBufferLength, mtuLength, sessionId, stream, strippedChannel,
-                                           originalChannel, sourceIdentity) -> {
-                                              if (id < recordingId) {
-                                                  older.add(id);
-                                              }
-                                          });
-        for (final long id : older) {
+        for (final ArchiveRecording older : ArchiveRecording.ofStream(localArchive, streamId)) {
+            if (older.recordingId() >= recordingId) {
+                continue;
+            }
             try {
-                localArchive.purgeRecording(id);
+                localArchive.purgeRecording(older.recordingId());
             } catch (final ArchiveException ex) {
                 Logger.error(Logger.CoreComponent.QueueRelay, Logger.CoreEventCode.ServiceError, nodeId,
-                             "could not purge group %d's earlier queue recording %d: %s", groupId, id, ex.getMessage());
+                             "could not purge group %d's earlier queue recording %d: %s", groupId, older.recordingId(),
+                             ex.getMessage());
             }
         }
         return new LocalQueue(groupId, queue, counterId, recordingId);
@@ -310,13 +304,14 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
             dropSource("it announces no derivation start: it has not started");
             return;
         }
-        final long[] log = activeRecording(ConsensusModule.Configuration.logStreamId());
+        final ArchiveRecording log = ArchiveRecording.activeOf(source, ConsensusModule.Configuration.logStreamId());
         if (log == null) {
             dropSource("it is not recording a log");
             return;
         }
         final DerivationStart start = announcement.start();
-        final long from = relay.replayFrom(start.logPosition(), log[1], source.getRecordingPosition(log[0]), nowMs);
+        final long from = relay.replayFrom(start.logPosition(), log.startPosition(),
+                                           source.getRecordingPosition(log.recordingId()), nowMs);
         if (from == LogRelay.HISTORY_LOST) {
             closeSource();
             fatal("every member archive's log recording starts past position " + relay.position() +
@@ -325,7 +320,7 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
             return;
         }
         if (from == LogRelay.NOT_SUITABLE) {
-            dropSource("its log's recording, from " + log[1] + ", does not hold position " +
+            dropSource("its log's recording, from " + log.startPosition() + ", does not hold position " +
                        (relay.position() == LogRelay.NOT_SUITABLE ? start.logPosition() : relay.position()));
             return;
         }
@@ -350,20 +345,20 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
             return ends && !pending.isEmpty() ? Action.BREAK : Action.CONTINUE;
         };
         replaySessionId =
-            source.startBoundedReplay(log[0], from, AeronArchive.NULL_LENGTH, announcement.commitCounterId(),
+            source.startBoundedReplay(log.recordingId(), from, AeronArchive.NULL_LENGTH, announcement.commitCounterId(),
                                       resolvedChannel(replay), REPLAY_STREAM_ID);
         Logger.info(Logger.CoreComponent.QueueRelay, nodeId,
                     "following member archive %s: its log's recording %d from position %d",
-                    archiveEndpoints.get(relay.sourceIndex()), log[0], from);
+                    archiveEndpoints.get(relay.sourceIndex()), log.recordingId(), from);
     }
 
     /** The member's last announcement off its newest active recording of them, or null. */
     private DerivationAnnouncement readAnnouncement() {
-        final long[] recording = activeRecording(DerivationAnnouncement.STREAM_ID);
+        final ArchiveRecording recording = ArchiveRecording.activeOf(source, DerivationAnnouncement.STREAM_ID);
         if (recording == null) {
             return null;
         }
-        final long length = source.getRecordingPosition(recording[0]) - recording[1];
+        final long length = source.getRecordingPosition(recording.recordingId()) - recording.startPosition();
         if (length <= 0) {
             return null;
         }
@@ -374,10 +369,10 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
             messages.add(message);
         });
         try (Subscription subscription = aeron.addSubscription("aeron:udp?endpoint=" + host + ":0", REPLAY_STREAM_ID)) {
-            final long sessionId =
-                source.startReplay(recording[0], recording[1], length, resolvedChannel(subscription), REPLAY_STREAM_ID);
+            final long sessionId = source.startReplay(recording.recordingId(), recording.startPosition(), length,
+                                                      resolvedChannel(subscription), REPLAY_STREAM_ID);
             final long deadlineMs = Clocks.monotonicMs() + ANNOUNCEMENT_TIMEOUT_MS;
-            final long end = recording[1] + length;
+            final long end = recording.startPosition() + length;
             while ((subscription.imageCount() == 0 || subscription.imageAtIndex(0).position() < end) &&
                    Clocks.monotonicMs() < deadlineMs) {
                 if (subscription.poll(assembler, FRAGMENT_LIMIT) == 0) {
@@ -387,21 +382,6 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
             CloseHelper.quietClose(() -> source.stopReplay(sessionId));
             return DerivationAnnouncement.decode(messages);
         }
-    }
-
-    /** The id and the start position of the member's newest active recording of a stream, or null. */
-    private long[] activeRecording(final int streamId) {
-        final long[][] newest = { null };
-        source.listRecordingsForUri(0, Integer.MAX_VALUE, "", streamId,
-                                    (controlSessionId, correlationId, id, startTimestamp, stopTimestamp, start,
-                                     stopPosition, initialTermId, segmentFileLength, termBufferLength, mtuLength,
-                                     sessionId, stream, strippedChannel, originalChannel, sourceIdentity) -> {
-                                        if (stopTimestamp == AeronArchive.NULL_TIMESTAMP &&
-                                            (newest[0] == null || id > newest[0][0])) {
-                                            newest[0] = new long[] { id, start };
-                                        }
-                                    });
-        return newest[0];
     }
 
     /** The subscription's channel with the port the driver bound, which is where the member replays to. */

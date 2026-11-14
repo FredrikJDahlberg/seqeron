@@ -125,8 +125,7 @@ public final class SequencerService implements ClusteredService {
      * @param derivationStart receives where this service starts, for its Replayer
      * @param nodeTermLength the IPC term length of the node's driver, which its queues are published with
      * @param nodeMtu        the IPC MTU of the node's driver
-     * @param stallTimeoutMs how long a queue's drain may make no progress under back-pressure before this node
-     *                       terminates
+     * @param stallTimeoutMs how long one queue offer may stay back-pressured before this node terminates
      */
     public SequencerService(final int memberId, final Queue<byte[]> topologyRows, final Runnable fatalHandler,
                             final RestartSafeLog safeLog, final Queue<CutHandover> cuts,
@@ -569,11 +568,6 @@ public final class SequencerService implements ClusteredService {
         @Override
         public boolean recordingActive(final int groupId) {
             return !queueDrains[groupId - 1].isClosed();
-        }
-
-        @Override
-        public long recordedPosition(final int groupId) {
-            return queueDrains[groupId - 1].position();
         }
 
         @Override
