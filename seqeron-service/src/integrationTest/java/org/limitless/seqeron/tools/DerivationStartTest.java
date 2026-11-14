@@ -98,6 +98,7 @@ class DerivationStartTest {
     @InterruptAfter(60)
     void anAnnouncementTheArchiveRefusesIsRecordedOnceItCan() {
         awaitStart();
+        awaitRecordedAnnouncements();
         final DerivingReplayer deriving = deriving(() -> cluster.derivationStart(MEMBER));
         awaitWork(deriving, () -> deriving.checkpointCount() > 0, "the derivation to catch up");
         // The member's own Replayer records the announcement stream, so the archive refuses a second recording.
@@ -119,6 +120,15 @@ class DerivationStartTest {
         }
         assertNotNull(start);
         return start;
+    }
+
+    /** The member's own Replayer records the announcements once it starts; the test's must not get there first. */
+    private void awaitRecordedAnnouncements() {
+        final long deadline = System.nanoTime() + TIMEOUT_NS;
+        while (activeAnnouncementRecordings().isEmpty()) {
+            assertTrue(System.nanoTime() < deadline, "member " + MEMBER + " never recorded its announcements");
+            Tests.yield();
+        }
     }
 
     private DerivingReplayer deriving(final Supplier<DerivationStart> start) {
