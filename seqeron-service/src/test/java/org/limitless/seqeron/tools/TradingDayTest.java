@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 
 class TradingDayTest {
     private static final long SECOND = 1_000_000_000L;
+    private static final double SCALE = 0.001;
 
     @Test
     void parsesPhasesAndSkipsComments() {
@@ -70,6 +71,29 @@ class TradingDayTest {
         for (final String name : List.of("/trading-day-us.txt", "/trading-day-nordic.txt")) {
             final Path profile = Path.of(TradingDayTest.class.getResource(name).toURI());
             assertTrue(TradingDay.parse(Files.readAllLines(profile), 1).phases().size() > 5, name);
+        }
+    }
+
+    @Test
+    void shippedProfilesArriveAtTheirIntegratedRate() throws Exception {
+        for (final String name : List.of("/trading-day-us.txt", "/trading-day-nordic.txt")) {
+            final Path profile = Path.of(TradingDayTest.class.getResource(name).toURI());
+            final TradingDay day = TradingDay.parse(Files.readAllLines(profile), SCALE);
+            double expected = 0;
+            double peak = 0;
+            for (final TradingDay.Phase phase : day.phases()) {
+                expected += phase.seconds() * (phase.fromRate() + phase.toRate()) / 2;
+                peak = Math.max(peak, Math.max(phase.fromRate(), phase.toRate()));
+            }
+            final SplittableRandom random = new SplittableRandom(1);
+            long count = 0;
+            for (long offset = day.nextArrival(0, random); offset >= 0; offset = day.nextArrival(offset, random)) {
+                count++;
+            }
+            final double seconds = (double)day.durationNs() / SECOND;
+            System.out.printf("%s: %d arrivals, %.0f expected, %.2f%% off, %.0f msg/s mean, %.0f msg/s peak%n", name, count,
+                              expected, 100 * (count - expected) / expected, count / seconds / SCALE, peak / SCALE);
+            assertEquals(expected, count, expected * 0.03, name);
         }
     }
 
