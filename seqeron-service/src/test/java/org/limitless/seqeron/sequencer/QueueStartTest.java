@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/** Where a queue's recording starts when a member starts (doc/snapshot.md §10.3). */
+/** Where a queue's recording starts when a member starts. */
 class QueueStartTest {
     private static final int TERM = 16 * 1024 * 1024;
     private static final int MTU = 4096;

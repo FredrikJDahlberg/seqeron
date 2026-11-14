@@ -133,7 +133,7 @@ final class GatewayLifecycle {
     }
 
     /**
-     * Takes the election state a snapshot header holds in place of the frames before its cut (doc/snapshot.md §6):
+     * Takes the election state a snapshot header holds in place of the frames before its cut:
      * the pair's rows, which resolve this instance's identity by name, and the instance its {@code GatewayActive}
      * names. Before the gate has opened, so nothing is published or closed.
      */

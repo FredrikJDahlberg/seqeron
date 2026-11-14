@@ -6,7 +6,7 @@
 
       clusterctl.sh load-topology cluster/src/test/resources/topology-test-gateway.xml
 
-    Schema: cluster/src/main/resources/topology.xsd (doc/seqeron-protocol-spec.md §6.4). The loader
+    Schema: cluster/src/main/resources/topology.xsd. The loader
     resolves it from its own jar and ignores a schemaLocation named here, so none is named.
 
     List only what you run: a pair no process starts is designated, times out, hands over to its standby
@@ -20,7 +20,7 @@
         <group name="test" id="1"/>
     </groups>
 
-    <!-- sourceId 9, allocated in doc/seqeron-protocol-spec.md §5 — the one id space over both kinds of
+    <!-- sourceId 9 — the one id space over both kinds of
          producer. gatewayIds 10 and 11 rather than the next free pair, so a log line or a dump can never
          be confused with the C++ pair's 1/2. -->
     <gateways>

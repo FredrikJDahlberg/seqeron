@@ -5,7 +5,7 @@ Reviewed 2026-11-13, at `95191c23` on `main` (v0.18.0). Paths are under
 
 **Scope.** Read: `SequencerService`, `QueuePublisher`, `DerivingReplayer`, `RecordingReader`, `LogTrimmer`,
 `AeronLogRelay`, and the wiring in `ReplayerServer` and `SequencerServer`: the half of the service tier that
-`disk-load-plan.md`, step 2a, changed. Not read: `Sequencer`, `ReplayerService`, `ClientProxy`, `tools` and `metrics`,
+`../plans/disk-load-plan.md`, step 2a, changed. Not read: `Sequencer`, `ReplayerService`, `ClientProxy`, `tools` and `metrics`,
 about 7,000 of the tier's 13,600 lines. Not run: no test was executed, and no finding has a test that reproduces it.
 
 **Verdict.** The derivation, the log relay and the trim hold together, and the three interactions most likely to lose

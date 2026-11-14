@@ -44,7 +44,7 @@ import org.limitless.seqeron.sequencer.QueuePositions;
 import org.limitless.seqeron.sequencer.Sequencer;
 
 /**
- * A member's queues derived from its Raft log alone (doc/disk-load-plan.md, step 2a): {@link LogDeriver} over the log's
+ * A member's queues derived from its Raft log alone: {@link LogDeriver} over the log's
  * recording, read up to the commit position, must give the frames the sequencer published on each queue, byte for byte
  * and at the same positions. The reference is a recording of each queue the test has a member's archive make from the
  * start, and every member's queues are that member's, frame for frame: each member derives from its own log. Each run

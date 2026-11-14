@@ -46,7 +46,7 @@ import org.limitless.seqeron.replayer.server.Replayer;
 import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /**
- * Cluster snapshots (doc/snapshot.md §10): a round is taken by the cluster's snapshot action, a member restarts from
+ * Cluster snapshots: a round is taken by the cluster's snapshot action, a member restarts from
  * the newest one it has marked restart-safe, and its queue starts again at the cut.
  */
 @ExtendWith(InterruptingTestCallback.class)

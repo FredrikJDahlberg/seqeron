@@ -46,7 +46,7 @@ import org.limitless.seqeron.util.Logger;
  * with lost requests, held requests, truncated images, stalled replays and redeliveries, in under a
  * second.
  *
- * <p><b>Restore</b> — a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut
+ * <p><b>Restore</b> — a client restoring its own snapshot holds both properties from the cut
  * on, under the same faults, and its restored state plus the frames after the cut equals the state a full replay
  * builds. It holds files of two rounds: the newer was cut from another log, whose cut this recording does not hold
  * where the file says, so it gives way to the older. The log holds a superseded round and another source's end among

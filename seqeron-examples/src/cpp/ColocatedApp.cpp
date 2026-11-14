@@ -7,7 +7,7 @@
 // node leads. onLeadershipChanged is the whole election.
 //
 // Start a node, load the examples' topology, start the host, then run this (in the seqeron repo, after
-// ./gradlew uberJar; doc/running-a-cluster.md, "Client proxy", has the host's properties):
+// ./gradlew uberJar):
 //   seqeron-service/src/main/scripts/start-cluster.sh
 //   seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology.xml
 //   seqeron-service/src/main/scripts/start-client-proxy.sh -Dproxy.sourceId=12 -Dproxy.clientId=14 \
@@ -48,7 +48,7 @@ constexpr std::int32_t SOURCE_ID = 12;
 
 constexpr std::int64_t PING_INTERVAL_NS = 1'000'000'000;
 
-// Fenced or host lost, restart me: this repository's convention (doc/ops.md). 78: the host refused the attach, which a
+// Fenced or host lost, restart me: this repository's convention. 78: the host refused the attach, which a
 // restart does not cure.
 constexpr int EXIT_RESTART = 70;
 constexpr int EXIT_REFUSED = 78;

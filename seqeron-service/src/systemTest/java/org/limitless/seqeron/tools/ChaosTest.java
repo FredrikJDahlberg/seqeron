@@ -154,7 +154,7 @@ class ChaosTest {
             startReplica(m);
         }
         // Without <snapshots>: a restarted member would start its queue at the last cut, which the plain probe
-        // replicas cannot follow (doc/snapshot.md §10.8).
+        // replicas cannot follow.
         final Path noRounds = baseDir.resolve("topology-no-rounds.xml");
         ClusterProcesses.withoutSnapshots(Path.of(System.getProperty("seqeron.gatewayTopology")), noRounds);
         cluster.loadTopology(noRounds);

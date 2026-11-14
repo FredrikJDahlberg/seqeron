@@ -128,7 +128,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         this.controlFragmentHandler = new FragmentAssembler(this::onControlFragment);
     }
 
-    /** What a cut round is told to: the Replayer says a round was cut, to every replica (doc/snapshot.md §10.8). */
+    /** What a cut round is told to: the Replayer says a round was cut, to every replica. */
     @FunctionalInterface
     public interface SnapshotRoundHandler {
         /**
@@ -196,7 +196,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     /**
      * Restores the newest snapshot in {@code store} on {@link #start}, before anything is dispatched, once a replay
-     * shows the log holds its cut (doc/snapshot.md §7). Call before {@link #start}; {@link #restoreFailure()} reports
+     * shows the log holds its cut. Call before {@link #start}; {@link #restoreFailure()} reports
      * a snapshot that cannot be restored.
      */
     public void restoreFrom(final SnapshotStore store, final SnapshotRestoreHandler handler) {

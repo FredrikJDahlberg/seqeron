@@ -19,7 +19,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
- * The C++ stub of a hosted Gateway (hosted::Gateway, doc/seqeron-protocol-spec.md §17.5) against the prototype host.
+ * The C++ stub of a hosted Gateway (hosted::Gateway) against the prototype host.
  * The stub is {@code hosted_gateway_probe}, beside the {@code hosted_probe} that {@code HOSTED_PROBE} names; without
  * it the test is skipped.
  */

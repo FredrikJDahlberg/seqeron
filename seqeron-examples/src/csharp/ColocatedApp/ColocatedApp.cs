@@ -36,7 +36,7 @@ public sealed class ColocatedApp : IApplicationListener
 
     private static readonly long PingIntervalTicks = Stopwatch.Frequency;
 
-    // Fenced, restart me: this repository's convention (doc/ops.md).
+    // Fenced, restart me: this repository's convention.
     private const int ExitFenced = 70;
 
     private Application _app;

@@ -18,7 +18,7 @@
 # The caller launches, waits for and stops those itself, after this script prints READY; core names no
 # process it does not start. READY then means the cluster is up, not that any consumer is caught up.
 #
-# The cluster refuses everything before its groups are active (doc/seqeron-protocol-spec.md §7.4), so the
+# The cluster refuses everything before its groups are active, so the
 # topology goes first: SEQERON_TOPOLOGY names the file to load once the members run. Without it, the probe
 # followers' cluster loads topology-test-groups.xml, and one started with SEQERON_NO_CONSUMERS=1 loads
 # nothing: its caller loads its own topology after READY.

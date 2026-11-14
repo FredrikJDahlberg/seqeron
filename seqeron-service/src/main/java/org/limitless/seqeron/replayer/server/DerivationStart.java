@@ -4,7 +4,7 @@ import org.limitless.seqeron.sequencer.LogDeriver;
 
 /**
  * Where a member's service started, handed to its Replayer so that a derivation of the queues from the Raft log
- * starts where the queues did (doc/disk-load-plan.md, step 2a).
+ * starts where the queues did.
  *
  * @param logPosition of the first log entry the service applies: 0, or the cluster snapshot's
  * @param state       the sequencer's there: nothing sequenced, or the snapshot's

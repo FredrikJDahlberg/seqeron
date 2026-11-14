@@ -6,7 +6,7 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * What a trim of a member's Raft log removes (doc/snapshot.md §10.7), free of Aeron's archive. The member keeps its two
+ * What a trim of a member's Raft log removes, free of Aeron's archive. The member keeps its two
  * newest restart-safe snapshots and the Raft log from the older one; everything below is the plan's.
  *
  * @param floor              the log position the log is kept from, the older of the two snapshots kept

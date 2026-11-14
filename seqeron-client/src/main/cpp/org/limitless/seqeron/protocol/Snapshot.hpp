@@ -19,7 +19,7 @@
 #endif
 #endif
 
-// The snapshot format (doc/snapshot.md §2, §6): a sequence of records, the façade's header first, and the
+// The snapshot format: a sequence of records, the façade's header first, and the
 // CRC-32C over their bytes in order. The Java twins are protocol/SnapshotFormat and SnapshotHeader; keep them in
 // step.
 

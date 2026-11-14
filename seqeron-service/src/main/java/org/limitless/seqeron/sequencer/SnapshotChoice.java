@@ -11,7 +11,7 @@ import java.util.function.LongUnaryOperator;
 import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /**
- * Which cluster snapshot a member starts from (doc/snapshot.md §10.8). A member restarts its queue at the snapshot's
+ * Which cluster snapshot a member starts from. A member restarts its queue at the snapshot's
  * cut, so one whose cut no co-located application is known to hold a file for would fence them: the launcher
  * invalidates, before the consensus module starts, every snapshot at the head of the recording log that the member's
  * {@code restart-safe.log} does not name, as {@code clusterctl invalidate-latest-snapshot} does, until the newest is

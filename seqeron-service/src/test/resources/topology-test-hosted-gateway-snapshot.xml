@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The hosted-façade prototype's gateway (doc/seqeron-protocol-spec.md §17.5) taking part in snapshot rounds every 2 s:
+    The hosted-façade prototype's gateway taking part in snapshot rounds every 2 s:
     one row, no pair. HostedGatewayStubTest loads it for the gateway's cut and restore.
 -->
 <topology xmlns="http://limitless.org/seqeron/topology/1">

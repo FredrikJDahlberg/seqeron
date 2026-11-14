@@ -7,7 +7,7 @@ import org.agrona.SemanticVersion;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/** Which logs a node starts on (doc/snapshot.md §10.2). */
+/** Which logs a node starts on. */
 class LogVersionTest {
     @Test
     @DisplayName("a log of this build's major, or of Aeron's default major, is accepted; any other is not")

@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Frame
 {
     /// <summary>
-    /// A source's snapshot of one round as its publisher serialized it. The bytes stay with                               each instance that serialized them; every one compares its own with this, and a                               restore checks its local copy against it (doc/snapshot.md §2)
+    /// A source's snapshot of one round as its publisher serialized it. The bytes stay with                               each instance that serialized them; every one compares its own with this, and a                               restore checks its local copy against it
     /// </summary>
     public sealed partial class SnapshotEnd
     {

@@ -12,7 +12,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** A member's record of its snapshots (doc/snapshot.md §10.8), which a restart reads. */
+/** A member's record of its snapshots, which a restart reads. */
 class RestartSafeLogTest {
     @TempDir
     Path directory;

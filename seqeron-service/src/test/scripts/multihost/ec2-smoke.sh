@@ -17,7 +17,7 @@ SGID=$(aws ec2 create-security-group --group-name "$SG" --description "seqeron s
     --query GroupId --output text)
 aws ec2 authorize-security-group-ingress --group-id "$SGID" --protocol tcp --port 22 --cidr "$MYIP/32"
 
-# Stock Ubuntu 24.04 x86_64 (the AMI of doc/ec2-tests.md section 4 is not built yet)
+# Stock Ubuntu 24.04 x86_64
 AMI=$(aws ssm get-parameter \
     --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
     --query Parameter.Value --output text)

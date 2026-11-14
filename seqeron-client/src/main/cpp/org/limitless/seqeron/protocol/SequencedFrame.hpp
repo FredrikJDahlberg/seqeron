@@ -88,7 +88,7 @@ inline constexpr std::uint16_t MIN_INGRESS_LENGTH = static_cast<std::uint16_t>(
 // Largest ingress frame: a full payload behind that framing -- 8904 bytes. §9.2 condition 1's ceiling.
 inline constexpr std::uint16_t MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAYLOAD_LENGTH;
 
-// ── The systemEventType table (doc/seqeron-protocol-spec.md §7) ────────────────
+// ── The systemEventType table ────────────────
 //
 // A submitted event's value is its payload codec's template id. The five synthesized events have templates
 // of their own and stamp these values at offset 16 so that field discriminates every frame on the queue.
@@ -160,7 +160,7 @@ constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
 /**
  * Carries one message from the cluster stream.
  *
- * Every fragment on the queue is one of seven messages (doc/seqeron-protocol-spec.md §4), and the same
+ * Every fragment on the queue is one of seven messages, and the same
  * 2-byte field at offset 16 discriminates all of them: a `Sequenced` frame carries one opaque
  * application payload named by payloadId, the six system messages carry seqeron's own vocabulary named
  * by systemEventType. `system` says which. A consumer of an application frame dispatches on

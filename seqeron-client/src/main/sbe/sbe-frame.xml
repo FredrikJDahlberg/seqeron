@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-    The frame layer: schema 210, specified in doc/seqeron-protocol-spec.md §4 and §7.
+    The frame layer: schema 210.
 
     Two families. The application family (Unsequenced 100, Sequenced 101) carries one opaque,
     length-prefixed payload named by header.payloadId (§6); the cluster tier never decodes it. The
@@ -191,7 +191,7 @@
 
     <sbe:message name="SnapshotStarted" id="107"
                  description="Starts a snapshot round: every participating source serializes its state as of this
-                              frame's clusterSeqNo, the round's cut (doc/snapshot.md §3)">
+                              frame's clusterSeqNo, the round's cut">
         <field name="header" id="20001" type="sequencedSystemHeader"/>
         <field name="round"  id="20049" type="int64"
                description="The round's number, from 1"/>
@@ -296,7 +296,7 @@
     <sbe:message name="SnapshotEnd" id="28"
                  description="A source's snapshot of one round as its publisher serialized it. The bytes stay with
                               each instance that serialized them; every one compares its own with this, and a
-                              restore checks its local copy against it (doc/snapshot.md §2)">
+                              restore checks its local copy against it">
         <field name="round"         id="20049" type="int64"/>
         <field name="recordCount"   id="20052" type="int32"
                description="Records, the header included"/>

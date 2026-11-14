@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
-/** Which cluster snapshot a member starts from (doc/snapshot.md §10.8). */
+/** Which cluster snapshot a member starts from. */
 class SnapshotChoiceTest {
     private static final LongUnaryOperator UNTRIMMED = id -> 0;
 

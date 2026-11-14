@@ -34,7 +34,7 @@ at once. `ReceiverFaultsTest` drops a client's `Replaying` or a run of its repla
 tip. A run it drops from every replay is a recording with a hole: the client retries at the resend pace, raises
 `recoveryStalled` at the 30 s no-progress timeout, and heals once the hole is covered. `StalledHostReplayerTest` stops a gateway host's Replayer reading requests while a client cold-starts on it, and holds
 the client to waiting without a fault, then walking in order once the Replayer runs. In every case no queue goes silent for the queue-stall fence's default, and no frame is lost.
-A member records no queue (`doc/disk-load-plan.md`, step 2a), so a test that needs a whole queue to compare a derived
+A member records no queue (`doc/plans/disk-load-plan.md`, step 2a), so a test that needs a whole queue to compare a derived
 replay with asks `InProcessCluster.withQueueRecordings()`, which has each member's archive record its queues at each
 start; a member restarted mid-test records from where its queue has reached, and the test checks that start against
 the member's `DerivationStart`. `QueueFrames` reads a member's queue through its Replayer where its archive keeps no

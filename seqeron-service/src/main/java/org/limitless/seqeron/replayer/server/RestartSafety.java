@@ -4,7 +4,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * When a cluster snapshot may be restarted from (doc/snapshot.md §10.8), free of Aeron and of the clock. A member's
+ * When a cluster snapshot may be restarted from, free of Aeron and of the clock. A member's
  * queue restarts at the cut, so a co-located application whose newest file is older would be fenced: the cut is
  * restart-safe once every application and gateway that joined its round has confirmed its file for it. The ones that
  * join are those that do within a window of the cut, so one that is down is not waited for. A source is its

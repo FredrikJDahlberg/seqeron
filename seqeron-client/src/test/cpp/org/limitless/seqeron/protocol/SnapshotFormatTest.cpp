@@ -1,4 +1,4 @@
-// The snapshot byte format (doc/snapshot.md §2, §6). The golden vectors are the Java
+// The snapshot byte format. The golden vectors are the Java
 // SnapshotFormatTest's, computed by a third implementation, so the two languages agree with each other and
 // not merely with themselves. Case for case with the Java twin, in the same order.
 

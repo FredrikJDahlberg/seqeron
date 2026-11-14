@@ -378,7 +378,7 @@ history, which a snapshot cannot regenerate; what lies below the cut is in the a
 
 A queue is not one run from `groupSeqNo` 1 across every restart (§10.8). It starts at a cut, and a restart
 starts it again at the cut of the set it restores. Nothing records a member's queue: its history is the Raft
-log from where the service started, which the member's Replayer derives (`disk-load-plan.md`, step 2a).
+log from where the service started, which the member's Replayer derives (`plans/disk-load-plan.md`, step 2a).
 
 | | |
 | --- | --- |
@@ -722,7 +722,7 @@ state, so any instance's file restores any other. It holds for seqeron's replica
 
 Proposed, not implemented: the instance that may publish serializes nothing and fetches the round's file from
 the source's other instances — the followers' replicas, a gateway's standby, or a snapshot host — and an instance
-with no usable file fetches one from a peer. The design is in [`snapshot-offload.md`](snapshot-offload.md).
+with no usable file fetches one from a peer. The design is in [`snapshot-offload.md`](plans/snapshot-offload.md).
 
 ## 12. Costs and limits
 

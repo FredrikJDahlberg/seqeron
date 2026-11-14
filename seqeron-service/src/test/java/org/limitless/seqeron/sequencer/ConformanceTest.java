@@ -46,7 +46,7 @@ import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemHeaderDecoder;
 
 /**
- * The protocol conformance suite — doc/seqeron-protocol-spec.md §14, one nested section per row.
+ * The protocol conformance suite, one nested section per row.
  *
  * <p>No Aeron, no media driver, sub-second, and the fixture is a <b>synthetic payload seqeron owns</b>:
  * the application vectors carry arbitrary bytes under a {@code payloadId} the cluster tier never opens,

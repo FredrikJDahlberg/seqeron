@@ -29,7 +29,7 @@ import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.replayer.server.DerivingReplayer;
 
 /**
- * A client's cold start served off the Raft log (doc/disk-load-plan.md, step 2a): a member records no queue and its
+ * A client's cold start served off the Raft log: a member records no queue and its
  * Replayer derives the replay through {@link DerivingReplayer}, and an unchanged {@link ReplayerStreamReceiver} must
  * walk each queue from groupSeqNo 1 in order, catch up at the queue's tip and follow it live, and print its rate. A
  * gateway host's walk is off its own recording.

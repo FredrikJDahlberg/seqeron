@@ -5,7 +5,7 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 
 /// <summary>
 /// Takes a source's snapshot as a restore reads it from this instance's own file, before any frame after its cut is
-/// dispatched (doc/snapshot.md §7). Each restore, a restart's included, begins with <see cref="OnSnapshotHeader"/>.
+/// dispatched. Each restore, a restart's included, begins with <see cref="OnSnapshotHeader"/>.
 /// </summary>
 public interface ISnapshotRestoreHandler
 {

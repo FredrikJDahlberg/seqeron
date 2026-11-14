@@ -8,7 +8,7 @@ namespace Org.Limitless.Seqeron.Protocol;
 
 /// <summary>
 /// The header a façade writes ahead of the application's body: what it derives from frames before the round's
-/// cut, which a restore never replays (doc/snapshot.md §6). Little-endian, packed:
+/// cut, which a restore never replays. Little-endian, packed:
 /// <code>
 ///  0  headerVersion       uint16   HeaderVersion
 ///  2  headerLength        uint32   bytes up to the body

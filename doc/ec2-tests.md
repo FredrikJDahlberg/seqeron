@@ -341,7 +341,7 @@ c6in.8xlarge ($6.35/hr) and about $145 on c6id.metal ($20.26/hr), from the insta
 about $13 on c6in.8xlarge. Neither includes the
 rehearsals, so allow the first attempt twice the figure; the soak and the knee ramps run unattended.
 
-The disk session (`disk-session.sh`) measures `disk-load-plan.md`, step 2a, in one launch: two knee ramps (`direct`, 100-byte
+The disk session (`disk-session.sh`) measures `plans/disk-load-plan.md`, step 2a, in one launch: two knee ramps (`direct`, 100-byte
 markers, from 50k msg/s in 10 s steps), two under the kernel's default writeback and two with the archive on a default gp3
 volume, then test 3's cold replay of 4,000,000 frames, quiet and under load. The figures here are of the session as it ran
 before the release, when it also ran each knee and replay on members that recorded their queues: the ramps took about 26
@@ -412,7 +412,7 @@ REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and aga
 DISK_DEFAULT_VOLUME=/mnt/gp3-default ./disk-session.sh         # the disk session
 ```
 
-Members record no queue (`disk-load-plan.md`, step 2a), and a gateway host relays a member's Raft log. The order check
+Members record no queue (`plans/disk-load-plan.md`, step 2a), and a gateway host relays a member's Raft log. The order check
 reads each member's queue through its Replayer. `REPLAY_COLD=1` drops every member's page cache before each replay phase, so the replay reads
 its log or recording from EBS; it needs passwordless `sudo` on the members.
 

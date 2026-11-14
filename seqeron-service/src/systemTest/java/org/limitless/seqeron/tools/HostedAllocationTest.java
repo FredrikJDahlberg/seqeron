@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The hosted-façade prototype's host holds its steady state to no per-frame allocation (doc/hosted-facade.md §2):
+ * The hosted-façade prototype's host holds its steady state to no per-frame allocation:
  * its loop thread, running the real {@code Application} on the leader, allocates nothing across a window of delivered
  * payloads, published markers and heartbeats once the JIT has warmed (at most {@link #MAX_BYTES} over the window). There is no snapshot policy, so no cut is in
  * the window, and the window must see no change of gate epoch, whose log line allocates.

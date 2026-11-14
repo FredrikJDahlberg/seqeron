@@ -24,7 +24,7 @@ namespace Org.Limitless.Seqeron.App;
 /// payloads it submits. Every replica reads the same ordered stream and so holds the same state, which is what makes
 /// <see cref="OutstandingWork{TKey,TWork}"/> — fed that same stream — the way work survives the gate closing under
 /// it.</para>
-/// <para><b>Snapshots</b> (doc/snapshot.md §4): given an <see cref="ISnapshotListener"/> and a topology row with
+/// <para><b>Snapshots</b>: given an <see cref="ISnapshotListener"/> and a topology row with
 /// <c>snapshot="true"</c>, every replica serializes its state at each round's cut into its own directory, and the
 /// one whose gate is open then submits the round's <c>SnapshotEnd</c>. A replica whose snapshot differs from the one
 /// sequenced is fenced with <see cref="ClusterError.SnapshotDiverged"/>. On start, a replica given a listener

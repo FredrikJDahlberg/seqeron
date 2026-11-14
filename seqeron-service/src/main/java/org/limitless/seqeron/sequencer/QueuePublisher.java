@@ -130,7 +130,7 @@ public final class QueuePublisher {
 
     /**
      * As {@link #activate(int[])}, each queue starting where {@code starts} says: a member restoring a snapshot
-     * starts its queues at the cut (doc/snapshot.md §10.3).
+     * starts its queues at the cut.
      * @param groupIds the groups to activate, ascending
      * @param starts   where each group's queue starts
      */

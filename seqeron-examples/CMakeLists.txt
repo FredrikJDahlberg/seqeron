@@ -34,7 +34,7 @@ target_link_libraries(gateway_app PRIVATE seqeron::seqeron_core)
 # What these examples are for: the hosted stub and the types it shares are sufficient on their own. Compiling them
 # proves nothing about what they include, so the includes are the assertion, checked here the way the Java half's
 # checkFacadeOnly checks its imports. util is on the list because it is support code beside the stub rather than a
-# tier under it (doc/client-api.md, "Support code").
+# tier under it.
 foreach(_example IN ITEMS ColocatedApp GatewayApp)
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/${_example}.cpp" _example_includes
          REGEX "^#include \"org/limitless/seqeron/")

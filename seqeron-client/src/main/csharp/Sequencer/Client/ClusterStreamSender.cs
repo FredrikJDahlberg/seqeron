@@ -105,7 +105,7 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     /// <summary>Connects a client co-located with no member: UDP ingress against the whole endpoint set.</summary>
     /// <param name="aeron">the caller's client, left open by <see cref="Dispose"/></param>
     /// <param name="egressChannel">this client's own egress endpoint; two media drivers on one host cannot both bind
-    /// a port (doc/ops.md, "Ports")</param>
+    /// a port</param>
     /// <param name="ingressEndpoints">the members to reach, <see cref="PortLayout.IngressEndpoints()"/> for the
     /// default set</param>
     /// <param name="appListener">sees every egress event, or null; a gateway's cluster-session fence</param>
@@ -219,7 +219,7 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     /// once it sees the leader's egress end, <c>AeronCluster</c> closes the ingress publication and waits for a
     /// <c>NewLeader</c>, which <see cref="PollEgress"/> installs — hence the spin polls. A leader that dies ends no
     /// egress, so its publication takes frames until the <c>NewLeader</c>, which discards what it has not sent: a frame
-    /// that lands can still be lost, and only the queue confirms it (doc/fault-tolerance.md §1.2). Bounded, since
+    /// that lands can still be lost, and only the queue confirms it. Bounded, since
     /// losing quorum would otherwise stop the caller's duty cycle. No keep-alive from in here: it would offer on the
     /// same stuck publication.
     /// </summary>

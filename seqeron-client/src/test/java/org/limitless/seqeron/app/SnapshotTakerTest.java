@@ -25,7 +25,7 @@ import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.replayer.client.SnapshotStore;
 
-/** A façade's side of snapshot rounds (doc/snapshot.md §4), driven through its {@code Actions} seam. */
+/** A façade's side of snapshot rounds, driven through its {@code Actions} seam. */
 class SnapshotTakerTest {
     private static final SnapshotHeader HEADER =
         new SnapshotHeader(3, 1, List.of(new SnapshotHeader.Group(1, "orders")), null);

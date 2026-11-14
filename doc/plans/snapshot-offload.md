@@ -1,8 +1,8 @@
 # Offloaded snapshots (proposed)
 
-A proposal; none of it is implemented. [`snapshot.md`](snapshot.md) describes what is. Section references
+A proposal; none of it is implemented. [`snapshot.md`](../snapshot.md) describes what is. Section references
 without a file name are to this document; `snapshot.md §n` is to that one, and `spec` is
-[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md).
+[`seqeron-protocol-spec.md`](../seqeron-protocol-spec.md).
 
 Every instance of a participating source serializes on dispatching `SnapshotStarted`, and its dispatch waits
 for the encoding, the CRC and the page-cache write (snapshot.md §4 step 1, §12). On the instance that may
@@ -73,7 +73,7 @@ after it loses the role.
 
 ## 3 The snapshot host
 
-A gateway host ([`fault-tolerance.md`](fault-tolerance.md) §3.3) whose instances are producers only. Both
+A gateway host ([`fault-tolerance.md`](../fault-tolerance.md) §3.3) whose instances are producers only. Both
 façades gain a mode, `snapshotOnly`: the instance follows its source's queues, restores and recovers as any
 instance does, serializes at every round, and publishes nothing but its `SnapshotEnd`. It sends no
 `GatewayStarted`, opens no connection and has no gate. It holds a cluster session for the end. A hosted
@@ -109,7 +109,7 @@ host needs no such condition: its instances confirm only after the end.
 
 **A round in which an `offload` source has no producer** has no end for that source, and is not restart-safe
 on any member. Members keep their previous safe cut, and their queues and Raft logs grow until a round
-completes. Nothing is lost, and `seqeron_app_snapshot_round` shows the lag ([`ops.md`](ops.md)).
+completes. Nothing is lost, and `seqeron_app_snapshot_round` shows the lag ([`ops.md`](../ops.md)).
 
 **A producer that stops after its end is sequenced and before it confirms** leaves its own node's cut unsafe, so
 that node keeps the history below `R`. Its restart restores its previous file, replays through `R`, serializes
@@ -123,7 +123,7 @@ Files stay in each instance's directory (snapshot.md §4.1). The Replayers move 
 - **Serving.** An instance tells its node's Replayer its snapshot directory when it attaches. The Replayer
   serves the confirmed files in it, read-only.
 - **Endpoint.** A member's Replayer serves at `base + memberId*10 + 6`, unused in the member's stride, so the
-  cluster block keeps its width ([`ops.md`](ops.md), "Ports"). A gateway host or a snapshot host serves only
+  cluster block keeps its width ([`ops.md`](../ops.md), "Ports"). A gateway host or a snapshot host serves only
   with `replayer.snapshotEndpoint`. Without one it can fetch but not serve, so a host running a gateway's
   standby needs one for the active instance to fetch from it.
 - **Request.** An instance asks its Replayer for a source's round, or for the newest round that is not cut
@@ -133,7 +133,7 @@ Files stay in each instance's directory (snapshot.md §4.1). The Replayers move 
   them through its store and checks them, against the sequenced end at a round and against the file's trailer
   at a restore.
 - **Messages.** The directory report, `SnapshotFetch` and `SnapshotFetched` join `sbe-replay.xml` (spec §10).
-  Their ids, and the streams, are allocated in [`ops.md`](ops.md) when this is built. The part that crosses
+  Their ids, and the streams, are allocated in [`ops.md`](../ops.md) when this is built. The part that crosses
   hosts runs between Replayers, which are built and released together.
 - **Deletion while serving.** An instance deletes its older files after a confirmation (snapshot.md §4.1),
   possibly during a transfer. The Replayer opens a file with delete sharing, which Java NIO does by default on
@@ -186,8 +186,8 @@ Every instance of a source, a snapshot host's included, runs one build (A-6).
 | snapshot.md §10.8 | confirmation by fetch; the member's added condition (§4) |
 | snapshot.md §12 | the costs of §6 |
 | façades, Java and C# | the `offload` roles, `snapshotOnly`, and fetched records written through `SnapshotStore`; C++ through `ClientProxy` |
-| [`client-api.md`](client-api.md) | `snapshotOnly` and the mode, in every column |
-| `PortLayout` (Java, C++, C#), `ports.sh`, [`ops.md`](ops.md) | the `+ 6` port, `replayer.snapshotEndpoint`, `replayer.snapshotPeers` |
+| [`client-api.md`](../client-api.md) | `snapshotOnly` and the mode, in every column |
+| `PortLayout` (Java, C++, C#), `ports.sh`, [`ops.md`](../ops.md) | the `+ 6` port, `replayer.snapshotEndpoint`, `replayer.snapshotPeers` |
 | scripts | `start-gateway-host.sh` starts a snapshot host |
 | tests | `ClusterSnapshotTest`: a round whose publisher fetches; two producers that diverge; a member with no instance of an `offload` source keeping its purge floor until the end; a gateway with its standby down. `ReplayerRecoveryTest`, in every language: a restore that fetches from a peer |
 

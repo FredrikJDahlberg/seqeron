@@ -8,7 +8,7 @@ using SbeBuffer = Org.SbeTool.Sbe.Dll.DirectBuffer;
 namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
-/// The frame of a round a façade publishes, its <c>SnapshotEnd</c> (doc/snapshot.md §4), under its <c>sourceId</c>
+/// The frame of a round a façade publishes, its <c>SnapshotEnd</c>, under its <c>sourceId</c>
 /// and belonging to no connection. <c>SnapshotFrames.java</c> and <c>app/detail/SnapshotFrames.hpp</c> are its
 /// twins; keep the three in step.
 /// </summary>
@@ -48,8 +48,7 @@ internal sealed class SnapshotFrames : SnapshotTaker.IActions
     {
         if (outcome == Publish.Refused)
         {
-            throw new InvalidOperationException("a SnapshotEnd the sequencer would reject " +
-                                                "(doc/seqeron-protocol-spec.md §9.2)");
+            throw new InvalidOperationException("a SnapshotEnd the sequencer would reject");
         }
         return outcome;
     }

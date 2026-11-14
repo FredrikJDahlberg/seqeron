@@ -38,7 +38,7 @@ SEQERON_JAVA_OPTS=(
 )
 
 # A member's or gateway host's JVM also logs every GC pause into its own output, to set against the cluster's
-# timeouts (doc/ops.md, "Garbage collection").
+# timeouts.
 SEQERON_SERVER_JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}" -Xlog:gc)
 
 # Call from a script that launches Java; the ones that only signal or delete files do not.

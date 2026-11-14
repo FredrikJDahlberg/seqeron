@@ -10,7 +10,7 @@ using Xunit;
 namespace Org.Limitless.Seqeron.Replayer.Client;
 
 /// <summary>
-/// An instance's own snapshot files (doc/snapshot.md §4.1). The golden trailer is shared with
+/// An instance's own snapshot files. The golden trailer is shared with
 /// <c>SnapshotStoreTest.java</c> and <c>SnapshotStoreTest.cpp</c>, so a file one language writes is one the others
 /// read.
 /// </summary>

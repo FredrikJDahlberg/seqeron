@@ -57,7 +57,7 @@ import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
 /**
- * clusterctl — the operator cluster life-cycle tool (doc/clusterctl.md). Node-local: it shares a {@code
+ * clusterctl — the operator cluster life-cycle tool. Node-local: it shares a {@code
  * SequencerServer} host's Aeron directory (to read the default queue, which the node's Replayer names) and {@code
  * clusterDir} (for {@link ClusterTool}).
  * Named so as not to shadow Aeron's {@code io.aeron.cluster.ClusterControl}.
@@ -71,11 +71,11 @@ import org.xml.sax.SAXParseException;
  *       {@code GatewayActivationRequested} and waits for the {@code GatewayActive} the sequencer synthesizes
  *       behind it, so the designation stays the cluster's and an unlisted {@code gatewayId} is refused.</li>
  *   <li><b>request-snapshot</b> — publishes {@code SnapshotRequested} and waits for the
- *       {@code SnapshotStarted} the sequencer synthesizes behind it (doc/snapshot.md §3).</li>
+ *       {@code SnapshotStarted} the sequencer synthesizes behind it.</li>
  *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's validated topology document, checked
  *       against the log (spec §6.4); the first command an archive accepts.
  *   <li><b>trim-log [--dry-run]</b> — asks this member's Replayer to purge its Raft log and snapshot recordings
- *       below its two newest restart-safe snapshots (doc/snapshot.md §10.7), which it also does by itself each time
+ *       below its two newest restart-safe snapshots, which it also does by itself each time
  *       a snapshot becomes restart-safe; needs no leader, and is safe to repeat. {@code --dry-run} prints what it
  *       would purge and purges nothing.</li>
  *   <li><b>counters</b> — lists this node's operator counters off the CnC file; needs no leader.</li>
@@ -114,7 +114,7 @@ public final class ClusterCtl {
     private static final long IPC_CONNECT_TIMEOUT_MS = 500;
 
     /**
-     * Ephemeral: this tool runs for one command and needs no port of its own (doc/ops.md, "Ports"). The host
+     * Ephemeral: this tool runs for one command and needs no port of its own. The host
      * is what the leader replies to, so on a follower of a multi-host cluster it must be this node's own name.
      */
     private static final String EGRESS_CHANNEL = "aeron:udp?endpoint="
@@ -200,8 +200,7 @@ public final class ClusterCtl {
     private static final long TRIM_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
 
     /**
-     * Asks the member's Replayer to purge what its two newest restart-safe snapshots make unneeded (doc/snapshot.md
-     * §10.7), or with {@code dryRun} to say what it would, and prints each line of its answer.
+     * Asks the member's Replayer to purge what its two newest restart-safe snapshots make unneeded, or with {@code dryRun} to say what it would, and prints each line of its answer.
      */
     private static int trimLog(final boolean dryRun) {
         final long correlationId = System.nanoTime();
@@ -931,7 +930,7 @@ public final class ClusterCtl {
               trim-log [--dry-run]
                            purge this member's Raft log and snapshot recordings below its two
                            newest restart-safe snapshots; per member, safe to repeat, no leader
-                           needed; --dry-run prints what it would purge (doc/clusterctl.md)
+                           needed; --dry-run prints what it would purge
               counters     list this node's seqeron operator counters (SequencerService/
                            ReplayerService); no cluster connection needed, safe on every node
               snapshot     Aeron's cluster snapshot; not supported (see request-snapshot)

@@ -55,7 +55,7 @@ import uk.co.real_logic.sbe.otf.OtfMessageDecoder;
  * <p>Every valid recording is dumped by default, and a node restart mints a new queue recording, so the
  * output repeats history; pass a stream id to select. See {@link #scanAndDumpLog()}. A group's queue prints from its
  * recording where the archive keeps one, a gateway host's, and is otherwise derived from the archive's Raft log, as a
- * member's Replayer derives it (doc/disk-load-plan.md, step 2a).
+ * member's Replayer derives it.
  */
 public class SbeLogPrinter {
     /** Where every module stages its {@code .sbeir} files: package-less, since contributors are not seqeron's. */

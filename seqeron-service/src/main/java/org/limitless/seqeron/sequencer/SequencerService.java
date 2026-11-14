@@ -42,10 +42,10 @@ import org.limitless.seqeron.util.Logger;
  * comes back on this node's queues, one per group. It holds no replicated state.
  *
  * <p>Every node publishes its own queues and records none: its Replayer derives a queue's history from the log
- * (doc/disk-load-plan.md, step 2a). Each queue's publication and drain are created once, when the log activates the
+ *. Each queue's publication and drain are created once, when the log activates the
  * groups (§7.4), and span every leader tenure.
  *
- * <p>A cluster snapshot is also an application round (doc/snapshot.md §10.8): {@link #onTakeSnapshot} publishes the
+ * <p>A cluster snapshot is also an application round: {@link #onTakeSnapshot} publishes the
  * round's marker on every queue and writes the {@link Sequencer}'s state, and {@link #onStart} restores that state and
  * starts each queue again at the cut. It is refused while no {@code <snapshots>} policy is loaded, and recovery is then
  * full-log replay.
@@ -181,8 +181,7 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Restores the {@link Sequencer} from the snapshot, then starts each queue again at the cut (doc/snapshot.md
-     * §10.3): the marker of the round is the queue's first frame.
+     * Restores the {@link Sequencer} from the snapshot, then starts each queue again at the cut: the marker of the round is the queue's first frame.
      */
     private void restore(final Image snapshotImage) {
         final RuntimeException[] failure = {null};
@@ -355,7 +354,7 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Asks the cluster for a snapshot while a round is due and this node leads (doc/snapshot.md §10.2). The consensus
+     * Asks the cluster for a snapshot while a round is due and this node leads. The consensus
      * module reads its toggle only on the leader, outside an election, so a request set elsewhere would wait and take an
      * extra snapshot once that member leads; and it switches only from neutral, by compare-and-set, so a request that
      * meets an operator's or one in progress fails and is made again at the next callback.
@@ -373,7 +372,7 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * A cluster snapshot, which is an application round (doc/snapshot.md §10.8): the {@link Sequencer} publishes the
+     * A cluster snapshot, which is an application round: the {@link Sequencer} publishes the
      * round's marker on every queue, then its state is written, which acks. Nothing waits for an application. Refused
      * while no {@code <snapshots>} policy is loaded, so a cluster without one keeps its full-log replay.
      *
@@ -387,7 +386,7 @@ public final class SequencerService implements ClusteredService {
         if (!sequencer.hasSnapshotPolicy()) {
             throw new IllegalStateException(
                 "[SequencerService] Refusing to take a snapshot: no <snapshots> policy is loaded, so recovery is "
-                + "full-log replay from clusterSeqNo 1 (doc/snapshot.md §10.2). Load a topology with <snapshots>.");
+                + "full-log replay from clusterSeqNo 1. Load a topology with <snapshots>.");
         }
         final long logPosition = cluster.logPosition();
         final boolean live = !safeLog.isCut(logPosition);

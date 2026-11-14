@@ -10,7 +10,7 @@ import org.limitless.seqeron.replayer.client.SnapshotRestoreHandler;
 import org.limitless.seqeron.replayer.client.SnapshotStore;
 
 /**
- * A façade's side of snapshot rounds, with no Aeron in it (doc/snapshot.md §4): serialize at the cut into this
+ * A façade's side of snapshot rounds, with no Aeron in it: serialize at the cut into this
  * instance's own file, submit the round's {@code SnapshotEnd} if this instance may publish, and compare the
  * source's sequenced {@code SnapshotEnd} with what this instance serialized (A-7). The façade feeds it the frames
  * and drives {@link #submit} from its duty cycle; every outcome is the façade's to act on.

@@ -53,7 +53,7 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
     private long applied;
     private long rejected;
 
-    /** Fenced, restart me: this repository's convention (doc/ops.md). */
+    /** Fenced, restart me: this repository's convention. */
     private static final int EXIT_FENCED = 70;
 
     private final MutableDirectBuffer transfer = new UnsafeBuffer(new byte[TRANSFER_LENGTH]);

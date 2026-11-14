@@ -89,7 +89,7 @@ public static class SeqeronCounters
     public const int ReplayerArchiveErrorsCountTypeId = 5111;
 
     // Co-located application replicas (5200-5299). Core reserves 5200 and 5297-5299; a consumer allocates its own
-    // in 5201-5296 (doc/ops.md, "Counter type ids").
+    // in 5201-5296.
 
     /// <summary>First type id of the app range: core reserves <see cref="AppRecoveryStalledTypeId"/>,
     /// <see cref="HostedLagTypeId"/>, <see cref="AppSnapshotRoundTypeId"/> and <see cref="GatewayConnectionsTypeId"/>
@@ -107,7 +107,7 @@ public static class SeqeronCounters
     /// applied one.</summary>
     public const int HostedLagTypeId = 5297;
 
-    /// <summary>The last snapshot round a participating client confirmed (doc/snapshot.md §4), 0 for none
+    /// <summary>The last snapshot round a participating client confirmed, 0 for none
     /// yet.</summary>
     public const int AppSnapshotRoundTypeId = 5298;
 

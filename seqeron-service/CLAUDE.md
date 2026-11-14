@@ -79,7 +79,7 @@ replaces every older one but the confirmed round before it. A starting client re
 newest confirmed file whose records match its trailer once a replay from the file's cut position opens on that cut —
 a file from a purged log fails it — then resumes after the cut; an instance with no such file replays its queue from `groupSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
 
-**A member records no queue** (`doc/disk-load-plan.md`, step 2a). Its Replayer is a `DerivingReplayer`, which
+**A member records no queue** (`doc/plans/disk-load-plan.md`, step 2a). Its Replayer is a `DerivingReplayer`, which
 derives each queue from the Raft log's recording, read from the archive's segment files (`RecordingReader`) up to
 the commit position: a `LogFollower` runs a `LogDeriver` over the log once from the service's `DerivationStart`
 and keeps a checkpoint every 8 MiB (its rules unit-tested over segment files `LogFollowerTest` writes), and a

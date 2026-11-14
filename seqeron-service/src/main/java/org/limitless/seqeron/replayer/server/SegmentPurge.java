@@ -3,7 +3,7 @@ package org.limitless.seqeron.replayer.server;
 import io.aeron.archive.client.AeronArchive;
 
 /**
- * Where an archive recording may be purged to (doc/snapshot.md §10.6). {@code purgeSegments} takes a segment boundary
+ * Where an archive recording may be purged to. {@code purgeSegments} takes a segment boundary
  * at or past the end of the recording's first segment, and nothing else.
  */
 public final class SegmentPurge {

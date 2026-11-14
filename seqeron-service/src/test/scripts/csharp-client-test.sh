@@ -17,11 +17,11 @@
 #                                                                            follow FAILED
 #
 # and no member logs a rejected ingress frame. D SIGKILLs the leader, as FailoverProcessTest does, so the run costs
-# what a crash does (doc/fault-tolerance.md §1.2). Its control reports what the kill cost; like FailoverProcessTest's,
+# what a crash does. Its control reports what the kill cost; like FailoverProcessTest's,
 # it is not asserted, since a kill can land between two frames.
 #
 # Needs the uber jar and the .NET SDK (`dotnet`, or DOTNET naming one). Run it on every Aeron upgrade: the C#
-# client is on Aeron.NET, which trails Java (doc/seqeron-protocol-spec.md, V-1).
+# client is on Aeron.NET, which trails Java.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
