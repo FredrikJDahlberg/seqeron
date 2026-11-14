@@ -171,7 +171,8 @@ class SbeLogPrinterTest {
     @DisplayName("a stream no recording is on dumps nothing and says so")
     void anAbsentStreamIsNotDumped() throws IOException {
         final Dump dump = dump(archiveDir, 4242, SbeLogPrinter.NO_QUEUE, true);
-        assertFalse(dump.dumped() && dump.count("[Catalog]") > 0, dump.stdout());
+        assertFalse(dump.dumped(), dump.stdout());
+        assertEquals(0, dump.count("[Catalog]"));
         assertEquals(0, dump.count("ProbeMarker"));
     }
 

@@ -572,11 +572,6 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         sendAttached(clientId, requestId, Refusal.NONE);
     }
 
-    /** True from the Attached that accepted a client until its attachment ends. */
-    private boolean connectionOrLive() {
-        return live;
-    }
-
     /**
      * H-8: the façade is built only once the client's subscription has connected to the events publication, so every
      * callback, the restore included, has a reader. A façade that cannot reach the cluster in {@link #CONNECT_ATTEMPTS}

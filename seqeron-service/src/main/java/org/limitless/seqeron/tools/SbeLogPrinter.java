@@ -564,27 +564,26 @@ public class SbeLogPrinter {
             final long fileLength = channel.size();
             final ByteBuffer byteBuffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileLength);
             final UnsafeBuffer catalogBuffer = new UnsafeBuffer(byteBuffer);
-            processFile(fileLength, catalogBuffer);
+            return processFile(fileLength, catalogBuffer);
         } catch (Exception error) {
             System.err.println("Failed parsing catalog file: " + error.getMessage());
             return false;
         }
-        return true;
     }
 
-    private void processFile(final long fileLength, final UnsafeBuffer buffer) {
+    /** @return whether a recording was dumped or a queue derived */
+    private boolean processFile(final long fileLength, final UnsafeBuffer buffer) {
         if (NO_QUEUE != queueGroupId) {
-            printQueue(fileLength, buffer);
-            return;
+            return printQueue(fileLength, buffer);
         }
         if (NO_STREAM_FILTER != streamIdFilter) {
             final int selectedOffset = newestRecording(fileLength, buffer, streamIdFilter);
             if (selectedOffset < 0) {
                 System.err.println("No valid recording on stream " + streamIdFilter + " found in catalog.");
-                return;
+                return false;
             }
             dumpRecording(descriptor(buffer, selectedOffset));
-            return;
+            return true;
         }
         int offset = CATALOG_HEADER_LENGTH;
         boolean found = false;
@@ -608,6 +607,7 @@ public class SbeLogPrinter {
         if (!found) {
             System.err.println("No valid recordings found in catalog.");
         }
+        return found;
     }
 
     /** The descriptor offset of the newest valid recording on {@code streamId}, or -1 if there is none. */
@@ -644,18 +644,19 @@ public class SbeLogPrinter {
      * Prints group {@link #queueGroupId}'s queue: its newest recording if the archive keeps one, as a gateway host's
      * does, else derived from the archive's Raft log from the member's last announced start. A running member's log
      * is read to its end, which can hold entries not yet committed.
+     * @return whether it found a recording to print, or a log to derive the queue from
      */
-    private void printQueue(final long fileLength, final UnsafeBuffer catalog) {
+    private boolean printQueue(final long fileLength, final UnsafeBuffer catalog) {
         final int recorded = newestRecording(fileLength, catalog, FrameLayer.queueStreamId(queueGroupId));
         if (recorded >= 0) {
             dumpRecording(descriptor(catalog, recorded));
-            return;
+            return true;
         }
         final int log = newestRecording(fileLength, catalog, ConsensusModule.Configuration.logStreamId());
         if (log < 0) {
             System.err.println("No recording of group " + queueGroupId + "'s queue, and no Raft log to derive it " +
                                "from, found in catalog.");
-            return;
+            return false;
         }
         final int announcements = newestRecording(fileLength, catalog, DerivationAnnouncement.STREAM_ID);
         final DerivationAnnouncement announcement =
@@ -666,7 +667,7 @@ public class SbeLogPrinter {
         if (from < logStart) {
             System.err.println("The Raft log's recording starts at " + logStart + ", past the derivation's start at " +
                                from + (announcement == null ? ": the member announced none." : "."));
-            return;
+            return false;
         }
         text.printf("[Derived] Group %d's queue from the Raft log | Recording ID: %d | From Log Pos: %d%n",
                     queueGroupId, descriptorDecoder.recordingId(), from);
@@ -698,6 +699,7 @@ public class SbeLogPrinter {
         } finally {
             messages = this::printMessage;
         }
+        return true;
     }
 
     /** Every whole message of a recording, copied. */

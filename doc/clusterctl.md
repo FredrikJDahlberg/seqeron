@@ -82,17 +82,17 @@ signalled separately: a follower stopped on its own may not yet have applied `Cl
 to a `SequencerServer` is itself clean, since it runs the same shutdown, but it is not ordered against the
 marker, so a supervisor should not send it to a follower during a `clusterctl shutdown`.
 
-**Why `ABORT` and not `SHUTDOWN`.** Aeron's `SHUTDOWN` takes a cluster snapshot before stopping, and the
-next start would recover from that snapshot instead of replaying the log. The cluster never snapshots:
-replaying from `clusterSeqNo` 1 is what keeps every member's recording complete
-([`fault-tolerance.md`](fault-tolerance.md) §0). `ABORT` takes none. Aeron's default termination hook does
-nothing, which would leave `SequencerServer` waiting after the consensus module stopped, so
-`SequencerServer` sets it to release its shutdown barrier. On `ABORT` every member then closes its archive
-through the normal shutdown path, and `SequencerService.onTerminate` closes the queue publications, giving
-each recording a valid stop position.
+**Why `ABORT` and not `SHUTDOWN`.** Aeron's `SHUTDOWN` takes a cluster snapshot before stopping. Without a
+`<snapshots>` policy the service refuses it ([`fault-tolerance.md`](fault-tolerance.md) §0); with one it is a
+round no application confirms before its member stops, so the next start invalidates it as not restart-safe
+([`snapshot.md`](snapshot.md) §10.8). `ABORT` takes none. Aeron's default termination hook does nothing,
+which would leave `SequencerServer` waiting after the consensus module stopped, so `SequencerServer` sets it
+to release its shutdown barrier. On `ABORT` every member then closes its archive through the normal shutdown
+path, which gives the Raft log's recording a valid stop position, and `SequencerService.onTerminate` closes
+the queue publications.
 
-After a shutdown every member's archive holds the same queues (spec **F-2**), one per group, and
-`sbe-log-printer.sh` reads them offline, one queue at a time.
+After a shutdown every member's archive holds the same Raft log, from which each derives the same queues
+(spec **F-2**), and `sbe-log-printer.sh --queue` derives one offline.
 
 ### activate
 

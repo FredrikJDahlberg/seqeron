@@ -210,6 +210,33 @@ class MetricsExporterTest {
         assertThrows(Exception.class, () -> MetricsExporter.scrape(aeronDir, MEMBER));
     }
 
+    @Test
+    @DisplayName("two app counter type ids whose labels name one metric share one header")
+    void appCountersNamingOneMetricShareOneHeader() {
+        counters
+            .newCounter("myapp.orders member=1 client=3", SeqeronCounters.APP_TYPE_ID_MIN + 42,
+                        keyBuffer -> {
+                            keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, MEMBER);
+                            keyBuffer.putInt(SeqeronCounters.KEY_CLIENT_ID_OFFSET, 3);
+                        })
+            .set(7);
+        counters
+            .newCounter("myapp-orders member=1 client=4", SeqeronCounters.APP_TYPE_ID_MIN + 43,
+                        keyBuffer -> {
+                            keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, MEMBER);
+                            keyBuffer.putInt(SeqeronCounters.KEY_CLIENT_ID_OFFSET, 4);
+                        })
+            .set(8);
+
+        final String body = new MetricsExporter(counters, MEMBER).renderMetrics();
+
+        // Prometheus refuses a whole scrape that declares one metric twice.
+        assertEquals(1, count(body, "# HELP myapp_orders "), body);
+        assertEquals(1, count(body, "# TYPE myapp_orders "), body);
+        assertTrue(body.contains("myapp_orders{member=\"1\",client=\"3\"} 7"), body);
+        assertTrue(body.contains("myapp_orders{member=\"1\",client=\"4\"} 8"), body);
+    }
+
     private void addCounter(final int typeId, final int memberId, final long value) {
         counters.newCounter("seqeron member=" + memberId, typeId,
                             keyBuffer -> keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, memberId))

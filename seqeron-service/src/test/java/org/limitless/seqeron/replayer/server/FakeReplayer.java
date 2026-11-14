@@ -75,6 +75,7 @@ final class FakeReplayer implements Replayer {
     private final Deque<byte[]> requests = new ArrayDeque<>();
     private final List<byte[]> controlReplies = new ArrayList<>();
     private long controlOfferResult = 1; // > 0 is a successful offer
+    private int controlOfferAttempts;
 
     private final Set<Long> endedReplays = new HashSet<>();
     private final Map<Long, Long> replayProgress = new HashMap<>();
@@ -271,6 +272,11 @@ final class FakeReplayer implements Replayer {
         controlOfferResult = result;
     }
 
+    /** How many control offers were made, refused ones included. */
+    int controlOfferAttempts() {
+        return controlOfferAttempts;
+    }
+
     void advanceMillis(final long millis) {
         monotonicMs += millis;
     }
@@ -416,6 +422,7 @@ final class FakeReplayer implements Replayer {
 
     @Override
     public long offerControl(final DirectBuffer buffer, final int offset, final int length) {
+        controlOfferAttempts++;
         if (controlOfferResult < 0) {
             return controlOfferResult;
         }

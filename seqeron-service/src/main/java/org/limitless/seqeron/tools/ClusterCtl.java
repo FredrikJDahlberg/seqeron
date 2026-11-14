@@ -149,7 +149,8 @@ public final class ClusterCtl {
             usage();
             break;
         case "snapshot":
-            System.out.println("[clusterctl] snapshot: command is not supported.");
+            System.err.println("[clusterctl] snapshot: command is not supported; request-snapshot starts a round");
+            System.exit(2);
             break;
         case "start":
             System.exit(start());

@@ -165,6 +165,9 @@ public final class DerivingReplayer implements Replayer {
     @Override
     public long startReplay(final long recordingId, final long position, final long length, final int streamId) {
         final Queue queue = queueOf(recordingId);
+        if ((position & (FrameDescriptor.FRAME_ALIGNMENT - 1)) != 0) {
+            throw new IllegalArgumentException("position " + position + " is not on a frame boundary");
+        }
         final long from = runAt(queue, position);
         final int termId = (int)(position >> Integer.numberOfTrailingZeros(queue.termLength()));
         final ExclusivePublication publication = aeron.addExclusivePublication(

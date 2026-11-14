@@ -89,9 +89,6 @@ public final class Sequencer implements SequencerSnapshot {
      */
     public static final int NO_SOURCE_ID = -1;
 
-    /** No gateway instance. */
-    private static final int NO_GATEWAY_ID = -1;
-
     /** The gateway maps' missing value: no int32 id equals it, so no id can be refused as one. */
     private static final long NO_BINDING = Long.MIN_VALUE;
 
@@ -465,7 +462,8 @@ public final class Sequencer implements SequencerSnapshot {
         final long key;
         switch (systemEventType) {
             case SystemFrame.GROUPS_REGISTERED -> key = (long)systemEventType << 32;
-            case SystemFrame.GATEWAY_REGISTERED -> key = (long)systemEventType << 32 | gatewayRegisteredDecoder.gatewayId();
+            case SystemFrame.GATEWAY_REGISTERED ->
+                key = (long)systemEventType << 32 | gatewayRegisteredDecoder.gatewayId() & 0xFFFFFFFFL;
             case SystemFrame.APPLICATION_REGISTERED ->
                 key = (long)systemEventType << 32 | applicationRegisteredDecoder.applicationSourceId() & 0xFFFFFFFFL;
             default -> {
@@ -737,9 +735,9 @@ public final class Sequencer implements SequencerSnapshot {
         stampSynthesized(clusterHeartbeatEncoder.header(), SystemFrame.CLUSTER_HEARTBEAT, clusterSeq, timestamp);
         publishSynthesized(MessageHeaderEncoder.ENCODED_LENGTH + clusterHeartbeatEncoder.encodedLength());
 
-        int overdue;
-        while ((overdue = takeOverdueActivation(timestamp)) != NO_GATEWAY_ID) {
-            handOverUnansweredActivation(overdue, timestamp);
+        PendingActivation overdue;
+        while ((overdue = takeOverdueActivation(timestamp)) != null) {
+            handOverUnansweredActivation(overdue.gatewayId(), timestamp);
         }
         if (snapshotIntervalNs > 0 && timestamp - lastSnapshotStart >= snapshotIntervalNs ||
             snapshotIntervalNs != NO_SNAPSHOT_POLICY && snapshotBytes > 0 && bytesSinceSnapshot >= snapshotBytes) {
@@ -867,8 +865,8 @@ public final class Sequencer implements SequencerSnapshot {
             !isDesignated((int)closedGatewayId)) {
             return false; // a replaced binding's or a superseded instance's close takes the role from no one
         }
-        final int promoted = promotionTarget((int)closedGatewayId);
-        if (promoted == NO_GATEWAY_ID) {
+        final GatewayRow promoted = promotionTarget((int)closedGatewayId);
+        if (promoted == null) {
             gatewayPromotionFailedCount++;
             Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
                          "gateway instance %d's session closed with no standby to promote — this logical "
@@ -876,7 +874,7 @@ public final class Sequencer implements SequencerSnapshot {
                          closedGatewayId, clusterSeqNo);
             return false;
         }
-        promote(promoted, timestamp);
+        promote(promoted.gatewayId, timestamp);
         return true;
     }
 
@@ -889,8 +887,8 @@ public final class Sequencer implements SequencerSnapshot {
      * @param timestamp  now
      */
     private void handOverUnansweredActivation(final int designated, final long timestamp) {
-        final int promoted = promotionTarget(designated);
-        if (promoted == NO_GATEWAY_ID) {
+        final GatewayRow promoted = promotionTarget(designated);
+        if (promoted == null) {
             gatewayPromotionFailedCount++;
             Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
                          "gateway instance %d never declared itself started within %dms and has no sibling to "
@@ -902,8 +900,8 @@ public final class Sequencer implements SequencerSnapshot {
         Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayActivationTimeout, memberId,
                      "gateway instance %d never declared itself started within %dms of being designated — "
                          + "handing the role to instance %d",
-                     designated, GATEWAY_ACTIVATION_TIMEOUT_MS, promoted);
-        promote(promoted, timestamp);
+                     designated, GATEWAY_ACTIVATION_TIMEOUT_MS, promoted.gatewayId);
+        promote(promoted.gatewayId, timestamp);
     }
 
     /** Publishes the {@code GatewayActive} that hands a logical gateway's role to {@code gatewayId}. */
@@ -913,12 +911,12 @@ public final class Sequencer implements SequencerSnapshot {
     }
 
     /**
-     * Removes and returns the first overdue, unanswered activation, or {@link #NO_GATEWAY_ID}. Overdue ones
+     * Removes and returns the first overdue, unanswered activation, or null. Overdue ones
      * that were answered are dropped as resolved. Removed before the caller acts, so the resulting
      * {@code gatewayActive} cannot re-enter {@link #pendingActivations} mid-iteration.
      * @param timestamp now
      */
-    private int takeOverdueActivation(final long timestamp) {
+    private PendingActivation takeOverdueActivation(final long timestamp) {
         for (final java.util.Iterator<PendingActivation> it = pendingActivations.iterator(); it.hasNext(); ) {
             final PendingActivation pending = it.next();
             if (timestamp < pending.deadline()) {
@@ -926,22 +924,22 @@ public final class Sequencer implements SequencerSnapshot {
             }
             it.remove();
             if (rowFor(pending.gatewayId()).boundSession == NO_BINDING) {
-                return pending.gatewayId();
+                return pending;
             }
         }
-        return NO_GATEWAY_ID;
+        return null;
     }
 
     /**
-     * The instance to hand over to when {@code closedGatewayId} goes away: the lowest-rank other instance
-     * of the same logical gateway, ties broken by log order, or {@link #NO_GATEWAY_ID}. A {@code gatewayId},
-     * never a {@code gatewaySourceId}, which both instances of a pair share.
+     * The instance to hand over to when {@code closedGatewayId} goes away: the row of the lowest-rank other
+     * instance of the same logical gateway, ties broken by log order, or null. A promotion names its
+     * {@code gatewayId}, never the {@code gatewaySourceId}, which both instances of a pair share.
      * @param closedGatewayId the instance that went away
      */
-    private int promotionTarget(final int closedGatewayId) {
+    private GatewayRow promotionTarget(final int closedGatewayId) {
         final GatewayRow closed = rowFor(closedGatewayId);
         if (closed == null) {
-            return NO_GATEWAY_ID;
+            return null;
         }
         GatewayRow best = null;
         for (final GatewayRow row : gatewayRows) {
@@ -950,7 +948,7 @@ public final class Sequencer implements SequencerSnapshot {
                 best = row;
             }
         }
-        return best == null ? NO_GATEWAY_ID : best.gatewayId;
+        return best;
     }
 
     /** Records a Gateway row, updating any earlier row for the same {@code gatewayId} in place. */
@@ -1415,7 +1413,7 @@ public final class Sequencer implements SequencerSnapshot {
             case SystemFrame.GATEWAY_REGISTERED -> {
                 gatewayRegisteredDecoder.wrap(buffer, body, GatewayRegisteredDecoder.BLOCK_LENGTH,
                                               MessageHeaderDecoder.SCHEMA_VERSION);
-                yield (long)systemEventType << 32 | gatewayRegisteredDecoder.gatewayId();
+                yield (long)systemEventType << 32 | gatewayRegisteredDecoder.gatewayId() & 0xFFFFFFFFL;
             }
             case SystemFrame.APPLICATION_REGISTERED -> {
                 applicationRegisteredDecoder.wrap(buffer, body, ApplicationRegisteredDecoder.BLOCK_LENGTH,

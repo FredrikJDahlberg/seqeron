@@ -5,6 +5,7 @@ import static io.aeron.Aeron.NULL_VALUE;
 import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.ArchiveException;
 import io.aeron.logbuffer.FragmentHandler;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -605,7 +606,7 @@ public final class ReplayerService {
         try {
             serveReplay(clientId, requestId, fromPosition, queueId, cutClusterSeqNo);
         } catch (final RuntimeException error) {
-            if (!fromStart && archiveAnswers(queueId)) {
+            if (!fromStart && refusesPosition(error, queueId)) {
                 rejectResume(clientId, requestId, "archive refused it: " + error.getMessage());
                 return;
             }
@@ -614,6 +615,15 @@ public final class ReplayerService {
                            error);
             sendPending(clientId, requestId);
         }
+    }
+
+    /**
+     * Whether a replay failed on its position rather than on an outage: the {@link Replayer} does not hold it, or the
+     * archive refused it and still answers. Anything else, such as a driver that cannot add a publication, is held.
+     */
+    private boolean refusesPosition(final RuntimeException error, final int queueId) {
+        return error instanceof IllegalArgumentException ||
+            error instanceof ArchiveException && archiveAnswers(queueId);
     }
 
     /** Whether the local archive still answers at all — what separates a bad request from an outage. */
@@ -843,7 +853,8 @@ public final class ReplayerService {
 
     /**
      * Offers one control reply, dropping it at {@link #MAX_CONTROL_OFFER_SPINS} rather than spinning without
-     * bound. Safe, unlike on the queue: the app resends on a timer, so a drop costs one resend interval.
+     * bound, and at once while nothing subscribes, since nobody could read it. Safe, unlike on the queue: the app
+     * resends on a timer, so a drop costs one resend interval.
      * @param length encoded length
      */
     private void offerControl(final int length) {
@@ -853,10 +864,11 @@ public final class ReplayerService {
             if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
                 throw new IllegalStateException("[ReplayerService] control publication failed: " + result);
             }
+            if (result == ExclusivePublication.NOT_CONNECTED) {
+                return;
+            }
             if (++spins > MAX_CONTROL_OFFER_SPINS) {
-                if (result != ExclusivePublication.NOT_CONNECTED) {
-                    onControlReplyDropped(result);
-                }
+                onControlReplyDropped(result);
                 return;
             }
             idleStrategy.idle();
