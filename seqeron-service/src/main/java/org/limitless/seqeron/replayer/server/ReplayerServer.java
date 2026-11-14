@@ -30,14 +30,14 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p><b>On a cluster member</b> it runs inside {@code SequencerServer}, which starts it with {@link #launch}: it
  * attaches to the member's embedded media driver to reach that member's archive over {@code aeron:ipc}, and
- * serves replays from it regardless of leadership. Its topology rows come from the member's sequencer, which
- * hands each over once as it publishes it; they are not handed over again, so this lives exactly as long as
- * that sequencer.
+ * serves replays derived from the member's Raft log there ({@link DerivingReplayer}) regardless of leadership. Its
+ * topology rows come from the member's sequencer, which hands each over once as it publishes it; they are not handed
+ * over again, so this lives exactly as long as that sequencer.
  *
  * <p><b>On a gateway host</b>, one that runs no member, {@link #main} runs it on its own media driver and
- * archive, and an {@link AeronQueueRelay} per group it relays copies a member's queue of that group onto a local
- * one over UDP, moving to the next member when that one is lost. Clients on the host use the local queues and
- * this Replayer exactly as they would on a member; they submit over UDP ingress.
+ * archive, and an {@link AeronLogRelay} derives the queues of the groups it relays from a member's log, over UDP, onto
+ * local ones, which the local archive records, moving to the next member when that one is lost. Clients on the host use
+ * the local queues and this Replayer exactly as they would on a member; they submit over UDP ingress.
  *
  * <p>System properties of {@link #main}:
  * <pre>
@@ -53,17 +53,16 @@ import org.limitless.seqeron.util.Logger;
  *   replayer.snapshotJoinMs    — how long after a cut an application or gateway has to join its round; default 10s
  *   replayer.queueStallTimeoutMs — how long a relayed queue's local recording may make no progress under
  *                                back-pressure before the host terminates; default 5000, at least 1000
- *                                (doc/ops.md, "A node that terminates itself")
  *   replayer.host              — this host's name as the members reach it; default localhost
  *   replayer.baseDir           — data directory root; default {tmpdir}/seqeron-seq
  *   proxy.hosts                — hosted façades this process runs beside the Replayer, as ClientProxy's
  *                                proxy.hosts, with proxy.memberId, proxy.aeronDir and proxy.egressHost defaulting
  *                                to this host's and proxy.offCluster to true; a host that throws stops this
  *                                process as a fatal duty cycle does
- *   aeron.threading.mode       — the driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
- *   aeron.ipc.term.buffer.length — the driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
+ *   aeron.threading.mode       — the driver's threading mode; default DEDICATED
+ *   aeron.ipc.term.buffer.length — the driver's IPC term length; default 16m
  *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
- *                                10ms, 100ms, 100ms (doc/ops.md, "Untethered subscribers")
+ *                                10ms, 100ms, 100ms
  * </pre>
  *
  * <p>Launch example (gateway host 3, members on m0/m1/m2):
@@ -86,13 +85,8 @@ public final class ReplayerServer {
     private static final String PROP_GROUPS = "replayer.groups";
     private static final String PROP_SNAPSHOT_JOIN_MS = "replayer.snapshotJoinMs";
     private static final String PROP_QUEUE_STALL_TIMEOUT_MS = "replayer.queueStallTimeoutMs";
-    /**
-     * Prototype: a member records no queue and serves its replays off the Raft log ({@link DerivingReplayer}), and a
-     * gateway host derives its queues from such a member's log ({@link AeronLogRelay}).
-     */
-    public static final String PROP_DERIVE_FROM_LOG = "replayer.deriveFromLog";
 
-    /** Above a member's, since a host's purge cannot be undone (doc/snapshot.md §10.6). */
+    /** Above a member's, since a host's purge cannot be undone. */
     static final long DEFAULT_SNAPSHOT_JOIN_MS = 10_000;
 
     /**
@@ -105,8 +99,7 @@ public final class ReplayerServer {
     private final ArchivingMediaDriver driver;
     private final Aeron aeron;
     private final AeronArchive archive;
-    private final List<AeronQueueRelay> relays;
-    /** A gateway host's one relay when its members record no queue, in place of {@link #relays}. */
+    /** A gateway host's relay; null on a member. */
     private final AeronLogRelay logRelay;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final Thread replayerThread;
@@ -186,7 +179,7 @@ public final class ReplayerServer {
 
     /**
      * The hosted façades' {@code proxy.*} properties on this gateway host: its node id, Aeron directory and name unless
-     * set, and an {@code Application} off the cluster (doc/hosted-facade.md §2, question 4).
+     * set, and an {@code Application} off the cluster.
      */
     static Properties hostProperties(final GatewayHostConfig config) {
         final Properties properties = new Properties();
@@ -263,7 +256,7 @@ public final class ReplayerServer {
     }
 
     /**
-     * As above, tracking the cluster snapshots the member takes (doc/snapshot.md §10.8).
+     * As above, tracking the cluster snapshots the member takes.
      *
      * @param cutIntake the cuts the member hands over, its {@code restart-safe.log} and the join window; null to
      *                  track none
@@ -280,8 +273,8 @@ public final class ReplayerServer {
      * only: a Replayer that fails or stalls on cue.
      *
      * @param wrapper         decorates the node's Replayer
-     * @param derivationStart where the member's service started, or null until it has: what {@link
-     *                        #PROP_DERIVE_FROM_LOG} derives from
+     * @param derivationStart where the member's service started, or null until it has: what its replays derive
+     *                        from
      * @param archiveDir      the member's archive directory, where that reads the log's segment files
      */
     public static ReplayerServer launch(final int memberId, final String aeronDir,
@@ -314,34 +307,21 @@ public final class ReplayerServer {
             .lock(NoOpLock.INSTANCE));
 
         final IdleStrategy idleStrategy = idleStrategies.get();
-        relays = new ArrayList<>();
         int relayedGroups = QueueResolver.EVERY_GROUP;
-        final boolean derive = Boolean.getBoolean(PROP_DERIVE_FROM_LOG);
         if (archiveEndpoints != null) {
             relayedGroups = 0;
             for (final int groupId : groups) {
                 relayedGroups |= 1 << (groupId - 1);
             }
         }
-        logRelay = archiveEndpoints != null && derive
-            ? new AeronLogRelay(aeron, archive, archiveEndpoints, host, memberId, groups, topologyRows, cutReports,
-                                idleStrategies.get(), fatalHandler, relayStallTimeoutMs)
-            : null;
-        if (archiveEndpoints != null && !derive) {
-            for (final int groupId : groups) {
-                // The lowest relayed queue is the host's default queue, and it alone feeds the resolver.
-                relays.add(new AeronQueueRelay(aeron, archive, archiveEndpoints, host, memberId, groupId,
-                                               relays.isEmpty() ? topologyRows : null, cutReports, idleStrategies.get(),
-                                               fatalHandler, relayStallTimeoutMs));
-            }
-        }
-        final IdleStrategy relayIdleStrategy = archiveEndpoints == null ? null : idleStrategies.get();
         if (archiveEndpoints == null) {
+            logRelay = null;
             relayThread = null;
-        } else if (logRelay != null) {
-            relayThread = new Thread(() -> logRelay.run(running, relayIdleStrategy), "relay-" + memberId);
         } else {
-            relayThread = new Thread(() -> AeronQueueRelay.run(relays, running, relayIdleStrategy), "relay-" + memberId);
+            logRelay = new AeronLogRelay(aeron, archive, archiveEndpoints, host, memberId, groups, topologyRows,
+                                         cutReports, idleStrategies.get(), fatalHandler, relayStallTimeoutMs);
+            final IdleStrategy relayIdleStrategy = idleStrategies.get();
+            relayThread = new Thread(() -> logRelay.run(running, relayIdleStrategy), "relay-" + memberId);
         }
         // The derivation needs the log from its first checkpoint, which only it knows, so the trim asks it.
         final DerivingReplayer[] deriving = { null };
@@ -350,7 +330,7 @@ public final class ReplayerServer {
             : new LogTrimmer(aeron, archive, memberId, cutIntake.log(),
                              () -> deriving[0] == null ? Long.MAX_VALUE : deriving[0].firstCheckpointLogPosition());
         final Replayer recorded = new AeronReplayer(aeron, archive, memberId, trimmer);
-        if (archiveEndpoints == null && derive) {
+        if (archiveEndpoints == null) {
             deriving[0] = new DerivingReplayer(recorded, aeron, archive, archiveDir, memberId, derivationStart);
         }
         final Replayer served = deriving[0] == null ? recorded : deriving[0];
@@ -380,7 +360,6 @@ public final class ReplayerServer {
         running.set(false);
         final boolean stopped = join(replayerThread) & (relayThread == null || join(relayThread));
         if (stopped) {
-            CloseHelper.quietCloseAll(relays);
             CloseHelper.quietClose(logRelay);
             archive.close();
             aeron.close();

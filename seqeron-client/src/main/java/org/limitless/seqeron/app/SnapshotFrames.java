@@ -8,7 +8,7 @@ import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
 
 /**
- * The frame of a round a façade publishes, its {@code SnapshotEnd} (doc/snapshot.md §4), under its {@code sourceId}
+ * The frame of a round a façade publishes, its {@code SnapshotEnd}, under its {@code sourceId}
  * and belonging to no connection. The C++ twin is {@code app/detail/SnapshotFrames.hpp}; keep the two in step.
  */
 final class SnapshotFrames implements SnapshotTaker.Actions {
@@ -40,8 +40,7 @@ final class SnapshotFrames implements SnapshotTaker.Actions {
     /** A refused end is this class's own bug, never a condition to wait out. */
     private static Publish placed(final Publish outcome) {
         if (outcome == Publish.Refused) {
-            throw new IllegalStateException("a SnapshotEnd the sequencer would reject "
-                                            + "(doc/seqeron-protocol-spec.md §9.2)");
+            throw new IllegalStateException("a SnapshotEnd the sequencer would reject");
         }
         return outcome;
     }

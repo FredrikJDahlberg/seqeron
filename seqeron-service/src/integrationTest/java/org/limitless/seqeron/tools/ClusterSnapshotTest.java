@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.aeron.archive.CatalogView;
+import io.aeron.cluster.ClusterControl;
 import io.aeron.cluster.RecordingLog;
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
@@ -27,6 +28,7 @@ import org.limitless.seqeron.replayer.server.RelayedCut;
 import io.aeron.Aeron;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.status.AtomicCounter;
 import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.GroupDirectory;
@@ -41,11 +43,10 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.server.Replayer;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /**
- * Cluster snapshots (doc/snapshot.md §10): a round is taken by the cluster's snapshot action, a member restarts from
+ * Cluster snapshots: a round is taken by the cluster's snapshot action, a member restarts from
  * the newest one it has marked restart-safe, and its queue starts again at the cut.
  */
 @ExtendWith(InterruptingTestCallback.class)
@@ -61,19 +62,15 @@ class ClusterSnapshotTest {
     private InProcessCluster cluster;
     private Boolean gatewayRow;
     private String joinMs;
-    private String deriveFromLog;
 
     @BeforeEach
     void remember() {
-        // Each test here sets the flag it runs with, whatever the suite's.
-        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         joinMs = System.getProperty(JOIN_PROPERTY);
         watcher.dataCollector().add(baseDir);
     }
 
     @AfterEach
     void stopCluster() {
-        restoreProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
         if (cluster != null) {
             cluster.close();
         }
@@ -120,24 +117,21 @@ class ClusterSnapshotTest {
         cluster.stop(member);
         cluster.start(member);
 
-        // The restarted member's queue is one recording, starting where its marker did, with the marker first.
-        List<QueueFrames.Span> spans;
-        do {
-            Tests.sleep(100);
-            spans = QueueFrames.recordings(cluster.aeronDir(member), InProcessCluster.GROUP_ID);
-        } while (spans.stream().noneMatch(span -> span.active() && span.startPosition() > 0));
-        final QueueFrames.Span restored = spans.stream().filter(QueueFrames.Span::active).findFirst().orElseThrow();
-        assertEquals(1, spans.size(), "the earlier run's recording is purged: " + spans);
-
+        // The restarted member's queue starts where its marker did, with the marker first.
+        for (int i = 0; i < 600 && listedStart(member) <= 0; i++) {
+            Tests.sleep(50);
+        }
+        final long start = listedStart(member);
+        assertTrue(start > 0, "the restarted member's queue does not start at a cut");
         final List<QueueFrames.Frame> first =
-            QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, restored.startPosition(), 3);
+            QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, start, 3);
         assertTrue(first.getFirst().system());
         assertEquals(SystemFrame.SNAPSHOT_STARTED, first.getFirst().systemEventType(), "the marker is its first frame");
         assertTrue(first.getFirst().groupSeqNo() > 1, "and it is not the first frame of the queue");
 
         // The leader holds the same frame at the same position: positions agree across members.
-        final List<QueueFrames.Frame> leaders = QueueFrames.readFrom(
-            cluster.aeronDir(leader), InProcessCluster.GROUP_ID, restored.startPosition(), 3);
+        final List<QueueFrames.Frame> leaders =
+            QueueFrames.readFrom(cluster.aeronDir(leader), InProcessCluster.GROUP_ID, start, 3);
         assertEquals(first, leaders, "the restored queue is the leader's from the cut");
 
         assertFalse(cluster.fatal(), "a member raised a fatal");
@@ -161,19 +155,56 @@ class ClusterSnapshotTest {
         cluster.stop(member);
         cluster.start(member);
 
-        // The launcher invalidated the snapshots, so the member replays from clusterSeqNo 1 into a new recording.
-        List<QueueFrames.Span> spans;
-        do {
-            Tests.sleep(100);
-            spans = QueueFrames.recordings(cluster.aeronDir(member), InProcessCluster.GROUP_ID);
-        } while (spans.stream().filter(QueueFrames.Span::active).count() != 1 || spans.size() < 2);
-        final QueueFrames.Span fresh = spans.stream().filter(QueueFrames.Span::active).findFirst().orElseThrow();
-        assertEquals(0, fresh.startPosition());
+        // The launcher invalidated the snapshots, so the member replays from clusterSeqNo 1.
+        for (int i = 0; i < 600 && listedStart(member) < 0; i++) {
+            Tests.sleep(50);
+        }
+        assertEquals(0, listedStart(member));
         final List<QueueFrames.Frame> own = QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, 0, 40);
         assertEquals(1, own.getFirst().groupSeqNo(), "the whole queue, from its first frame");
         assertEquals(own, QueueFrames.readFrom(cluster.aeronDir(leader), InProcessCluster.GROUP_ID, 0, 40),
                      "frame for frame what the leader holds, the replayed snapshot actions' markers included");
 
+        assertFalse(cluster.fatal(), "a member raised a fatal");
+        assertFalse(cluster.terminated(), "a member terminated");
+    }
+
+    /**
+     * Aeron's snapshot action reaches {@code onTakeSnapshot} whether or not a policy is loaded. Its refusal acks with
+     * no recording, which the consensus module takes as a failed snapshot: it records none and returns to active.
+     */
+    @Test
+    @InterruptAfter(120)
+    void aSnapshotToggledWithNoPolicyIsRefusedAndTheClusterSequencesOn() throws Exception {
+        watcher.ignoreErrorsMatching(s -> s.contains("Refusing to take a snapshot"));
+        watcher.ignoreErrorsMatching(s -> s.contains("failed to take snapshot"));
+        start("200", InProcessCluster.NO_SNAPSHOT_POLICY);
+        final int leader = cluster.awaitLeader();
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(leader)))) {
+            final AtomicCounter toggle = ClusterControl.findControlToggle(aeron.countersReader(), 0);
+            assertTrue(ClusterControl.ToggleState.SNAPSHOT.toggle(toggle), "the toggle was not neutral");
+            for (int i = 0; i < 600 && ClusterControl.ToggleState.get(toggle) != ClusterControl.ToggleState.NEUTRAL;
+                 i++) {
+                Tests.sleep(50);
+            }
+            assertEquals(ClusterControl.ToggleState.NEUTRAL, ClusterControl.ToggleState.get(toggle),
+                         "the snapshot action never completed");
+        }
+
+        final int member = (leader + 1) % InProcessCluster.MEMBERS;
+        try (ConfirmProducer producer = new ConfirmProducer(cluster.aeronDir(member), member, 100, 0)) {
+            while (!producer.isDrained() && !producer.isStalled()) {
+                producer.doWork();
+                Tests.yield();
+            }
+            assertTrue(producer.isDrained(), "the cluster stopped sequencing");
+        }
+        for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
+            try (RecordingLog log = new RecordingLog(baseDir.resolve("cluster-" + m).toFile(), false)) {
+                assertTrue(log.entries().stream().noneMatch(e -> e.type == RecordingLog.ENTRY_TYPE_SNAPSHOT),
+                           "member " + m + " recorded a snapshot");
+            }
+        }
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");
     }
@@ -199,13 +230,10 @@ class ClusterSnapshotTest {
             }
         }
 
-        List<QueueFrames.Span> spans;
-        do {
-            Tests.sleep(100);
-            spans = QueueFrames.recordings(cluster.aeronDir(member), InProcessCluster.GROUP_ID);
-        } while (spans.stream().filter(QueueFrames.Span::active).count() != 1);
-        final QueueFrames.Span restored = spans.stream().filter(QueueFrames.Span::active).findFirst().orElseThrow();
-        assertEquals(0, restored.startPosition(), "its positions are its own");
+        for (int i = 0; i < 600 && listedStart(member) < 0; i++) {
+            Tests.sleep(50);
+        }
+        assertEquals(0, listedStart(member), "its positions are its own");
 
         final List<QueueFrames.Frame> own = QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, 0, 3);
         assertEquals(SystemFrame.SNAPSHOT_STARTED, own.getFirst().systemEventType(), "the marker is still its first frame");
@@ -284,14 +312,13 @@ class ClusterSnapshotTest {
         cluster.stop(member);
         cluster.start(member);
 
-        List<QueueFrames.Span> spans;
-        do {
-            Tests.sleep(100);
-            spans = QueueFrames.recordings(cluster.aeronDir(member), InProcessCluster.GROUP_ID);
-        } while (spans.stream().noneMatch(span -> span.active() && span.startPosition() > 0));
-        final QueueFrames.Span restored = spans.stream().filter(QueueFrames.Span::active).findFirst().orElseThrow();
-        assertEquals(QueueFrames.readFrom(cluster.aeronDir(leader), InProcessCluster.GROUP_ID, restored.startPosition(), 3),
-                     QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, restored.startPosition(), 3),
+        for (int i = 0; i < 600 && listedStart(member) <= 0; i++) {
+            Tests.sleep(50);
+        }
+        final long start = listedStart(member);
+        assertTrue(start > 0, "the restarted member's queue does not start at a cut");
+        assertEquals(QueueFrames.readFrom(cluster.aeronDir(leader), InProcessCluster.GROUP_ID, start, 3),
+                     QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, start, 3),
                      "the member recovered and holds the leader's queue from the cut");
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");
@@ -351,12 +378,12 @@ class ClusterSnapshotTest {
         awaitSafe(member);
         cluster.stop(member);
         cluster.start(member);
-        while (QueueFrames.recordings(cluster.aeronDir(member), InProcessCluster.GROUP_ID).stream()
-                   .noneMatch(span -> span.active() && span.startPosition() > 0)) {
-            Tests.sleep(100);
+        for (int i = 0; i < 600 && listedStart(member) <= 0; i++) {
+            Tests.sleep(50);
         }
+        assertTrue(listedStart(member) > 0, "the restarted member's queue does not start at a cut");
 
-        // Its walk from the recording's start opens on the cut's marker, not on groupSeqNo 1.
+        // Its walk from the queue's start opens on the cut's marker, not on groupSeqNo 1.
         try (GatewayInstance gateway = new GatewayInstance(member)) {
             final RuntimeException failure = gateway.awaitFailure();
             assertTrue(failure.getMessage().contains("expected 1"), failure.getMessage());
@@ -541,8 +568,9 @@ class ClusterSnapshotTest {
         assertEquals(1, spans.size(), "a restarted host holds one recording: " + spans);
         final List<QueueFrames.Frame> frames = QueueFrames.readFrom(
             cluster.aeronDir(InProcessCluster.GATEWAY_HOST), InProcessCluster.GROUP_ID, spans.getFirst().startPosition(), 1);
+        // From the member's announced start, the checkpoint at or below its queue's start: with this little log, the
+        // log's own. A host's start above a trimmed log is aMemberTrimsItsLogAboveWhatItsQueuesNeedAndStartsAHost's.
         assertEquals(1, frames.size(), "it is readable from its start");
-        assertTrue(frames.getFirst().groupSeqNo() > 1, "which is the member's purged start, not its first frame");
         assertFalse(cluster.fatal(), "a member or the host raised a fatal");
     }
 
@@ -561,8 +589,9 @@ class ClusterSnapshotTest {
     }
 
     @Test
-    @InterruptAfter(240)
-    void aRelayDisconnectedWhileEveryMemberPurgedPastItStopsAndItsRestartRelaysFromTheirStart() throws Exception {
+    @InterruptAfter(300)
+    void aRelayDisconnectedWhileEveryMemberTrimmedItsLogPastItStopsAndItsRestartRelaysFromTheirStart()
+        throws Exception {
         // A member's archive checks a replay's start, then registers the replay once its publication exists; a purge
         // in between deletes the segment it starts in. So a relay asking from a member's start while the member
         // purges times out, and the archive logs the replay's error to the relay's control session (stream 122), gone.
@@ -580,18 +609,21 @@ class ClusterSnapshotTest {
             }
             Tests.sleep(4_000); // past its source timeout: it has left every member
 
-            try (ConfirmProducer producer = new ConfirmProducer(cluster.aeronDir(member), member, 1_500, 5_000_000, 1_000)) {
+            // A log segment is at least a term of the log, so the log's first is purged only once it is full.
+            try (ConfirmProducer producer =
+                     new ConfirmProducer(cluster.aeronDir(member), member, LOG_FRAMES, 0, LOG_FILLER)) {
                 while (!producer.isDrained() && !producer.isStalled()) {
                     producer.doWork();
                     Tests.yield();
                 }
                 assertTrue(producer.isDrained(), "the producer did not drain");
             }
+            awaitSafeRounds(member, safeLog(member).safe().size() + 2);
             for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
-                for (int i = 0; i < 1200 && memberStart(m) < SMALL_SEGMENT; i++) {
+                for (int i = 0; i < 1200 && firstTermStart(m) == 0; i++) {
                     Tests.sleep(50);
                 }
-                assertTrue(memberStart(m) >= SMALL_SEGMENT, "member " + m + " never purged past the relay");
+                assertTrue(firstTermStart(m) > 0, "member " + m + " never trimmed its log past the relay");
             }
 
             for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
@@ -609,10 +641,11 @@ class ClusterSnapshotTest {
             final List<QueueFrames.Span> spans =
                 QueueFrames.recordings(cluster.aeronDir(InProcessCluster.GATEWAY_HOST), InProcessCluster.GROUP_ID);
             assertEquals(1, spans.size(), "one recording: " + spans);
-            final List<QueueFrames.Frame> frames = QueueFrames.readFrom(
-                cluster.aeronDir(InProcessCluster.GATEWAY_HOST), InProcessCluster.GROUP_ID, spans.getFirst().startPosition(), 3);
-            assertEquals(3, frames.size());
-            assertTrue(frames.getFirst().groupSeqNo() > 1, "from the members' purged start, not the first frame");
+            final List<QueueFrames.Frame> relayed =
+                QueueFrames.readFrom(cluster.aeronDir(InProcessCluster.GATEWAY_HOST), InProcessCluster.GROUP_ID,
+                                     spans.getFirst().startPosition(), 3);
+            assertEquals(3, relayed.size());
+            assertTrue(relayed.getFirst().groupSeqNo() > 1, "from the members' announced start, not the first frame");
             for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
                 assertFalse(cluster.fatal(m), "member " + m + " raised a fatal");
             }
@@ -621,12 +654,6 @@ class ClusterSnapshotTest {
             restoreProperty(TERM_PROPERTY, term);
             restoreProperty(SEGMENT_PROPERTY, segment);
         }
-    }
-
-    /** The start of member {@code m}'s active recording of group 1's queue. */
-    private long memberStart(final int m) {
-        return QueueFrames.recordings(cluster.aeronDir(m), InProcessCluster.GROUP_ID)
-            .stream().filter(QueueFrames.Span::active).findFirst().orElseThrow().startPosition();
     }
 
     /**
@@ -662,15 +689,7 @@ class ClusterSnapshotTest {
 
     @Test
     @InterruptAfter(180)
-    void aGatewayRestartedOnAMemberThatRecordsNoQueueRestoresItsSnapshotOffTheLog() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
-        aGatewayRestartedOnItsMemberRestoresItsConfirmedSnapshotAndCatchesUp();
-    }
-
-    @Test
-    @InterruptAfter(180)
     void aMemberThatRecordsNoQueueRestartsAtItsCutAndAGatewayRestoresOnIt() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         gatewayRow = true;
         start("200", 1);
         final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
@@ -703,7 +722,6 @@ class ClusterSnapshotTest {
     @Test
     @InterruptAfter(240)
     void aMemberThatRecordsNoQueueMovesItsStartToTheCutsItsGatewayConfirmsAndServesFromThere() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         final String term = setProperty(TERM_PROPERTY, String.valueOf(SMALL_SEGMENT));
         try {
             gatewayRow = true;
@@ -738,33 +756,10 @@ class ClusterSnapshotTest {
         }
     }
 
-    @Test
-    @InterruptAfter(180)
-    void aGatewayHostThatDerivesItsQueuesReportsEachMarkerAtItsStartInItsOwnRecording() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
-        aGatewayHostRelayReportsEachMarkerAtItsStartInTheHostsOwnRecording();
-    }
-
-    @Test
-    @InterruptAfter(240)
-    void aGatewayHostThatDerivesItsQueuesPurgesThemBelowTheCutsItsGatewayConfirms() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
-        final long start = hostStartAfterTraffic(true, true);
-        assertTrue(start > 0, "the host's recording still starts at 0");
-        assertEquals(0, start % SMALL_SEGMENT, "and a purge leaves it at a segment boundary");
-        assertFalse(cluster.fatal(), "a member or the host raised a fatal");
-    }
-
     /** Enough frames of {@link #LOG_FILLER} bytes to carry the Raft log past its first segment of a 64 MiB term. */
     private static final int LOG_FRAMES = 90_000;
     private static final int LOG_FILLER = 1_000;
     private static final int LOG_TERM = 64 * 1024 * 1024;
-
-    @Test
-    @InterruptAfter(300)
-    void aMemberTrimsItsLogOnceItsCutsAreRestartSafeAndAGatewayRestoresOnIt() throws Exception {
-        aMemberTrimsItsLog(false);
-    }
 
     /**
      * The log still derives the queue from the start a purge moved it to, and the member has announced the checkpoint
@@ -772,12 +767,7 @@ class ClusterSnapshotTest {
      */
     @Test
     @InterruptAfter(300)
-    void aMemberThatRecordsNoQueueTrimsItsLogAboveWhatItsQueuesNeedAndStartsAHost() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
-        aMemberTrimsItsLog(true);
-    }
-
-    private void aMemberTrimsItsLog(final boolean startHost) throws Exception {
+    void aMemberTrimsItsLogAboveWhatItsQueuesNeedAndStartsAHost() throws Exception {
         final String segment = setProperty(SEGMENT_PROPERTY, String.valueOf(LOG_TERM));
         try {
             gatewayRow = true;
@@ -804,8 +794,7 @@ class ClusterSnapshotTest {
         }
         assertTrue(firstTermStart(member) > 0, "the member purged no segment of its log");
         assertEquals(0, trimLog(member), "a request finds the work done");
-        // A recording member's Replayer lists through its archive session, which is its own thread's alone.
-        assertTrue((startHost ? listedStart(member) : memberStart(member)) > 0, "the queue still starts at 0");
+        assertTrue(listedStart(member) > 0, "the queue still starts at 0");
 
         try (GatewayInstance restarted = new GatewayInstance(member)) {
             restarted.awaitCaughtUp();
@@ -814,9 +803,6 @@ class ClusterSnapshotTest {
         }
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");
-        if (!startHost) {
-            return;
-        }
 
         cluster.startGatewayHost();
         final String host = cluster.aeronDir(InProcessCluster.GATEWAY_HOST);
@@ -839,7 +825,6 @@ class ClusterSnapshotTest {
     @Test
     @InterruptAfter(180)
     void aGatewayHostThatDerivesItsQueuesStartsThemAtTheCutOfAMemberRestartedFromASnapshot() throws Exception {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         gatewayRow = true;
         start("200", 1);
         cluster.awaitLeader();

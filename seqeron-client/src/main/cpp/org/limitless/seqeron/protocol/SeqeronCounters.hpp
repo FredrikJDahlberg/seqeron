@@ -61,7 +61,7 @@ inline constexpr std::int32_t REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;
 inline constexpr std::int32_t REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
 
 // ── Co-located application replicas (5200-5299) ──────────────────────────────────────────────
-// Core reserves 5200 and 5297-5299; a consumer allocates its own in 5201-5296 (doc/ops.md, "Counter type ids").
+// Core reserves 5200 and 5297-5299; a consumer allocates its own in 5201-5296.
 inline constexpr std::int32_t APP_TYPE_ID_MIN = 5200;
 inline constexpr std::int32_t APP_TYPE_ID_MAX = 5299;
 
@@ -71,7 +71,7 @@ inline constexpr std::int32_t APP_RECOVERY_STALLED_TYPE_ID = 5200;
 // How far a hosted client trails its host: the host's last dispatched position less the client's applied one.
 inline constexpr std::int32_t HOSTED_LAG_TYPE_ID = 5297;
 
-// The last snapshot round a participating client confirmed (doc/snapshot.md §4), 0 for none yet.
+// The last snapshot round a participating client confirmed, 0 for none yet.
 inline constexpr std::int32_t APP_SNAPSHOT_ROUND_TYPE_ID = 5298;
 
 // Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not serve.
@@ -104,7 +104,7 @@ inline constexpr std::size_t APP_KEY_LENGTH = 8;
  * Allocates an app counter keyed on {memberId, clientId}.
  *
  * @param aeron    the client to allocate it on
- * @param typeId   the counter's type id (doc/ops.md, "Counter type ids")
+ * @param typeId   the counter's type id
  * @param label    the counter's label
  * @param memberId the node the app runs on, the key's first half
  * @param clientId the app's client id, the key's second half

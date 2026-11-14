@@ -11,6 +11,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.MappedByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.agrona.BufferUtil;
@@ -21,7 +22,7 @@ import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
- * Node-local Prometheus exporter (see {@code doc/ops.md}): converts seqeron's counters, and Aeron Cluster's own, into
+ * Node-local Prometheus exporter: converts seqeron's counters, and Aeron Cluster's own, into
  * Prometheus text format
  */
 public final class MetricsExporter {
@@ -78,11 +79,9 @@ public final class MetricsExporter {
                                  "Count of local-archive calls that threw; a sustained rate means the archive is "
                                      + "not serving replays.",
                                  "counter")),
-        Map.entry(
-            SeqeronCounters.REPLAYER_READY_TYPE_ID,
-            new MetricMeta("seqeron_replayer_ready",
-                           "1 once the co-located queue recording is visible and replay requests are being served.",
-                           "gauge")),
+        Map.entry(SeqeronCounters.REPLAYER_READY_TYPE_ID,
+                  new MetricMeta("seqeron_replayer_ready",
+                                 "1 once every served queue is listed and replay requests are being served.", "gauge")),
         Map.entry(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID,
                   new MetricMeta("seqeron_replayer_active_slots", "Current count of in-flight replays.", "gauge")),
         Map.entry(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID,
@@ -100,8 +99,8 @@ public final class MetricsExporter {
                       "counter")),
         Map.entry(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID,
                   new MetricMeta("seqeron_replayer_throttled_requests_total",
-                                 "Count of replay requests held because the queue recording trailed the queue while a "
-                                     + "replay ran, resends included.",
+                                 "Count of replay requests held because a gateway host's queue recording trailed the "
+                                     + "queue while a replay ran, resends included; 0 on a member, which records none.",
                                  "counter")),
         Map.entry(
             SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
@@ -229,21 +228,23 @@ public final class MetricsExporter {
 
     /**
      * Renders every seqeron and Aeron Cluster counter this node's CnC file holds as one Prometheus exposition body. A
-     * counter in the app range core has no name for is a consumer's (doc/ops.md, "Counter type ids"), named from its
+     * counter in the app range core has no name for is a consumer's, named from its
      * label.
      */
     String renderMetrics() {
-        final Map<MetricMeta, StringBuilder> samplesByMetric = new LinkedHashMap<>();
+        // By name: two consumer type ids may name one metric, and Prometheus refuses a scrape that declares it twice.
+        final Map<String, MetricMeta> metas = new LinkedHashMap<>();
+        final Map<String, StringBuilder> samplesByMetric = new HashMap<>();
         reader.forEach((counterId, typeId, keyBuffer, label) -> {
             final MetricMeta clusterMeta = CLUSTER_METRICS_BY_TYPE_ID.get(typeId);
-            MetricMeta meta = clusterMeta != null ? clusterMeta : METRICS_BY_TYPE_ID.get(typeId);
-            if (meta == null) {
-                if (typeId < SeqeronCounters.APP_TYPE_ID_MIN || typeId > SeqeronCounters.APP_TYPE_ID_MAX) {
-                    return;
-                }
-                meta = appMetricMeta(typeId, label);
+            final MetricMeta known = clusterMeta != null ? clusterMeta : METRICS_BY_TYPE_ID.get(typeId);
+            if (known == null &&
+                (typeId < SeqeronCounters.APP_TYPE_ID_MIN || typeId > SeqeronCounters.APP_TYPE_ID_MAX)) {
+                return;
             }
-            final StringBuilder samples = samplesByMetric.computeIfAbsent(meta, name -> new StringBuilder());
+            final MetricMeta meta = known != null ? known : appMetricMeta(typeId, label);
+            metas.putIfAbsent(meta.name(), meta);
+            final StringBuilder samples = samplesByMetric.computeIfAbsent(meta.name(), name -> new StringBuilder());
             samples.append(meta.name())
                 .append("{member=\"")
                 .append(clusterMeta != null ? memberId : keyBuffer.getInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET))
@@ -255,17 +256,16 @@ public final class MetricsExporter {
         });
 
         final StringBuilder body = new StringBuilder();
-        for (final Map.Entry<MetricMeta, StringBuilder> entry : samplesByMetric.entrySet()) {
-            final MetricMeta meta = entry.getKey();
+        for (final MetricMeta meta : metas.values()) {
             body.append("# HELP ").append(meta.name()).append(' ').append(meta.help()).append('\n');
             body.append("# TYPE ").append(meta.name()).append(' ').append(meta.type()).append('\n');
-            body.append(entry.getValue());
+            body.append(samplesByMetric.get(meta.name()));
         }
         return body.toString();
     }
 
     /**
-     * A consumer counter's metric name: its label's first token, sanitised (doc/ops.md, "Counter type ids"). The same
+     * A consumer counter's metric name: its label's first token, sanitised. The same
      * for every counter of one type id, so the replicas publishing it share one HELP/TYPE header.
      */
     private static MetricMeta appMetricMeta(final int typeId, final String label) {

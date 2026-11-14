@@ -86,7 +86,7 @@ final class RecordingReader implements AutoCloseable {
      *
      * @param messageLimit the most to hand over
      * @return how many were handed over
-     * @throws UncheckedIOException if a segment file is gone or cannot be read
+     * @throws UncheckedIOException if a segment file is gone, cannot be read, or is damaged below {@code limit}
      */
     int poll(final MessageHandler handler, final long limit, final int messageLimit) {
         int messages = 0;
@@ -94,7 +94,10 @@ final class RecordingReader implements AutoCloseable {
             final int offset = (int)(position - bufferPosition);
             final int frameLength = buffer.getInt(offset + HeaderFlyweight.FRAME_LENGTH_FIELD_OFFSET);
             final int alignedLength = BitUtil.align(frameLength, FrameDescriptor.FRAME_ALIGNMENT);
-            if (frameLength < DataHeaderFlyweight.HEADER_LENGTH || position + alignedLength > limit) {
+            if (frameLength < DataHeaderFlyweight.HEADER_LENGTH) {
+                throw damaged("a frame length of " + frameLength);
+            }
+            if (position + alignedLength > limit) {
                 break;
             }
             if ((buffer.getShort(offset + HeaderFlyweight.TYPE_FIELD_OFFSET) & 0xFFFF) ==
@@ -137,7 +140,10 @@ final class RecordingReader implements AutoCloseable {
         return messages;
     }
 
-    /** @return whether {@code length} bytes at {@link #position} are in the buffer, read from the file if need be */
+    /**
+     * @return whether {@code length} bytes at {@link #position} are in the buffer, read from the file if need be
+     * @throws UncheckedIOException if the file ends short of them below {@code limit}
+     */
     private boolean load(final int length, final long limit) {
         if (position >= bufferPosition && position + length <= bufferPosition + bufferLength) {
             return true;
@@ -158,10 +164,18 @@ final class RecordingReader implements AutoCloseable {
                 // a read may come back short of what the file holds
             }
             bufferLength = bytes.position();
+            if (bufferLength < length && bytes.limit() >= length) {
+                throw damaged("the file holds " + bufferLength + " of the " + length + " bytes read");
+            }
         } catch (final IOException ex) {
             throw new UncheckedIOException(ex);
         }
         return length <= bufferLength;
+    }
+
+    private UncheckedIOException damaged(final String what) {
+        return new UncheckedIOException(new IOException("recording " + recordingId + "'s segment file is damaged at " +
+                                                        position + ", below the limit: " + what));
     }
 
     @Override

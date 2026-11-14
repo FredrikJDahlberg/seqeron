@@ -109,7 +109,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
      * Connects a client co-located with no member: UDP ingress against the whole endpoint set.
      *
      * @param egressChannel this client's own egress endpoint; two media drivers on one host cannot both
-     *     bind a port (doc/ops.md, "Ports")
+     *     bind a port
      * @param ingressEndpoints the members to reach, {@link PortLayout#ingressEndpoints()} for the default set
      */
     public void connect(final Aeron aeron, final String egressChannel, final String ingressEndpoints) {
@@ -261,7 +261,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
      * terminal: once it sees the leader's egress end, {@code AeronCluster} closes the ingress publication and
      * waits for a {@code NewLeader}, which {@code pollEgress} installs — hence the spin polls. A leader that dies
      * ends no egress, so its publication takes frames until the {@code NewLeader}, which discards what it has not
-     * sent: a frame that lands can still be lost, and only the queue confirms it (doc/fault-tolerance.md §1.2).
+     * sent: a frame that lands can still be lost, and only the queue confirms it.
      * Bounded, since losing quorum would otherwise stop the caller's duty cycle. No keep-alive from in here: it
      * would offer on the same stuck publication.
      *

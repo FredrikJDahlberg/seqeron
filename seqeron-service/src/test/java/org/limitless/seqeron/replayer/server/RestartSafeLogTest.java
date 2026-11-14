@@ -12,7 +12,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** A member's record of its snapshots (doc/snapshot.md §10.8), which a restart reads. */
+/** A member's record of its snapshots, which a restart reads. */
 class RestartSafeLogTest {
     @TempDir
     Path directory;
@@ -50,5 +50,20 @@ class RestartSafeLogTest {
         final RestartSafeLog.State state = RestartSafeLog.read(file);
         assertEquals(Set.of(100L), state.cuts());
         assertEquals(Set.of(), state.safe(), "a line with no newline was never forced");
+    }
+
+    @Test
+    @DisplayName("a line appended after one a crash cut short is read back")
+    void aLineAfterATornOneIsKept() throws Exception {
+        final Path file = directory.resolve(RestartSafeLog.FILE_NAME);
+        Files.writeString(file, "cut 100\nsafe 10", StandardCharsets.US_ASCII);
+
+        try (RestartSafeLog log = RestartSafeLog.open(directory)) {
+            log.appendCut(200);
+        }
+
+        final RestartSafeLog.State state = RestartSafeLog.read(file);
+        assertEquals(Set.of(100L, 200L), state.cuts());
+        assertEquals(Set.of(), state.safe());
     }
 }

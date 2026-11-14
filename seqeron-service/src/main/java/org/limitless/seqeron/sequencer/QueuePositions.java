@@ -7,7 +7,7 @@ import org.agrona.BitUtil;
 /**
  * Where a frame lands on a queue, by the arithmetic of Aeron's {@code ExclusivePublication.offer}: a queue position is
  * a function of the lengths of the frames before it, at a given term length and MTU, so one who derives the frames can
- * derive their positions (doc/disk-load-plan.md, step 2a).
+ * derive their positions.
  */
 public final class QueuePositions {
     private QueuePositions() {

@@ -36,7 +36,7 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * what makes {@link OutstandingWork} — fed that same stream — the way work survives the gate closing
  * under it.
  *
- * <p><b>Snapshots</b> (doc/snapshot.md §4): given a {@link SnapshotListener} and a topology row with {@code
+ * <p><b>Snapshots</b>: given a {@link SnapshotListener} and a topology row with {@code
  * snapshot="true"}, every replica serializes its state at each round's cut into its own directory, and the one
  * whose gate is open then submits the round's {@code SnapshotEnd}. A replica whose snapshot differs from the one
  * sequenced is fenced with {@link ClusterError#SNAPSHOT_DIVERGED}. On start, a replica given a listener restores

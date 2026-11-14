@@ -1,18 +1,28 @@
 package org.limitless.seqeron.replayer.server;
 
+import java.util.Arrays;
+
 /**
  * What a gateway host's relay of a member's Raft log decides, free of Aeron: which member's log it reads, where a
- * replay of it starts, and when it gives up on a member or on itself (doc/disk-load-plan.md, step 2a).
+ * replay of it starts, and when it gives up on a member or on itself.
  * {@link AeronLogRelay} is the adapter.
  *
  * <p>The first member it reads fixes where the derivation starts. After that it resumes at the end of the last entry
- * it applied, on whichever member: members' log positions agree by construction.
+ * it applied, on whichever member: members' log positions agree by construction. A member whose log starts past
+ * that position has trimmed it, and once every member has, the relay stops: a restart starts again from a member's
+ * start.
  *
  * <p>Single-threaded: the relay's duty cycle.
  */
 final class LogRelay {
     /** {@link #replayFrom}'s answer for a member whose log does not hold the position this relay continues from. */
     static final long NOT_SUITABLE = -1;
+
+    /**
+     * {@link #replayFrom}'s answer once every member's log has been found to start past the position: they trimmed it
+     * while this relay was away, so no member can serve it again.
+     */
+    static final long HISTORY_LOST = -2;
 
     /** No entry for this long means the member is gone: three cluster heartbeats. */
     static final long SOURCE_TIMEOUT_MS = 3_000;
@@ -26,6 +36,8 @@ final class LogRelay {
     private int failedAttempts;
     private long nextAttemptMs;
     private long lastEntryMs;
+    /** Per member, whether its log was last found to start past {@link #position}. */
+    private final boolean[] startsPast;
 
     /** Where the next entry to apply starts, or {@link #NOT_SUITABLE} before a member has fixed the start. */
     private long position = NOT_SUITABLE;
@@ -47,6 +59,7 @@ final class LogRelay {
         }
         this.sourceCount = sourceCount;
         this.stallTimeoutMs = stallTimeoutMs;
+        this.startsPast = new boolean[sourceCount];
     }
 
     long stallTimeoutMs() {
@@ -75,11 +88,16 @@ final class LogRelay {
      * @param logStart         where the member's log recording starts
      * @param recordedPosition how far it has recorded
      * @param nowMs            the clock, which starts the source timeout
-     * @return the position, or {@link #NOT_SUITABLE} when the member's log does not hold it
+     * @return the position, {@link #NOT_SUITABLE} when the member's log does not hold it, or {@link #HISTORY_LOST}
+     *     when it is the last member found to start past it
      */
     long replayFrom(final long announcedStart, final long logStart, final long recordedPosition, final long nowMs) {
         lastEntryMs = nowMs;
         final long from = position == NOT_SUITABLE ? announcedStart : position;
+        startsPast[sourceIndex] = position != NOT_SUITABLE && from < logStart;
+        if (startsPast[sourceIndex] && isHistoryLost()) {
+            return HISTORY_LOST;
+        }
         if (from < logStart || from > recordedPosition) {
             return NOT_SUITABLE;
         }
@@ -101,6 +119,7 @@ final class LogRelay {
         lastEntryMs = nowMs;
         live |= entryEnd > liveTarget;
         failedAttempts = 0;
+        Arrays.fill(startsPast, false);
     }
 
     /** A local queue took a frame. */
@@ -151,5 +170,14 @@ final class LogRelay {
             failedAttempts = 0;
             nextAttemptMs = nowMs + RETRY_INTERVAL_MS;
         }
+    }
+
+    private boolean isHistoryLost() {
+        for (final boolean past : startsPast) {
+            if (!past) {
+                return false;
+            }
+        }
+        return true;
     }
 }

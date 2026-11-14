@@ -1,6 +1,8 @@
 package org.limitless.seqeron.tools;
 
 import io.aeron.Aeron;
+import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.ElectionState;
 import io.aeron.cluster.service.Cluster;
@@ -22,7 +24,6 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.MutableLong;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
-import org.junit.jupiter.api.Assumptions;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
@@ -55,6 +56,7 @@ final class InProcessCluster implements AutoCloseable {
     /** Every group, ascending: each one's queue is on every archive. */
     static final List<Integer> GROUP_IDS = List.of(GROUP_ID, OTHER_GROUP_ID);
     private static final long ACTIVATION_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
+    private static final int RECORDING_RESPONSE_STREAM_ID = 127; // beside the tests' own archive response streams
 
     private final Path baseDir;
     private final AtomicReferenceArray<SequencerServer> nodes = new AtomicReferenceArray<>(MEMBERS);
@@ -73,6 +75,7 @@ final class InProcessCluster implements AutoCloseable {
     private int gatewayRowLength;
     private ExpandableArrayBuffer applicationRow;
     private int applicationRowLength;
+    private boolean recordQueues;
 
     InProcessCluster(final Path baseDir) {
         this.baseDir = baseDir;
@@ -199,6 +202,15 @@ final class InProcessCluster implements AutoCloseable {
         applicationRow = body;
     }
 
+    /**
+     * Has each member's archive record its queues, as the sequencer publishes them, from the next {@link #startAll},
+     * which records each whole, and again from each restart of a member, which records from wherever its queue has
+     * reached: the reference a test holds a derivation to, since a member records no queue of its own.
+     */
+    void withQueueRecordings() {
+        recordQueues = true;
+    }
+
     /** Launches member {@code m} on its directories, which a previous run of it may have left. */
     void start(final int m) {
         final SequencerServer.Config config = new SequencerServer.Config(
@@ -219,6 +231,27 @@ final class InProcessCluster implements AutoCloseable {
             m,
             SequencerServer.launch(config, () -> terminated.set(true), () -> isFatal.set(true), udpFaults, clocks[m],
                                    replayers[m]::wrap));
+        if (recordQueues) {
+            recordQueues(m);
+        }
+    }
+
+    /** Has member {@code m}'s archive record each group's queue, which it goes on doing after this session closes. */
+    private void recordQueues(final int m) {
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir(m)));
+             AeronArchive archive =
+                 AeronArchive.connect(new AeronArchive.Context()
+                                          .aeron(aeron)
+                                          .ownsAeronClient(false)
+                                          .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                          .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+                                          .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                          .controlResponseStreamId(RECORDING_RESPONSE_STREAM_ID))) {
+            for (final int groupId : GROUP_IDS) {
+                archive.startRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.queueStreamId(groupId),
+                                       SourceLocation.LOCAL);
+            }
+        }
     }
 
     /** Launches the gateway host: its own driver and archive, relaying a member's queue of each group onto its own. */
@@ -305,12 +338,6 @@ final class InProcessCluster implements AutoCloseable {
     /** Member {@code m}'s archive directory. */
     File archiveDir(final int m) {
         return baseDir.resolve("archive-" + m).toFile();
-    }
-
-    /** Skips a test of a member's queue recording when the suite runs members that record none (-PderiveFromLog). */
-    static void assumeMembersRecordQueues() {
-        Assumptions.assumeFalse(Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG),
-                                "members record no queue with " + ReplayerServer.PROP_DERIVE_FROM_LOG);
     }
 
     /** Each running member's driver directory, and the gateway host's if launched, by name. */

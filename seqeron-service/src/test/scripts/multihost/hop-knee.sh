@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hop-knee.sh — the knee of each arm (doc/ec2-tests.md, test 1b): the rate at which the whole loop saturates, found by
+# hop-knee.sh — the knee of each arm: the rate at which the whole loop saturates, found by
 # stepping the rate up in short runs on one fresh cluster per ramp. Each step is a line in <results>/knee-<stamp>.txt, in
 # hop-matrix.sh's format, and each ramp ends in a line
 #

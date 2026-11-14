@@ -26,7 +26,7 @@ import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
 
 /**
- * A member's Replayer purging its queue recording below the newest restart-safe cut (doc/snapshot.md §10.6).
+ * A member's Replayer purging its queue recording below the newest restart-safe cut.
  */
 class QueuePurgeTest {
     private static final int GROUP_ID = FakeReplayer.GROUP_ID;

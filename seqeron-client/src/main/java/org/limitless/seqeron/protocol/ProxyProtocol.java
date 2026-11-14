@@ -4,7 +4,7 @@ import io.aeron.Counter;
 import org.limitless.seqeron.sbe.hosted.MessageHeaderDecoder;
 
 /**
- * What a ClientProxy and its client share (doc/seqeron-protocol-spec.md §17.2, §17.7): schema 218 on four {@code
+ * What a ClientProxy and its client share: schema 218 on four {@code
  * aeron:ipc} streams, and the heartbeat both write. The counters' type ids are in {@link SeqeronCounters}. The C++
  * twin is {@code protocol/ProxyProtocol.hpp}, which leaves the channels to each end.
  */

@@ -4,7 +4,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 
 /**
- * The Sequencer's state as records, the shape of {@code SnapshotListener} (doc/snapshot.md §10.2).
+ * The Sequencer's state as records, the shape of {@code SnapshotListener}.
  * {@link SequencerService} writes them to Aeron's snapshot publication and reads them back in {@code onStart}.
  */
 interface SequencerSnapshot {

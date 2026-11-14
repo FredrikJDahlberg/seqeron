@@ -137,7 +137,7 @@ internal sealed class GatewayLifecycle
     }
 
     /// <summary>Takes the election state a snapshot header holds in place of the frames before its cut
-    /// (doc/snapshot.md §6): the pair's rows, which resolve this instance's identity by name, and the instance its
+    ///: the pair's rows, which resolve this instance's identity by name, and the instance its
     /// <c>GatewayActive</c> names. Before the gate has opened, so nothing is published or closed.</summary>
     /// <param name="state">the header's gateway continuation</param>
     public void OnSnapshotHeader(SnapshotHeader.GatewayState state)

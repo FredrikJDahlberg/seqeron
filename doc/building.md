@@ -118,13 +118,15 @@ The suite launches members in the test's own JVM through `SequencerServer.launch
 a member or cutting its UDP for up to 1.5 s, the leader or a follower as the round draws. The producer's queue must
 come out exact and every member must be up at the end. A failure prints its seed, and
 `./gradlew :seqeron-service:integrationTest -Pseed=<n>` replays the rounds' draws, though not the threads'
-timing. Both tests then read every queue recording on every member, and on the host, straight off its archive,
-since a client's `ReplayerRecovery` would hide a repeated frame or replay over a gap: each must hold groupSeqNo 1
-onwards once each, in order, and the same frame wherever two hold the same groupSeqNo. `InProcessCluster` activates
+timing. Both tests then read every member's queues twice, as its Raft log derives them and as its Replayer
+replays them, and the host's recordings straight off its archive, since a client's `ReplayerRecovery` would hide a
+repeated frame or replay over a gap: each must hold groupSeqNo 1 onwards once each, in order, and the same frame
+wherever two hold the same groupSeqNo. `InProcessCluster` activates
 its one group before a test starts, since the cluster sequences nothing before it.
 
-`SbeLogPrinterTest` sequences five probe frames through three members, stops them, and dumps a member's archive: the
-recordings, the frames named and numbered, the stream filter and `--oneline`.
+`SbeLogPrinterTest` sequences five probe frames through three members and a gateway host, stops them, and dumps the
+host's archive: the recordings, the frames named and numbered, the stream filter and `--oneline`. `--queue` derives
+a group's queue from a member's log, which must match the host's recording frame for frame.
 
 `CommittedEntryLossTest` scripts a fault sequence under which Aeron Cluster 1.53.2 loses a committed entry: a
 follower restarts while the leader waits on a member that cannot copy the log, truncates the entries it
@@ -132,7 +134,7 @@ acknowledged, and the leader is cut before they are copied back. Each step waits
 and commit position rather than on time, so it reproduces every run, and the stranded member stops advancing. It
 fails on the pinned Aeron, so it runs only under `-PknownAeronFaults`, to check an Aeron upgrade against it. A second
 test runs the same sequence by default and checks that the member that truncates the entry takes itself down, and
-that, restarted, it rejoins with an active recording that is one log with the others'
+that, restarted, it rejoins with queues that are one log with the others'
 ([`fault-tolerance.md`](fault-tolerance.md) §1.4).
 
 The UDP faults are `SequencerServer.launch`'s `udpFaults` overload, which drops each frame a member's driver sends
@@ -161,16 +163,16 @@ children's classpath. A test with knobs reads them from the environment, named b
 
 | test | what it asserts |
 | --- | --- |
-| `FailoverProcessTest` | A leader is `SIGKILL`ed (every run then takes the crash's path, [`fault-tolerance.md`](fault-tolerance.md) §1.2), and a fresh `ClusterProbe` follower cold-started on the new leader catches up on full history, each node's queue recording being one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
-| `GapRecoveryTest` | A live queue frame dropped on a caught-up consumer (`SIGUSR1` fault injection; `GAP_SIZE` frames) is recovered by resuming its recording at the hole, not by wedging |
+| `FailoverProcessTest` | A leader is `SIGKILL`ed (every run then takes the crash's path, [`fault-tolerance.md`](fault-tolerance.md) §1.2), and a fresh `ClusterProbe` follower cold-started on the new leader catches up on full history, each node's queue being one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
+| `GapRecoveryTest` | A live queue frame dropped on a caught-up consumer (`SIGUSR1` fault injection; `GAP_SIZE` frames) is recovered by resuming its queue at the hole, not by wedging |
 | `PausedSubscriberTest` | A caught-up consumer `SIGSTOP`ped while more than two queue windows go by leaves its member up, and the resumed consumer heals the hole its eviction left |
 | `SessionReplaceTest` | A `TestApplication` `SIGSTOP`ped past its session timeout, then deprived of quorum, replaces its cluster session both times, unfenced, without its duty cycle stopping while an attempt is pending; and the `TestGateway` pair paused past its session timeout has the standby take the role over rather than fence alongside the active instance |
-| `ReplayerRestartTest` | A client's own node killed and restarted: the client fails fast and a fresh cold start is served from the node's new recording alone |
+| `ReplayerRestartTest` | A client's own node killed and restarted: the client fails fast and a fresh cold start is served from the node's new derivation alone |
 | `GatewayHostTest` | A `confirm` producer on a gateway host (node 3) streams while the member its relay reads, the leader, is killed: every frame comes back exactly once, in order, and the relay moves to another member. The host is then restarted, and a fresh `ClusterProbe` follower there catches up from its new recording |
 | `SnapshotTest` | Application snapshots on a live three-member cluster: the `TestGateway` pair and a `TestApplication` replica per member take part in rounds every 2 s, and the test restarts the standby, fails over onto the restored instance, brings the other back as a hot standby that restores, starts a round with `clusterctl request-snapshot`, restarts a follower's replica, and kills the cluster leader. Every restore reaches the state the log implies and no instance diverges from a sequenced round |
 | `ReplayColdStartTest` | A cold `ClusterProbe follow` on member 1 replays `REPLAY_PRELOAD` (20,000) preloaded frames to caught up within 120 s, on a quiet cluster and while four times as many more are sequenced, and has delivered them all in order. It prints the archive size and rate and asserts neither; `REPLAY_PRELOAD=400000` is the case that used to hang |
 | `ClusterToolsTest` | `clusterctl`, `ClusterProbe` and `SbeLogPrinter` as an operator runs them, against one live cluster: usage and argument errors with their exit codes, `start`, `counters`, `list-members`, `trim-log` with no snapshots, the refusals of `request-snapshot` and `activate`, the probe's `ping`, `submit`, `confirm` and `follow`, `shutdown` on a follower and on the leader, and the printer's schemas, filters and argument errors on the stopped members' archives |
-| `ChaosTest` | Randomized fault injection against a live three-member cluster, with a consumer replica on every member and the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate. Each round draws one of kill-leader, kill-follower, `SIGKILL` of a follower, pause, queue-drop and queue-stall, heals it, and checks the invariants; at the end every member's queue recording is gap-free and the same length. It prints its `SEED`, and `SEED=<n>` replays the draws; `ROUNDS`, `ONLY_FAULT` and `STEADY_STATE_SECS` tune the run. Tagged `chaos`, so `systemTest` leaves it out; `./gradlew :seqeron-service:systemTest -Pchaos` runs it alone, as `chaos.yml` does. With `-PderiveFromLog` no member has a queue recording: queue-stall is not drawn, and at the end a replica cold-started on each member must replay the same number of frames in order |
+| `ChaosTest` | Randomized fault injection against a live three-member cluster, with a consumer replica on every member and the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate. Each round draws one of kill-leader, kill-follower, `SIGKILL` of a follower, pause and queue-drop, heals it, and checks the invariants; at the end a replica cold-started on each member must replay its queue from `groupSeqNo` 1 in order, and all three the same number of frames. It prints its `SEED`, and `SEED=<n>` replays the draws; `ROUNDS`, `ONLY_FAULT` and `STEADY_STATE_SECS` tune the run. Tagged `chaos`, so `systemTest` leaves it out; `./gradlew :seqeron-service:systemTest -Pchaos` runs it alone, as `chaos.yml` does |
 
 The tests tagged `docker` run the `docker/compose.yml` cluster, and `systemTest` leaves them out. They need Docker, and
 the faulteron ones a checkout of [faulteron](https://github.com/FredrikJDahlberg/faulteron), an eBPF injector in its
@@ -212,7 +214,7 @@ distribution that has a JDK 21. The drivers in
 | Script | Purpose |
 |--------|---------|
 | `start-three-node-cluster.sh` | Start a local 3-node Raft cluster with a per-node `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_NO_CONSUMERS=1` leaves out the replicas, for a caller that runs its own |
-| `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `groupSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, a `GatewayApp` pair handed over when its active instance is killed, and a `SnapshotApp` restart that restores from a round it confirmed; last, a member restarted at a cut, where a cold start with no snapshot file must fail from its poll. Rerun on every Aeron upgrade (spec V-1); CI runs it in `chaos.yml` on every pull request. Needs the .NET SDK (`DOTNET` names one off the `PATH`). `CSHARP_MEMBER_OPTS` adds JVM flags to every member: `-Dreplayer.deriveFromLog=true` runs it on members that record no queue |
+| `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `groupSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, a `GatewayApp` pair handed over when its active instance is killed, and a `SnapshotApp` restart that restores from a round it confirmed; last, a member restarted at a cut, where a cold start with no snapshot file must fail from its poll. Rerun on every Aeron upgrade (spec V-1); CI runs it in `chaos.yml` on every pull request. Needs the .NET SDK (`DOTNET` names one off the `PATH`) |
 | `csharp-windows-test.sh` | The C# client on Windows, where it is deployed, against a member on Linux, on one host: the member in WSL1, which shares Windows' network stack, and on Windows a gateway host with the C# probe and examples beside it. UDP ingress through `PendingSends`, a cold start through the gateway host, and the C# gateway pair handed over. One member, because three cannot hold Raft's heartbeats under WSL1's system-call translation; the leader kill is `csharp-client-test.sh`'s. Runs in Git Bash; CI runs it in `windows.yml` |
 
 ## Examples

@@ -12,7 +12,7 @@ import org.limitless.seqeron.sbe.frame.SequencedSystemEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotStartedEncoder;
 
-/** A snapshot as a restore meets it (doc/snapshot.md §7): the instance's own file and the round's frames. */
+/** A snapshot as a restore meets it: the instance's own file and the round's frames. */
 final class RestoreFrames {
     /** One encoded frame or control message. */
     record Frame(UnsafeBuffer buffer, int length) { }

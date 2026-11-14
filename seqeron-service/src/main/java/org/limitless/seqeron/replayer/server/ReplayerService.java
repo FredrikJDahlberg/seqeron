@@ -5,6 +5,7 @@ import static io.aeron.Aeron.NULL_VALUE;
 import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.ArchiveException;
 import io.aeron.logbuffer.FragmentHandler;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -159,7 +160,7 @@ public final class ReplayerService {
     }
 
     /**
-     * As above, tracking the cluster snapshots a member takes (doc/snapshot.md §10.8).
+     * As above, tracking the cluster snapshots a member takes.
      * @param cutIntake the cuts handed over, the member's {@code restart-safe.log} and the join window
      */
     public ReplayerService(final Aeron aeron, final AeronArchive archive, final int memberId,
@@ -286,8 +287,7 @@ public final class ReplayerService {
     /**
      * Takes the cuts the service has handed over, or the relays have reported, since the last cycle: each queue keeps
      * where its marker was recorded, every application replica and gateway instance is told of the round, and a cut
-     * that every one that joined has confirmed is written to the member's log as safe to restart from
-     * (doc/snapshot.md §10.8).
+     * that every one that joined has confirmed is written to the member's log as safe to restart from.
      */
     private int trackCuts() {
         int work = 0;
@@ -376,7 +376,7 @@ public final class ReplayerService {
     }
 
     /**
-     * Purges each queue's recording below the newest restart-safe cut (doc/snapshot.md §10.6). A refusal, such as a
+     * Purges each queue's recording below the newest restart-safe cut. A refusal, such as a
      * replay reading below the floor, is no fault: the floor stays and is tried again after an interval.
      */
     private int purgeBelowFloors() {
@@ -605,7 +605,7 @@ public final class ReplayerService {
         try {
             serveReplay(clientId, requestId, fromPosition, queueId, cutClusterSeqNo);
         } catch (final RuntimeException error) {
-            if (!fromStart && archiveAnswers(queueId)) {
+            if (!fromStart && refusesPosition(error, queueId)) {
                 rejectResume(clientId, requestId, "archive refused it: " + error.getMessage());
                 return;
             }
@@ -614,6 +614,15 @@ public final class ReplayerService {
                            error);
             sendPending(clientId, requestId);
         }
+    }
+
+    /**
+     * Whether a replay failed on its position rather than on an outage: the {@link Replayer} does not hold it, or the
+     * archive refused it and still answers. Anything else, such as a driver that cannot add a publication, is held.
+     */
+    private boolean refusesPosition(final RuntimeException error, final int queueId) {
+        return error instanceof IllegalArgumentException ||
+            error instanceof ArchiveException && archiveAnswers(queueId);
     }
 
     /** Whether the local archive still answers at all — what separates a bad request from an outage. */
@@ -843,7 +852,8 @@ public final class ReplayerService {
 
     /**
      * Offers one control reply, dropping it at {@link #MAX_CONTROL_OFFER_SPINS} rather than spinning without
-     * bound. Safe, unlike on the queue: the app resends on a timer, so a drop costs one resend interval.
+     * bound, and at once while nothing subscribes, since nobody could read it. Safe, unlike on the queue: the app
+     * resends on a timer, so a drop costs one resend interval.
      * @param length encoded length
      */
     private void offerControl(final int length) {
@@ -853,10 +863,11 @@ public final class ReplayerService {
             if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
                 throw new IllegalStateException("[ReplayerService] control publication failed: " + result);
             }
+            if (result == ExclusivePublication.NOT_CONNECTED) {
+                return;
+            }
             if (++spins > MAX_CONTROL_OFFER_SPINS) {
-                if (result != ExclusivePublication.NOT_CONNECTED) {
-                    onControlReplyDropped(result);
-                }
+                onControlReplyDropped(result);
                 return;
             }
             idleStrategy.idle();
@@ -943,7 +954,7 @@ public final class ReplayerService {
 
     /**
      * Remembers where a snapshot cut was recorded in a queue's active recording, so a restore naming it is answered
-     * without reading the recording. The cluster tier's cut hand-over calls it (doc/snapshot.md §10.8).
+     * without reading the recording. The cluster tier's cut hand-over calls it.
      * @param queueId         the queue's group
      * @param cutClusterSeqNo the cut
      * @param position        where its frame starts in the recording

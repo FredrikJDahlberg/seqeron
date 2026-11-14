@@ -38,7 +38,7 @@ final class DockerCluster implements AutoCloseable {
     private static final List<String> COMPOSE =
         List.of("docker", "compose", "-f", REPO_ROOT.resolve("docker/compose.yml").toString());
     private static final List<String> HOST_COMPOSE = join(COMPOSE, "--profile", "gateway-host");
-    private static final Pattern RELAY_SOURCE = Pattern.compile("following member archive (\\S+): group");
+    private static final Pattern RELAY_SOURCE = Pattern.compile("following member archive (\\S+): its log's");
     private static final Pattern RELAY_DEPARTURE = Pattern.compile("relay left member archive (\\S+): (.*)");
     private static final Pattern COUNTER = Pattern.compile("^(\\S+) member=\\d+\\s+= (-?\\d+)$");
     private static final long POLL_MS = 500;

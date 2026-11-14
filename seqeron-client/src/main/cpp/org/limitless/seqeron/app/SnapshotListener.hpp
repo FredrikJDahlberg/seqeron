@@ -8,7 +8,7 @@
 namespace org::limitless::seqeron::app {
 
 /**
- * What a source that takes part in snapshot rounds serializes, and restores from (doc/snapshot.md §4, §7).
+ * What a source that takes part in snapshot rounds serializes, and restores from.
  * Given to a façade's Config; a source whose topology row says snapshot="true" takes part only if it has one,
  * and every instance of a source runs the same build, so either all of them do or none does. An instance
  * given one restores its source's latest snapshot on start, if there is one. The Java twin is
@@ -25,10 +25,10 @@ class SnapshotListener
     virtual std::uint32_t formatVersion() const = 0;
 
     /**
-     * Lists the formats onRestore reads. A restore stops on a snapshot of a format this omits (doc/snapshot.md §9),
+     * Lists the formats onRestore reads. A restore stops on a snapshot of a format this omits,
      * so a build that changes formatVersion keeps the formats it replaces listed until no instance holds a file of
      * them. A list rather than Java's supportsFormatVersion predicate, since the hosted stub sends it in its Attach
-     * (doc/seqeron-protocol-spec.md H-7). Called once per attach.
+     *. Called once per attach.
      *
      * @return by default, this build's own alone
      */

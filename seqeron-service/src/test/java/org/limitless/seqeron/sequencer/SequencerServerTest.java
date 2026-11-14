@@ -65,7 +65,7 @@ class SequencerServerTest {
     }
 
     // The reservation is wider than what seven members bind, and applications check themselves against it
-    // (doc/ops.md, "Ports"). Pinned here, and in PortLayoutTest, so it cannot quietly narrow to 9365.
+    //. Pinned here, and in PortLayoutTest, so it cannot quietly narrow to 9365.
     @Test
     void reservedBlockCoversSevenMemberStrides() {
         assertEquals(9300, PortLayout.CLUSTER_PORT_BLOCK_FIRST);

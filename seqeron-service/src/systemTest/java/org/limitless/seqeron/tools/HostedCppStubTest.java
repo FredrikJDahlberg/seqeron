@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The C++ stub (hosted::Application, doc/seqeron-protocol-spec.md §17) against the prototype host, on the leader of a
+ * The C++ stub (hosted::Application) against the prototype host, on the leader of a
  * cluster with no snapshot policy. The stub is {@code hosted_probe}, whose path is {@code HOSTED_PROBE} in the
  * environment of the Gradle run; without it the test is skipped.
  */

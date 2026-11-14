@@ -16,7 +16,6 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReferenceArray;
-import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -24,7 +23,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 
 /**
  * A randomized fault loop against a live three-member cluster with a consumer replica on every
@@ -37,7 +35,7 @@ import org.limitless.seqeron.replayer.server.ReplayerServer;
  */
 @Tag("chaos")
 class ChaosTest {
-    private enum Fault { KILL_LEADER, KILL_FOLLOWER, SIGKILL_NODE, PAUSE_NODE, QUEUE_DROP, QUEUE_STALL }
+    private enum Fault { KILL_LEADER, KILL_FOLLOWER, SIGKILL_NODE, PAUSE_NODE, QUEUE_DROP }
 
     private static final String TEST_GATEWAY = "org.limitless.seqeron.tools.TestGateway";
     private static final int TEST_GATEWAY_PORT_BASE = 9200;
@@ -55,8 +53,6 @@ class ChaosTest {
     // Aeron's own 10 s timeouts, which a slow host does not lengthen.
     private static final long DRIVER_LOSS_GRACE_SECS = 15;
     private static final long MARK_FILE_SETTLE_SECS = 12;
-    private static final long QUEUE_STALL_DEADLINE_SECS = 10;
-    private static final boolean DERIVED = Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG);
     private static final String DELIVERED = "frames delivered in order:";
 
     @TempDir
@@ -142,15 +138,14 @@ class ChaosTest {
     private static List<Fault> menu() {
         final String only = System.getenv("ONLY_FAULT");
         if (only == null || only.isEmpty()) {
-            // A member that derives its queues has no queue recording to stop.
-            return Stream.of(Fault.values()).filter(f -> !DERIVED || f != Fault.QUEUE_STALL).toList();
+            return List.of(Fault.values());
         }
         return List.of(Fault.valueOf(only.replaceFirst("^fault_", "").replace('-', '_').toUpperCase()));
     }
 
     private void bringUp() throws IOException {
         for (int m = 0; m < ClusterProcesses.MEMBERS; m++) {
-            cluster.startMember(m, "seq-" + m, true);
+            cluster.startMember(m, "seq-" + m);
         }
         cluster.awaitActive();
         cluster.awaitLeader();
@@ -159,7 +154,7 @@ class ChaosTest {
             startReplica(m);
         }
         // Without <snapshots>: a restarted member would start its queue at the last cut, which the plain probe
-        // replicas cannot follow (doc/snapshot.md §10.8).
+        // replicas cannot follow.
         final Path noRounds = baseDir.resolve("topology-no-rounds.xml");
         ClusterProcesses.withoutSnapshots(Path.of(System.getProperty("seqeron.gatewayTopology")), noRounds);
         cluster.loadTopology(noRounds);
@@ -220,7 +215,6 @@ class ChaosTest {
                 System.out.println("FAULT queue-drop: SIGUSR1 member " + leader + "'s replica");
                 replicas[leader].signal("USR1");
             }
-            case QUEUE_STALL -> queueStall(follower(leader));
         }
     }
 
@@ -241,29 +235,9 @@ class ChaosTest {
         restartColocated(leader);
     }
 
-    private void queueStall(final int m) throws Exception {
-        System.out.println("FAULT queue-stall: stop member " + m + "'s queue recording");
-        final ClusterProcesses.Child member = cluster.memberLog(m);
-        final Path trigger = baseDir.resolve("cluster-" + m).resolve("queue-stall-fault");
-        cluster.expectExit(m);
-        Files.createFile(trigger);
-        if (!member.awaitDead(scaled(QUEUE_STALL_DEADLINE_SECS))) {
-            failures.add("member " + m + " kept running " + QUEUE_STALL_DEADLINE_SECS + "s with no queue recording");
-            cluster.kill(m);
-        } else if (member.lines("FATAL:").stream().noneMatch(l -> l.contains("terminating this node"))) {
-            failures.add("member " + m + " died without the FATAL queue-recording line");
-        }
-        // Else the restarted node re-arms it at once.
-        Files.deleteIfExists(trigger);
-        sleep(2);
-        restart(m);
-        sleep(2);
-        restartColocated(m);
-    }
-
     /** A killed member's driver died with it, so its co-located clients must have exited non-zero by now. */
     private void restart(final int m) {
-        final ClusterProcesses.Child member = cluster.startMember(m, "seq-" + m + "-b" + ++boots[m], true);
+        final ClusterProcesses.Child member = cluster.startMember(m, "seq-" + m + "-b" + ++boots[m]);
         try {
             member.awaitLine("Running", scaled(15));
         } catch (final AssertionError ex) {
@@ -425,10 +399,7 @@ class ChaosTest {
         }
     }
 
-    /**
-     * Every member's queue recordings must each run groupSeqNo 1..N without a gap, and all members must end at the
-     * same N. A restarted member rotates its queue, so each recording is checked alone.
-     */
+    /** Stops the load and the clients, then has every member serve its whole queue ({@link #verifyDerived}). */
     private String verifySequence() throws Exception {
         loading = false;
         load.interrupt();
@@ -440,29 +411,7 @@ class ChaosTest {
             replica.stop();
         }
         sleep(3);
-        if (DERIVED) {
-            return verifyDerived();
-        }
-        // Frozen so the 1 Hz heartbeat cannot land between the dumps, which are not atomic.
-        final List<ClusterProcesses.Child> paused = new ArrayList<>();
-        final long[] highWater = new long[ClusterProcesses.MEMBERS];
-        try {
-            for (int m = 0; m < ClusterProcesses.MEMBERS; m++) {
-                paused.add(cluster.memberLog(m));
-                cluster.memberLog(m).pause();
-            }
-            sleep(1);
-            for (int m = 0; m < ClusterProcesses.MEMBERS; m++) {
-                final ClusterProcesses.Child dump = cluster.logPrinter("sequenced-dump-" + m, m);
-                assertEquals(0, dump.awaitExit(scaled(180)), "SbeLogPrinter on member " + m + "; see " + dump.log());
-                highWater[m] = highWater(m, dump.log());
-            }
-        } finally {
-            paused.forEach(ClusterProcesses.Child::resume);
-        }
-        assertTrue(highWater[0] == highWater[1] && highWater[1] == highWater[2],
-                   "nodes diverged: high-water " + highWater[0] + " / " + highWater[1] + " / " + highWater[2]);
-        return "all 3 nodes recorded groupSeqNo 1.." + highWater[0];
+        return verifyDerived();
     }
 
     /**
@@ -499,31 +448,6 @@ class ChaosTest {
         assertTrue(delivered[0] > 0 && delivered[0] == delivered[1] && delivered[1] == delivered[2],
                    "replicas diverged: delivered " + delivered[0] + " / " + delivered[1] + " / " + delivered[2]);
         return "all 3 nodes served " + delivered[0] + " frames in order";
-    }
-
-    private static long highWater(final int m, final Path dump) throws IOException {
-        long expected = 0;
-        long max = 0;
-        long total = 0;
-        try (Stream<String> lines = Files.lines(dump)) {
-            for (final String line : (Iterable<String>)lines::iterator) {
-                if (line.contains("[Catalog] Recording ID")) {
-                    expected = 0;
-                } else if (line.contains("\"groupSeqNo\"")) {
-                    final long n = Long.parseLong(line.replaceAll("[^0-9]", ""));
-                    total++;
-                    if (expected == 0) {
-                        assertEquals(1, n, "member " + m + ": recording starts at groupSeqNo " + n);
-                    } else {
-                        assertEquals(expected + 1, n, "member " + m + ": gap or regression after " + expected);
-                    }
-                    expected = n;
-                    max = Math.max(max, n);
-                }
-            }
-        }
-        assertTrue(total > 0, "member " + m + ": no sequenced messages decoded");
-        return max;
     }
 
     private int follower(final int leader) {

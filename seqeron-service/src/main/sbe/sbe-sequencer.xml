@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-    The Sequencer's snapshot: schema 216, specified in doc/snapshot.md §10.2.
+    The Sequencer's snapshot: schema 216.2.
 
     What SequencerService writes to Aeron's snapshot publication and reads back in onStart: a begin message
     with the scalars, one message per map or list entry, and an end message with the counts. Java only, and

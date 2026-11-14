@@ -18,7 +18,7 @@
 namespace org::limitless::seqeron::hosted {
 
 /**
- * The client stub of a hosted Gateway (doc/seqeron-protocol-spec.md §17): the surface of app::Gateway, with the façade
+ * The client stub of a hosted Gateway: the surface of app::Gateway, with the façade
  * itself, the pair and the election running in a host process that this talks to over schema 218. Its listener is the
  * direct Gateway's, and onActivated returns what the host waits for (§17.5).
  *

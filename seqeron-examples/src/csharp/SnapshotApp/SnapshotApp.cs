@@ -44,7 +44,7 @@ public sealed class SnapshotApp : IApplicationListener, ISnapshotListener
 
     private static readonly long TransferIntervalTicks = Stopwatch.Frequency;
 
-    // Fenced, restart me: this repository's convention (doc/ops.md).
+    // Fenced, restart me: this repository's convention.
     private const int ExitFenced = 70;
 
     // The replicated state: derived from the log alone, so identical on every replica.

@@ -25,7 +25,7 @@ public final class QueuePublisher {
 
         /**
          * Whether the archive has started recording group {@code groupId}'s queue; once it has, the queue's
-         * recording is the one {@link #recordingActive} and {@link #recordedPosition} read.
+         * recording is the one {@link #recordingActive} reads.
          */
         boolean attachRecording(int groupId);
 
@@ -49,12 +49,6 @@ public final class QueuePublisher {
 
         /** Whether the co-located archive is still recording group {@code groupId}'s queue. */
         boolean recordingActive(int groupId);
-
-        /** How far the archive has recorded that queue; only meaningful while {@link #recordingActive}. */
-        long recordedPosition(int groupId);
-
-        /** Which recording that is, for the operator's log line. */
-        long recordingId(int groupId);
 
         /** The {@code seqeron.sequencer.queueBackPressureAlerts} counter. */
         void queueBackPressureAlert();
@@ -85,7 +79,7 @@ public final class QueuePublisher {
     /** Spins between clock reads while back-pressured, so the clock is not read on every iteration. */
     static final int SPINS_PER_CLOCK_CHECK = 1024;
 
-    /** How long the recording may make no progress under back-pressure before the stall gauge is raised. */
+    /** How long one offer may stay back-pressured before the stall gauge is raised. */
     static final long SUSTAINED_BACKPRESSURE_THRESHOLD_NS = TimeUnit.MILLISECONDS.toNanos(200);
 
     /**
@@ -107,17 +101,16 @@ public final class QueuePublisher {
     /** The groups whose queues are open, ascending; none before activation. */
     private int[] activeGroups = NO_GROUPS;
 
-    /** Monotonic reading at the last observed recording advance; 0 when no stall is in progress. */
+    /** Monotonic reading at the first evaluation of the current back-pressure; 0 when none is in progress. */
     private long stallSinceNs;
-    private long stallRecordedPosition;
     private boolean stalled;
 
     private boolean fatalSignalled;
 
     /**
      * @param actions        the transport
-     * @param stallTimeoutNs how long the recording may make <em>zero</em> progress under back-pressure before the node
-     *                       terminates; an archive that is slow but still advancing is never timed out
+     * @param stallTimeoutNs how long one offer may stay back-pressured before the node terminates; each landed offer
+     *                       restarts it
      */
     public QueuePublisher(final Actions actions, final long stallTimeoutNs) {
         this.actions = actions;
@@ -137,7 +130,7 @@ public final class QueuePublisher {
 
     /**
      * As {@link #activate(int[])}, each queue starting where {@code starts} says: a member restoring a snapshot
-     * starts its queues at the cut (doc/snapshot.md §10.3).
+     * starts its queues at the cut.
      * @param groupIds the groups to activate, ascending
      * @param starts   where each group's queue starts
      */
@@ -148,14 +141,15 @@ public final class QueuePublisher {
             try {
                 actions.openQueue(groupId, starts.apply(groupId));
             } catch (final RuntimeException ex) {
-                fatalQueueFailure("group " + groupId + "'s queue could not be opened and recorded: " + ex, true);
+                fatalQueueFailure("group " + groupId + "'s queue could not be opened: " + ex, true);
                 return;
             }
         }
         for (final int groupId : activeGroups) {
             while (!actions.attachRecording(groupId)) {
                 if (actions.nanoTime() - deadlineNs >= 0) {
-                    fatalQueueFailure("the local archive did not start recording group " + groupId + "'s queue within " +
+                    fatalQueueFailure("the media driver did not connect this service's subscriber to group " + groupId +
+                                          "'s queue within " +
                                           TimeUnit.NANOSECONDS.toMillis(QUEUE_RECORDING_START_TIMEOUT_NS) + "ms",
                                       true);
                     return;
@@ -164,18 +158,19 @@ public final class QueuePublisher {
             }
         }
         Logger.info(Logger.CoreComponent.Sequencer, actions.memberId(),
-                    "groups %s active: each queue opened and recorded at clusterSeqNo=%d",
+                    "groups %s active: each queue opened and its subscriber connected at clusterSeqNo=%d",
                     Arrays.toString(activeGroups), actions.clusterSeqNo());
     }
 
     /**
      * Publishes a frame onto a group's queue. Spins on back-pressure, since a dropped
-     * frame is an unrecoverable gap, but terminates the node once the recording is provably not draining.
+     * frame is an unrecoverable gap, but terminates the node once one offer has been back-pressured for the stall
+     * timeout.
      * The only exits are a landed offer and process death.
      *
      * <p>{@code offer}, not {@code tryClaim}: a claim saves one copy, only below the queue's MTU, of a frame the
      * cluster has already logged, replicated and archived, and an aborted claim pads this node's recording
-     * alone, moving its positions off the other members' that {@code QueueRelay} resumes at.
+     * alone, moving its positions off the ones a derivation from the log gives.
      * @param groupId the queue's group
      * @param buffer  holding the frame from offset 0
      * @param length  of the frame
@@ -203,7 +198,6 @@ public final class QueuePublisher {
         }
         final boolean wasStalled = stalled;
         stallSinceNs = 0;
-        stallRecordedPosition = 0;
         stalled = false;
         if (wasStalled && !fatalSignalled) {
             actions.queueStalled(false);
@@ -255,8 +249,7 @@ public final class QueuePublisher {
     }
 
     private String stoppedRecording(final int groupId) {
-        return "the local archive stopped recording group " + groupId + "'s queue (recording " +
-               actions.recordingId(groupId) + ")";
+        return "the media driver closed this service's subscriber to group " + groupId + "'s queue";
     }
 
     /** Whether this node has already been given up on — see {@link #fatalFailure}. */
@@ -266,8 +259,9 @@ public final class QueuePublisher {
 
     /**
      * One {@link #BACK_PRESSURE_ALERT_INTERVAL_NS} of continuous back-pressure has elapsed in {@link #emit}:
-     * alert, then time how long the recording has made no progress. Kept out of the spin, so an emit whose
-     * first offer lands pays none of it.
+     * alert, then time how long this offer has been back-pressured. The service's subscriber has read up to the
+     * publication's position, so its position cannot move until an offer lands, and is not watched. Kept out of
+     * the spin, so an emit whose first offer lands pays none of it.
      * @param groupId the back-pressured queue's group
      * @param nowNs   the clock reading that triggered this period, reused rather than read again
      */
@@ -282,26 +276,23 @@ public final class QueuePublisher {
             fatalQueueFailure(stoppedRecording(groupId), true);
             return;
         }
-        final long recordedPosition = actions.recordedPosition(groupId);
-        if (stallSinceNs == 0 || recordedPosition > stallRecordedPosition) {
+        if (stallSinceNs == 0) {
             // The first observation only anchors the clock: how long back-pressure lasted before it is unknown.
-            stallRecordedPosition = recordedPosition;
             stallSinceNs = nowNs;
             return;
         }
         final long stalledNs = nowNs - stallSinceNs;
         if (stalledNs >= stallTimeoutNs) {
-            fatalQueueFailure("group " + groupId + "'s queue recording made no progress for " +
-                                  TimeUnit.NANOSECONDS.toMillis(stallTimeoutNs) + "ms of continuous back-pressure",
-                              true);
+            fatalQueueFailure(
+                "group " + groupId + "'s queue made no progress for " + TimeUnit.NANOSECONDS.toMillis(stallTimeoutNs) +
+                    "ms of continuous back-pressure, held by a subscriber the media driver has not dropped",
+                true);
         } else if (stalledNs >= SUSTAINED_BACKPRESSURE_THRESHOLD_NS && !stalled) {
             stalled = true;
             actions.queueStalled(true);
-            Logger.error(
-                Logger.CoreComponent.Sequencer, Logger.CoreEventCode.QueueBackpressure, actions.memberId(),
-                "STALLED: group %d's queue back-pressure sustained beyond %dms with no recording progress at "
-                    + "clusterSeqNo=%d",
-                groupId, TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), actions.clusterSeqNo());
+            Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.QueueBackpressure, actions.memberId(),
+                         "STALLED: group %d's queue back-pressure sustained beyond %dms at clusterSeqNo=%d", groupId,
+                         TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), actions.clusterSeqNo());
         }
     }
 
@@ -314,8 +305,8 @@ public final class QueuePublisher {
         if (!fatalSignalled) {
             actions.queueStalled(true);
         }
-        fatalFailure(Logger.CoreEventCode.QueueRecordingFailure,
-                     reason + ", so it can no longer record the history it is responsible for", inSpin);
+        fatalFailure(Logger.CoreEventCode.QueueRecordingFailure, reason + ", so this node cannot publish its queues",
+                     inSpin);
     }
 
     /**

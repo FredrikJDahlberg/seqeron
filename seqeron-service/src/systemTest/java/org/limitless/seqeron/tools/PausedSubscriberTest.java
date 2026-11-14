@@ -70,7 +70,7 @@ class PausedSubscriberTest {
             .awaitExit(Duration.ofSeconds(60));
         final boolean healed = poll(() -> !follower.lines("re-converged at clusterSeqNo").isEmpty(), 15);
 
-        final int fatals = cluster.memberLog(FOLLOWER_MEMBER).lines("FATAL: the queue recording made no progress")
+        final int fatals = cluster.memberLog(FOLLOWER_MEMBER).lines("queue made no progress for")
             .size();
         final int reconvergences = follower.lines("re-converged at clusterSeqNo").size();
         System.out.printf("queue-stall fatals on member %d: %d; follower re-convergences: %d%n", FOLLOWER_MEMBER,

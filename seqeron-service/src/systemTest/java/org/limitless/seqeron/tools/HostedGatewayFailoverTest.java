@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * A pair of hosted Gateways (hosted::Gateway, doc/seqeron-protocol-spec.md §17.5): GW-H-A is designated, GW-H-B is its
+ * A pair of hosted Gateways (hosted::Gateway): GW-H-A is designated, GW-H-B is its
  * standby, each a host and a C++ stub, on different members. Needs {@code HOSTED_PROBE}, as the other hosted tests.
  */
 class HostedGatewayFailoverTest {

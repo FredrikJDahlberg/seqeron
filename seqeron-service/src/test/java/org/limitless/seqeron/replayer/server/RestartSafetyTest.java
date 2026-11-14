@@ -7,7 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/** When a cluster snapshot may be restarted from (doc/snapshot.md §10.8). */
+/** When a cluster snapshot may be restarted from. */
 class RestartSafetyTest {
     private static final long WINDOW = 1_000;
     private static final long NO_POSITION = RestartSafety.NO_POSITION;

@@ -27,13 +27,12 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.replayer.server.DerivingReplayer;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 
 /**
- * A client's cold start served off the Raft log (doc/disk-load-plan.md, step 2a): with {@code replayer.deriveFromLog} a
- * member records no queue and its Replayer derives the replay through {@link DerivingReplayer}, and an unchanged
- * {@link ReplayerStreamReceiver} must walk each queue from groupSeqNo 1 in order, catch up at the queue's tip and
- * follow it live. The same walk off the queue's recording runs beside it, and each prints its rate.
+ * A client's cold start served off the Raft log: a member records no queue and its
+ * Replayer derives the replay through {@link DerivingReplayer}, and an unchanged {@link ReplayerStreamReceiver} must
+ * walk each queue from groupSeqNo 1 in order, catch up at the queue's tip and follow it live, and print its rate. A
+ * gateway host's walk is off its own recording.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class DerivedReplayTest {
@@ -54,22 +53,13 @@ class DerivedReplayTest {
 
     private InProcessCluster cluster;
 
-    private String deriveFromLog;
-
     @BeforeEach
     void collect() {
-        // Each test here sets the flag it runs with, whatever the suite's.
-        deriveFromLog = System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
         watcher.dataCollector().add(baseDir);
     }
 
     @AfterEach
     void stopCluster() {
-        if (deriveFromLog == null) {
-            System.clearProperty(ReplayerServer.PROP_DERIVE_FROM_LOG);
-        } else {
-            System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, deriveFromLog);
-        }
         if (cluster != null) {
             cluster.close();
         }
@@ -78,14 +68,7 @@ class DerivedReplayTest {
     @Test
     @InterruptAfter(240)
     void aColdStartWalksEachQueueOffTheLog() {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
-        walkEachQueue(true);
-    }
-
-    @Test
-    @InterruptAfter(240)
-    void aColdStartWalksEachQueueOffItsRecording() {
-        walkEachQueue(false);
+        walkEachQueue();
     }
 
     /**
@@ -95,7 +78,6 @@ class DerivedReplayTest {
     @Test
     @InterruptAfter(240)
     void aGatewayHostDerivesItsQueuesFromAMembersLogAndGoesOnFromTheNextMembers() {
-        System.setProperty(ReplayerServer.PROP_DERIVE_FROM_LOG, "true");
         cluster = new InProcessCluster(baseDir);
         cluster.startAll();
         final long tip = send(cluster.awaitLeader(), HOST_HISTORY_FRAMES);
@@ -152,16 +134,15 @@ class DerivedReplayTest {
                                         .controlResponseStreamId(RESPONSE_STREAM_ID));
     }
 
-    private void walkEachQueue(final boolean derived) {
+    private void walkEachQueue() {
         cluster = new InProcessCluster(baseDir);
         cluster.startAll();
         final int leader = cluster.awaitLeader();
         final int member = (leader + 1) % InProcessCluster.MEMBERS;
         final long tip = send(leader, HISTORY_FRAMES);
         for (final int groupId : InProcessCluster.GROUP_IDS) {
-            walk(member, groupId, tip, derived);
-            assertEquals(derived, queueRecordings(member, groupId) == 0,
-                         "whether group " + groupId + "'s queue is unrecorded");
+            walk(member, groupId, tip, true);
+            assertEquals(0, queueRecordings(member, groupId), "a member records group " + groupId + "'s queue");
         }
         assertFalse(cluster.fatal(), "a member raised a fatal");
         assertFalse(cluster.terminated(), "a member terminated");

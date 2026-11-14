@@ -5,6 +5,7 @@ import io.aeron.archive.codecs.CatalogHeaderDecoder;
 import io.aeron.archive.codecs.RecordingDescriptorDecoder;
 import io.aeron.archive.codecs.RecordingDescriptorHeaderDecoder;
 import io.aeron.archive.codecs.RecordingState;
+import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.codecs.SessionMessageHeaderDecoder;
 import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
@@ -27,11 +28,15 @@ import java.util.TreeSet;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import org.agrona.BitUtil;
+import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SystemFrame;
+import org.limitless.seqeron.replayer.server.DerivationAnnouncement;
 import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredDecoder;
+import org.limitless.seqeron.sequencer.LogDeriver;
+import org.limitless.seqeron.sequencer.Sequencer;
 import uk.co.real_logic.sbe.ir.Ir;
 import uk.co.real_logic.sbe.ir.IrDecoder;
 import uk.co.real_logic.sbe.ir.Token;
@@ -48,7 +53,9 @@ import uk.co.real_logic.sbe.otf.OtfMessageDecoder;
  * is decoded against the schema its header names; naming one narrows the dump, or an IR file can be given.
  *
  * <p>Every valid recording is dumped by default, and a node restart mints a new queue recording, so the
- * output repeats history; pass a stream id to select. See {@link #scanAndDumpLog()}.
+ * output repeats history; pass a stream id to select. See {@link #scanAndDumpLog()}. A group's queue prints from its
+ * recording where the archive keeps one, a gateway host's, and is otherwise derived from the archive's Raft log, as a
+ * member's Replayer derives it.
  */
 public class SbeLogPrinter {
     /** Where every module stages its {@code .sbeir} files: package-less, since contributors are not seqeron's. */
@@ -64,6 +71,12 @@ public class SbeLogPrinter {
 
     /** streamIdFilter value meaning "no filter" — dump every recording. Stream id 0 is legal, so 0 cannot serve. */
     public static final int NO_STREAM_FILTER = Integer.MIN_VALUE;
+
+    /** queueGroupId value meaning "no queue selected"; groupIds start at 1. */
+    public static final int NO_QUEUE = 0;
+
+    /** The memberId a derivation's log lines carry: the printer reads an archive, not a member. */
+    private static final int NO_MEMBER = -1;
 
     private static final String RECORDING_SEGMENT_SUFFIX = ".rec";
 
@@ -117,6 +130,12 @@ public class SbeLogPrinter {
     private record Schema(Ir ir, JsonPrinter printer) {
     }
 
+    /** Takes each whole message a recording's segments hold. */
+    @FunctionalInterface
+    private interface MessageSink {
+        void onMessage(UnsafeBuffer buffer, int offset, int endOffset, long position);
+    }
+
     private final File archiveDir;
     private final Map<Integer, Schema> schemasBySchemaId = new HashMap<>();
 
@@ -126,6 +145,7 @@ public class SbeLogPrinter {
     private final RecordingDescriptorDecoder descriptorDecoder = new RecordingDescriptorDecoder();
 
     private final int streamIdFilter;
+    private final int queueGroupId;
     private final boolean oneLine;
     private final int payloadIdFilter;
     private final byte[] payloadBytes;
@@ -145,14 +165,21 @@ public class SbeLogPrinter {
     private int fragmentsLength;
     /** Where the message being gathered starts, or {@code NULL_POSITION} when none is. */
     private long fragmentsPosition = AeronArchive.NULL_POSITION;
+    /** Where the segment walk hands each message: printed, unless a queue is being derived. */
+    private MessageSink messages = this::printMessage;
 
+    /**
+     * @param streamIdFilter the stream whose newest recording alone is printed, or {@link #NO_STREAM_FILTER}
+     * @param queueGroupId   the group whose queue alone is printed, or {@link #NO_QUEUE}; not with a stream filter
+     */
     public SbeLogPrinter(final List<Ir> irs, final String archiveDirPath, final int streamIdFilter,
-                         final boolean oneLine, final int payloadIdFilter) {
+                         final int queueGroupId, final boolean oneLine, final int payloadIdFilter) {
         this.archiveDir = new File(archiveDirPath);
         if (!archiveDir.exists() || !archiveDir.isDirectory()) {
             throw new IllegalArgumentException("Invalid archive directory: " + archiveDirPath);
         }
         this.streamIdFilter = streamIdFilter;
+        this.queueGroupId = queueGroupId;
         this.oneLine = oneLine;
         this.payloadIdFilter = payloadIdFilter;
         this.payloadBytes = NO_PAYLOAD_OUTPUT == payloadIdFilter ? null : new byte[MAX_PAYLOAD_LENGTH];
@@ -537,18 +564,28 @@ public class SbeLogPrinter {
             final long fileLength = channel.size();
             final ByteBuffer byteBuffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileLength);
             final UnsafeBuffer catalogBuffer = new UnsafeBuffer(byteBuffer);
-            processFile(fileLength, catalogBuffer);
+            return processFile(fileLength, catalogBuffer);
         } catch (Exception error) {
             System.err.println("Failed parsing catalog file: " + error.getMessage());
             return false;
         }
-        return true;
     }
 
-    private void processFile(final long fileLength, final UnsafeBuffer buffer) {
+    /** @return whether a recording was dumped or a queue derived */
+    private boolean processFile(final long fileLength, final UnsafeBuffer buffer) {
+        if (NO_QUEUE != queueGroupId) {
+            return printQueue(fileLength, buffer);
+        }
+        if (NO_STREAM_FILTER != streamIdFilter) {
+            final int selectedOffset = newestRecording(fileLength, buffer, streamIdFilter);
+            if (selectedOffset < 0) {
+                System.err.println("No valid recording on stream " + streamIdFilter + " found in catalog.");
+                return false;
+            }
+            dumpRecording(descriptor(buffer, selectedOffset));
+            return true;
+        }
         int offset = CATALOG_HEADER_LENGTH;
-        int selectedOffset = -1;
-        long selectedRecordingId = -1;
         boolean found = false;
         while (offset + DESCRIPTOR_HEADER_LENGTH <= fileLength) {
             headerDecoder.wrap(buffer, offset, RecordingDescriptorHeaderDecoder.BLOCK_LENGTH,
@@ -562,28 +599,125 @@ public class SbeLogPrinter {
                 descriptorDecoder.wrap(buffer, descriptorOffset,
                     RecordingDescriptorDecoder.BLOCK_LENGTH,
                     RecordingDescriptorDecoder.SCHEMA_VERSION);
-                if (NO_STREAM_FILTER == streamIdFilter) {
-                    dumpRecording(descriptorDecoder);
-                    found = true;
-                } else if (descriptorDecoder.streamId() == streamIdFilter &&
-                    descriptorDecoder.recordingId() > selectedRecordingId) {
-                    selectedRecordingId = descriptorDecoder.recordingId();
-                    selectedOffset = descriptorOffset;
+                dumpRecording(descriptorDecoder);
+                found = true;
+            }
+            offset += BitUtil.align(recordingLength + DESCRIPTOR_HEADER_LENGTH, BitUtil.CACHE_LINE_LENGTH);
+        }
+        if (!found) {
+            System.err.println("No valid recordings found in catalog.");
+        }
+        return found;
+    }
+
+    /** The descriptor offset of the newest valid recording on {@code streamId}, or -1 if there is none. */
+    private int newestRecording(final long fileLength, final UnsafeBuffer buffer, final int streamId) {
+        int newestOffset = -1;
+        long newestRecordingId = -1;
+        int offset = CATALOG_HEADER_LENGTH;
+        while (offset + DESCRIPTOR_HEADER_LENGTH <= fileLength) {
+            headerDecoder.wrap(buffer, offset, RecordingDescriptorHeaderDecoder.BLOCK_LENGTH,
+                               RecordingDescriptorHeaderDecoder.SCHEMA_VERSION);
+            final int recordingLength = headerDecoder.length();
+            if (recordingLength < 1) {
+                break;
+            }
+            if (headerDecoder.state() == RecordingState.VALID) {
+                final int descriptorOffset = offset + DESCRIPTOR_HEADER_LENGTH;
+                descriptor(buffer, descriptorOffset);
+                if (descriptorDecoder.streamId() == streamId && descriptorDecoder.recordingId() > newestRecordingId) {
+                    newestRecordingId = descriptorDecoder.recordingId();
+                    newestOffset = descriptorOffset;
                 }
             }
             offset += BitUtil.align(recordingLength + DESCRIPTOR_HEADER_LENGTH, BitUtil.CACHE_LINE_LENGTH);
         }
-        if (NO_STREAM_FILTER != streamIdFilter && selectedOffset >= 0) {
-            descriptorDecoder.wrap(buffer, selectedOffset, RecordingDescriptorDecoder.BLOCK_LENGTH,
-                RecordingDescriptorDecoder.SCHEMA_VERSION);
-            dumpRecording(descriptorDecoder);
-            found = true;
+        return newestOffset;
+    }
+
+    private RecordingDescriptorDecoder descriptor(final UnsafeBuffer buffer, final int descriptorOffset) {
+        return descriptorDecoder.wrap(buffer, descriptorOffset, RecordingDescriptorDecoder.BLOCK_LENGTH,
+                                      RecordingDescriptorDecoder.SCHEMA_VERSION);
+    }
+
+    /**
+     * Prints group {@link #queueGroupId}'s queue: its newest recording if the archive keeps one, as a gateway host's
+     * does, else derived from the archive's Raft log from the member's last announced start. A running member's log
+     * is read to its end, which can hold entries not yet committed.
+     * @return whether it found a recording to print, or a log to derive the queue from
+     */
+    private boolean printQueue(final long fileLength, final UnsafeBuffer catalog) {
+        final int recorded = newestRecording(fileLength, catalog, FrameLayer.queueStreamId(queueGroupId));
+        if (recorded >= 0) {
+            dumpRecording(descriptor(catalog, recorded));
+            return true;
         }
-        if (!found) {
-            System.err.println(NO_STREAM_FILTER == streamIdFilter ?
-                "No valid recordings found in catalog." :
-                "No valid recording on stream " + streamIdFilter + " found in catalog.");
+        final int log = newestRecording(fileLength, catalog, ConsensusModule.Configuration.logStreamId());
+        if (log < 0) {
+            System.err.println("No recording of group " + queueGroupId + "'s queue, and no Raft log to derive it " +
+                               "from, found in catalog.");
+            return false;
         }
+        final int announcements = newestRecording(fileLength, catalog, DerivationAnnouncement.STREAM_ID);
+        final DerivationAnnouncement announcement =
+            announcements < 0 ? null : DerivationAnnouncement.decode(readMessages(descriptor(catalog, announcements)));
+        descriptor(catalog, log);
+        final long logStart = descriptorDecoder.startPosition();
+        final long from = announcement == null ? 0 : announcement.start().logPosition();
+        if (from < logStart) {
+            System.err.println("The Raft log's recording starts at " + logStart + ", past the derivation's start at " +
+                               from + (announcement == null ? ": the member announced none." : "."));
+            return false;
+        }
+        text.printf("[Derived] Group %d's queue from the Raft log | Recording ID: %d | From Log Pos: %d%n",
+                    queueGroupId, descriptorDecoder.recordingId(), from);
+        final UnsafeBuffer frame = new UnsafeBuffer(0, 0);
+        final long[] entryPosition = { from };
+        final LogDeriver deriver = new LogDeriver(NO_MEMBER, new Sequencer.FrameSink() {
+            @Override
+            public void activate(final int[] groupIds) {
+            }
+
+            @Override
+            public void publish(final int groupId, final DirectBuffer buffer, final int length) {
+                if (groupId == queueGroupId) {
+                    frame.wrap(buffer, 0, length);
+                    printMessage(frame, 0, length, entryPosition[0]);
+                }
+            }
+        });
+        if (announcement != null) {
+            deriver.restore(announcement.start().state(), announcement.start().restored());
+        }
+        messages = (buffer, offset, endOffset, position) -> {
+            entryPosition[0] = position;
+            deriver.onLogEntry(buffer, offset, endOffset - offset);
+        };
+        try {
+            readPhysicalSegments(descriptorDecoder.recordingId(), logStart, from, descriptorDecoder.stopPosition(),
+                                 descriptorDecoder.termBufferLength(), descriptorDecoder.segmentFileLength());
+        } finally {
+            messages = this::printMessage;
+        }
+        return true;
+    }
+
+    /** Every whole message of a recording, copied. */
+    private List<byte[]> readMessages(final RecordingDescriptorDecoder descriptor) {
+        final List<byte[]> read = new ArrayList<>();
+        messages = (buffer, offset, endOffset, position) -> {
+            final byte[] message = new byte[endOffset - offset];
+            buffer.getBytes(offset, message);
+            read.add(message);
+        };
+        try {
+            readPhysicalSegments(descriptor.recordingId(), descriptor.startPosition(), descriptor.startPosition(),
+                                 descriptor.stopPosition(), descriptor.termBufferLength(),
+                                 descriptor.segmentFileLength());
+        } finally {
+            messages = this::printMessage;
+        }
+        return read;
     }
 
     private void dumpRecording(final RecordingDescriptorDecoder descriptorDecoder) {
@@ -594,26 +728,29 @@ public class SbeLogPrinter {
         final int segmentFileLength = descriptorDecoder.segmentFileLength();
         text.printf("[Catalog] Recording ID: %d | Stream ID: %d | Start Pos: %d | Stop Pos: %d%n", recordingId,
                     descriptorDecoder.streamId(), startPosition, stopPosition);
-        readPhysicalSegments(recordingId, startPosition, stopPosition, termBufferLength, segmentFileLength);
+        readPhysicalSegments(recordingId, startPosition, startPosition, stopPosition, termBufferLength,
+                             segmentFileLength);
     }
 
     /**
      * Read log segment
      * @param recordingId recording identity
      * @param startPos start position
+     * @param from where to start reading, at a message's start
      * @param stopPos stop position
      * @param termLength term buffer length
      * @param segmentLength segment length
      */
     private void readPhysicalSegments(final long recordingId,
                                       final long startPos,
+                                      final long from,
                                       final long stopPos,
                                       final int termLength,
                                       final int segmentLength) {
         // An in-progress recording has no stop position yet; rely on frame/segment EOF to end the scan.
         final long endPosition = stopPos == AeronArchive.NULL_POSITION ? Long.MAX_VALUE : stopPos;
         fragmentsPosition = AeronArchive.NULL_POSITION;
-        for (long position = startPos; position < endPosition; ) {
+        for (long position = from; position < endPosition; ) {
             // The segment grid is anchored on the recording's start term, not on position 0.
             final long segmentBasePosition = AeronArchive.segmentFileBasePosition(startPos, position, termLength,
                                                                                  segmentLength);
@@ -656,7 +793,7 @@ public class SbeLogPrinter {
         final int length = frameLength - DataHeaderFlyweight.HEADER_LENGTH;
         final byte flags = (byte)dataHeader.flags();
         if ((flags & FrameDescriptor.UNFRAGMENTED) == FrameDescriptor.UNFRAGMENTED) {
-            printMessage(buffer, offset, offset + length, position);
+            messages.onMessage(buffer, offset, offset + length, position);
             return;
         }
         if ((flags & FrameDescriptor.BEGIN_FRAG_FLAG) != 0) {
@@ -669,7 +806,7 @@ public class SbeLogPrinter {
         fragmentsLength += length;
         if ((flags & FrameDescriptor.END_FRAG_FLAG) != 0) {
             assembled.wrap(fragments.byteArray(), 0, fragmentsLength);
-            printMessage(assembled, 0, fragmentsLength, fragmentsPosition);
+            messages.onMessage(assembled, 0, fragmentsLength, fragmentsPosition);
             fragmentsPosition = AeronArchive.NULL_POSITION;
         }
     }
@@ -706,12 +843,14 @@ public class SbeLogPrinter {
 
     private static void usage() {
         System.out.println("Usage: sbe-log-printer.sh [--schema <name>|--spec <file.sbeir>] <archive-dir> " +
-                           "[--stream <id>] [--oneline] [-o <payloadId>]");
+                           "[--stream <id>|--queue <groupId>] [--oneline] [-o <payloadId>]");
         System.out.println("  --schema <name>  decode only this bundled schema (default: all of " +
                            String.join(", ", BUNDLED_SCHEMAS) + ", each frame matched on its schema id)");
         System.out.println("  --spec <file>    decode against an IR file outside the jar instead");
         System.out.println(
             "  --stream <id>    dump only the newest recording on that stream; a queue is 2000 + groupId");
+        System.out.println("  --queue <groupId> dump only that group's queue: its recording, or else derived from");
+        System.out.println("                   the Raft log, which is what a member's archive holds");
         System.out.println("  --oneline        print each message as a single line of JSON");
         System.out.println("  --list-schemas   list the bundled schema names and exit");
         System.out.println("  -o <payloadId>   write that protocol's payloads to stdout, raw and back to back,");
@@ -723,6 +862,7 @@ public class SbeLogPrinter {
         String specIrPath = null;
         String archiveDirPath = null;
         int streamIdFilter = NO_STREAM_FILTER;
+        int queueGroupId = NO_QUEUE;
         boolean oneLine = false;
         int payloadIdFilter = NO_PAYLOAD_OUTPUT;
 
@@ -734,8 +874,8 @@ public class SbeLogPrinter {
                     System.out.println(name);
                 }
                 return;
-            } else if ("--stream".equals(args[i]) || "--schema".equals(args[i]) || "--spec".equals(args[i]) ||
-                       "-o".equals(args[i])) {
+            } else if ("--stream".equals(args[i]) || "--queue".equals(args[i]) || "--schema".equals(args[i]) ||
+                       "--spec".equals(args[i]) || "-o".equals(args[i])) {
                 final String option = args[i];
                 if (++i == args.length) {
                     System.err.println("Missing value for " + option);
@@ -764,6 +904,17 @@ public class SbeLogPrinter {
                             System.exit(1);
                         }
                     }
+                    case "--queue" -> {
+                        try {
+                            queueGroupId = Integer.parseInt(args[i]);
+                        } catch (NumberFormatException e) {
+                            queueGroupId = NO_QUEUE;
+                        }
+                        if (queueGroupId < 1 || queueGroupId > FrameLayer.MAX_GROUPS) {
+                            System.err.println("Not a groupId (1-" + FrameLayer.MAX_GROUPS + "): " + args[i]);
+                            System.exit(1);
+                        }
+                    }
                     default -> throw new IllegalStateException("unhandled option " + option);
                 }
             } else if (archiveDirPath == null) {
@@ -783,6 +934,10 @@ public class SbeLogPrinter {
             System.err.println("--schema and --spec are mutually exclusive");
             System.exit(1);
         }
+        if (streamIdFilter != NO_STREAM_FILTER && queueGroupId != NO_QUEUE) {
+            System.err.println("--stream and --queue are mutually exclusive");
+            System.exit(1);
+        }
         // A typo here is a usage error, so report it as one rather than as a stack trace from the load below.
         if (schema != null && !BUNDLED_SCHEMAS.contains(schema)) {
             System.err.println("Unknown schema '" + schema + "' — bundled: " + String.join(", ", BUNDLED_SCHEMAS));
@@ -792,8 +947,8 @@ public class SbeLogPrinter {
             final List<Ir> irs = specIrPath != null ? List.of(loadIrFile(specIrPath))
                                      : schema != null ? List.of(loadBundledIr(schema))
                                          : loadAllBundledIrs();
-            final SbeLogPrinter printer = new SbeLogPrinter(irs, archiveDirPath, streamIdFilter, oneLine,
-                                                           payloadIdFilter);
+            final SbeLogPrinter printer =
+                new SbeLogPrinter(irs, archiveDirPath, streamIdFilter, queueGroupId, oneLine, payloadIdFilter);
             final boolean dumped = printer.scanAndDumpLog();
             System.out.flush();
             if (!dumped) {

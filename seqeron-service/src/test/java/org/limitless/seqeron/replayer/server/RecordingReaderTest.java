@@ -117,7 +117,7 @@ class RecordingReaderTest {
     }
 
     @Test
-    @DisplayName("a segment file cut short of the limit gives what it holds, and one that is gone throws")
+    @DisplayName("a segment file cut short of the limit throws after what it holds, and so does one that is gone")
     void truncatedAndMissingFiles() throws IOException {
         final long first = data(UNFRAGMENTED, "kept");
         data(UNFRAGMENTED, "cut");
@@ -125,12 +125,24 @@ class RecordingReaderTest {
             file.truncate(first + 8);
         }
         try (RecordingReader reader = reader(0)) {
-            assertEquals(1, poll(reader, tail));
-            assertEquals(0, poll(reader, tail));
+            assertThrows(UncheckedIOException.class, () -> poll(reader, tail));
             assertEquals(List.of("kept"), messages);
+            assertEquals(first, reader.position());
         }
         try (RecordingReader reader = reader(SEGMENT_LENGTH)) {
             assertThrows(UncheckedIOException.class, () -> poll(reader, SEGMENT_LENGTH + 64));
+        }
+    }
+
+    @Test
+    @DisplayName("a frame header below the limit too short for a frame throws, where a damaged segment holds zeros")
+    void aDamagedFrameHeader() {
+        final long first = data(UNFRAGMENTED, "kept");
+        write(ByteBuffer.allocate(64), 64);
+        try (RecordingReader reader = reader(0)) {
+            assertThrows(UncheckedIOException.class, () -> poll(reader, tail));
+            assertEquals(List.of("kept"), messages);
+            assertEquals(first, reader.position());
         }
     }
 

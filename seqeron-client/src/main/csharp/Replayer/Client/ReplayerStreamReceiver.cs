@@ -99,7 +99,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
     }
 
     /// <summary>Hands each <c>SnapshotRound</c> the Replayer sends to <paramref name="handler"/>, with the round and
-    /// its cut; none is delivered without one (doc/snapshot.md §10.8).</summary>
+    /// its cut; none is delivered without one.</summary>
     /// <param name="handler">receives the round's number and its cut's <c>clusterSeqNo</c></param>
     public void OnSnapshotRound(Action<long, long> handler)
     {
@@ -143,7 +143,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
     }
 
     /// <summary>Restores the newest snapshot in <paramref name="store"/> on <see cref="Start"/>, before anything is
-    /// dispatched, once a replay shows the log holds its cut (doc/snapshot.md §7). Call before <see cref="Start"/>;
+    /// dispatched, once a replay shows the log holds its cut. Call before <see cref="Start"/>;
     /// <see cref="RestoreFailure"/> reports a snapshot that cannot be restored.</summary>
     /// <param name="store">this instance's snapshot files</param>
     /// <param name="handler">takes the restored records</param>

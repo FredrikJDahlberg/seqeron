@@ -16,7 +16,7 @@ final class ReplyAddresses {
      * @param sourceId     the requester's source
      * @param connectionId the requester's connection
      * @param groupMask    the groups that saw the request
-     * @return@return an address equal to {@code new ReplyAddress(sourceId, connectionId, groupMask)}
+     * @return an address equal to {@code new ReplyAddress(sourceId, connectionId, groupMask)}
      */
     ReplyAddress of(final int sourceId, final int connectionId, final int groupMask) {
         final int slot = ((sourceId * 31 + connectionId) * 31 + groupMask) & (SLOTS - 1);

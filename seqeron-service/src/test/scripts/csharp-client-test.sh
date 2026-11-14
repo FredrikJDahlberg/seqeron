@@ -17,14 +17,11 @@
 #                                                                            follow FAILED
 #
 # and no member logs a rejected ingress frame. D SIGKILLs the leader, as FailoverProcessTest does, so the run costs
-# what a crash does (doc/fault-tolerance.md §1.2). Its control reports what the kill cost; like FailoverProcessTest's,
+# what a crash does. Its control reports what the kill cost; like FailoverProcessTest's,
 # it is not asserted, since a kill can land between two frames.
 #
-# CSHARP_MEMBER_OPTS adds JVM flags to every member, space-separated: -Dreplayer.deriveFromLog=true runs it on
-# members that record no queue (doc/disk-load-plan.md, step 2a).
-#
 # Needs the uber jar and the .NET SDK (`dotnet`, or DOTNET naming one). Run it on every Aeron upgrade: the C#
-# client is on Aeron.NET, which trails Java (doc/seqeron-protocol-spec.md, V-1).
+# client is on Aeron.NET, which trails Java.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,7 +55,6 @@ for ex in FollowStream ColocatedApp GatewayApp SnapshotApp; do
 done
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
-read -r -a MEMBER_OPTS <<< "${CSHARP_MEMBER_OPTS:-}"
 BASE_DIR="${TMP_DIR}/seqeron-seqcs"
 SNAPSHOT_DIR="${BASE_DIR}/snapshot-app"
 CLUSTER_HOSTS="$(cluster_hosts_string 3)"
@@ -96,7 +92,7 @@ rm -rf "$BASE_DIR" "$(aeron_dir 0)" "$(aeron_dir 1)" "$(aeron_dir 2)" 2>/dev/nul
 
 declare -a SEQ_PIDS
 for m in 0 1 2; do
-  java "${JAVA_OPTS[@]}" ${MEMBER_OPTS[@]+"${MEMBER_OPTS[@]}"} -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
+  java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
        -Dsequencer.hosts="$CLUSTER_HOSTS" -jar "$JAR" > "$LOG_DIR/seq-$m.log" 2>&1 &
   SEQ_PIDS[$m]=$!
 done
@@ -253,7 +249,7 @@ for ((i = 0; i < 120; i++)); do
 done
 grep -q "^safe " "$BASE_DIR/cluster-$Q/restart-safe.log" 2>/dev/null || { echo "    member $Q has no restart-safe cut"; H_OK=0; }
 kill "${SEQ_PIDS[$Q]}" 2>/dev/null; wait "${SEQ_PIDS[$Q]}" 2>/dev/null
-java "${JAVA_OPTS[@]}" ${MEMBER_OPTS[@]+"${MEMBER_OPTS[@]}"} -Dsequencer.memberId="$Q" -Dsequencer.baseDir="$BASE_DIR" \
+java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$Q" -Dsequencer.baseDir="$BASE_DIR" \
      -Dsequencer.hosts="$CLUSTER_HOSTS" -jar "$JAR" > "$LOG_DIR/seq-$Q-restart.log" 2>&1 &
 SEQ_PIDS[$Q]=$!
 wait_for_log "$LOG_DIR/seq-$Q-restart.log" "serving replay" 60 || { echo "    member $Q not back"; H_OK=0; }

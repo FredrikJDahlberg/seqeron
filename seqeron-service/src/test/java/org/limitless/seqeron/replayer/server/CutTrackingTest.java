@@ -28,7 +28,7 @@ import org.limitless.seqeron.sbe.replay.SnapshotRoundDecoder;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * A member's Replayer tracking its cluster snapshots (doc/snapshot.md §10.8): it tells the applications of each round,
+ * A member's Replayer tracking its cluster snapshots: it tells the applications of each round,
  * hears which join and which confirm, and writes the cut to the member's log once it may be restarted from.
  */
 class CutTrackingTest {

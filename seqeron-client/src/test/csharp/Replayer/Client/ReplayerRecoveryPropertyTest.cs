@@ -20,7 +20,7 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// (<see cref="ClusterSeqNoOf"/>), and the client must track it by groupSeqNo.</para>
 /// <para><b>Liveness</b>: once the faults stop, recovery converges: caught up, at the tip, having dispatched every
 /// frame ever published.</para>
-/// <para><b>Restore</b>: a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut
+/// <para><b>Restore</b>: a client restoring its own snapshot holds both properties from the cut
 /// on, under the same faults, and its restored state plus the frames after the cut equals the state a full replay
 /// builds. It holds files of two rounds: the newer was cut from another log, whose cut this recording does not hold
 /// where the file says, so it gives way to the older.</para>

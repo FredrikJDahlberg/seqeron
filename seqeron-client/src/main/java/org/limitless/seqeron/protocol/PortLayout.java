@@ -8,7 +8,7 @@ import java.util.List;
 /**
  * The cluster port-layout formula — the Java twin of {@code protocol/PortLayout.hpp} and {@code
  * ports.sh}; {@code SequencerServerTest} and {@code PortLayoutTest} pin the same pairs. Cluster member ports
- * only (doc/ops.md, "Ports"). Client tier, so a producer derives
+ * only. Client tier, so a producer derives
  * endpoints from here without depending on the node.
  */
 public final class PortLayout {
@@ -52,7 +52,7 @@ public final class PortLayout {
     public static final List<String> HOSTS = resolveHosts(System.getenv(ENV_HOSTS));
 
     /**
-     * Core's reserved block (doc/ops.md, "Ports"): seven members wide, one stride each — wider than the
+     * Core's reserved block: seven members wide, one stride each — wider than the
      * base+1..base+65 seven members bind.
      */
     public static final int CLUSTER_PORT_BLOCK_FIRST = CLUSTER_PORT_BASE;

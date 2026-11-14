@@ -17,7 +17,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.limitless.seqeron.replayer.server.ReplayerServer;
 
 /**
  * The operator tools as an operator runs them: {@code clusterctl}, {@code ClusterProbe} and {@code SbeLogPrinter} as
@@ -85,7 +84,7 @@ class ClusterToolsTest {
         help.assertContains("load-topology <file>");
 
         final Run snapshot = clusterctl(0, "snapshot");
-        assertEquals(0, snapshot.status());
+        assertEquals(2, snapshot.status());
         snapshot.assertContains("snapshot: command is not supported");
 
         final Run noGateway = clusterctl(0, "activate");
@@ -220,13 +219,15 @@ class ClusterToolsTest {
         final Run dump = printer(archive.toString(), "--oneline");
         assertEquals(0, dump.status());
         dump.assertContains("[Catalog] Recording ID");
-        if (Boolean.getBoolean(ReplayerServer.PROP_DERIVE_FROM_LOG)) {
-            return; // the member recorded no queue, so its archive holds no sequenced frame
-        }
-        dump.assertContains("ProbeMarker");
-        dump.assertContains("ClusterStopped");
 
-        final Run only = printer("--schema", "frame", archive.toString(), "--oneline");
+        // The member records no queue, so its queue is derived from its log.
+        final Run queue = printer(archive.toString(), "--queue", "1", "--oneline");
+        assertEquals(0, queue.status());
+        queue.assertContains("[Derived] Group 1's queue");
+        queue.assertContains("ProbeMarker");
+        queue.assertContains("ClusterStopped");
+
+        final Run only = printer("--schema", "frame", archive.toString(), "--queue", "1", "--oneline");
         assertEquals(0, only.status());
         only.assertContains("ClusterStopped");
         assertFalse(only.output().contains("ProbeMarker ="), "the probe schema is not loaded");
@@ -246,6 +247,12 @@ class ClusterToolsTest {
         final Run stream = printer(archive.toString(), "--stream", "many");
         assertEquals(1, stream.status());
         stream.assertContains("Not a stream id: many");
+        final Run group = printer(archive.toString(), "--queue", "17");
+        assertEquals(1, group.status());
+        group.assertContains("Not a groupId (1-16): 17");
+        final Run selectors = printer(archive.toString(), "--stream", "2001", "--queue", "1");
+        assertEquals(1, selectors.status());
+        selectors.assertContains("--stream and --queue are mutually exclusive");
         final Run payload = printer(archive.toString(), "-o", "0");
         assertEquals(1, payload.status());
         payload.assertContains("Not a payloadId: 0");

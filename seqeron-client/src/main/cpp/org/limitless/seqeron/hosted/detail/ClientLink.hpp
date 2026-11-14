@@ -47,7 +47,7 @@ namespace org::limitless::seqeron::hosted {
 
 namespace wire = sbe::hosted;
 
-/** Why a stub stopped (doc/seqeron-protocol-spec.md §17.6): its own faults, which are not a fence. */
+/** Why a stub stopped: its own faults, which are not a fence. */
 enum class Failure : std::uint8_t
 {
     None,
@@ -76,7 +76,7 @@ inline std::int64_t nowNs()
 }
 
 /**
- * What a hosted Application and a hosted Gateway share (doc/seqeron-protocol-spec.md §17): the attach, the counters,
+ * What a hosted Application and a hosted Gateway share: the attach, the counters,
  * the command window, the host's events and the snapshot cut. The derived class supplies the hooks
  *
  *   onGate(bool leading), onOther(templateId, base, length, blockLength, version)

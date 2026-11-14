@@ -58,7 +58,10 @@ public final class SeqeronCounters {
     /** Last type id of the Replayer's block. */
     public static final int REPLAYER_TYPE_ID_MAX = 5199;
 
-    /** 1 once the co-located queue recording is visible and replay requests are being served, else 0. */
+    /**
+     * 1 once every served queue is listed and replay requests are being served, else 0: on a member once its
+     * derivation has caught up with the log, on a gateway host once its archive records each queue.
+     */
     public static final int REPLAYER_READY_TYPE_ID = 5101;
 
     /** Current count of in-flight replays, out of {@code MAX_CONCURRENT_REPLAYS}. */
@@ -77,8 +80,8 @@ public final class SeqeronCounters {
     public static final int REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5107;
 
     /**
-     * Count of replay requests held pending only because the queue recording trailed the queue while a replay ran,
-     * resends included: a held client resends about every 500 ms.
+     * Count of replay requests held pending only because a gateway host's queue recording trailed the queue while a
+     * replay ran, resends included: a held client resends about every 500 ms. 0 on a member, which records none.
      */
     public static final int REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;
 
@@ -89,7 +92,7 @@ public final class SeqeronCounters {
     public static final int REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
 
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
-    // Core reserves 5200 and 5297-5299; a consumer allocates its own in 5201-5296 (doc/ops.md, "Counter type ids").
+    // Core reserves 5200 and 5297-5299; a consumer allocates its own in 5201-5296.
     // Published by the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.
     /**
      * First type id of the app range: core reserves {@link #APP_RECOVERY_STALLED_TYPE_ID}, {@link #HOSTED_LAG_TYPE_ID},
@@ -106,7 +109,7 @@ public final class SeqeronCounters {
     public static final int HOSTED_LAG_TYPE_ID = 5297;
 
     /**
-     * The last snapshot round a participating client confirmed (doc/snapshot.md §4), 0 for none yet. A client whose
+     * The last snapshot round a participating client confirmed, 0 for none yet. A client whose
      * round lags the others' is missing rounds.
      */
     public static final int APP_SNAPSHOT_ROUND_TYPE_ID = 5298;
@@ -114,7 +117,7 @@ public final class SeqeronCounters {
     /** Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not serve. */
     public static final int GATEWAY_CONNECTIONS_TYPE_ID = 5299;
 
-    // ClientProxy and the clients it serves (doc/seqeron-protocol-spec.md §17.2.1)
+    // ClientProxy and the clients it serves
     /** First type id of the proxy's block. */
     public static final int PROXY_TYPE_ID_MIN = 5300;
     /** Last type id of the proxy's block. */

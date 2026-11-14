@@ -58,7 +58,7 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      # The client tier only, the surface doc/client-api.md defines; configuring fetches Aeron but builds none of it.
+      # The client tier only; configuring fetches Aeron but builds none of it.
       - name: Render
         run: |
           ./gradlew :seqeron-client:javadoc

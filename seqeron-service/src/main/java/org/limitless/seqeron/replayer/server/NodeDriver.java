@@ -19,7 +19,7 @@ import org.limitless.seqeron.util.Logger;
  * streams of the archive clients sharing it, and the exit statuses of the process that runs it.
  */
 public final class NodeDriver {
-    /** Exit status of a process that can no longer record its queue or serve replay; restart it. */
+    /** Exit status of a process that can no longer publish its queues or serve replay; restart it. */
     public static final int EXIT_FATAL = 70;
 
     /**
@@ -38,7 +38,7 @@ public final class NodeDriver {
     /** {@link ReplayerServer}'s. */
     static final int REPLAYER_ARCHIVE_RESPONSE_STREAM_ID = 120;
 
-    /** {@link AeronQueueRelay}'s session with a member's archive. */
+    /** {@link AeronLogRelay}'s session with a member's archive. */
     static final int RELAY_ARCHIVE_RESPONSE_STREAM_ID = 122;
 
     /** IPC term length when {@code aeron.ipc.term.buffer.length} is not set, rather than Aeron's 64 MiB. */
@@ -50,12 +50,13 @@ public final class NodeDriver {
     /**
      * Untethered window-limit and linger timeouts when their Aeron properties are not set, rather than Aeron's 5s
      * each. Until evicted, a stalled subscriber holds the queue's window, and the sequencer and a gateway host's
-     * relay each terminate after {@link #queueStallTimeoutMs} of back-pressure with no recording progress.
+     * relay each terminate after {@link #queueStallTimeoutMs} of back-pressure: one offer on a member, with no
+     * recording progress on a gateway host.
      */
     static final long DEFAULT_UNTETHERED_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(100);
 
     /**
-     * How long a queue's recording may make no progress under back-pressure before the process terminates, when
+     * How long a queue may stay back-pressured before the process terminates, when
      * {@link #queueStallTimeoutMs}'s property is not set. Above a block storage's write stalls, which can reach
      * several members at once.
      */
@@ -63,7 +64,7 @@ public final class NodeDriver {
 
     /**
      * The least stall timeout: over twice the untethered eviction, until which a stalled subscriber holds the window
-     * and the recording cannot advance.
+     * and the queue cannot advance.
      */
     public static final long MIN_QUEUE_STALL_TIMEOUT_MS = 1_000;
 
@@ -72,7 +73,7 @@ public final class NodeDriver {
 
     /**
      * Reads the queue stall timeout, {@code sequencer.queueStallTimeoutMs} on a member and
-     * {@code replayer.queueStallTimeoutMs} on a gateway host (doc/ops.md, "A node that terminates itself").
+     * {@code replayer.queueStallTimeoutMs} on a gateway host.
      *
      * @param property the property's name
      * @return the timeout in milliseconds, {@link #DEFAULT_QUEUE_STALL_TIMEOUT_MS} when it is not set
@@ -90,8 +91,7 @@ public final class NodeDriver {
 
     /**
      * A seqeron media driver's context: every driver thread on {@code idleStrategies}, and dedicated threads, the IPC
-     * term length and the untethered timing of doc/ops.md ("Driver threads", "Term lengths", "Untethered
-     * subscribers") where their Aeron properties are not set.
+     * term length and the untethered timing where their Aeron properties are not set.
      *
      * <p>The directory is not deleted unchecked on start: Aeron refuses one a live driver holds, and saves the
      * previous driver's error log beside it before deleting it.
@@ -142,7 +142,7 @@ public final class NodeDriver {
     }
 
     /**
-     * Warns, on Linux, when a member's {@code baseDir} is on tmpfs: its Raft log and queue recording would not survive
+     * Warns, on Linux, when a member's {@code baseDir} is on tmpfs: its Raft log would not survive
      * the host's restart, and a cluster whose members restart together would lose its log.
      * @param component who is launching the member
      * @param memberId  its node id
@@ -155,7 +155,7 @@ public final class NodeDriver {
         try {
             if ("tmpfs".equals(fileSystemType(Path.of(baseDir)))) {
                 Logger.log(component, Logger.Severity.Warn, Logger.CoreEventCode.Info, memberId,
-                           "the base directory %s is on tmpfs: the Raft log and queue recording in it do not survive "
+                           "the base directory %s is on tmpfs: the Raft log in it does not survive "
                                + "a restart of the host — put it on a disk",
                            baseDir);
             }
@@ -166,8 +166,7 @@ public final class NodeDriver {
 
     /**
      * Warns, on Linux, when the kernel's writeback timers are its defaults: it then flushes about 30 s of dirty
-     * archive data at once, and a recorder write waiting behind the flush stops the member's commits
-     * (doc/ec2-tests.md, "Archive writes on EBS").
+     * archive data at once, and a recorder write waiting behind the flush stops the member's commits.
      * @param component who is launching the member
      * @param memberId  its node id
      */
@@ -210,7 +209,7 @@ public final class NodeDriver {
 
     /**
      * Has the archive write a CRC-32C into every frame it records, where {@code aeron.archive.record.checksum} is not
-     * set, so a damaged recording can be found (doc/ops.md, "Recording checksums"). Nothing verifies them on replay
+     * set, so a damaged recording can be found. Nothing verifies them on replay
      * unless {@code aeron.archive.replay.checksum} is set. Agrona computes them through {@code java.util.zip}'s
      * internals, so a JVM that does not open it to this code warns and records without them rather than fail.
      *

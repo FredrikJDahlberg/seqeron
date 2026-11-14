@@ -15,7 +15,7 @@ public interface Replayer {
     /**
      * One queue recording as read off an archive listing. {@code startPosition} is carried because a replay
      * must start at or after it. A queue recorded from its first frame starts at 0, one recorded from a snapshot's
-     * cut elsewhere (doc/snapshot.md §10.3).
+     * cut elsewhere.
      */
     record RecordingSpan(long recordingId, long startPosition, boolean active, int termBufferLength,
                          int segmentFileLength) { }

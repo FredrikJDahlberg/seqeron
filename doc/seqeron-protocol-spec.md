@@ -114,12 +114,12 @@ host relays (**R-6**).
 > consumer tracks a queue's continuity by `groupSeqNo` (**P-3**).
 
 - A frame whose mask names several groups is on each of their queues, under each group's own `groupSeqNo`.
-- A process that republishes a queue copies its frames unchanged. A gateway host relays the queue of
-  each group it is configured with (`replayer.groups`, a list of `groupId`s, required since no group is
-  special), each onto its own queue of the same stream id, and resumes a relay at the frame whose
-  `groupSeqNo` follows the last one it published.
-- The sequencer writes a queue reliably, and only once the node's archive is recording it, so a queue's
-  recording starts at its first frame.
+- A process that republishes a queue gives the same frames. A gateway host relays a member's Raft log and
+  derives the queue of each group it is configured with (`replayer.groups`, a list of `groupId`s, required
+  since no group is special), each onto its own queue of the same stream id, and resumes on another member at
+  the end of the last log entry it applied.
+- The sequencer writes a queue reliably, and only once its own subscriber to it is connected, so a queue's
+  history starts at its first frame.
 - The frames sequenced before activation are on no queue: the Raft log holds them. A cluster does nothing
   until its topology is loaded: before activation the sequencer refuses every ingress frame but the
   group table (§9.2 condition 13), and the prologue carries what a consumer needs of the rest.
@@ -712,28 +712,28 @@ still replayed, relayed to a gateway host and read. Nor is a queue of every fram
 groups' queues: every frame after activation is on at least one of them (**F-1**) and the Raft log
 holds the whole history, so no instance would read it.
 
-**What it costs.** A frame is written to every queue that carries it: a system frame once per group, an
-application frame once per bit in its mask, so a node's archive holds the sum of its queues. Each queue
-is a recording, and a stalled one terminates its node (`doc/fault-tolerance.md` §1.3). A gateway host
-runs one relay per group its instances read. Groups pay off when most application frames address one
-group; a deployment whose frames mostly address every group pays the writes, saves no reads, and should
-declare one group. Groups are not access control: the producer chooses the mask, and every queue
+**What it costs.** A frame is published on every queue that carries it: a system frame once per group, an
+application frame once per bit in its mask. A member's archive records only the Raft log, and a replay of
+one group derives it from every group's log entries; a gateway host's archive records each queue it relays,
+the sum of its queues. A queue that stalls terminates its node (`doc/fault-tolerance.md` §1.3). Groups pay
+off when most application frames address one group; a deployment whose frames mostly address every group
+pays the publications, saves no reads, and should declare one group. Groups are not access control: the producer chooses the mask, and every queue
 carries every system frame.
 
 **Activation.** Until its groups are active, a log has no queue. The first `GroupsRegistered` activates
 every group it declares: the sequencer builds the group table from it, then:
 
-1. opens each group's queue and asks the node's archive to record each;
-2. waits until the archive is recording all of them, for at most 5 s in all;
+1. opens each group's queue, with a subscriber of its own to each;
+2. waits until all of those subscribers are connected, for at most 5 s in all;
 3. writes each queue's prologue at `groupSeqNo` 1, in ascending `groupId`: the most recent
    `LeadershipChanged`, as it was sequenced. The sequencer keeps that frame until then.
 
 The wait holds up the node's processing of the log, so it is bounded. It is paid once, at the first
-load, and again by each node's restart, whose replay reaches the same frame. A node whose archive is not
-recording every queue by the deadline terminates itself, as one whose recording stops does
+load, and again by each node's restart, whose replay reaches the same frame. A node whose subscribers are
+not all connected by the deadline terminates itself, as one whose queue stops draining does
 (`doc/fault-tolerance.md` §1.3): its peers keep quorum, and its restart replays to the same frame and
-waits again. A queue is opened once, at activation, and never re-created, so a node's recording of it
-is one continuous run across every leader tenure. (`SequencerService`)
+waits again. A queue is opened once, at activation, and never re-created, so a node's queue is one
+continuous run across every leader tenure. (`SequencerService`)
 
 It then emits the `GroupsRegistered` to every queue, as it emits every system frame from then on, so it
 is the second frame of every queue. Between them, the two give a group's members what they need of the
@@ -768,8 +768,8 @@ that a gateway's `connectionData` reaches every group.
 A bit therefore never changes meaning. A group cannot be added, removed or renamed on an existing
 archive (§11), and a source cannot move to another group: its instances' state and snapshot files
 derive from the queue they read (**A-8**). A producer's masks stay valid for its life. A restarting node
-replays the log from `clusterSeqNo` 1 and activates the groups at the same frame as before, into new
-recordings.
+replays the log from `clusterSeqNo` 1 and activates the groups at the same frame as before, and its
+replayer derives their history again.
 
 Adding groups to a running cluster is proposed, not implemented; the rules above hold until it is ([`upgrades.md`](upgrades.md) §7.4).
 
@@ -991,10 +991,11 @@ no header composite and are never sequenced or recorded.
   passes it without a frame there, which means the cut was made in another log. The client checks the frame it
   receives, and anchors its resume at that frame's position.
 
-The replayer serves only the active recording of each of its node's queues, whatever its first frame. With no
-`<snapshots>` policy, a node's every start replays the log from `clusterSeqNo` 1 into a new recording, which
-holds the whole queue. With one, a member restarted at a cut records from the cut, and a purge moves a
-recording's start forward while the node runs (`doc/snapshot.md` §10.3, §10.6). A client replaying from
+The replayer serves only the active recording of each of its node's queues, whatever its first frame: on a
+member, the one its derivation of the Raft log holds; on a gateway host, its archive's. With no `<snapshots>`
+policy, a node's every start derives each queue from `clusterSeqNo` 1, which holds the whole queue. With one, a
+member restarted at a cut starts its queues at the cut, and a purge moves a queue's start forward while the node
+runs (`doc/snapshot.md` §10.3, §10.6). A client replaying from
 `FROM_START` checks that the first frame it dispatches is `groupSeqNo` 1, and stops if it is not; one restoring a
 snapshot takes its first `groupSeqNo` from the frame at the cut (`doc/snapshot.md` §7).
 
@@ -1042,8 +1043,8 @@ encoded length is 8 + block. None has var-data or repeating groups.
 - `catchUpPosition`: where the client stops following the replay and switches to the live queue,
   de-duplicating on `clusterSeqNo`.
 
-**Slot limits.** A replayer serves at most `MAX_CONCURRENT_REPLAYS` = 4 replays at once, one while any of its
-queue recordings trails its queue by more than a quarter of the publication window, and answers
+**Slot limits.** A replayer serves at most `MAX_CONCURRENT_REPLAYS` = 4 replays at once, and on a gateway host
+one while any of its queue recordings trails its queue by more than a quarter of the publication window, and answers
 `ReplayPending` beyond that. A slot frees when its replay's publication is gone (**R-3**): within a duty
 cycle of the client closing its replay subscription, which it does at `catchUpPosition`, and within the
 media driver's client liveness timeout (`aeron.client.liveness.timeout`, 10 s by default) of a client

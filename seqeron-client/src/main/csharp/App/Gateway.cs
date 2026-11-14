@@ -19,7 +19,7 @@ namespace Org.Limitless.Seqeron.App;
 /// <para><b>What is left to the consumer is its edge</b> — a socket, a dialler, a codec. It opens that edge in
 /// <see cref="IGatewayListener.OnActivated"/>, closes it in <see cref="IGatewayListener.OnStandby"/>, and otherwise
 /// exchanges payloads: nothing of the frame layer or of seqeron's system vocabulary appears in its code.</para>
-/// <para><b>Snapshots</b> (doc/snapshot.md §4): given an <see cref="ISnapshotListener"/> and topology rows with
+/// <para><b>Snapshots</b>: given an <see cref="ISnapshotListener"/> and topology rows with
 /// <c>snapshot="true"</c>, every instance serializes its state at each round's cut into its own directory, under a
 /// header carrying the pair's election state, and the active one then submits the round's <c>SnapshotEnd</c>. An
 /// instance whose snapshot differs from the one sequenced is fenced with <see cref="ClusterError.SnapshotDiverged"/>.
@@ -374,7 +374,7 @@ public sealed class Gateway : IDisposable
         if (result == Protocol.Publish.Refused)
         {
             throw new InvalidOperationException(
-                "a frame the sequencer would reject (doc/seqeron-protocol-spec.md §9.2)");
+                "a frame the sequencer would reject");
         }
         return result == Protocol.Publish.Published;
     }
@@ -497,7 +497,7 @@ public sealed class Gateway : IDisposable
         }
 
         // A submitted system payload carries no MessageHeader, so each decode takes this build's own block length and
-        // version (doc/seqeron-protocol-spec.md §7, V-3).
+        // version.
         public void OnSystem(SequencedEvent sequencedEvent)
         {
             Gateway g = _gateway;

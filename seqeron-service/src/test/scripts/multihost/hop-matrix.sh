@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hop-matrix.sh — the hosted-façade hop across three hosts (doc/ec2-tests.md, test 1): the benches' arms on the
+# hop-matrix.sh — the hosted-façade hop across three hosts: the benches' arms on the
 # leader's host, each run a line in <results>/hop-<stamp>.txt.
 #
 # For each rate a fresh cluster loads topology-test-hosted-quiet.xml, and each repeat runs every mode in turn on the
@@ -25,7 +25,7 @@
 #
 # Prerequisites on every host: ./gradlew uberJar, hosted_hop_bench built Release and, for the direct arm,
 # MULTIHOST_DIRECT_BENCH, hop_bench of the tag with direct-hop-bench-payload.patch and then
-# direct-hop-bench-histogram.patch applied (doc/ec2-tests.md, "Image").
+# direct-hop-bench-histogram.patch applied.
 #
 # Usage:
 #   MULTIHOST_MEMBERS=10.0.0.11,10.0.0.12,10.0.0.13 ./hop-matrix.sh

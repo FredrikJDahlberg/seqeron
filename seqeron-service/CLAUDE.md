@@ -7,33 +7,33 @@ no Aeron dependency, and is unit-tested directly (`SequencerTest`). `SequencerSe
 comes back, holding no replicated state itself. Every ingress message gets a cluster-wide monotone
 `clusterSeqNo` plus the Raft consensus timestamp, then is republished on the **node-local queue** of each group
 it reaches (`QUEUE_CHANNEL` = `aeron:ipc?alias=seqeron-queue`, stream `queueStreamId(groupId)` = 2000 + `groupId`),
-which this node's co-located Aeron Archive records: every system frame on every queue, an application frame on
-the queue of each group its `groupMask` names, numbered along the queue by `groupSeqNo`. The first topology load
+every system frame on every queue, an application frame on the queue of each group its `groupMask` names,
+numbered along the queue by `groupSeqNo`. Nothing records a queue: the node's co-located Aeron Archive records the
+Raft log alone, and the Replayer derives each queue's history from it (below). The first topology load
 activates the groups and opens the queues, and the sequencer refuses everything before it. Every frame on a
 queue is sequenced: it carries `Sequenced` envelopes and nothing else, and the sequencer is its only publisher.
 
-**Every node publishes and records its own queues** — leader and follower alike. All nodes process the
+**Every node publishes its own queues** — leader and follower alike. All nodes process the
 same committed log in the same order and keep identical sequencing state (so a new leader resumes
 exactly where the last one left off), which gives every node the same frames in the same order on its queues
-(recording positions match only at equal IPC MTU and term length): each archive
-independently holds each queue, with no cross-node replication, from `groupSeqNo` 1 or from the cut a restarted
-member restored at (below). A queue publication is created
+(queue positions match only at equal IPC MTU and term length), from `groupSeqNo` 1 or from the cut a restarted
+member restored at (below), with no cross-node replication. A queue publication is created
 once, at activation, and never re-created on a leadership change (`aeron:ipc` has no port to collide on),
-so a node's recording of it is one continuous run spanning every leader tenure; a node whose archive is not
-recording every queue within 5 s of activation terminates itself.
+so a node's queue is one continuous run spanning every leader tenure. The service holds a subscriber of its own
+on each queue (`queueDrains`) and reads it past every frame it offers, so the queue is always connected and every
+offer lands; a node whose subscribers have not all connected within 5 s of activation terminates itself.
 
 Consumers split live from history: co-located apps subscribe to the queue **directly** for the live feed
 (untethered, so a slow app is dropped and heals via replay rather than back-pressuring), while the
-co-located `ReplayerService` serves cold-start/gap replay off the same recording. `emit` is reliable —
-it spins until the offer lands, since a dropped frame would be an unrecoverable hole — and can only
-block on local-archive write back-pressure, because the recording is the queue's one tethered subscriber.
-Reliable is not unbounded: `QueuePublisher` — the reliable-offer discipline, split off the way `Sequencer` is
-and unit-tested the same way — watches the archive's `RecordingPos` counter,
-and a node whose recording has stopped or stopped advancing **terminates itself** (`NodeDriver.EXIT_FATAL` = 70) rather
-than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its recording over the
-full-log replay it does anyway. The 1 Hz heartbeat runs the same liveness check, because a *stopped*
-recording back-pressures nothing at all (the untethered app subscribers keep the publication connected)
-and would otherwise be silent. A node whose consensus module truncates its log below what it applied terminates itself
+co-located `ReplayerService` serves cold-start/gap replay derived from the log. `emit` is reliable —
+it spins until the offer lands, since a dropped frame would leave the queue behind the positions the log gives —
+and can only block on an untethered subscriber its driver has not yet dropped. Reliable is not unbounded:
+`QueuePublisher` — the reliable-offer discipline, split off the way `Sequencer` is and unit-tested the same way —
+watches the service's own subscriber, and a node whose subscriber has gone, or whose offer stays back-pressured
+for the stall timeout, **terminates itself** (`NodeDriver.EXIT_FATAL` = 70). Peers keep quorum, and the restart rebuilds its
+queues over the log replay it does anyway. The 1 Hz heartbeat runs the same liveness check, because a lost image
+back-pressures nothing at all (the untethered app subscribers keep the publication connected) and would otherwise
+be silent. `QueuePublisher`'s names and messages still say "recording" for that subscriber. A node whose consensus module truncates its log below what it applied terminates itself
 too, which Aeron Cluster 1.53.2 does to a committed entry (`SequencerServer.truncatesAppliedLog`,
 `doc/fault-tolerance.md` §1.4).
 
@@ -52,7 +52,8 @@ the same log position: `Sequencer.takeSnapshot` publishes the marker `SnapshotSt
 `Sequencer` (a `SequencerSnapshot`, its own Java-only schema 216) writes its state, which acks. Nothing waits for an
 application. **`onStart` restores that state and creates each queue again at the cut** (`QueueStart`: at the marker's
 position when the node's IPC term length and MTU are the snapshot's, else at 0), re-emits the marker as the queue's
-first frame, purges the earlier recording, and hands the Replayer the topology rows the log no longer replays. So a
+first frame, and hands the Replayer a `DerivationStart` (the snapshot's log position, the restored state and each
+queue's start) and the topology rows the log no longer replays. So a
 restarted member's queue starts at a cut, not at `groupSeqNo` 1, and a consumer that cannot restore from a snapshot
 file cannot follow it.
 
@@ -78,16 +79,18 @@ replaces every older one but the confirmed round before it. A starting client re
 newest confirmed file whose records match its trailer once a replay from the file's cut position opens on that cut —
 a file from a purged log fails it — then resumes after the cut; an instance with no such file replays its queue from `groupSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
 
-**With `replayer.deriveFromLog` a member records no queue** (`doc/disk-load-plan.md`, step 2a; a prototype, off by
-default). Its Replayer is a `DerivingReplayer`, which derives each queue from the Raft log's recording, read from the
-archive's segment files (`RecordingReader`): a `LogDeriver` follows the log once, and a replay rebuilds frames with a
-`FramePredictor` wherever the two agreed, and a gateway host with the flag relays a member's log (`AeronLogRelay`, `LogRelay`) where it relays
-queue recordings. Everything in this file describes the flag off; the plan lists what differs and the limits.
+**A member records no queue** (`doc/plans/disk-load-plan.md`, step 2a). Its Replayer is a `DerivingReplayer`, which
+derives each queue from the Raft log's recording, read from the archive's segment files (`RecordingReader`) up to
+the commit position: a `LogFollower` runs a `LogDeriver` over the log once from the service's `DerivationStart`
+and keeps a checkpoint every 8 MiB (its rules unit-tested over segment files `LogFollowerTest` writes), and a
+replay rebuilds frames with a `FramePredictor` wherever the two agreed. Each queue is listed as one recording at the queue's positions, so the replay protocol and the clients are those of a
+recording. The member's Replayer announces its start on stream 207 (`DerivationAnnouncement`), which its archive
+records for gateway hosts, and its `LogTrimmer` keeps the log from the first checkpoint. The plan lists the limits.
 
 ## The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
-`ReplaySlotAllocator` and the gateway host's `QueueRelay`, with
-`AeronReplayer` and `AeronQueueRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
+`ReplaySlotAllocator` and the gateway host's `LogRelay`, with
+`AeronReplayer`, `DerivingReplayer` and `AeronLogRelay` the parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
 `ReplayerRecovery`, plus `SequencedEvent` and an instance's snapshot files, `SnapshotStore` — Java, C++ in
 `org::limitless::seqeron::replayer::client`, and C# in `Org.Limitless.Seqeron.Replayer.Client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
 JVM, on its embedded driver, so a fatal in either exits the node with 70; its own `main` is the gateway
@@ -96,20 +99,19 @@ host's alone. The two sides share only the protocol's addresses —
 `FROM_START` and `NO_REPLAY_NEEDED` — and those are `protocol/ReplayProtocol` in every language.
 
 **A gateway host runs clients with no member on it.** `ReplayerServer` with `replayer.archiveEndpoints`
-runs its own media driver and archive, and `AeronQueueRelay` copies a member's queue of each group in
-`replayer.groups` onto the host's own: one archive replay per queue, over UDP, that follows the member's active
-recording live. Its decisions are the pure
-**`QueueRelay`**, unit-tested the way `QueuePublisher` is. It republishes only the frame after the last one it
-published, so the host's queue is the member's frame for frame, and on losing its member it resumes on the next
-at the same recording position — a member's recording of a queue follows from its frames from its first, so
-positions agree at equal term length and MTU — falling back to that recording's start if the frame there is not the
-next one. Each start relays from the member's recording start, `groupSeqNo` 1 or a cut's, into a new local recording,
-as a member's restart does, so the host's recording starts where a client checks it does. Clients there are unchanged: they attach to the host's
+runs its own media driver and archive, and `AeronLogRelay` replays a member's Raft log over UDP, bounded by
+that member's commit position, runs a `LogDeriver` over it, and publishes the queue of each group in
+`replayer.groups` onto the host's own, which the host's archive records and its `AeronReplayer` serves. Its
+decisions are the pure **`LogRelay`**, unit-tested the way `QueuePublisher` is. The derivation starts where the
+first member it reads announces, `groupSeqNo` 1, a cut or the checkpoint below a purged start, into new local
+recordings. On losing its member it resumes on the next at the end of the last log entry it applied, since
+members' log positions agree by construction; once every member's log starts past that position it stops with a
+fatal (`HISTORY_LOST`), and a restart derives again from a member's start. Clients there are unchanged: they attach to the host's
 Aeron directory with the host's node id (one no member uses) where they take a member id, and submit over UDP
 ingress — an `Application` with `offCluster` set, since no leadership there is its own, which makes it the
 one instance whose gate opens once caught up. The member pays one archive replay per gateway host and its sequencer nothing.
-Each relay reports the snapshot markers it publishes, and the host's Replayer tracks rounds and purges its queue
-recordings as a member's does (`doc/snapshot.md` §10.6). A restarted host purges the earlier recordings of each
+The relay reports the snapshot markers it publishes, and the host's Replayer tracks rounds and purges its queue
+recordings below the newest restart-safe cut (`doc/snapshot.md` §10.6). A restarted host purges the earlier recordings of each
 relayed queue before its Replayer starts.
 
 ## Two kinds of producer, and only one of them is elected

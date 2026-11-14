@@ -66,7 +66,7 @@ Never commit code without permission.
 
 See [README.md](README.md). **seqeron** is the sequencing tier: an Aeron
 Cluster (Raft) replicated state machine that assigns a global, gap-free total order to messages from
-external producers, plus the replayer that serves history off each node's recording and the client-side
+external producers, plus the replayer that serves history derived from each node's Raft log and the client-side
 plumbing that follows the ordered stream.
 
 This repository is that tier **alone**: it contains no application edges and no application schemas.
@@ -231,6 +231,9 @@ The cluster is bounded at seven members by the 70-port cluster block (`doc/ops.m
 `SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by both mirrors
 — but does not widen it. `SEQERON_HOSTS` names the members' hosts, deployment-wide too, and is read by
 both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
+
+`doc/plans/` and `doc/reviews/` hold the plans, proposals and reviews: dated records, not descriptions of the
+code. A plan is cited by path from the code it changed (`doc/plans/disk-load-plan.md`, step 2a).
 
 `doc/` holds `overview.md` (the design, for architects: what each part does and why, the life of a
 message, the failure model, the limits — keep it in step with the documents it summarizes),

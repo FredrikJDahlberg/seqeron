@@ -28,6 +28,11 @@
 # application frame's groupMask bits are labelled with the names in the queue's
 # GroupsRegistered.
 #
+# --queue <groupId> prints that group's queue: its newest recording where the archive
+# keeps one (a gateway host's), and otherwise derived from the archive's Raft log, which
+# is all a member's archive holds of it. A running member's log is read to its end,
+# which can hold entries not yet committed.
+#
 # The cluster does not need to be stopped — an in-progress recording is
 # printed up to whatever has been written so far.
 #
@@ -36,27 +41,28 @@
 # recording scrolls.
 #
 # -o <payloadId> writes that protocol's payloads to stdout, raw and back to back,
-# for piping to a decoder that owns the schema (doc/seqeron-protocol-spec.md
-# §13.1). The stream carries no framing of its own — the decoder's schema is what
+# for piping to a decoder that owns the schema. The stream carries no framing of its own — the decoder's schema is what
 # delimits each payload — so every text line, the dump included, moves to stderr
 # for the run.
 #
 # Usage:
-#   ./sbe-log-printer.sh [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline] [-o <payloadId>]
+#   ./sbe-log-printer.sh [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>|--queue <groupId>] [--oneline] [-o <payloadId>]
 #
 # Examples:
 #   ./gradlew uberJar
-#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 2001
-#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 2001 -o 2 \
+#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --queue 1
+#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --queue 1 -o 2 \
 #       2>frames.log | order-decode
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline] [-o <payloadId>]"
+    echo "Usage: $0 [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>|--queue <groupId>] [--oneline] [-o <payloadId>]"
     echo "  --schema <name>  decode only this schema (default: every bundled one)"
     echo "  --spec <file>    decode against an IR file outside the jar instead"
     echo "  --stream <id>    dump only the newest recording on that stream; a queue is 2000 + groupId"
+    echo "  --queue <groupId> dump only that group's queue: its recording, or else derived from"
+    echo "                   the Raft log, which is what a member's archive holds"
     echo "  --oneline        print each message as a single line of JSON"
     echo "  --list-schemas   list the bundled schema names and exit"
     echo "  -o <payloadId>   write that protocol's payloads to stdout, raw and back to back,"

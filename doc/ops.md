@@ -121,14 +121,14 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_sequencer_gateway_promotion_total` | counter | `GatewayActive` frames promoting a standby: on a gateway session closing, or on a designated instance not publishing `GatewayStarted` within 5 s (`GATEWAY_ACTIVATION_TIMEOUT_MS`) |
 | `seqeron_sequencer_gateway_promotion_failed_total` | counter | times a gateway lost its active instance and had no standby to promote |
 | `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap `GatewayActive` is in this cluster's log, else 0 |
-| `seqeron_sequencer_queue_stalled` | gauge | 1 while the queue recording has made no progress for more than 200 ms under back-pressure, else 0; stays 1 when the member terminates for a queue it cannot record ([below](#a-node-that-terminates-itself)) |
+| `seqeron_sequencer_queue_stalled` | gauge | 1 while a queue offer has been back-pressured for more than 200 ms, else 0; stays 1 when the member terminates for a queue it cannot publish ([below](#a-node-that-terminates-itself)) |
 | `seqeron_sequencer_ingress_messages_total` | counter | ingress frames sequenced; the frames the sequencer synthesizes are not counted |
-| `seqeron_replayer_ready` | gauge | 1 once the queue recording is visible and replay requests are served |
+| `seqeron_replayer_ready` | gauge | 1 once every queue it serves is listed, and replay requests are served: on a member once its derivation has caught up with the log, on a gateway host once its archive records each queue |
 | `seqeron_replayer_active_slots` | gauge | replays in progress |
 | `seqeron_replayer_pending_requests` | gauge | replay requests waiting for a free slot |
 | `seqeron_replayer_replays_served_total` | counter | replays started since this member came up |
 | `seqeron_replayer_control_replies_dropped_total` | counter | control replies dropped, rather than retried indefinitely, because a client stopped reading. Each costs that client one resend interval, so the rate, not the total, identifies a stuck client |
-| `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because the queue recording trailed the queue by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the queue |
+| `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because, on a gateway host, a queue recording trailed the queue by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the host's recorder is falling behind the queue. A member, which records no queue, never throttles |
 | `seqeron_replayer_archive_errors_total` | counter | local-archive calls that threw. A request one fails is answered `ReplayPending` and the client's resend is the retry; the Replayer's own call, its readiness check, waits a second before the next. Live delivery is unaffected, so a sustained rate means only that history is not being served. A replay its client does not subscribe to within the archive's 5 s connect timeout counts one too, logged as a refused replay with `no connection established`: a client paused that long between its request and the answer, by a GC pause for one, requests again 5 s after it resumes, so isolated counts are not an archive fault |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a Replayer that never answers and a gap this member's recording cannot cover; the client's own log line names which |
 | `seqeron_hosted_lag_bytes` | gauge | how far a hosted client trails its host: the bytes of the queue the host has dispatched and the client not yet applied (`seqeron-protocol-spec.md` **H-14**). The counter exists only while a client is attached, so no client is no series rather than 0. Labelled `client` with the host's `proxy.clientId`, its façade's, which is unique on the node as every client's is ([Client ids](#client-ids)). A lag that only grows is a client falling behind |
@@ -306,7 +306,8 @@ stream has cycled through all three terms. A UDP stream costs another 3 × term 
 | each queue (stream 2000 + `groupId`), every co-located producer's ingress, replay control | `aeron:ipc` | 16 MiB | `aeron.ipc.term.buffer.length` on the member's or gateway host's driver |
 | ingress from a producer not beside the leader, egress, consensus between members | `aeron:udp` | 16 MiB | `aeron.term.buffer.length` on the sending driver |
 | the Raft log | `aeron:udp` | 64 MiB | `aeron.cluster.log.channel`, default `aeron:udp?term-length=64m` |
-| a replay: recovery, a gateway host's relay | IPC or UDP | the recording's | the stream the recording was made from |
+| a replay | IPC or UDP | the queue's | on a member, the IPC term length the queue was started with; on a gateway host, its recording's |
+| a gateway host's relay | `aeron:udp` | 64 MiB | the Raft log's recording |
 
 16 MiB is seqeron's IPC default; Aeron's own is 64 MiB. The other rows are Aeron's defaults. A client
 attached to a member's driver uses that driver's IPC term length and sets none of its own.
@@ -316,32 +317,40 @@ attached to a member's driver uses that driver's IPC term length and sets none o
 - 8 × the largest frame, so a frame fits Aeron's message limit: 128 KiB, for an 8,944-byte message on the
   Raft log;
 - 2 × peak bytes per second × the longest stall to absorb. The window is the room a stalled consumer has.
-  The archive is the queue's one tethered consumer, so a recorder stall longer than window / rate
-  back-pressures the sequencer; an untethered queue subscriber that falls a window behind is dropped and
-  heals through replay. At 16 MiB the queue's window is 8 MiB: 0.4 s at 20 MB/s. A shorter recorder stall still
-  stops the sequencer, by another path: the same thread records the Raft log, and a member commits and reads
-  no further than its own log recording (`ec2-tests.md`, "Archive writes on EBS"). No term length absorbs that.
+  On a member the queue's one tethered subscriber is the service's own, which reads past every frame as it is
+  offered, so the window is what an untethered subscriber may fall behind before its driver drops it; it then
+  heals through replay. On a gateway host the archive records each queue as its one tethered consumer, so a
+  recorder stall longer than window / rate back-pressures the relay. At 16 MiB the queue's window is 8 MiB: 0.4 s
+  at 20 MB/s. A member's recorder stall still stops its sequencer, by another path: the archive records the Raft
+  log, and a member commits and reads no further than its own log recording (`ec2-tests.md`, "Archive writes on
+  EBS"). No term length absorbs that.
 `vm.dirty_expire_centisecs=50` and `vm.dirty_writeback_centisecs=20` keep each kernel flush small, and a
-member on Linux whose two timers are the kernel's defaults warns at start.
+member on Linux whose two timers are the kernel's defaults warns at start. They stay required although a member
+writes only its log: under the kernel's defaults a member at 909k msg/s of 100-byte messages sequenced 680k in one
+ramp, with a 2.7 s tail, and its p99.9 rose above 466k msg/s. The archive's volume bounds the rate too: on gp3 at
+its default 125 MB/s a member holds about 580k msg/s of 100-byte messages, where the log writes about 130 MB/s
+(`ec2-results.md` §2.1).
 
-Two things keep the recorder inside the window. Every log buffer is a memory-mapped file in the driver's
+Two things keep the stalls short. Every log buffer is a memory-mapped file in the driver's
 Aeron directory, so on Linux it belongs on tmpfs, such as `/dev/shm`: on a disk, writing back its dirty pages
 stalls the threads that write them, the sequencer's included. A member or gateway host whose directory is not
-on tmpfs warns at start. And while the recording trails the queue by more than a quarter of the window, the
-Replayer starts a new replay only when none is running, since replays compete with the recorder for the disk.
+on tmpfs warns at start. And on a gateway host, while a queue recording trails the queue by more than a quarter of
+the window, the Replayer starts a new replay only when none is running, since replays compete with the recorder for
+the disk.
 
 Beyond that, a larger term costs memory and cache. At 16 MiB a member maps 48 MiB for the queue, 48 MiB per
 co-located producer's IPC ingress and 48 MiB per replay in progress, besides the Raft log's 192 MiB.
 
 **Setting one.** Pass `-Daeron.ipc.term.buffer.length=32m` (or `aeron.term.buffer.length` for UDP) to the
 `java` command that runs `SequencerServer` or `ReplayerServer`; the scripts and the Docker image read it
-from `JAVA_TOOL_OPTIONS`. Set the IPC term length identically on every member and gateway host. A
-recording's positions depend on it, since a term ends in padding, and a gateway host's relay resumes on
-the next member at the same position only when both recordings agree; otherwise it falls back to that
-member's recording start.
+from `JAVA_TOOL_OPTIONS`. Set the IPC term length identically on every member and gateway host: a queue's
+positions depend on it, since a term ends in padding, and a client that moves between nodes resumes by
+position. A gateway host's relay resumes on the next member at the log position, which every member agrees on
+whatever its IPC term length.
 
-A recording keeps the term length it was made with, and so do its replays. A member's queue is recorded
-afresh at every start, so a new IPC term length takes effect at its next start. The Raft log's cannot
+A queue keeps the term length it was started with, and so do its replays. A member starts its queues afresh at
+every start, so a new IPC term length takes effect at its next start, which then starts each queue from
+position 0 rather than at a restored cut's position (`snapshot.md` §10.3). The Raft log's cannot
 change on a cluster with history: the cluster extends one log recording, and the archive refuses to extend
 it with a different term length.
 
@@ -376,8 +385,8 @@ and then lingered for `aeron.untethered.linger.timeout`, each checked every `aer
 then it still holds the window, and a full window behind it back-pressures the queue.
 
 The sequencer and a gateway host's relay terminate after the queue stall timeout of back-pressure with no
-recording progress ("A node that terminates itself"), so seqeron's drivers set those three to 10 ms, 100 ms and
-100 ms. At Aeron's defaults of 1 s, 5 s and 5 s, a subscriber that stops for a window's worth of traffic would
+progress ("A node that terminates itself"), and on a member a subscriber not yet dropped is what back-pressures
+the queue, so seqeron's drivers set those three to 10 ms, 100 ms and 100 ms. At Aeron's defaults of 1 s, 5 s and 5 s, a subscriber that stops for a window's worth of traffic would
 take its member down. When overriding them, keep both timeouts plus two timer intervals under half the stall
 timeout. A dropped subscriber rejoins at the live position after `aeron.untethered.resting.timeout`, 10 s.
 
@@ -385,7 +394,8 @@ timeout. A dropped subscriber rejoins at the live position after `aeron.untether
 
 A member's and a gateway host's archive write a CRC-32C of every frame they record into the frame's
 session id field, which a replay rewrites anyway. `aeron.archive.record.checksum` overrides it, and an empty
-value turns it off. The cost is the recorder thread's, the queue's one tethered consumer, at hardware CRC speed.
+value turns it off. The cost is the recorder thread's, which records a member's Raft log and a gateway host's
+queues, at hardware CRC speed.
 Agrona computes them through `java.util.zip`'s internals, so the JVM needs
 `--add-opens=java.base/java.util.zip=ALL-UNNAMED`, which the launch scripts and the jar's manifest pass; a
 process without it warns at start and records without checksums.
@@ -424,13 +434,13 @@ a replay of its whole log.
   host's own JVM, default 10000, above a member's because a host's purge cannot be undone. An instance that is down or
   late at a round and restarts after the host has purged past its file is fenced until a peer's file is copied in, so
   this window is the operator's fence-risk knob. A host with no `<snapshots>` policy sees no markers and purges nothing.
-- **A gateway host's relay holds its member's purge back** while it is connected, however far behind it is, so a lagging
-  relay grows that member's recording instead of losing history. A relay that was disconnected from every member while
-  they purged past the next frame it needs has nothing left to relay: it stops with a fatal, and the host's process
-  exits. Its restart relays from a member's recording start into a new recording, which fences only an instance on the
-  host whose newest snapshot file is below that start.
+- **A gateway host's relay holds its member's log trim back** while it is connected, however far behind it is: the
+  archive refuses to purge log a replay is reading. A relay that was disconnected from every member while they trimmed
+  their logs past the next entry it needs has nothing left to relay: it stops with a fatal naming the position, and the
+  host's process exits. Its restart derives from a member's announced start into new recordings, which fences only an
+  instance on the host whose newest snapshot file is below that start.
 - **A member's archive may log `recording segment file not created`**, with `response publication is closed` on the
-  relay's control session (stream 122), when a relay starts at that member's recording start while the member purges.
+  relay's control session (stream 122), when a relay starts its replay of that member's log while the member trims it.
   The archive checks a replay's start before it registers the replay, and a purge in between deletes the segment the
   replay starts in. The relay times out after 1 s and tries the next member, so isolated pairs are not a fault.
 - **The two instances of a gateway pair never run on one node**, member or host. They share a `sourceId`, so a node
@@ -448,39 +458,40 @@ a replay of its whole log.
 
 ## A node that terminates itself
 
-A member's archive is its copy of the sequenced history, so a member that cannot record would accumulate
-silent holes in it. Rather than do that, `SequencerServer` exits with code **70** when its archive stops
-recording the queue: no progress for `sequencer.queueStallTimeoutMs` (default 5 s) under back-pressure, or the
-recording gone. This is deliberate, not a crash.
+A queue offer may not be dropped, since the history a replay derives from the log must match what the queue
+carried. Rather than wait forever, `SequencerServer` exits with code **70** when it cannot publish a queue: no
+progress for `sequencer.queueStallTimeoutMs` (default 5 s) under back-pressure, or the service's own subscriber to
+the queue gone, which means its driver is. This is deliberate, not a crash. On a member only an untethered
+subscriber its driver has not yet dropped back-pressures the queue, so a stall that long means the driver is not
+dropping it.
 
-- **The stall timeout** counts only while a frame waits on the queue and the recording position does not move: a
-  recording that is slow but advancing never trips it, and the `seqeron_sequencer_queue_stalled` gauge rises after
-  200 ms as the warning. While it runs, the member sequences nothing, so a long one holds a leader's co-located
+- **The stall timeout** counts while one frame waits on the queue, and each frame that lands restarts it: a queue
+  that is slow but still taking frames never trips it, and the `seqeron_sequencer_queue_stalled` gauge rises after 200 ms as the warning. While it runs, the member sequences nothing, so a long one holds a leader's co-located
   applications up; a short one turns a write stall of the storage into an exit, and a stall that reaches several
   members at once, as one on shared network block storage can, into a loss of quorum. The 5 s default rides out
-  such stalls; lower it only on local disks whose stalls are measured. It may not go below 1000, which keeps
-  it over twice an untethered subscriber's eviction ("Untethered subscribers"). A gateway host's relay applies the
-  same bound to its local recording, as `replayer.queueStallTimeoutMs` in the host's JVM.
+  such stalls; lower it only where its stalls are measured. It may not go below 1000, which keeps it over twice an
+  untethered subscriber's eviction ("Untethered subscribers"). A gateway host's relay applies the same bound to its
+  local queue recordings, as `replayer.queueStallTimeoutMs` in the host's JVM.
 - **What you see.** A `[SequencerService/N] FATAL: … terminating this node` line naming the reason, and
   `seqeron_sequencer_queue_stalled{member="N"}` at 1 until the process goes; then `up{job="seqeron",member="N"}`
   falls to 0.
-- **The cluster carries on** with the remaining members. Every member holds an identical, complete
-  recording, so nothing is lost with this one, and an election moves leadership if it led. **A second member
+- **The cluster carries on** with the remaining members. Every member holds the same log, so nothing is lost with
+  this one, and an election moves leadership if it led. **A second member
   down is a loss of quorum**: treat it as an emergency, not a repeat.
-- **Restart it** once its storage is healthy. Recovery is the usual full-log replay, which rebuilds the
-  recording from scratch. Under a supervisor this is automatic: exit 70, against the 0 of an orderly
+- **Restart it** once its driver is healthy. Recovery is the usual replay of the log, which rebuilds the queues
+  from scratch. Under a supervisor this is automatic: exit 70, against the 0 of an orderly
   `clusterctl shutdown`, is the signal to restart. A member that halted rather than shut down
   ([`fault-tolerance.md`](fault-tolerance.md) §1.3) leaves its mark files active, and a restart within
   about 10 s fails with "active mark file detected"; delay the restart by 12 s or retry it.
-- **If it exits 70 again immediately**, the archive is still broken: at start-up the recording must go live
-  within 5 s. Fix the storage first.
+- **If it exits 70 again immediately**, the driver is still broken: at start-up each queue's subscriber must
+  connect within 5 s. Fix the driver first.
 
 A member also exits 70 when its Replayer's duty cycle dies (a `[ReplayerService/N]` error names it), and 71
 when its shutdown gave up waiting for that duty cycle. Both mean restart it.
 
 It exits 70, too, when its log is truncated below what it applied ([`fault-tolerance.md`](fault-tolerance.md) §1.4):
-`[SequencerServer/N] FATAL: the log was truncated below what this node applied …`. Restart it as above. Its earlier
-queue recording holds frames the cluster no longer has; see that section before serving it.
+`[SequencerServer/N] FATAL: the log was truncated below what this node applied …`. Restart it as above, and see that section before
+serving its history.
 
 ## A gateway that fences itself
 

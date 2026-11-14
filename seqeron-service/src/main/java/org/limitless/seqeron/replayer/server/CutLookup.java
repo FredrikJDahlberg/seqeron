@@ -5,7 +5,7 @@ import org.agrona.collections.Long2LongHashMap;
 
 /**
  * Where a snapshot's cut is in a queue recording, free of Aeron: a restoring client names the cut by its
- * {@code clusterSeqNo} and hints at a position (doc/snapshot.md §10.8). A cut the Replayer has kept is answered from
+ * {@code clusterSeqNo} and hints at a position. A cut the Replayer has kept is answered from
  * memory; any other is found by reading the recording for the frame, from the hint when it is a frame boundary and
  * otherwise from the recording's start. {@link ReplayerService} drives it, with the archive behind {@link Replayer}.
  *

@@ -3,7 +3,7 @@ using Adaptive.Agrona;
 namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
-/// What a source that takes part in snapshot rounds serializes, and restores from (doc/snapshot.md §4, §7). Given
+/// What a source that takes part in snapshot rounds serializes, and restores from. Given
 /// to a façade's options; a source whose topology row says <c>snapshot="true"</c> takes part only if it has one,
 /// and every instance of a source runs the same build, so either all of them do or none does. An instance given one
 /// restores its source's latest snapshot on start, if there is one.
@@ -15,7 +15,7 @@ public interface ISnapshotListener
     int FormatVersion { get; }
 
     /// <summary>Whether <see cref="OnRestore"/> reads records of <paramref name="formatVersion"/>. A restore stops
-    /// on a snapshot this refuses (doc/snapshot.md §9), so a build that changes <see cref="FormatVersion"/> keeps
+    /// on a snapshot this refuses, so a build that changes <see cref="FormatVersion"/> keeps
     /// the formats it replaces readable here until no instance holds a file of them. A subclass that overrides it
     /// names <see cref="ISnapshotListener"/> among its bases again, or this default is still the one called.</summary>
     /// <param name="formatVersion">the snapshot's, as its writer's <see cref="FormatVersion"/> returned it</param>

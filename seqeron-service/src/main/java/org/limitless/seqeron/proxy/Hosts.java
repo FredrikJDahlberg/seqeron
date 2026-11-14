@@ -7,12 +7,13 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.locks.LockSupport;
 import org.agrona.CloseHelper;
 
 /**
  * Several hosts in one process ({@code proxy.hosts=a,b}), each a {@link ClientProxy} on a thread of its own, all on one
- * Aeron client (doc/seqeron-protocol-spec.md §17.6). A host that ends fenced or with the cluster unreachable, which
+ * Aeron client. A host that ends fenced or with the cluster unreachable, which
  * alone would exit 70, is rebuilt in place after a second: its client restarts and the others do not notice. Anything
  * else a host throws is the process's fault, for its owner to handle.
  */
@@ -23,14 +24,15 @@ public final class Hosts implements AutoCloseable {
     private final List<HostProperties> hosts;
     private final String aeronDir;
     private final List<Thread> threads = new ArrayList<>();
-    private final ClientProxy[] current;
+    /** Each host's proxy, written by its own thread when it rebuilds one and read by {@link #close}. */
+    private final AtomicReferenceArray<ClientProxy> current;
     private Aeron aeron;
     private volatile boolean running = true;
 
     private Hosts(final List<HostProperties> hosts, final String aeronDir) {
         this.hosts = hosts;
         this.aeronDir = aeronDir;
-        current = new ClientProxy[hosts.size()];
+        current = new AtomicReferenceArray<>(hosts.size());
     }
 
     /**
@@ -83,7 +85,7 @@ public final class Hosts implements AutoCloseable {
     private void serve(final int index, final Runnable onFault) {
         while (running) {
             final ClientProxy proxy = new ClientProxy(hosts.get(index));
-            current[index] = proxy;
+            current.set(index, proxy);
             if (!running) {
                 return;
             }
@@ -111,7 +113,8 @@ public final class Hosts implements AutoCloseable {
     @Override
     public void close() {
         running = false;
-        for (final ClientProxy proxy : current) {
+        for (int i = 0; i < current.length(); i++) {
+            final ClientProxy proxy = current.get(i);
             if (proxy != null) {
                 proxy.stop();
             }

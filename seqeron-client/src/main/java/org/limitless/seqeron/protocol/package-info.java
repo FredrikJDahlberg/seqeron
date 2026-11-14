@@ -11,7 +11,6 @@
  * ({@link org.limitless.seqeron.protocol.SeqeronCounters}) and what a publish did
  * ({@link org.limitless.seqeron.protocol.Publish}).
  *
- * <p>API, and it changes only when the protocol does. {@code doc/seqeron-protocol-spec.md} is normative;
- * each class here carries the C++ twin it must stay in step with.
+ * <p>API, and it changes only when the protocol does; each class here carries the C++ twin it must stay in step with.
  */
 package org.limitless.seqeron.protocol;

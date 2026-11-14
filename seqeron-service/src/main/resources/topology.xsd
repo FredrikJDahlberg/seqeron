@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The topology document's schema — doc/seqeron-protocol-spec.md §6.4.
+    The topology document's schema.
 
     It is the loader's artifact, not the document's: clusterctl resolves it from its own jar and
     ignores any schemaLocation a document names. A file that may name its own schema may name a lax
@@ -135,7 +135,7 @@
                     </xs:complexType>
                 </xs:element>
 
-                <!-- Enables snapshot rounds (doc/snapshot.md §1). interval is in seconds of consensus
+                <!-- Enables snapshot rounds. interval is in seconds of consensus
                      time; 0 means rounds start only on clusterctl request-snapshot. bytes is the sequenced
                      bytes between rounds; 0, the default, turns that trigger off. -->
                 <xs:element name="snapshots" minOccurs="0">

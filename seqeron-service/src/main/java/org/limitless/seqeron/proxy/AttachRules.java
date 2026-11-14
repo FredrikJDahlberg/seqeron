@@ -4,7 +4,7 @@ import org.limitless.seqeron.protocol.ProxyProtocol;
 import org.limitless.seqeron.sbe.hosted.Kind;
 
 /**
- * Who a ClientProxy answers, and how (doc/seqeron-protocol-spec.md H-8): a resend of the live request is answered
+ * Who a ClientProxy answers, and how: a resend of the live request is answered
  * again, any other client is refused as busy, and a client of another protocol or kind is refused. The client's Aeron
  * version is not checked: Aeron's own CnC check at connect covers what the two share (spec §17.7).
  * Holds no Aeron object, and no state of the live attachment: the proxy passes it in.

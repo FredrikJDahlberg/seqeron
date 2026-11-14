@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The hosted-façade prototype's gateway pair (doc/seqeron-protocol-spec.md §17.5): rank 0 is designated and rank 1
+    The hosted-façade prototype's gateway pair: rank 0 is designated and rank 1
     takes over when its session goes. No snapshot policy. HostedGatewayFailoverTest loads it and runs both rows.
 -->
 <topology xmlns="http://limitless.org/seqeron/topology/1">

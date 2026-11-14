@@ -1,7 +1,7 @@
 package org.limitless.seqeron.replayer.server;
 
 /**
- * A cluster snapshot as the service takes it, handed to the member's Replayer (doc/snapshot.md §10.8).
+ * A cluster snapshot as the service takes it, handed to the member's Replayer.
  *
  * @param round           the round's number
  * @param clusterSeqNo    its cut: the {@code clusterSeqNo} of the marker

@@ -24,7 +24,7 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// contiguous: consumers gate real decisions on it. Single-threaded: every method runs on the one duty-cycle
 /// thread.</para>
 /// <para>Given a snapshot store (<see cref="RestoreFrom"/>), a cold start first restores the newest snapshot it holds
-/// (doc/snapshot.md §7): it replays the recording from the snapshot's cut, and if the frame there is the round's
+///: it replays the recording from the snapshot's cut, and if the frame there is the round's
 /// <c>SnapshotStarted</c> the file recorded, reads the file's records into the handler, dispatching nothing, then
 /// resumes at the cut with it as the anchor. A file whose cut the recording does not hold, or whose records do not
 /// match its trailer, gives way to the next older one, and the last to a walk.</para>

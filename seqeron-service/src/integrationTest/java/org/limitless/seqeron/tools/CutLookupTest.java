@@ -43,7 +43,7 @@ import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
 
 /**
  * A member's Replayer finds a snapshot cut in its own archive by reading the recording, as a restoring client asks
- * (doc/snapshot.md §10.8): the request names the cut by its {@code clusterSeqNo} and its position is only a hint.
+ *: the request names the cut by its {@code clusterSeqNo} and its position is only a hint.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class CutLookupTest {
@@ -69,6 +69,7 @@ class CutLookupTest {
         watcher.ignoreErrorsMatching(s -> s.contains("does not point to a valid frame"));
         watcher.dataCollector().add(baseDir);
         cluster = new InProcessCluster(baseDir);
+        cluster.withQueueRecordings(); // what the tests of AeronReplayer read, as a gateway host's archive would hold
         cluster.startAll();
     }
 
@@ -109,7 +110,6 @@ class CutLookupTest {
     @Test
     @InterruptAfter(60)
     void aScanPastWhatTheRecordingWillHoldStallsAtItsDeadlineRatherThanBlocking() {
-        InProcessCluster.assumeMembersRecordQueues();
         final int member = cluster.awaitLeader();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
              AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()
@@ -154,7 +154,6 @@ class CutLookupTest {
     @Test
     @InterruptAfter(60)
     void aScanOfARecordingStillGrowingRunsPastItsDeadlineWhileFramesKeepArriving() {
-        InProcessCluster.assumeMembersRecordQueues();
         final int member = cluster.awaitLeader();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(member)));
              AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()

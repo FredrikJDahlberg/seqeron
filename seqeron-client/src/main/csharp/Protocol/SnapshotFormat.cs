@@ -7,7 +7,7 @@ using Org.Limitless.Seqeron.Util;
 namespace Org.Limitless.Seqeron.Protocol;
 
 /// <summary>
-/// What a snapshot is (doc/snapshot.md §2): a sequence of records, the façade's header first, checked by the
+/// What a snapshot is: a sequence of records, the façade's header first, checked by the
 /// CRC-32C of their bytes in order that its <c>SnapshotEnd</c> carries. <c>SnapshotFormat.java</c> and
 /// <c>Snapshot.hpp</c> are its twins; keep the three in step.
 /// </summary>

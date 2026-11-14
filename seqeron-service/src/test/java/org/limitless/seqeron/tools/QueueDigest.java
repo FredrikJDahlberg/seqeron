@@ -32,9 +32,8 @@ import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
  * frames=<n> crc=<hex> ckpt=<groupSeqNo>:<hex>,…}. The CRC-32C runs over every frame's bytes from the first, and a
  * checkpoint is its value at each multiple of {@value #CHECKPOINT} in {@code groupSeqNo}, so two members that stopped at
  * different frames compare at the last checkpoint both hold. An active recording is read to its position when the
- * tool starts. A member that records no queue ({@code replayer.deriveFromLog}) is read through its Replayer instead,
- * as a client is, from the queue's start to its tip when the replay is answered, and printed as {@code
- * recording=replayer active=true …}.
+ * tool starts. A member records no queue, so its queue is read through its Replayer, as a client reads it, from the
+ * queue's start to its tip when the replay is answered, and printed as {@code recording=replayer active=true …}.
  *
  * <p>System properties:
  * <pre>
