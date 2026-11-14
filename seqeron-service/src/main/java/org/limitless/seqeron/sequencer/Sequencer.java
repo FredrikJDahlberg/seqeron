@@ -259,7 +259,7 @@ public final class Sequencer implements SequencerSnapshot {
     /**
      * The latest {@code SnapshotPolicyRegistered}'s interval in consensus time, 0 for operator requests only,
      * or {@link #NO_SNAPSHOT_POLICY}. Rounds are cuts the sequencer tracks nothing about once started
-     * (doc/snapshot.md §3), so this, {@link #snapshotRound} and {@link #lastSnapshotStart} are all of it.
+     *, so this, {@link #snapshotRound} and {@link #lastSnapshotStart} are all of it.
      */
     private long snapshotIntervalNs = NO_SNAPSHOT_POLICY;
 
@@ -278,7 +278,7 @@ public final class Sequencer implements SequencerSnapshot {
     /**
      * A round is due: the interval or the byte count has passed, or an operator asked for one. Set from state every
      * member holds, so a new leader asks for it where the last stopped; cleared when the round's marker is
-     * published, by {@link #takeSnapshot} (doc/snapshot.md §10.2).
+     * published, by {@link #takeSnapshot}.
      */
     private boolean roundDue = false;
 
@@ -788,7 +788,7 @@ public final class Sequencer implements SequencerSnapshot {
     /**
      * Publishes the next round's {@code SnapshotStarted} on every queue, its {@code clusterSeqNo} the round's cut, and
      * clears {@link #snapshotDue}. Called from the cluster's snapshot action, which every member takes at the same
-     * place in the log with the same timestamp (doc/snapshot.md §10.8). With no group active there is no queue to cut,
+     * place in the log with the same timestamp. With no group active there is no queue to cut,
      * and nothing is published.
      * @param timestamp the action's consensus timestamp
      */
@@ -802,7 +802,7 @@ public final class Sequencer implements SequencerSnapshot {
     /**
      * Publishes the marker of the round a restored snapshot was taken at, as the first frame of each queue, as
      * {@link #takeSnapshot} published it: the same {@code clusterSeqNo}, timestamp and {@code groupSeqNo}, so that the
-     * restored queue begins as the queue it replaces did at the cut (doc/snapshot.md §10.3). Counts for nothing.
+     * restored queue begins as the queue it replaces did at the cut. Counts for nothing.
      */
     void reemitMarker() {
         if (activeGroupMask == 0) {
@@ -1108,7 +1108,7 @@ public final class Sequencer implements SequencerSnapshot {
         return null;
     }
 
-    // ── Snapshot (doc/snapshot.md §10.2) ─────────────────────────────────────────
+    // ── Snapshot ─────────────────────────────────────────
 
     /** The format {@link #onSnapshot} writes. */
     static final int SNAPSHOT_FORMAT_VERSION = 1;
@@ -1140,7 +1140,7 @@ public final class Sequencer implements SequencerSnapshot {
 
     /**
      * Records where a queue's marker started, for the snapshot taken next: the service knows the position, and the
-     * term length and MTU it was published with (doc/snapshot.md §10.3).
+     * term length and MTU it was published with.
      * @param groupId    the queue's group
      * @param position   where its marker started in this node's recording
      * @param termLength of the queue publication

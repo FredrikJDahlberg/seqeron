@@ -24,7 +24,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
- * The hosted-façade prototype (doc/hosted-facade.md) through restore, the snapshot cut and SIGKILL. One
+ * The hosted-façade prototype through restore, the snapshot cut and SIGKILL. One
  * {@code TestApplication} replica of source 16 is a host and a client; the other two members run the direct one. The
  * client writes {@code TestApplication}'s records byte for byte, so each side compares the other's rounds with the
  * sequenced {@code SnapshotEnd} and fences on a difference (spec A-7): a run with no FENCED line is the hosted state

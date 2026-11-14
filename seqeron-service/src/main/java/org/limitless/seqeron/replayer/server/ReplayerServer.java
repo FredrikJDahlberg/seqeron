@@ -53,17 +53,16 @@ import org.limitless.seqeron.util.Logger;
  *   replayer.snapshotJoinMs    — how long after a cut an application or gateway has to join its round; default 10s
  *   replayer.queueStallTimeoutMs — how long a relayed queue's local recording may make no progress under
  *                                back-pressure before the host terminates; default 5000, at least 1000
- *                                (doc/ops.md, "A node that terminates itself")
  *   replayer.host              — this host's name as the members reach it; default localhost
  *   replayer.baseDir           — data directory root; default {tmpdir}/seqeron-seq
  *   proxy.hosts                — hosted façades this process runs beside the Replayer, as ClientProxy's
  *                                proxy.hosts, with proxy.memberId, proxy.aeronDir and proxy.egressHost defaulting
  *                                to this host's and proxy.offCluster to true; a host that throws stops this
  *                                process as a fatal duty cycle does
- *   aeron.threading.mode       — the driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
- *   aeron.ipc.term.buffer.length — the driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
+ *   aeron.threading.mode       — the driver's threading mode; default DEDICATED
+ *   aeron.ipc.term.buffer.length — the driver's IPC term length; default 16m
  *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
- *                                10ms, 100ms, 100ms (doc/ops.md, "Untethered subscribers")
+ *                                10ms, 100ms, 100ms
  * </pre>
  *
  * <p>Launch example (gateway host 3, members on m0/m1/m2):
@@ -87,7 +86,7 @@ public final class ReplayerServer {
     private static final String PROP_SNAPSHOT_JOIN_MS = "replayer.snapshotJoinMs";
     private static final String PROP_QUEUE_STALL_TIMEOUT_MS = "replayer.queueStallTimeoutMs";
 
-    /** Above a member's, since a host's purge cannot be undone (doc/snapshot.md §10.6). */
+    /** Above a member's, since a host's purge cannot be undone. */
     static final long DEFAULT_SNAPSHOT_JOIN_MS = 10_000;
 
     /**
@@ -180,7 +179,7 @@ public final class ReplayerServer {
 
     /**
      * The hosted façades' {@code proxy.*} properties on this gateway host: its node id, Aeron directory and name unless
-     * set, and an {@code Application} off the cluster (doc/hosted-facade.md §2, question 4).
+     * set, and an {@code Application} off the cluster.
      */
     static Properties hostProperties(final GatewayHostConfig config) {
         final Properties properties = new Properties();
@@ -257,7 +256,7 @@ public final class ReplayerServer {
     }
 
     /**
-     * As above, tracking the cluster snapshots the member takes (doc/snapshot.md §10.8).
+     * As above, tracking the cluster snapshots the member takes.
      *
      * @param cutIntake the cuts the member hands over, its {@code restart-safe.log} and the join window; null to
      *                  track none

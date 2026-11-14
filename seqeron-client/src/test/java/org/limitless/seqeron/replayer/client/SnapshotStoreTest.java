@@ -24,7 +24,7 @@ import org.limitless.seqeron.protocol.SnapshotFormat;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 
 /**
- * An instance's own snapshot files (doc/snapshot.md §4.1). The golden trailer is shared with the C++ and C# {@code
+ * An instance's own snapshot files. The golden trailer is shared with the C++ and C# {@code
  * SnapshotStoreTest}s, so a file one language writes is one the others read.
  */
 class SnapshotStoreTest {

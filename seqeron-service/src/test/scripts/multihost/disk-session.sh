@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# disk-session.sh — the measurements of doc/disk-load-plan.md, step 2a, in one launch (doc/ec2-tests.md, "The disk
-# session"). Each part writes its results and fetched logs under <results>/disk-<stamp>/<part>:
+# disk-session.sh — the measurements of the disk load plan, step 2a, in one launch. Each part writes its results and fetched logs under <results>/disk-<stamp>/<part>:
 #
 #   knee            hop-knee.sh
 #   knee-writeback  knee with the kernel's default writeback (node.sh writeback default)

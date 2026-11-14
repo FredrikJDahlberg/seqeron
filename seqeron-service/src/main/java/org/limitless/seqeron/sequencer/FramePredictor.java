@@ -21,8 +21,7 @@ import org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder;
 /**
  * The frames a {@link Sequencer} publishes for the log entries whose frames follow from the entry and three counts
  * alone: an application message, sequenced onto the queue of each group its mask names, and on every queue a system
- * message it admits with nothing synthesized behind it and the heartbeat timer's {@code ClusterHeartbeat}
- * (doc/disk-load-plan.md, step 2a).
+ * message it admits with nothing synthesized behind it and the heartbeat timer's {@code ClusterHeartbeat}.
  *
  * <p>It validates nothing and holds none of the sequencer's state, so its frames are the sequencer's only where
  * something has compared the two: {@code DerivingReplayer} does for each entry, and replays with this over the

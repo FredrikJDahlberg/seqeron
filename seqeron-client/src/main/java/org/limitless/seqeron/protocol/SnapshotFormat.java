@@ -4,7 +4,7 @@ import java.util.zip.CRC32C;
 import org.agrona.DirectBuffer;
 
 /**
- * What a snapshot is (doc/snapshot.md §2): a sequence of records, the façade's header first, checked by the
+ * What a snapshot is: a sequence of records, the façade's header first, checked by the
  * CRC-32C of their bytes in order that its {@code SnapshotEnd} carries. The C++ twin is {@code
  * protocol/Snapshot.hpp}; keep the two in step.
  */

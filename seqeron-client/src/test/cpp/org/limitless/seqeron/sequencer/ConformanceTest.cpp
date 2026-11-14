@@ -1,5 +1,5 @@
 //
-// The C++ half of the protocol conformance suite — doc/seqeron-protocol-spec.md §14.
+// The C++ half of the protocol conformance suite.
 //
 // §14 asks for the suite in both languages, but only the rows with a C++ implementation behind them can
 // be mirrored: there is no C++ sequencer, so rows 1, 4, 4a, 5, 8 and 9 (which drive Sequencer's

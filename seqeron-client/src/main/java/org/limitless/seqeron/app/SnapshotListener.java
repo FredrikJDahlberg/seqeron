@@ -4,7 +4,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 
 /**
- * What a source that takes part in snapshot rounds serializes, and restores from (doc/snapshot.md §4, §7).
+ * What a source that takes part in snapshot rounds serializes, and restores from.
  * Given to a façade's builder; a source whose topology row says {@code snapshot="true"} takes part only if it
  * has one, and every instance of a source runs the same build, so either all of them do or none does. An
  * instance given one restores its source's latest snapshot on start, if there is one.
@@ -18,7 +18,7 @@ public interface SnapshotListener {
 
     /**
      * Whether {@link #onRestore} reads records of {@code formatVersion}. A restore stops on a snapshot this refuses
-     * (doc/snapshot.md §9), so a build that changes {@link #formatVersion} keeps the formats it replaces readable
+     *, so a build that changes {@link #formatVersion} keeps the formats it replaces readable
      * here until no instance holds a file of them.
      *
      * @param formatVersion the snapshot's, as its writer's {@link #formatVersion} returned it

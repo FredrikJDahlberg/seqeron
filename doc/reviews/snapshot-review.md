@@ -1,6 +1,6 @@
 # Snapshot review: application and cluster snapshots as implemented
 
-Reviewed 2026-10-24, at `70b4812` on `snapshot-plans`. "§n" refers to [`snapshot.md`](snapshot.md).
+Reviewed 2026-10-24, at `70b4812` on `snapshot-plans`. "§n" refers to [`snapshot.md`](../snapshot.md).
 
 **Scope.** Read: the cluster side in Java (`SequencerService`, `Sequencer`'s round and snapshot code, `QueueStart`,
 `SnapshotChoice`, `RestartSafeLog`, `RestartSafety`, `CutLookup`, the Replayer's cut tracking and purging,

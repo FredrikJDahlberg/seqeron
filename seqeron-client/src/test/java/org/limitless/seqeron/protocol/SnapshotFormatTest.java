@@ -16,7 +16,7 @@ import org.limitless.seqeron.protocol.SnapshotHeader.GatewayState;
 import org.limitless.seqeron.protocol.SnapshotHeader.Group;
 
 /**
- * The snapshot byte format (doc/snapshot.md §2, §6). The golden vectors are shared with the C++
+ * The snapshot byte format. The golden vectors are shared with the C++
  * {@code SnapshotFormatTest} and were computed by a third implementation, so the two languages agree with
  * each other and not merely with themselves.
  */

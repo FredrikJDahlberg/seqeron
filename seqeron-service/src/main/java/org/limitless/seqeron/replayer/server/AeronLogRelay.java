@@ -42,7 +42,7 @@ import org.limitless.seqeron.util.Logger;
  * The Aeron adapter for {@link LogRelay}: on a gateway host, reads a member's Raft log over UDP with one replay
  * bounded by the member's commit position, runs a {@link LogDeriver} over it, and publishes the frames of each relayed
  * group onto this host's own queue, which the local archive records and {@link ReplayerService} serves exactly as it
- * does on a member (doc/disk-load-plan.md, step 2a). Nothing on the member changes: its archive already takes remote
+ * does on a member. Nothing on the member changes: its archive already takes remote
  * clients, and a replay costs its sequencer nothing.
  *
  * <p>The derivation starts where the first member read says its service did ({@link DerivationAnnouncement}), so the
@@ -140,7 +140,7 @@ final class AeronLogRelay implements AutoCloseable, Sequencer.FrameSink {
             idleStrategy.idle();
         }
         final long recordingId = RecordingPos.getRecordingId(counters, counterId);
-        // An earlier run's recordings: this one starts again from a member's start (doc/snapshot.md §10.3).
+        // An earlier run's recordings: this one starts again from a member's start.
         for (final ArchiveRecording older : ArchiveRecording.ofStream(localArchive, streamId)) {
             if (older.recordingId() >= recordingId) {
                 continue;

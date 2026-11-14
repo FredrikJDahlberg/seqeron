@@ -20,8 +20,7 @@ import org.limitless.seqeron.protocol.SeqeronCounters;
  * it, then a cold follower started on the new leader. The producer sending through {@code PendingSends} must see
  * every frame once, in order, and the cold follower must catch up through a replay of the new leader's one
  * continuous recording. The untracked control's loss is what the kill cost, reported rather than asserted. SIGKILL,
- * since a leader that dies ends no egress stream, so every run costs what a crash does (doc/fault-tolerance.md
- * §1.2).
+ * since a leader that dies ends no egress stream, so every run costs what a crash does.
  */
 class FailoverProcessTest {
     private static final int COUNT = 20_000;

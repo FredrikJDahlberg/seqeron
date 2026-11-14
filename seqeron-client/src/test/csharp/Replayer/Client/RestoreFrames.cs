@@ -7,7 +7,7 @@ using Replay = Org.Limitless.Seqeron.Sbe.Replay;
 
 namespace Org.Limitless.Seqeron.Replayer.Client;
 
-/// <summary>A snapshot as a restore meets it (doc/snapshot.md §7): the instance's own file and the round's
+/// <summary>A snapshot as a restore meets it: the instance's own file and the round's
 /// frames.</summary>
 internal static class RestoreFrames
 {

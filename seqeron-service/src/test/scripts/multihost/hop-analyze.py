@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""hop-analyze.py — applies the latency part of Test 1's rule (doc/ec2-tests.md) to hop-matrix.sh's result files.
+"""hop-analyze.py — applies the latency part of Test 1's rule to hop-matrix.sh's result files.
 
     hop-analyze.py [--margins P50,P99,P999] [--min-runs N] [--stall-us US] hop-*.txt
 
@@ -9,7 +9,7 @@ passes when all three do, no run failed or lost a marker, and each arm has at le
 microseconds (default 25,250,2000: the placeholders of the rule, which the owner sets before the first run).
 
 A run whose p99.9 is at least --stall-us (default 5000) is a stall: the archive's write on a slow volume freezes the
-sequencer for tens of ms (doc/ec2-tests.md, "Archive writes on EBS"), which is the volume's and not the arm's. A
+sequencer for tens of ms, which is the volume's and not the arm's. A
 stalled run is listed and left out of the comparison and of --min-runs, so a cell with stalls needs more runs, and
 each arm's worst run is printed beside the median.
 

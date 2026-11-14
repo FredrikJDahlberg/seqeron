@@ -9,7 +9,7 @@ namespace Org.Limitless.Seqeron.Protocol;
 
 /// <summary>
 /// The cluster port-layout formula: the C# mirror of <c>PortLayout.java</c>, <c>PortLayout.hpp</c> and
-/// <c>ports.sh</c>; change all four together. Cluster member ports only (doc/ops.md, "Ports").
+/// <c>ports.sh</c>; change all four together. Cluster member ports only.
 /// </summary>
 public static class PortLayout
 {
@@ -54,7 +54,7 @@ public static class PortLayout
     /// <summary>The members' hosts from <see cref="EnvHosts"/>, empty when it is unset.</summary>
     public static readonly IReadOnlyList<string> Hosts = ResolveHosts(Environment.GetEnvironmentVariable(EnvHosts));
 
-    /// <summary>First port of core's reserved block (doc/ops.md, "Ports"): seven members wide, one stride each,
+    /// <summary>First port of core's reserved block: seven members wide, one stride each,
     /// wider than the base+1..base+65 seven members bind.</summary>
     public static readonly int ClusterPortBlockFirst = ClusterPortBase;
 

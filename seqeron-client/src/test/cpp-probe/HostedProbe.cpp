@@ -1,4 +1,4 @@
-// The C++ twin of HostedTestApplicationClient (doc/seqeron-protocol-spec.md §17): a hosted::Application stub holding
+// The C++ twin of HostedTestApplicationClient: a hosted::Application stub holding
 // the probe's state, a count of the markers sequenced under its source and a digest of their clusterSeqNos, for the
 // prototype host to snapshot. HostedCppStubTest drives it against a cluster and the host; nothing else runs it.
 //

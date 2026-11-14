@@ -22,7 +22,7 @@ import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
- * Node-local Prometheus exporter (see {@code doc/ops.md}): converts seqeron's counters, and Aeron Cluster's own, into
+ * Node-local Prometheus exporter: converts seqeron's counters, and Aeron Cluster's own, into
  * Prometheus text format
  */
 public final class MetricsExporter {
@@ -228,7 +228,7 @@ public final class MetricsExporter {
 
     /**
      * Renders every seqeron and Aeron Cluster counter this node's CnC file holds as one Prometheus exposition body. A
-     * counter in the app range core has no name for is a consumer's (doc/ops.md, "Counter type ids"), named from its
+     * counter in the app range core has no name for is a consumer's, named from its
      * label.
      */
     String renderMetrics() {
@@ -265,7 +265,7 @@ public final class MetricsExporter {
     }
 
     /**
-     * A consumer counter's metric name: its label's first token, sanitised (doc/ops.md, "Counter type ids"). The same
+     * A consumer counter's metric name: its label's first token, sanitised. The same
      * for every counter of one type id, so the replicas publishing it share one HELP/TYPE header.
      */
     private static MetricMeta appMetricMeta(final int typeId, final String label) {

@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The C++ stub of a hosted Consumer (hosted::Consumer, doc/seqeron-protocol-spec.md §17.1) against the prototype host,
+ * The C++ stub of a hosted Consumer (hosted::Consumer) against the prototype host,
  * on a follower of a cluster whose leader hosts an Application stub publishing the markers. The stub is
  * {@code hosted_consumer_probe}, beside the {@code hosted_probe} that {@code HOSTED_PROBE} names; without them the
  * test is skipped.

@@ -43,7 +43,7 @@ import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
 
 /**
  * A member's Replayer finds a snapshot cut in its own archive by reading the recording, as a restoring client asks
- * (doc/snapshot.md §10.8): the request names the cut by its {@code clusterSeqNo} and its position is only a hint.
+ *: the request names the cut by its {@code clusterSeqNo} and its position is only a hint.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class CutLookupTest {

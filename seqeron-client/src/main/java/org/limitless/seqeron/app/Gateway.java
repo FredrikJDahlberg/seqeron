@@ -40,7 +40,7 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * {@link Listener#onActivated}, closes it in {@link Listener#onStandby}, and otherwise exchanges payloads:
  * nothing of the frame layer or of seqeron's system vocabulary appears in its code.
  *
- * <p><b>Snapshots</b> (doc/snapshot.md §4): given a {@link SnapshotListener} and topology rows with {@code
+ * <p><b>Snapshots</b>: given a {@link SnapshotListener} and topology rows with {@code
  * snapshot="true"}, every instance serializes its state at each round's cut into its own directory, under a header
  * carrying the pair's election state, and the active one then submits the round's {@code SnapshotEnd}. An instance
  * whose snapshot differs from the one sequenced is fenced with {@link ClusterError#SNAPSHOT_DIVERGED}. On start, an
@@ -449,7 +449,7 @@ public final class Gateway implements AutoCloseable {
     /** A refused frame is this class's own bug, never a condition to wait out. */
     private static boolean published(final Publish result) {
         if (result == Publish.Refused) {
-            throw new IllegalStateException("a frame the sequencer would reject (doc/seqeron-protocol-spec.md §9.2)");
+            throw new IllegalStateException("a frame the sequencer would reject");
         }
         return result == Publish.Published;
     }
@@ -522,7 +522,7 @@ public final class Gateway implements AutoCloseable {
     private final class SessionDispatch implements Session.Dispatch {
         /**
          * A submitted system payload carries no MessageHeader, so each decode takes this build's own block length and
-         * version (doc/seqeron-protocol-spec.md §7, V-3).
+         * version.
          */
         @Override
         public void onSystem(final SequencedEvent event) {

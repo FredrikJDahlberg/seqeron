@@ -73,7 +73,7 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p>Its one piece of state is the cluster's view of its connections and a count of the markers sequenced under its
  * {@code sourceId}, which every instance derives from the queue alike. With {@code probe.snapshot} it snapshots and
- * restores that state (doc/snapshot.md), and its caught-up line reports it, so a harness can compare an instance
+ * restores that state, and its caught-up line reports it, so a harness can compare an instance
  * that restored with one that replayed.
  *
  * <p>System properties, on top of {@link ClusterProbe}'s {@code probe.memberId} / {@code probe.aeronDir} /
@@ -339,7 +339,7 @@ public final class TestGateway {
     /** A refusal is this harness's own bug, never a condition to wait out. */
     private static boolean published(final Publish result) {
         if (result == Publish.Refused) {
-            throw new IllegalStateException("a frame the sequencer would reject (doc/seqeron-protocol-spec.md §9.2)");
+            throw new IllegalStateException("a frame the sequencer would reject");
         }
         return result == Publish.Published;
     }

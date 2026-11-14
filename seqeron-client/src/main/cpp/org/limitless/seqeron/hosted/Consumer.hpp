@@ -8,7 +8,7 @@
 namespace org::limitless::seqeron::hosted {
 
 /**
- * The client stub of a hosted Consumer (doc/seqeron-protocol-spec.md §17.1): the surface of app::Consumer, with the
+ * The client stub of a hosted Consumer: the surface of app::Consumer, with the
  * queue, the replay and the fences running in a host process that this talks to over schema 218. Its listener is the
  * direct Consumer's, and a Payload reaches it as it would there.
  *

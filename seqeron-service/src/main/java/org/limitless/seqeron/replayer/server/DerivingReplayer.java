@@ -34,8 +34,7 @@ import org.limitless.seqeron.util.Logger;
 /**
  * A member's {@link Replayer} whose queues are not recorded: a queue's history is a {@link LogDeriver} over the Raft
  * log's recording, read from its segment files up to the commit position ({@link RecordingReader}) and published at the
- * queue's term length and MTU, which puts each frame at the position the queue's publication put it at
- * (doc/disk-load-plan.md, step 2a).
+ * queue's term length and MTU, which puts each frame at the position the queue's publication put it at.
  *
  * <p>To {@link ReplayerService} each queue is one active recording whose id is its group's, which starts where the
  * queue did and has reached where the derivation has brought it.

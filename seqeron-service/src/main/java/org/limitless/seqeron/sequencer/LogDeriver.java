@@ -21,7 +21,7 @@ import org.limitless.seqeron.sbe.sequencer.SequencerStateDecoder;
 /**
  * Derives a member's queues from its Raft log: a {@link Sequencer} driven by the log's entries as {@link
  * SequencerService} drives one from the cluster's callbacks, so that its frames are the ones the member published
- * (doc/disk-load-plan.md, step 2a). It starts at the log's first entry or from a {@link State}, and keeps no queue
+ *. It starts at the log's first entry or from a {@link State}, and keeps no queue
  * positions.
  *
  * <p>Free of the Aeron runtime: it reads the cluster's log codecs and nothing else. Single-threaded.

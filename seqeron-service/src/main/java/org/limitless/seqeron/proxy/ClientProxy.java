@@ -71,7 +71,7 @@ import org.limitless.seqeron.sbe.hosted.SnapshotEndDecoder;
 import org.limitless.seqeron.sbe.hosted.SnapshotRecordDecoder;
 
 /**
- * The proxy of the hosted façades (doc/seqeron-protocol-spec.md §17): the real {@link Application}, {@link Gateway} or
+ * The proxy of the hosted façades: the real {@link Application}, {@link Gateway} or
  * {@link Consumer}, started when a client sends {@code Attach} and closed when it is lost, its callbacks relayed in
  * schema 218 over {@link ProxyProtocol}'s streams. Launched beside a member.
  *

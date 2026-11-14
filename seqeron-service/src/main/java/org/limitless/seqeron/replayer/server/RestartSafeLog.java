@@ -12,7 +12,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * A member's own record of its cluster snapshots (doc/snapshot.md §10.8), in {@code restart-safe.log} in its
+ * A member's own record of its cluster snapshots, in {@code restart-safe.log} in its
  * cluster directory. Local to the member and in no replicated state. A line is
  * <pre>
  *   cut &lt;logPosition&gt;    a snapshot was taken at that log position, which the member then hands to its Replayer

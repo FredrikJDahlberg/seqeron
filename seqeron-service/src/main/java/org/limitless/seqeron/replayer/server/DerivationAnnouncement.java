@@ -8,7 +8,7 @@ import org.limitless.seqeron.sequencer.LogDeriver;
 
 /**
  * What a member tells a gateway host, which cannot read its driver: where a derivation of its queues may start and
- * which counter bounds a replay of its log (doc/disk-load-plan.md, step 2a). The member publishes one when it starts
+ * which counter bounds a replay of its log. The member publishes one when it starts
  * and one after each purge, on a stream its archive records, and the recording is active for as long as the counter
  * id holds.
  *

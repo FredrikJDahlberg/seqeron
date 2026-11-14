@@ -10,7 +10,7 @@ using Org.SbeTool.Sbe.Dll;
 namespace Org.Limitless.Seqeron.Sbe.Replay
 {
     /// <summary>
-    /// The replica's file for the round is confirmed and durable under its final name (doc/snapshot.md §5)
+    /// The replica's file for the round is confirmed and durable under its final name
     /// </summary>
     public sealed partial class SnapshotConfirmed
     {

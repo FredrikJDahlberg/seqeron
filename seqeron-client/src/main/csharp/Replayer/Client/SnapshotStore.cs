@@ -12,7 +12,7 @@ using Org.Limitless.Seqeron.Util;
 namespace Org.Limitless.Seqeron.Replayer.Client;
 
 /// <summary>
-/// This instance's own snapshots, in a directory no other instance writes (doc/snapshot.md §4.1). A round is written
+/// This instance's own snapshots, in a directory no other instance writes. A round is written
 /// as <c>&lt;round&gt;.tmp</c>: the records, each a little-endian uint16 length and its bytes, record 0 the façade's
 /// header, then a trailer:
 /// <code>

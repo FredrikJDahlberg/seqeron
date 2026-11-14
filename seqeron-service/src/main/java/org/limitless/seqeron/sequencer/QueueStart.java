@@ -1,7 +1,7 @@
 package org.limitless.seqeron.sequencer;
 
 /**
- * Where a queue's recording starts when a member starts (doc/snapshot.md §10.3), free of Aeron: at its first frame
+ * Where a queue's recording starts when a member starts, free of Aeron: at its first frame
  * with no snapshot, at the position its marker started at when the node's term length and MTU are the ones the
  * snapshot names, so that the positions agree with the recording it replaces and with every peer's, and at
  * position 0 otherwise, the cut being found by its {@code clusterSeqNo} instead.

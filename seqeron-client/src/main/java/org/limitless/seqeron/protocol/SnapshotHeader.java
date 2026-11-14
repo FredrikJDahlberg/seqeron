@@ -9,7 +9,7 @@ import org.agrona.MutableDirectBuffer;
 
 /**
  * The header a façade writes ahead of the application's body: what it derives from frames before the
- * round's cut, which a restore never replays (doc/snapshot.md §6). Little-endian, packed:
+ * round's cut, which a restore never replays. Little-endian, packed:
  *
  * <pre>
  *  0  headerVersion       uint16   {@link #VERSION}

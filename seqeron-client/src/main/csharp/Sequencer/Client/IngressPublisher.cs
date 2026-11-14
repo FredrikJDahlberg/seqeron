@@ -50,7 +50,7 @@ public sealed class IngressPublisher
         return Offer(sender, length);
     }
 
-    /// <summary>The same for one of seqeron's own events (doc/seqeron-protocol-spec.md §7), in an
+    /// <summary>The same for one of seqeron's own events, in an
     /// <c>UnsequencedSystem</c> frame.</summary>
     /// <param name="sender">the session to offer it on</param>
     /// <param name="sourceId">the producer the frame is on behalf of</param>

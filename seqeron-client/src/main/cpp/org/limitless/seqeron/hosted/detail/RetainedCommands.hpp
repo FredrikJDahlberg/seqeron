@@ -8,8 +8,7 @@
 namespace org::limitless::seqeron::hosted::detail {
 
 /**
- * The Publish commands an Application stub has offered and whose fate the host has not yet reported (doc/seqeron-protocol-spec.md
- * H-17). Each is kept, encoded, in one arena, in offer order, until `Resolved` passes its sequence number; one that a
+ * The Publish commands an Application stub has offered and whose fate the host has not yet reported. Each is kept, encoded, in one arena, in offer order, until `Resolved` passes its sequence number; one that a
  * `Dropped` named stays, flagged, to be resent under a new sequence number and epoch. A resent command is appended
  * after the others, so each entry also carries its rank, the order it was first offered in, which resends keep.
  *

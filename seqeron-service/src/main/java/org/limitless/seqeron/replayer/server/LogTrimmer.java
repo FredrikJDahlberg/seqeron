@@ -19,8 +19,7 @@ import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * Trims a member's Raft log and snapshot recordings below its two newest restart-safe snapshots (doc/snapshot.md
- * §10.7), from the member's Replayer thread: once each time a snapshot becomes restart-safe, and when {@code clusterctl
+ * Trims a member's Raft log and snapshot recordings below its two newest restart-safe snapshots, from the member's Replayer thread: once each time a snapshot becomes restart-safe, and when {@code clusterctl
  * trim-log} asks. A request is a correlation id and whether to print only; the reply is each line of the run, then
  * its count of refused purges.
  */

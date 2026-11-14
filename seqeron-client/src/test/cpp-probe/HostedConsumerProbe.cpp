@@ -1,4 +1,4 @@
-// A hosted::Consumer stub for HostedConsumerStubTest (doc/seqeron-protocol-spec.md §17.1): it follows a queue through
+// A hosted::Consumer stub for HostedConsumerStubTest: it follows a queue through
 // its host and counts the probe markers of one source, checking the order the queue delivers them in.
 //
 //   hosted_consumer_probe --aeron-dir D [--source-id 16] [--host-timeout-ms 3000] [--host-name hosted]

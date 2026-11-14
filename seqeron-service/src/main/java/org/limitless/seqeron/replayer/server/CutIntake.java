@@ -4,7 +4,7 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
- * What a Replayer is given to track its cluster snapshots (doc/snapshot.md §10.8): the cuts a member's service hands
+ * What a Replayer is given to track its cluster snapshots: the cuts a member's service hands
  * over from its own thread, or the markers a gateway host's relays report, the member's record of which snapshots may
  * be restarted from, and how long an application has to join a round.
  *

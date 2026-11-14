@@ -41,8 +41,7 @@
 # recording scrolls.
 #
 # -o <payloadId> writes that protocol's payloads to stdout, raw and back to back,
-# for piping to a decoder that owns the schema (doc/seqeron-protocol-spec.md
-# §13.1). The stream carries no framing of its own — the decoder's schema is what
+# for piping to a decoder that owns the schema. The stream carries no framing of its own — the decoder's schema is what
 # delimits each payload — so every text line, the dump included, moves to stderr
 # for the run.
 #

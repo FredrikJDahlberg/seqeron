@@ -22,7 +22,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * A {@link Sequencer} snapshotted at a random point of a seeded frame sequence, and a second restored from it, must
- * be the same state machine (doc/snapshot.md §10.2): every field it holds, and every frame it encodes from there on.
+ * be the same state machine: every field it holds, and every frame it encodes from there on.
  * The sequence deposes sessions, leaves activations pending and requests rounds, so a field the snapshot misses
  * shows as a difference in a later frame or in the field itself.
  */

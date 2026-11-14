@@ -40,7 +40,7 @@ public final class ColocatedApp implements Application.Listener {
 
     private final MutableDirectBuffer pingBody = new UnsafeBuffer(new byte[Long.BYTES]);
 
-    /** Fenced, restart me: this repository's convention (doc/ops.md). */
+    /** Fenced, restart me: this repository's convention. */
     private static final int EXIT_FENCED = 70;
 
     private Application app;

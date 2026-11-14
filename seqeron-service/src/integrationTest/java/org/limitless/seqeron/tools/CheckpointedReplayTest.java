@@ -36,7 +36,7 @@ import org.limitless.seqeron.replayer.server.RestartSafeLog;
 
 /**
  * A replay derived from the Raft log is the archive's replay of the queue's recording, fragment for fragment, from
- * wherever it starts (doc/disk-load-plan.md, step 2a): from mid-history, which continues from a checkpoint, and on a
+ * wherever it starts: from mid-history, which continues from a checkpoint, and on a
  * member that started from a cluster snapshot, whose derivation starts at the snapshot. A {@link DerivingReplayer}
  * of the test's own runs over a member's archive, which the test has record the member's queues, and each derived
  * replay is read beside the recorded one.

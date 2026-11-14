@@ -50,7 +50,7 @@ ingress_endpoints_string() {
     echo "${out}"
 }
 
-# ── Core's own satellite port block (doc/ops.md, "Ports"). An application's ports are its own. ──────────────────
+# ── Core's own satellite port block. An application's ports are its own. ──────────────────
 TEST_GATEWAY_PORT_BASE=9200          # TestGateway TCP listen (9200 GW-T-A, 9201 GW-T-B) — the cluster
                                      # tier's OWN harness block, 9200-9209. Not in
                                      # the 9300 block: that is seven members of stride 10 with nothing spare.

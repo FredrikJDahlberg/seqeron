@@ -26,7 +26,7 @@ import org.limitless.seqeron.protocol.Publish;
 /**
  * The façades' surface is closed: a consumer that takes one names {@code app}, {@code protocol.Publish},
  * {@code Aeron}, {@code DirectBuffer}, {@code MutableDirectBuffer} and {@code IdleStrategy}, and nothing else. {@code
- * package-info.java} and {@code doc/client-api.md} both say so in prose; this is what makes it fail the build. A public signature
+ * package-info.java} says so in prose; this is what makes it fail the build. A public signature
  * that reaches into {@code sequencer.client}, {@code replayer.client}, the generated codecs or one of this
  * package's own package-private blocks is the leak it catches.
  */

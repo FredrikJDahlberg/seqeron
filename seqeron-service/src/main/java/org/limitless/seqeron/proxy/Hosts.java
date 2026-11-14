@@ -13,7 +13,7 @@ import org.agrona.CloseHelper;
 
 /**
  * Several hosts in one process ({@code proxy.hosts=a,b}), each a {@link ClientProxy} on a thread of its own, all on one
- * Aeron client (doc/seqeron-protocol-spec.md §17.6). A host that ends fenced or with the cluster unreachable, which
+ * Aeron client. A host that ends fenced or with the cluster unreachable, which
  * alone would exit 70, is rebuilt in place after a second: its client restarts and the others do not notice. Anything
  * else a host throws is the process's fault, for its owner to handle.
  */

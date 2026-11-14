@@ -295,7 +295,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         public const long CutClusterSeqNoMaxValue = 9223372036854775807L;
 
         /// <summary>
-        /// Set by a restore to the clusterSeqNo of the snapshot's cut, which fromPosition then                             only hints at; NO_CUT (-1) otherwise (doc/snapshot.md §10.8)
+        /// Set by a restore to the clusterSeqNo of the snapshot's cut, which fromPosition then                             only hints at; NO_CUT (-1) otherwise
         /// </summary>
         public long CutClusterSeqNo
         {

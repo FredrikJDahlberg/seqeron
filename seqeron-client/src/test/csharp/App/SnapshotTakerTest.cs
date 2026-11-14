@@ -12,7 +12,7 @@ using Xunit;
 namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
-/// A façade's side of snapshot rounds (doc/snapshot.md §4), driven through its <c>IActions</c> seam. Case for case
+/// A façade's side of snapshot rounds, driven through its <c>IActions</c> seam. Case for case
 /// with <c>SnapshotTakerTest.java</c>.
 /// </summary>
 public class SnapshotTakerTest : IDisposable

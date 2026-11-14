@@ -8,7 +8,7 @@
 // its own queue.
 //
 // Start a node, load the pair, start a host for the instance, then run it (in the seqeron repo, after ./gradlew
-// uberJar; doc/running-a-cluster.md, "Client proxy", has the host's properties). The standby has a host and a client
+// uberJar). The standby has a host and a client
 // of its own, under the other name:
 //   seqeron-service/src/main/scripts/start-cluster.sh
 //   seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology.xml
@@ -56,7 +56,7 @@ constexpr const char* CLIENT_LABEL = "example-client";
 // What Gateway::openConnection answers when there is none; Edge cannot name Gateway<Edge> before it is complete.
 constexpr std::int32_t NO_CONNECTION = -1;
 
-// Fenced or host lost, restart me: this repository's convention (doc/ops.md). 78: the host refused the attach, which a
+// Fenced or host lost, restart me: this repository's convention. 78: the host refused the attach, which a
 // restart does not cure.
 constexpr int EXIT_RESTART = 70;
 constexpr int EXIT_REFUSED = 78;

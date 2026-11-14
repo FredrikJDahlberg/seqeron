@@ -30,7 +30,7 @@ import org.limitless.seqeron.replayer.server.DerivationStart;
 import org.limitless.seqeron.replayer.server.DerivingReplayer;
 
 /**
- * How a member's derivation of its queues starts (doc/disk-load-plan.md, step 2a). A member has no recorded path to
+ * How a member's derivation of its queues starts. A member has no recorded path to
  * fall back on, so a start it cannot make ends its Replayer's duty cycle, which exits the node; and an announcement
  * its archive refuses to record is tried again rather than given up on, since a gateway host starts from it. A
  * {@link DerivingReplayer} of the test's own runs over a member's archive.

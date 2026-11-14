@@ -12,7 +12,7 @@
 # it launches, waits for and stops that itself, and stop-cluster.sh sweeps it through
 # SEQERON_EXTRA_PROCESSES.
 #
-# The cluster refuses everything before its groups are active (doc/seqeron-protocol-spec.md §7.4).
+# The cluster refuses everything before its groups are active.
 # SEQERON_TOPOLOGY names a topology file to load once the member runs; without it, load one with
 # clusterctl.sh load-topology, and the probe replica waits until then.
 #

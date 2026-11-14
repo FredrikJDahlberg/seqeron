@@ -4,7 +4,7 @@ import io.aeron.cluster.VersionValidator;
 import org.agrona.SemanticVersion;
 
 /**
- * The version a node's Raft log and snapshots carry (doc/snapshot.md §10.2), as Aeron's {@code appVersion}. Aeron
+ * The version a node's Raft log and snapshots carry, as Aeron's {@code appVersion}. Aeron
  * compares the major when it loads a snapshot and when it replays a leadership term from the log, so a node started on
  * a log it is not compatible with stops with "incompatible version" rather than sequence another history.
  *

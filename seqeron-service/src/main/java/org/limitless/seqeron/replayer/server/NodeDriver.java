@@ -73,7 +73,7 @@ public final class NodeDriver {
 
     /**
      * Reads the queue stall timeout, {@code sequencer.queueStallTimeoutMs} on a member and
-     * {@code replayer.queueStallTimeoutMs} on a gateway host (doc/ops.md, "A node that terminates itself").
+     * {@code replayer.queueStallTimeoutMs} on a gateway host.
      *
      * @param property the property's name
      * @return the timeout in milliseconds, {@link #DEFAULT_QUEUE_STALL_TIMEOUT_MS} when it is not set
@@ -91,8 +91,7 @@ public final class NodeDriver {
 
     /**
      * A seqeron media driver's context: every driver thread on {@code idleStrategies}, and dedicated threads, the IPC
-     * term length and the untethered timing of doc/ops.md ("Driver threads", "Term lengths", "Untethered
-     * subscribers") where their Aeron properties are not set.
+     * term length and the untethered timing where their Aeron properties are not set.
      *
      * <p>The directory is not deleted unchecked on start: Aeron refuses one a live driver holds, and saves the
      * previous driver's error log beside it before deleting it.
@@ -167,8 +166,7 @@ public final class NodeDriver {
 
     /**
      * Warns, on Linux, when the kernel's writeback timers are its defaults: it then flushes about 30 s of dirty
-     * archive data at once, and a recorder write waiting behind the flush stops the member's commits
-     * (doc/ec2-tests.md, "Archive writes on EBS").
+     * archive data at once, and a recorder write waiting behind the flush stops the member's commits.
      * @param component who is launching the member
      * @param memberId  its node id
      */
@@ -211,7 +209,7 @@ public final class NodeDriver {
 
     /**
      * Has the archive write a CRC-32C into every frame it records, where {@code aeron.archive.record.checksum} is not
-     * set, so a damaged recording can be found (doc/ops.md, "Recording checksums"). Nothing verifies them on replay
+     * set, so a damaged recording can be found. Nothing verifies them on replay
      * unless {@code aeron.archive.replay.checksum} is set. Agrona computes them through {@code java.util.zip}'s
      * internals, so a JVM that does not open it to this code warns and records without them rather than fail.
      *

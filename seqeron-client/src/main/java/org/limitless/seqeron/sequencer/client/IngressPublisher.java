@@ -51,7 +51,7 @@ public final class IngressPublisher {
     }
 
     /**
-     * The same for one of seqeron's own events (doc/seqeron-protocol-spec.md §7), in an
+     * The same for one of seqeron's own events, in an
      * {@code UnsequencedSystem} frame.
      *
      * @param body the event's SBE block, with no {@code MessageHeader} of its own — {@code systemEventType}

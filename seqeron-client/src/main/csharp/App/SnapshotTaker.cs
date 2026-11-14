@@ -7,7 +7,7 @@ using Org.Limitless.Seqeron.Replayer.Client;
 namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
-/// A façade's side of snapshot rounds, with no Aeron in it (doc/snapshot.md §4): serialize at the cut into this
+/// A façade's side of snapshot rounds, with no Aeron in it: serialize at the cut into this
 /// instance's own file, submit the round's <c>SnapshotEnd</c> if this instance may publish, and compare the
 /// source's sequenced <c>SnapshotEnd</c> with what this instance serialized (A-7). The façade feeds it the frames
 /// and drives <see cref="Submit"/> from its duty cycle; every outcome is the façade's to act on.

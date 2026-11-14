@@ -36,7 +36,7 @@ public sealed class GatewayApp : IGatewayListener
 
     private static readonly long PingIntervalTicks = Stopwatch.Frequency;
 
-    // Fenced, restart me: this repository's convention (doc/ops.md).
+    // Fenced, restart me: this repository's convention.
     private const int ExitFenced = 70;
 
     private volatile bool _running = true;

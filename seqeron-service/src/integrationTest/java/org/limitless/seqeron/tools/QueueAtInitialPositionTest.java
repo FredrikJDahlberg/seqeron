@@ -24,7 +24,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.FrameLayer;
 
 /**
- * What a restored member relies on (doc/snapshot.md §10.3): a queue created at an initial position is recorded from
+ * What a restored member relies on: a queue created at an initial position is recorded from
  * there, the archive's catalog says so, a consumer sees the same positions, and a replay of the recording works.
  */
 class QueueAtInitialPositionTest {

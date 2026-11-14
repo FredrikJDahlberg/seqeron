@@ -8,7 +8,7 @@ using Xunit;
 namespace Org.Limitless.Seqeron.Protocol;
 
 /// <summary>
-/// The snapshot byte format (doc/snapshot.md §2, §6). The golden vectors are the ones
+/// The snapshot byte format. The golden vectors are the ones
 /// <c>SnapshotFormatTest.java</c> and the C++ <c>SnapshotFormatTest</c> share, computed by an independent
 /// implementation, so the three languages agree with each other and not merely with themselves.
 /// </summary>

@@ -608,7 +608,7 @@ class SequencerTest {
         return recorded.all().toArray(new byte[0][]);
     }
 
-    // ── Snapshot rounds (doc/snapshot.md §3, §10.2) ───────────────────────────
+    // ── Snapshot rounds ───────────────────────────
 
     /** The round the sequencer calls for, taken at {@code timestamp}: asserts one is due, and returns its number. */
     private long takeRound(final long timestamp) {

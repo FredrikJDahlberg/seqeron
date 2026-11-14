@@ -160,7 +160,7 @@ public final class ReplayerService {
     }
 
     /**
-     * As above, tracking the cluster snapshots a member takes (doc/snapshot.md §10.8).
+     * As above, tracking the cluster snapshots a member takes.
      * @param cutIntake the cuts handed over, the member's {@code restart-safe.log} and the join window
      */
     public ReplayerService(final Aeron aeron, final AeronArchive archive, final int memberId,
@@ -287,8 +287,7 @@ public final class ReplayerService {
     /**
      * Takes the cuts the service has handed over, or the relays have reported, since the last cycle: each queue keeps
      * where its marker was recorded, every application replica and gateway instance is told of the round, and a cut
-     * that every one that joined has confirmed is written to the member's log as safe to restart from
-     * (doc/snapshot.md §10.8).
+     * that every one that joined has confirmed is written to the member's log as safe to restart from.
      */
     private int trackCuts() {
         int work = 0;
@@ -377,7 +376,7 @@ public final class ReplayerService {
     }
 
     /**
-     * Purges each queue's recording below the newest restart-safe cut (doc/snapshot.md §10.6). A refusal, such as a
+     * Purges each queue's recording below the newest restart-safe cut. A refusal, such as a
      * replay reading below the floor, is no fault: the floor stays and is tried again after an interval.
      */
     private int purgeBelowFloors() {
@@ -955,7 +954,7 @@ public final class ReplayerService {
 
     /**
      * Remembers where a snapshot cut was recorded in a queue's active recording, so a restore naming it is answered
-     * without reading the recording. The cluster tier's cut hand-over calls it (doc/snapshot.md §10.8).
+     * without reading the recording. The cluster tier's cut hand-over calls it.
      * @param queueId         the queue's group
      * @param cutClusterSeqNo the cut
      * @param position        where its frame starts in the recording

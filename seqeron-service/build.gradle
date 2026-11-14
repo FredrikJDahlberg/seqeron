@@ -131,8 +131,7 @@ tasks.register('networkFaultTest', Test) {
 }
 
 // ── SBE code generation ────────────────────────────────────────────────────────
-// The schemas the node owns. sbe-sequencer.xml is the Sequencer's snapshot, node-local and Java only (doc/snapshot.md
-// §10.2). sbe-probe.xml (payloadId 5) is the protocol ClusterProbe speaks so this
+// The schemas the node owns. sbe-sequencer.xml is the Sequencer's snapshot, node-local and Java only. sbe-probe.xml (payloadId 5) is the protocol ClusterProbe speaks so this
 // repo's e2e scripts can drive a cluster with no product binary built; it is private to tools/ClusterProbe,
 // which is also what keeps the C++ client's generated root free of any application codec.
 def sbeGeneratedSrcDir = layout.buildDirectory.dir('generated/sources/sbe/main/java').get().asFile

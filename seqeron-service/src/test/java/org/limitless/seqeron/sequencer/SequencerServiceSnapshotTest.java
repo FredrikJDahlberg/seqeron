@@ -20,7 +20,7 @@ class SequencerServiceSnapshotTest {
     @DisplayName("a snapshot is refused while no <snapshots> policy is loaded, and nothing is written before the throw")
     void aSnapshotIsRefusedWithoutAPolicy() {
         // The throw precedes any use of the cluster or the publication, which is why null is safe to pass. A cluster
-        // with no policy keeps its full-log replay (doc/snapshot.md §10.2).
+        // with no policy keeps its full-log replay.
         try (RestartSafeLog log = RestartSafeLog.open(clusterDir)) {
             final SequencerService service = new SequencerService(
                 0, new ArrayDeque<>(), () -> { }, log, new ArrayDeque<>(), new AtomicReference<>(), 1 << 24, 4096,

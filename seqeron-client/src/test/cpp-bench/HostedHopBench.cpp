@@ -1,4 +1,4 @@
-// The hosted-façade hop through the real stub (doc/ec2-tests.md, Test 1): an open-loop publish of a ProbeMarker of
+// The hosted-façade hop through the real stub: an open-loop publish of a ProbeMarker of
 // --payload bytes through hosted::Application, timed from its intended send until this process sees its own frame
 // sequenced. The direct arm is hop_bench from the tag cpp-direct-client-final; the two print the same line.
 //
@@ -15,7 +15,7 @@
 // and the run ends once every one offered is sequenced, or T ms (default 20000) after the last sequenced. It prints
 // FLOODING when it starts, then a line of the offered, sequenced and lost markers, any duplicated or out of order, and
 // the gate's last edge: how long the gate was shut, and how long after it reopened the last marker offered before it
-// shut was sequenced (doc/ec2-tests.md, the gate-edge set).
+// shut was sequenced.
 
 #include <algorithm>
 #include <atomic>

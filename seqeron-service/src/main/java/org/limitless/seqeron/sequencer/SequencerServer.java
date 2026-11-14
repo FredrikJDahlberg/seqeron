@@ -52,7 +52,7 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p><b>Port layout</b> (member m on base + 10m, for up to seven members; three shown). The base is 9300
  * unless {@code SEQERON_PORT_BASE} overrides it (see {@link PortLayout}); the reserved block is wider than
- * what seven members bind (doc/ops.md, "Ports"):
+ * what seven members bind:
  * <pre>
  *   +1  archive control   (9301, 9311, 9321)
  *   +2  cluster ingress   (9302, 9312, 9322)
@@ -77,23 +77,22 @@ import org.limitless.seqeron.util.Logger;
  *                               each agent owns a core.
  *   sequencer.sessionTimeoutMs — how long the cluster keeps a client session with no keep-alives; default
  *                               5000. A gateway that misses it is replaced by its standby. Keep it well above
- *                               the leader heartbeat timeout (doc/ops.md, "Consensus timeouts").
+ *                               the leader heartbeat timeout.
  *   sequencer.leaderHeartbeatIntervalMs — how often the leader heartbeats its followers; default 200
  *   sequencer.leaderHeartbeatTimeoutMs — how long a follower waits for a leader heartbeat before it starts an
  *                               election, and how long a member copying the log waits on progress; default
  *                               2000
  *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 1000
  *   sequencer.queueStallTimeoutMs — how long a queue's recording may make no progress under back-pressure before
- *                               the node terminates; default 5000, at least 1000 (doc/ops.md, "A node that
- *                               terminates itself")
+ *                               the node terminates; default 5000, at least 1000
  *   aeron.cluster.max.sessions — the most client sessions the cluster holds at once; default 64 rather than
- *                               Aeron's 10 (doc/ops.md, "Cluster sessions")
- *   aeron.threading.mode       — the embedded driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
- *   aeron.ipc.term.buffer.length — the embedded driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
+ *                               Aeron's 10
+ *   aeron.threading.mode       — the embedded driver's threading mode; default DEDICATED
+ *   aeron.ipc.term.buffer.length — the embedded driver's IPC term length; default 16m
  *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
- *                               10ms, 100ms, 100ms (doc/ops.md, "Untethered subscribers")
+ *                               10ms, 100ms, 100ms
  *   replayer.snapshotJoinMs    — how long after a cluster snapshot an application has to join its round; default
- *                               5000 (doc/snapshot.md §10.8)
+ *                               5000
  * </pre>
  *
  * <p>Launch example, member 0 of three:
@@ -119,7 +118,7 @@ public final class SequencerServer {
 
     /**
      * How long after a cluster snapshot an application has to join its round before the member stops waiting for it
-     * (doc/snapshot.md §10.8). Generous, since an application mid-serialization answers late, and an application that
+     *. Generous, since an application mid-serialization answers late, and an application that
      * joins after it is not waited for.
      */
     public static final long DEFAULT_SNAPSHOT_JOIN_MS = 5000;
@@ -129,7 +128,7 @@ public final class SequencerServer {
     public static final long DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS = 2000;
     public static final long DEFAULT_ELECTION_TIMEOUT_MS = 1000;
 
-    /** Session limit when {@code aeron.cluster.max.sessions} is not set; see doc/ops.md, "Cluster sessions". */
+    /** Session limit when {@code aeron.cluster.max.sessions} is not set. */
     private static final int DEFAULT_MAX_CONCURRENT_SESSIONS = 64;
 
     /**
@@ -406,7 +405,7 @@ public final class SequencerServer {
         if (!invalidated.isEmpty()) {
             Logger.info(Logger.CoreComponent.SequencerServer, memberId,
                         "starting without the snapshots at log positions %s: no co-located application is known to "
-                            + "hold a file for them (doc/snapshot.md §10.8)",
+                            + "hold a file for them",
                         invalidated);
         }
 
@@ -513,7 +512,7 @@ public final class SequencerServer {
 
     /**
      * Whether {@code t} is the consensus module truncating its log below the position it has applied, which Aeron
-     * Cluster 1.53.2 does to entries it committed (doc/fault-tolerance.md §1.4). The services then hold state the log
+     * Cluster 1.53.2 does to entries it committed. The services then hold state the log
      * no longer has, and only a restart rebuilds it.
      */
     static boolean truncatesAppliedLog(final Throwable t) {

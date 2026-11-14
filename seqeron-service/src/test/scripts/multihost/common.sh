@@ -2,7 +2,7 @@
 # common.sh — sourced by the multi-host drivers (cluster.sh, hop-matrix.sh, replay-remote.sh): the host lists,
 # node(), which runs node.sh on a host, and the cluster's life cycle. Meant to be sourced, not executed.
 #
-# Every host holds a built checkout at the same path (doc/ec2-tests.md, "Image"). The drivers run on one of them, or
+# Every host holds a built checkout at the same path. The drivers run on one of them, or
 # on any machine that reaches the members by the addresses below, which are also the addresses the members bind.
 #
 #   MULTIHOST_MEMBERS   the three members' addresses, comma-separated in member-id order (required); exported to

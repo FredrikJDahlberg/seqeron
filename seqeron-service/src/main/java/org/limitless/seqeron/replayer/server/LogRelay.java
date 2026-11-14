@@ -4,7 +4,7 @@ import java.util.Arrays;
 
 /**
  * What a gateway host's relay of a member's Raft log decides, free of Aeron: which member's log it reads, where a
- * replay of it starts, and when it gives up on a member or on itself (doc/disk-load-plan.md, step 2a).
+ * replay of it starts, and when it gives up on a member or on itself.
  * {@link AeronLogRelay} is the adapter.
  *
  * <p>The first member it reads fixes where the derivation starts. After that it resumes at the end of the last entry

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hop-gate-edge.sh — the gate-edge set of doc/ec2-tests.md, test 1b: does the hosted stub lose a command when the
+# hop-gate-edge.sh — the gate-edge set, test 1b: does the hosted stub lose a command when the
 # leader is paused until it is deposed, and how long does the resend take (spec H-17), against the direct client, which
 # does not resend.
 #
