@@ -1,0 +1,21 @@
+# A US cash-equity day on Nasdaq's timetable (ET), for TradingDayBench: <name> <seconds> <from msg/s> <to msg/s>.
+# A rate counts every message: new orders, cancels and trades. Nasdaq matched 2-3B shares a day in 2025; at an assumed
+# 100 shares a trade that is 20-30M trades, and at about 20 new orders and 20 cancels to a trade (cancel-to-trade
+# measured near 20 in 2013 by the SEC) about 1B messages a day, 35-50k msg/s over the 6.5 h session. The 400k msg/s
+# peak is an assumption; day.scale calibrates it. Quiet stretches are compressed, the open and the close run in real
+# time.
+#
+# phase              run s   from     to        the day
+pre-market             30     4000     4000   # 04:00-09:25
+opening-call           60    20000   120000   # 09:25-09:30, imbalance info from 09:25
+opening-cross           2   500000   500000   # 09:30:00, the uncross
+open                   58   400000   400000   # 09:30:02-09:31, the day's peak
+open-decay            120   400000    80000   # 09:31-09:45
+morning                90    80000    50000   # 09:45-12:00
+midday                 60    50000    50000   # 12:00-14:00
+afternoon              90    50000    90000   # 14:00-15:50
+closing-imbalance      60    90000   240000   # 15:50-15:55, on-close orders can no longer be cancelled
+closing-final         180   240000   360000   # 15:55-15:58, the cutoff for limit-on-close orders
+closing-cross         120   360000   400000   # 15:58-16:00
+close                   2   500000   500000   # 16:00:00, the uncross
+after-hours            30     4000     4000   # 16:00-20:00
