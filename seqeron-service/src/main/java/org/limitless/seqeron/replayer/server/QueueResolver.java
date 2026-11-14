@@ -117,6 +117,12 @@ public final class QueueResolver {
         return groupId >= 1 && groupId <= FrameLayer.MAX_GROUPS && (servedGroups() & (1 << (groupId - 1))) != 0;
     }
 
+    /** The next group served after {@code groupId} (0 for the first), or {@link #UNRESOLVED} past the last. */
+    int nextServed(final int groupId) {
+        final int rest = servedGroups() >>> groupId;
+        return rest == 0 ? UNRESOLVED : groupId + Integer.numberOfTrailingZeros(rest) + 1;
+    }
+
     /** The group of the gateway instance its row names, or {@link #UNRESOLVED} if no row names it yet. */
     int gatewayGroup(final String gatewayName) {
         return gatewayGroups.getOrDefault(gatewayName, UNRESOLVED);

@@ -89,11 +89,8 @@ public final class ReplayerService {
     // When the Replayer's own next archive call may be made, after one threw.
     private long archiveRetryAtMs = 0;
 
-    // When the last dropped control reply was (see onControlReplyDropped), 0 = none this process.
-    private long lastControlDropMs = 0;
-
-    // When the last archive call threw (see onArchiveError), 0 = none this process.
-    private long lastArchiveErrorMs = 0;
+    private final Episode controlDrops = new Episode(EPISODE_QUIET_MS);
+    private final Episode archiveErrors = new Episode(EPISODE_QUIET_MS);
 
     // Replay protocol state
     private final ReplaySlotAllocator replaySlots = new ReplaySlotAllocator(MAX_CONCURRENT_REPLAYS);
@@ -293,8 +290,9 @@ public final class ReplayerService {
         int work = 0;
         CutHandover cut;
         while ((cut = cutIntake.cuts().poll()) != null) {
-            for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
-                if (cut.markerPositions()[groupId - 1] >= 0 && resolver.serves(groupId)) {
+            for (int groupId = resolver.nextServed(0); groupId != QueueResolver.UNRESOLVED;
+                 groupId = resolver.nextServed(groupId)) {
+                if (cut.markerPositions()[groupId - 1] >= 0) {
                     keepCutOf(groupId, cut.clusterSeqNo(), cut.markerPositions()[groupId - 1]);
                 }
             }
@@ -308,7 +306,8 @@ public final class ReplayerService {
                 cutIntake.log().appendSafe(safe);
             }
             if (inFlightCut != null && inFlightCut.logPosition() == safe) {
-                for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
+                for (int groupId = resolver.nextServed(0); groupId != QueueResolver.UNRESOLVED;
+                     groupId = resolver.nextServed(groupId)) {
                     final int slot = groupId - 1;
                     purgeFloors[slot] = Math.max(purgeFloors[slot], keptCut(groupId, inFlightCut.clusterSeqNo()));
                 }
@@ -361,11 +360,8 @@ public final class ReplayerService {
         offerControl(MessageHeaderEncoder.ENCODED_LENGTH + snapshotRoundEncoder.encodedLength());
     }
 
-    /** Where a queue kept a cut, or -1 if it has not: the queue is not served, or its marker was not reported. */
+    /** Where a served queue kept a cut, or -1 if it has not: its marker was not reported. */
     private long keptCut(final int groupId, final long clusterSeqNo) {
-        if (!resolver.serves(groupId)) {
-            return NULL_VALUE;
-        }
         try {
             final Replayer.RecordingSpan active = findActiveRecording(groupId);
             return active == null ? NULL_VALUE : cutLookup.kept(active.recordingId(), clusterSeqNo);
@@ -440,10 +436,8 @@ public final class ReplayerService {
         }
         try {
             final StringJoiner recordings = new StringJoiner(", ");
-            for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
-                if (!resolver.serves(groupId)) {
-                    continue;
-                }
+            for (int groupId = resolver.nextServed(0); groupId != QueueResolver.UNRESOLVED;
+                 groupId = resolver.nextServed(groupId)) {
                 final Replayer.RecordingSpan active = findActiveRecording(groupId);
                 if (active == null) {
                     return 0; // not recorded yet; retry next cycle
@@ -472,40 +466,41 @@ public final class ReplayerService {
         if (inHeaderDecoder.schemaId() != ReplayRequestDecoder.SCHEMA_ID) {
             return;
         }
-
-        if (inHeaderDecoder.templateId() == QueueRequestDecoder.TEMPLATE_ID) {
-            queueRequestDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
-                                     inHeaderDecoder.blockLength(), inHeaderDecoder.version());
+        final int body = offset + MessageHeaderDecoder.ENCODED_LENGTH;
+        final int blockLength = inHeaderDecoder.blockLength();
+        final int version = inHeaderDecoder.version();
+        switch (inHeaderDecoder.templateId()) {
+        case QueueRequestDecoder.TEMPLATE_ID -> {
+            queueRequestDecoder.wrap(buffer, body, blockLength, version);
             onQueueRequest();
-            return;
         }
-        if (inHeaderDecoder.templateId() == SnapshotJoinedDecoder.TEMPLATE_ID) {
-            snapshotJoinedDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
-                                       inHeaderDecoder.blockLength(), inHeaderDecoder.version());
-            if (restartSafety != null) {
-                if (restartSafety.onJoined(snapshotJoinedDecoder.round(), snapshotJoinedDecoder.sourceId(),
-                                           snapshotJoinedDecoder.clientId())) {
-                    logSharedSource(snapshotJoinedDecoder.round(), snapshotJoinedDecoder.sourceId());
-                }
+        case SnapshotJoinedDecoder.TEMPLATE_ID -> {
+            snapshotJoinedDecoder.wrap(buffer, body, blockLength, version);
+            if (restartSafety != null && restartSafety.onJoined(snapshotJoinedDecoder.round(),
+                                                                snapshotJoinedDecoder.sourceId(),
+                                                                snapshotJoinedDecoder.clientId())) {
+                logSharedSource(snapshotJoinedDecoder.round(), snapshotJoinedDecoder.sourceId());
             }
-            return;
         }
-        if (inHeaderDecoder.templateId() == SnapshotConfirmedDecoder.TEMPLATE_ID) {
-            snapshotConfirmedDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
-                                          inHeaderDecoder.blockLength(), inHeaderDecoder.version());
-            if (restartSafety != null) {
-                if (restartSafety.onConfirmed(snapshotConfirmedDecoder.round(), snapshotConfirmedDecoder.sourceId(),
-                                              snapshotConfirmedDecoder.clientId())) {
-                    logSharedSource(snapshotConfirmedDecoder.round(), snapshotConfirmedDecoder.sourceId());
-                }
+        case SnapshotConfirmedDecoder.TEMPLATE_ID -> {
+            snapshotConfirmedDecoder.wrap(buffer, body, blockLength, version);
+            if (restartSafety != null && restartSafety.onConfirmed(snapshotConfirmedDecoder.round(),
+                                                                   snapshotConfirmedDecoder.sourceId(),
+                                                                   snapshotConfirmedDecoder.clientId())) {
+                logSharedSource(snapshotConfirmedDecoder.round(), snapshotConfirmedDecoder.sourceId());
             }
-            return;
         }
-        if (inHeaderDecoder.templateId() != ReplayRequestDecoder.TEMPLATE_ID) {
-            return;
+        case ReplayRequestDecoder.TEMPLATE_ID -> {
+            replayRequestDecoder.wrap(buffer, body, blockLength, version);
+            onReplayRequest();
         }
-        replayRequestDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, inHeaderDecoder.blockLength(),
-                                  inHeaderDecoder.version());
+        default -> {
+        }
+        }
+    }
+
+    /** Answers the replay request the decoder holds: a replay, or {@code ReplayPending} while it cannot start one. */
+    private void onReplayRequest() {
         final long clientId = replayRequestDecoder.clientId();
         final long requestId = replayRequestDecoder.requestId();
         final long fromPosition = replayRequestDecoder.fromPosition();
@@ -729,8 +724,9 @@ public final class ReplayerService {
             return MAX_CONCURRENT_REPLAYS; // the next replay is the only one either way
         }
         try {
-            for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
-                final Replayer.RecordingSpan active = resolver.serves(groupId) ? findActiveRecording(groupId) : null;
+            for (int groupId = resolver.nextServed(0); groupId != QueueResolver.UNRESOLVED;
+                 groupId = resolver.nextServed(groupId)) {
+                final Replayer.RecordingSpan active = findActiveRecording(groupId);
                 final Replayer.QueueBacklog backlog = active == null ? null : replayer.queueBacklog(groupId, active);
                 if (backlog != null && backlog.bytes() > backlog.window() / 4) {
                     return 1;
@@ -880,10 +876,7 @@ public final class ReplayerService {
      */
     private void onControlReplyDropped(final long result) {
         controlRepliesDroppedCounter.increment();
-        final long nowMs = replayer.monotonicMs();
-        final boolean newEpisode = lastControlDropMs == 0 || nowMs - lastControlDropMs >= EPISODE_QUIET_MS;
-        lastControlDropMs = nowMs;
-        if (newEpisode) {
+        if (controlDrops.begins(replayer.monotonicMs())) {
             Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.ControlReplyDropped, memberId,
                          "dropped a control reply (offer=%d): an app subscribed to stream %d and stopped "
                              + "reading it. Its replays are delayed by a resend; every other app is "
@@ -901,10 +894,7 @@ public final class ReplayerService {
      */
     private void onArchiveError(final String message, final RuntimeException exception) {
         archiveErrorsCounter.increment();
-        final long nowMs = replayer.monotonicMs();
-        final boolean newEpisode = lastArchiveErrorMs == 0 || nowMs - lastArchiveErrorMs >= EPISODE_QUIET_MS;
-        lastArchiveErrorMs = nowMs;
-        if (newEpisode) {
+        if (archiveErrors.begins(replayer.monotonicMs())) {
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                         "the local archive refused %s (%s); live delivery unaffected (apps read the queue directly) "
                             + "— see seqeron.replayer.archiveErrorsCount",

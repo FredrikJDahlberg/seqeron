@@ -4,7 +4,6 @@ import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.Publication;
 import io.aeron.archive.client.AeronArchive;
-import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.cluster.ConsensusModule;
 import io.aeron.logbuffer.BufferClaim;
 import io.aeron.logbuffer.FragmentHandler;
@@ -73,7 +72,7 @@ public final class DerivingReplayer implements Replayer {
     private static final String DERIVED_CHANNEL = "aeron:ipc?alias=" + DERIVED_ALIAS;
     /** How long a derived replay waits for its subscriber, as the archive's replay does. */
     private static final long CONNECT_TIMEOUT_MS = 5_000;
-    private static final long FOLLOW_RETRY_MS = 1_000;
+    static final long FOLLOW_RETRY_MS = 1_000;
     private static final int ENTRY_LIMIT = 64;
 
     private final Replayer delegate;
@@ -88,21 +87,10 @@ public final class DerivingReplayer implements Replayer {
     private final Long2ObjectHashMap<DerivedReplay> replays = new Long2ObjectHashMap<>();
     /** The derivation that keeps the checkpoints, or null until the service has started and the log is recorded. */
     private LogFollower follower;
-    /** The counter of the log's commit position, which the follower reads up to. */
-    private int commitCounterId;
-    /** Where a gateway host reads this member's {@link DerivationAnnouncement}, and what is still to be published. */
-    private ExclusivePublication announcement;
-    /** Whether the archive records the announcements, and whether it last refused to. */
-    private boolean announcing;
-    private boolean announcingRefused;
-    private final ArrayDeque<byte[]> unannounced = new ArrayDeque<>();
-    /** The checkpoint announced last: the first kept, which a gateway host may start from. */
-    private LogFollower.Checkpoint announced;
+    /** Where a gateway host reads this member's {@link DerivationAnnouncement}. */
+    private final DerivationAnnouncer announcer;
     /** When the follower's start, or the announcements' recording, is next tried. */
     private long nextAttemptMs;
-
-    /** A queue as it is published: every queue of a node has its term length and MTU. */
-    private record Queue(int groupId, int termLength, int mtu) { }
 
     /**
      * @param archiveDir      where the member's archive keeps the log's segment files
@@ -134,6 +122,7 @@ public final class DerivingReplayer implements Replayer {
         this.archive = archive;
         this.archiveDir = archiveDir;
         this.memberId = memberId;
+        this.announcer = new DerivationAnnouncer(aeron, archive, memberId);
     }
 
     /** Where replays need the log from: the first checkpoint, or {@link LogTrimmer#HOLD} until the follower starts. */
@@ -148,7 +137,7 @@ public final class DerivingReplayer implements Replayer {
 
     /** Whether this member's archive records its announcements, which a gateway host starts from. */
     public boolean announces() {
-        return announcing;
+        return announcer.recording();
     }
 
     /** The runs kept, the derivation's start among them: one more for each entry the predictor did not derive. */
@@ -163,41 +152,43 @@ public final class DerivingReplayer implements Replayer {
 
     @Override
     public long startReplay(final long recordingId, final long position, final long length, final int streamId) {
-        final Queue queue = queueOf(recordingId);
+        final int groupId = groupOf(recordingId);
+        final int termLength = follower.termLength();
         if ((position & (FrameDescriptor.FRAME_ALIGNMENT - 1)) != 0) {
             throw new IllegalArgumentException("position " + position + " is not on a frame boundary");
         }
-        final long from = runAt(queue, position);
-        final int termId = (int)(position >> Integer.numberOfTrailingZeros(queue.termLength()));
+        final long from = runAt(groupId, position);
+        final int termId = (int)(position >> Integer.numberOfTrailingZeros(termLength));
         final ExclusivePublication publication = aeron.addExclusivePublication(
-            DERIVED_CHANNEL + "|term-length=" + queue.termLength() + "|mtu=" + queue.mtu() +
-                "|init-term-id=0|term-id=" + termId + "|term-offset=" + (position & (queue.termLength() - 1)),
+            DERIVED_CHANNEL + "|term-length=" + termLength + "|mtu=" + follower.mtu() +
+                "|init-term-id=0|term-id=" + termId + "|term-offset=" + (position & (termLength - 1)),
             streamId);
         // What the client subscribes by, as an archive's replay session id is: its low 32 bits.
         final long replaySessionId = publication.sessionId() & 0xFFFF_FFFFL;
-        replays.put(replaySessionId, new DerivedReplay(queue, from, position, position + length, publication));
+        replays.put(replaySessionId, new DerivedReplay(groupId, from, position, position + length, publication));
+        final LogFollower.Run run = follower.run(from);
         Logger.info(
             Logger.CoreComponent.ReplayerService, memberId,
             "replay session %d derives group %d's queue [%d,%d) from the log at %d, where the queue stood at %d",
-            replaySessionId, queue.groupId(), position, position + length, follower.run(from).entriesFrom(),
-            follower.run(from).queuePositions()[queue.groupId() - 1]);
+            replaySessionId, groupId, position, position + length, run.entriesFrom(),
+            run.queuePositions()[groupId - 1]);
         return replaySessionId;
     }
 
-    /** The queue a recording id names, once the queues are listed. */
-    private Queue queueOf(final long recordingId) {
+    /** The group a recording id names, once the queues are listed. */
+    private int groupOf(final long recordingId) {
         if (follower == null || !follower.isValid() || recordingId < 1 || recordingId > FrameLayer.MAX_GROUPS) {
             throw new IllegalArgumentException("no queue is derived as recording " + recordingId);
         }
-        return new Queue((int)recordingId, follower.termLength(), follower.mtu());
+        return (int)recordingId;
     }
 
     /** The number of the last run before which a queue stood at or before {@code position}. */
-    private long runAt(final Queue queue, final long position) {
-        final long from = follower.runAt(queue.groupId(), position);
+    private long runAt(final int groupId, final long position) {
+        final long from = follower.runAt(groupId, position);
         if (from < 0) {
-            throw new IllegalArgumentException("group " + queue.groupId() + "'s queue is not derived from " + position +
-                                               ", before " + follower.queueStart(queue.groupId()));
+            throw new IllegalArgumentException("group " + groupId + "'s queue is not derived from " + position +
+                                               ", before " + follower.queueStart(groupId));
         }
         return from;
     }
@@ -224,51 +215,7 @@ public final class DerivingReplayer implements Replayer {
         follower =
             new LogFollower(memberId, start, archiveDir, log,
                             () -> counters.getCounterValue(counterId), checkpointLogBytes, maxCheckpoints, maxRunBytes);
-        commitCounterId = counterId;
-        announcement = aeron.addExclusivePublication(DerivationAnnouncement.CHANNEL, DerivationAnnouncement.STREAM_ID);
-        recordAnnouncements();
-    }
-
-    /**
-     * Records this run's announcements, and purges the ones earlier runs left. A refusal, such as a purge the archive
-     * declines while a gateway host replays the recording, is tried again at the next attempt.
-     */
-    private void recordAnnouncements() {
-        try {
-            for (final ArchiveRecording earlier :
-                 ArchiveRecording.ofStream(archive, DerivationAnnouncement.STREAM_ID)) {
-                if (!earlier.active()) {
-                    archive.purgeRecording(earlier.recordingId());
-                }
-            }
-            archive.startRecording(DerivationAnnouncement.CHANNEL, DerivationAnnouncement.STREAM_ID,
-                                   SourceLocation.LOCAL, true);
-            announcing = true;
-            if (announcingRefused) {
-                Logger.info(Logger.CoreComponent.ReplayerService, memberId, "recording this member's announcements");
-            }
-        } catch (final RuntimeException ex) {
-            if (!announcingRefused) {
-                announcingRefused = true;
-                Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.ServiceError, memberId,
-                             "the archive did not record this member's announcements, which a gateway host starts "
-                                 + "from (%s); trying again every %dms",
-                             ex.getMessage(), FOLLOW_RETRY_MS);
-            }
-        }
-    }
-
-    /** Announces the first checkpoint kept once a purge has released the one announced before it. */
-    private void announceFirstCheckpoint() {
-        final LogFollower.Checkpoint first = follower.checkpoints().getFirst();
-        if (first != announced && unannounced.isEmpty()) {
-            announced = first;
-            unannounced.addAll(new DerivationAnnouncement(
-                                   new DerivationStart(first.logPosition(), first.state(), first.reemitMarker(),
-                                                       first.queuePositions(), follower.termLength(), follower.mtu()),
-                                   commitCounterId)
-                                   .encode());
-        }
+        announcer.start(follower, counterId);
     }
 
     private int commitPositionCounterId() {
@@ -283,21 +230,13 @@ public final class DerivingReplayer implements Replayer {
 
     @Override
     public int doWork() {
-        int work = delegate.doWork();
-        if (announcing) {
-            announceFirstCheckpoint();
-        }
-        while (!unannounced.isEmpty() &&
-               announcement.offer(new UnsafeBuffer(unannounced.peek()), 0, unannounced.peek().length) > 0) {
-            unannounced.poll();
-            work++;
-        }
-        if ((follower == null || !announcing) && delegate.monotonicMs() >= nextAttemptMs) {
+        int work = delegate.doWork() + announcer.doWork();
+        if ((follower == null || !announcer.recording()) && delegate.monotonicMs() >= nextAttemptMs) {
             nextAttemptMs = delegate.monotonicMs() + FOLLOW_RETRY_MS;
             if (follower == null) {
                 startFollower();
             } else {
-                recordAnnouncements();
+                announcer.record();
             }
         }
         if (follower != null) {
@@ -311,6 +250,10 @@ public final class DerivingReplayer implements Replayer {
 
     @Override
     public void stopReplay(final long replaySessionId) {
+        release(replaySessionId);
+    }
+
+    private void release(final long replaySessionId) {
         final DerivedReplay replay = replays.remove(replaySessionId);
         if (replay != null) {
             replay.close();
@@ -321,10 +264,7 @@ public final class DerivingReplayer implements Replayer {
     public long replayProgress(final long replaySessionId) {
         final long progress = delegate.replayProgress(replaySessionId);
         if (progress == REPLAY_ENDED) {
-            final DerivedReplay replay = replays.remove(replaySessionId);
-            if (replay != null) {
-                replay.close();
-            }
+            release(replaySessionId);
         }
         return progress;
     }
@@ -422,13 +362,48 @@ public final class DerivingReplayer implements Replayer {
         }
     }
 
+    /** One queue's frames from a position, as a walk over the log derives them. */
+    private abstract class QueueSink implements Sequencer.FrameSink {
+        final int groupId;
+        final int termLength = follower.termLength();
+        final int mtu = follower.mtu();
+        final long startPosition;
+        final long endPosition;
+        /** Where the queue stands after the last frame derived, or before the start. */
+        long derivedPosition;
+
+        QueueSink(final int groupId, final long from, final long startPosition, final long endPosition) {
+            this.groupId = groupId;
+            this.startPosition = startPosition;
+            this.endPosition = endPosition;
+            this.derivedPosition = follower.run(from).queuePositions()[groupId - 1];
+        }
+
+        /** Whether the walk takes no more frames. */
+        abstract boolean done();
+
+        /** A frame of the queue that ends after the start. */
+        abstract void onFrame(long start, DirectBuffer buffer, int length);
+
+        @Override
+        public void activate(final int[] groupIds) {
+        }
+
+        @Override
+        public final void publish(final int group, final DirectBuffer buffer, final int length) {
+            if (group != groupId || done()) {
+                return;
+            }
+            final long start = QueuePositions.frameStart(derivedPosition, length, termLength, mtu);
+            derivedPosition = start + QueuePositions.framedLength(length, mtu);
+            if (derivedPosition > startPosition) {
+                onFrame(start, buffer, length);
+            }
+        }
+    }
+
     /** One replay: the log's entries in, the requested queue's frames out. */
-    private final class DerivedReplay implements Sequencer.FrameSink {
-        private final Queue queue;
-        private final long startPosition;
-        private final long endPosition;
-        /** Where the queue stands after the last frame derived, offered or pending or before the replay's start. */
-        private long derivedPosition;
+    private final class DerivedReplay extends QueueSink {
         private final RunWalker walker;
         private final ExclusivePublication publication;
         /** The frames the publication has not taken yet. */
@@ -442,14 +417,11 @@ public final class DerivingReplayer implements Replayer {
         private boolean started;
         private boolean closed;
 
-        DerivedReplay(final Queue queue, final long from, final long startPosition, final long endPosition,
+        DerivedReplay(final int groupId, final long from, final long startPosition, final long endPosition,
                       final ExclusivePublication publication) {
-            this.queue = queue;
-            this.startPosition = startPosition;
-            this.endPosition = endPosition;
-            this.derivedPosition = follower.run(from).queuePositions()[queue.groupId() - 1];
+            super(groupId, from, startPosition, endPosition);
             this.publication = publication;
-            this.walker = new RunWalker(queue.groupId(), from, this,
+            this.walker = new RunWalker(groupId, from, this,
                                         () -> pending.isEmpty() && derivedPosition < this.endPosition && !closed);
         }
 
@@ -477,7 +449,7 @@ public final class DerivingReplayer implements Replayer {
             if (publication.position() >= endPosition) {
                 if (publication.position() > endPosition) {
                     Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                                "group %d's derived replay ended at %d, past the queue's %d", queue.groupId(),
+                                "group %d's derived replay ended at %d, past the queue's %d", groupId,
                                 publication.position(), endPosition);
                 }
                 close();
@@ -487,39 +459,32 @@ public final class DerivingReplayer implements Replayer {
                 return work + walker.poll(ENTRY_LIMIT);
             } catch (final UncheckedIOException ex) {
                 Logger.info(Logger.CoreComponent.ReplayerService, memberId, "group %d's derived replay is closed: %s",
-                            queue.groupId(), ex.getMessage());
+                            groupId, ex.getMessage());
                 close();
                 return work;
             }
         }
 
         @Override
-        public void activate(final int[] groupIds) {
+        boolean done() {
+            return closed || derivedPosition >= endPosition;
         }
 
         @Override
-        public void publish(final int group, final DirectBuffer buffer, final int length) {
-            if (group != queue.groupId() || closed || derivedPosition >= endPosition) {
-                return;
-            }
-            final long start = QueuePositions.frameStart(derivedPosition, length, queue.termLength(), queue.mtu());
-            derivedPosition = start + QueuePositions.framedLength(length, queue.mtu());
-            if (derivedPosition <= startPosition) {
-                return; // before the replay
-            }
+        void onFrame(final long start, final DirectBuffer buffer, final int length) {
             if (!started && start < startPosition) {
                 // The archive replays from a fragment's start too, and a client stopped inside a frame resumes there.
                 final long skipped = startPosition - start;
-                if (skipped % queue.mtu() != 0) {
+                if (skipped % mtu != 0) {
                     Logger.info(
                         Logger.CoreComponent.ReplayerService, memberId,
                         "group %d's derived replay from %d is closed: it is inside a fragment of the frame at %d",
-                        queue.groupId(), startPosition, start);
+                        groupId, startPosition, start);
                     close();
                     return;
                 }
                 started = true;
-                pendingOffset = (int)(skipped / queue.mtu()) * publication.maxPayloadLength();
+                pendingOffset = (int)(skipped / mtu) * publication.maxPayloadLength();
                 final byte[] frame = new byte[length];
                 buffer.getBytes(0, frame);
                 pending.add(frame);
@@ -583,22 +548,15 @@ public final class DerivingReplayer implements Replayer {
     }
 
     /** One scan: the queue's frames from a position, derived from a run at or before it. */
-    private final class DerivedScan implements Sequencer.FrameSink {
-        private final Queue queue;
-        private final long fromPosition;
-        private final long endPosition;
+    private final class DerivedScan extends QueueSink {
         private final FrameVisitor visitor;
         private final SequencedFrameDecoder frame = new SequencedFrameDecoder();
-        private long derivedPosition;
         private ScanEnd ended;
 
-        DerivedScan(final Queue queue, final long from, final long fromPosition, final long endPosition,
+        DerivedScan(final int groupId, final long from, final long fromPosition, final long endPosition,
                     final FrameVisitor visitor) {
-            this.queue = queue;
-            this.fromPosition = fromPosition;
-            this.endPosition = endPosition;
+            super(groupId, from, fromPosition, endPosition);
             this.visitor = visitor;
-            this.derivedPosition = follower.run(from).queuePositions()[queue.groupId() - 1];
         }
 
         /**
@@ -618,22 +576,15 @@ public final class DerivingReplayer implements Replayer {
         }
 
         @Override
-        public void activate(final int[] groupIds) {
+        boolean done() {
+            return ended != null;
         }
 
         @Override
-        public void publish(final int group, final DirectBuffer buffer, final int length) {
-            if (group != queue.groupId() || ended != null) {
-                return;
-            }
-            final long start = QueuePositions.frameStart(derivedPosition, length, queue.termLength(), queue.mtu());
-            derivedPosition = start + QueuePositions.framedLength(length, queue.mtu());
-            if (derivedPosition <= fromPosition) {
-                return; // before the scan
-            }
+        void onFrame(final long start, final DirectBuffer buffer, final int length) {
             if (start >= endPosition) {
                 ended = ScanEnd.TIP;
-            } else if (start < fromPosition || !frame.wrap(buffer, 0, length)) {
+            } else if (start < startPosition || !frame.wrap(buffer, 0, length)) {
                 ended = ScanEnd.UNREADABLE;
             } else if (!visitor.onFrame(start, frame.clusterSeqNo())) {
                 ended = ScanEnd.STOPPED;
@@ -653,10 +604,10 @@ public final class DerivingReplayer implements Replayer {
     @Override
     public ScanEnd scanQueueRecording(final long recordingId, final long fromPosition, final long endPosition,
                                       final FrameVisitor visitor) {
-        final Queue queue = queueOf(recordingId);
-        final long from = runAt(queue, fromPosition);
-        final DerivedScan scan = new DerivedScan(queue, from, fromPosition, endPosition, visitor);
-        try (RunWalker log = new RunWalker(queue.groupId(), from, scan, () -> scan.ended == null)) {
+        final int groupId = groupOf(recordingId);
+        final long from = runAt(groupId, fromPosition);
+        final DerivedScan scan = new DerivedScan(groupId, from, fromPosition, endPosition, visitor);
+        try (RunWalker log = new RunWalker(groupId, from, scan, () -> scan.ended == null)) {
             return scan.run(log);
         } catch (final UncheckedIOException ex) {
             return ScanEnd.UNREADABLE;
@@ -685,7 +636,7 @@ public final class DerivingReplayer implements Replayer {
     /** Moves the queue's start: the log below it is the operator's to trim. */
     @Override
     public boolean purgeSegments(final long recordingId, final long newStartPosition) {
-        follower.purge(queueOf(recordingId).groupId(), newStartPosition);
+        follower.purge(groupOf(recordingId), newStartPosition);
         return true;
     }
 
