@@ -19,12 +19,13 @@ discipline is not what stands in the way. Five things do:
 
 - one defect that can make a member's queue diverge from its peers' (1);
 - one configuration that silently disables gateway failover (2);
-- history that is re-derived by whatever sequencer code is current, so any change to that code purges the archive (3);
+- history that is re-derived by whatever sequencer code is current, so a fix that changes output already published
+  purges the archive, and nothing detects such a change (3);
 - queue publication on the consensus thread, which lets a stray subscriber take members down (4);
 - exactly-once ingress that ends when the producer process ends (5).
 
 1 and 2 are fixed. 3 and 5 change the protocol, so they belong before 1.0, while a breaking release is still
-cheap.
+cheap. 7 comes first among the rest: it is what lets most fixes ship without a purge (3).
 
 ## Defects
 
@@ -85,17 +86,45 @@ different history from the same log, so it needs a `LogVersion` bump and a purge
 in three ways:
 
 - **No rolling upgrades.** Every member, gateway host and client upgrades together, and history is lost.
-- **Bug fixes are breaking changes.** A fix to a validation rule purges the archive, which conflicts with any
-  record-retention requirement unless old archives are exported and kept readable by old builds.
+- **A fix that changes published output purges the archive.** Fixing a crash and replaying the log is the usual
+  repair, and seqeron supports it: the log holds the inputs and every queue is derived. Which fixes cost a purge depends
+  on what the bug did:
+  - *It crashed.* The old build published nothing for the entry that stopped it. A fix that changes the output from
+    that entry on, and of no entry before it, derives the same history up to the crash and the right one after. Nothing
+    anyone saw changes, so the archive survives. V-3 asks for a bump here anyway.
+  - *It published wrong output.* Replaying repairs the sequencer's state, but consumers already acted on the old
+    frames. Refusing a frame that was accepted shifts every later `clusterSeqNo` and `groupSeqNo`, so snapshot cuts,
+    `SnapshotEnd` checks and gap positions name other frames, and a reply already sent cannot be replayed away. Only
+    this kind of fix needs the purge, and it conflicts with any record-retention requirement unless old archives are
+    exported and kept readable by old builds.
+
+  Today a bug is often the second kind when it should be the first: an exception in a callback is logged and the node
+  sequences on (7).
 - **The version bump is manual.** No test fails when a code change alters the frames `LogDeriver` derives from an
   existing log. `LogVersionTest` checks the validator, not behaviour. A forgotten bump is caught by nothing: a node
   restarted on the new build silently sequences a different history from its peers'.
 
 The cheap guard is a golden-log test. Commit a fixture of log entries covering every system event, rejection and
 election path, and the digest of the frames `LogDeriver` produces from it. The test fails unless the digest and
-`LOG_VERSION` change together. The structural fix is to version the rules inside the log. A system event names the
-rule set, the `Sequencer` branches on it, and a fix takes effect from the position where it was announced, so the
-archive survives. This is how replicated state machines usually ship fixes.
+`LOG_VERSION` change together. It also tells the two kinds of fix apart. A crash fix adds a fixture of its own, ending
+at the entry that crashed the old build, and leaves the existing digests alone, so it needs no bump. A fix that changes
+a digest changed output the old build published, and the test demands the bump.
+
+Once 7 and the golden-log test are in, V-3's second rule can narrow to that distinction. Proposed wording, replacing
+"A change to what §9.2 rejects is the same kind of change: a log replayed under another rule sequences another
+history":
+
+> A change to what §9.2 rejects, or to any frame the sequencer derives, is the same kind of change when it alters the
+> output of a log entry an earlier build processed without stopping: a log replayed under it sequences another
+> history. A change that alters only the output of entries on which an earlier build stopped with a fatal is not: the
+> earlier build published nothing for them, so the history up to that entry is unchanged. `LOG_VERSION` stays, and the
+> archive is kept.
+
+The structural fix is to version the rules inside the log. A system event names the rule set, the `Sequencer` branches
+on it, and a fix that changes published output takes effect from the position where it was announced, so the archive
+survives. A retroactive fix stays possible, by purging. This is how replicated state machines usually ship fixes:
+`doc/versioning-prior-art.md` §7 surveys Temporal's version markers and replay tests, Kafka's `metadata.version`,
+CockroachDB's finalization and Bitcoin's activation heights, and §8 maps them onto seqeron.
 
 **4. The live queue is published on the consensus service thread, so any tethered subscriber can halt a member.**
 `QueuePublisher.emit` spins on the service thread while an offer is back-pressured, and halts the node after
@@ -152,6 +181,12 @@ as well. An exception partway through `Sequencer.publish`'s loop over groups lea
 and others not. The rest of the tier stops rather than corrupting the stream, and this path should too.
 Since the handler also receives Aeron client errors (see 1), the fix belongs in the callbacks: each one catches its
 own exceptions and raises the fatal. A deterministic bug then crash-loops every member at the same entry. That is the correct outcome for a sequencer, but it needs a runbook entry for a poison log entry.
+
+This is also what keeps fixes cheap (3). A bug that stops every member before it publishes is repaired the usual way:
+ship the fix, restart, and each member replays its log past the entry and sequences on, with no `LOG_VERSION` bump and
+no purge. A bug that sequences on publishes inconsistent output, and fixing it rewrites history consumers already
+acted on. The runbook entry is therefore the standard repair, not a rare one: every member stops at entry N; ship a
+build that fixes entry N and passes the golden-log test with the existing digests unchanged; restart the members.
 
 **8. Configuration is about 50 system-property reads under six prefixes, with almost no cross-checks.** The prefixes
 are `sequencer.*`, `replayer.*`, `proxy.*`, `probe.*`, `aeron.*` and environment variables. `SequencerServer.Config`

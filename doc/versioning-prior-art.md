@@ -1,8 +1,9 @@
 # Protocol versioning: prior art
 
 How financial and log-based systems version their protocols, as background to
-[`upgrades.md`](upgrades.md). Nothing here is seqeron's design; §7 says what bears on it. The external facts
-are as published in October 2026, and those specifications change; the sources are listed at the end.
+[`upgrades.md`](upgrades.md). Nothing here is seqeron's design; §8 says what bears on it. The external facts
+are as published in October 2026 (§7 in November 2026), and those specifications change; the sources are listed at
+the end.
 
 The common thread: **who reads a stream decides how it can be versioned.** A one-to-one session can
 negotiate a version per client. A one-to-many stream cannot, and every exchange versions its market data
@@ -128,7 +129,48 @@ version or the encoded one; only the former protects a reader compiled against t
 - **Aeron Cluster** checks the application version when it replays the log (1.39.0) and versions its
   consensus protocol (1.40.0).
 
-## 7. Bearing on seqeron
+## 7. Code under replay
+
+§6 versions what a log's records look like. A system that replays its log through code has a second dependency:
+the code's behaviour is part of what the replay produces, so a change to it changes history unless something stops
+it. The systems below hold the same few rules.
+
+- **Log decisions, not inputs.** An event-sourced store records what was decided, so a replay applies events and
+  never re-runs the logic that chose them; a code change cannot alter the past, and versioning reduces to §6's
+  record formats. A system that logs inputs and derives its outputs (a replicated state machine, a durable workflow)
+  re-runs the logic on every replay and needs the rules below.
+- **A behaviour change takes effect at a log position.** The new build carries the old behaviour and the new, and an
+  entry in the log selects one, so every replica switches at the same place and a replay of older entries takes the
+  old branch.
+  - **Temporal** workflow code calls `Workflow.getVersion(changeId, DEFAULT_VERSION, maxVersion)` and branches on
+    the result. The first call records a marker in the execution's history, and every later call, replays included,
+    returns that version, so an execution started on the old code replays down the old branch. Without it a changed
+    workflow fails replay with a nondeterminism error. Worker Versioning is the alternative: an execution is pinned
+    to the build that started it, and old builds keep running old executions.
+  - **Kafka in KRaft mode** (KIP-778) gates new metadata record formats and RPC versions behind `metadata.version`, a
+    feature level. Each node's highest supported level rises when its software is upgraded; the operator raises the
+    cluster's level once every node runs the new build, and the controller writes it to the metadata log as a
+    `FeatureLevelRecord`.
+  - **CockroachDB** runs a major upgrade in two phases. Nodes move to the new binary while the cluster version stays
+    at the old release, features that need the new version stay off, and a rollback is possible. Finalizing runs the
+    migrations that cannot be undone and raises the cluster version; after it there is no rollback.
+  - **Bitcoin** changes consensus rules by soft fork, enforced from an activation block onward and never before.
+- **Keep old behaviour for as long as retained history needs it.** Temporal removes a version's branch once every
+  execution started before it has left retention. A validating Bitcoin node checks each block under the rules in force
+  at its height, so old rules stay in the code: `OP_CHECKMULTISIG` still pops one stack element too many, a flaw that
+  BIP 147 constrained with a new rule, activated with segwit, rather than repaired in old blocks. Once an activation is
+  far enough back, the logic that detected it can go: BIP 90 replaced the miner-signalling checks of BIP 34, 65 and 66
+  with fixed activation heights.
+- **Test new code against recorded histories.** Temporal's replay test runs a recorded execution history through the
+  current workflow code and fails if the replay diverges; its versioning documentation names it the way to tell
+  whether a change needs a version branch, and whether the branch is right.
+- **Bound the replay with snapshots.** New code that starts from a snapshot the old code took replays only what
+  follows it ([`upgrades.md`](upgrades.md) §3). LMAX kept about a day of input (§6).
+- **A retroactive change is an explicit migration.** What must change the past is done by rewriting: Young's
+  copy-and-replace writes a corrected copy of the stream and moves consumers to it (§6). Nothing above changes
+  history as a side effect of deploying code.
+
+## 8. Bearing on seqeron
 
 - **The queue is a one-to-many stream.** One encoding serves every consumer, live and replayed, so §5's
   conclusion applies: one version on the wire, readers that tolerate extension, a breaking change as a new
@@ -148,6 +190,23 @@ version or the encoded one; only the former protects a reader compiled against t
 - **Retirement follows `F`, not a calendar.** A payload version can be retired once `F` passes its last
   frame, about 256 rounds after its cutover marker. `LOG_VERSION` (`snapshot.md` §10.2) is the `schemaId` of
   seqeron's own log.
+- **Seqeron logs inputs.** The Raft log holds ingress and every queue is derived by running the `Sequencer` over it
+  (`LogDeriver`), so the sequencer's code is part of recorded history, as a workflow's is in Temporal. A Raft state
+  machine cannot log its decisions in the same entry, because consensus precedes the decision. Recording each
+  member's queues was the decision log, and `doc/plans/disk-load-plan.md` step 2a gave it up for disk.
+- **Today every behaviour change is retroactive.** Spec V-3 asks for a `LOG_VERSION` bump and a purged archive for
+  any change to what §9.2 refuses or to a derived frame: the copy-and-replace of §7, made for every such change. §7's
+  rules map onto seqeron as follows, as `doc/reviews/enterprise-review.md` issue 3 proposes:
+  - a system event naming a rule level, appended by an operator command once every member runs the new build, as
+    Kafka finalizes `metadata.version`; the `Sequencer` branches on the active level, so rolling upgrades and a
+    rollback before activation both work;
+  - a golden-log fixture per level, replayed through `LogDeriver` in the unit suite, as Temporal's replay test;
+  - an old level's branch deleted once `F` passes its activation, as Temporal deletes a version after retention.
+  `LOG_VERSION` would then mark encoding changes alone.
+- **A fix for a crash needs none of this.** A bug that stops every member at an entry published nothing from that
+  entry on, so a fix confined to it leaves every earlier output unchanged and the archive valid. This needs the
+  stop to be certain: a callback that logs an unexpected exception and sequences on publishes from the faulty entry
+  instead (the review's item 7).
 
 ## Sources
 
@@ -175,3 +234,9 @@ version or the encoded one; only the former protects a reader compiled against t
   [LMAX replay window](https://groups.google.com/g/dddcqrs/c/vNAwkmW055g),
   [Aeron 1.39.0](https://newreleases.io/project/github/aeron-io/aeron/release/1.39.0),
   [Aeron 1.40.0](https://newreleases.io/project/github/aeron-io/aeron/release/1.40.0)
+- Code under replay: [Temporal, versioning (Java SDK)](https://docs.temporal.io/develop/java/workflows/versioning),
+  [Temporal, replay testing (Java SDK)](https://docs.temporal.io/dev-guide/java/durable-execution),
+  [KIP-778, KRaft to KRaft upgrades](https://cwiki.apache.org/confluence/display/KAFKA/KIP-778%3A+KRaft+to+KRaft+Upgrades),
+  [CockroachDB, upgrade to v24.2](https://docs.cockroachlabs.com/docs/v24.2/upgrade-cockroach-version),
+  [BIP 147, dummy stack element malleability](https://github.com/bitcoin/bips/blob/master/bip-0147.mediawiki),
+  [BIP 90, buried deployments](https://github.com/bitcoin/bips/blob/master/bip-0090.mediawiki)
