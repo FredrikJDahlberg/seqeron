@@ -209,6 +209,35 @@ class ClusterSnapshotTest {
         assertFalse(cluster.terminated(), "a member terminated");
     }
 
+    /**
+     * Aeron reaches {@code onTakeSnapshot} only once the member's archive has taken the snapshot's recording, and acks
+     * a failure before that with no recording, as it does a refusal. That member's sequencer never applied the round
+     * its peers did, so it must not sequence on.
+     */
+    @Test
+    @InterruptAfter(120)
+    void aMemberWhoseSnapshotFailsBeforeItsServiceIsCalledRaisesAFatal() {
+        watcher.ignoreErrorsMatching(s -> s.contains("Archive connect timeout"));
+        watcher.ignoreErrorsMatching(s -> s.contains("failed to take snapshot"));
+        start("200", 0);
+        final int leader = cluster.awaitLeader();
+        final int broken = (leader + 1) % InProcessCluster.MEMBERS;
+        cluster.breakSnapshotArchive(broken);
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(leader)))) {
+            final AtomicCounter toggle = ClusterControl.findControlToggle(aeron.countersReader(), 0);
+            assertTrue(ClusterControl.ToggleState.SNAPSHOT.toggle(toggle), "the toggle was not neutral");
+        }
+        for (int i = 0; i < 600 && !cluster.fatal(broken); i++) {
+            Tests.sleep(50);
+        }
+
+        assertTrue(cluster.fatal(broken), "member " + broken + " sequenced on without the round its peers applied");
+        for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
+            assertTrue(m == broken || !cluster.fatal(m), "member " + m + " raised a fatal");
+        }
+        assertFalse(cluster.terminated(), "a member terminated");
+    }
+
     @Test
     @InterruptAfter(180)
     void aMemberRestartedWithAnotherTermLengthStartsItsQueueAtZeroAndTheCutIsFoundByItsClusterSeqNo() throws Exception {

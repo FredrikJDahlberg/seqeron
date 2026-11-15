@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
@@ -257,8 +258,8 @@ public final class SequencerServer {
      * @param config          the node's settings
      * @param terminationHook run when the consensus module or the service container terminates the node, but not
      *                        during {@link #stop()}
-     * @param fatalHandler    run when the node cannot go on: its queue recording stopped, its Replayer failed, or
-     *                        its log was truncated below what it applied
+     * @param fatalHandler    run when the node cannot go on: its queue recording stopped, its Replayer failed, its
+     *                        log was truncated below what it applied, or a cluster snapshot skipped its service
      * @return the running node, which {@link #stop()} stops
      */
     public static SequencerServer launch(final Config config, final Runnable terminationHook,
@@ -300,6 +301,19 @@ public final class SequencerServer {
                                          final Runnable fatalHandler, final UdpFaults udpFaults,
                                          final ClusterClock clusterClock,
                                          final UnaryOperator<Replayer> replayerWrapper) {
+        return launch(config, terminationHook, fatalHandler, udpFaults, clusterClock, replayerWrapper, ctx -> { });
+    }
+
+    /**
+     * As above, handing {@code serviceArchive} the archive context the service container takes its snapshots through,
+     * which Aeron clones for each one. Test harnesses only: a snapshot whose archive connect fails.
+     *
+     * @param serviceArchive receives the service container's archive context before the node launches
+     */
+    public static SequencerServer launch(final Config config, final Runnable terminationHook,
+                                         final Runnable fatalHandler, final UdpFaults udpFaults,
+                                         final ClusterClock clusterClock, final UnaryOperator<Replayer> replayerWrapper,
+                                         final Consumer<AeronArchive.Context> serviceArchive) {
         final int memberId = config.memberId();
         final String host = config.host();
         final String aeronDir = config.aeronDir();
@@ -413,19 +427,23 @@ public final class SequencerServer {
             new SequencerService(memberId, topologyRows, fatalHandler, safeLog, cuts, derivationStart,
                                  driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(), queueStallTimeoutMs);
 
+        final AeronArchive.Context serviceArchiveCtx = localArchiveCtx.clone();
+        serviceArchive.accept(serviceArchiveCtx);
         final ClusteredServiceContainer.Context serviceCtx =
             new ClusteredServiceContainer.Context()
                 .aeronDirectoryName(aeronDir)
-                .archiveContext(localArchiveCtx.clone())
+                .archiveContext(serviceArchiveCtx)
                 .clusterDir(clusterDir)
                 .clusteredService(service)
                 .appVersion(LogVersion.APP_VERSION)
                 .appVersionValidator(LogVersion.VALIDATOR)
                 .terminationHook(unlessStopping)
                 .idleStrategySupplier(idleStrategySupplier)
-                .errorHandler(t
-                              -> Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError,
-                                              memberId, "%s", describe(t)));
+                .errorHandler(t -> {
+                    Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError, memberId,
+                                 "%s", describe(t));
+                    service.onServiceError(t);
+                });
 
         ClusteredMediaDriver driver = null;
         ClusteredServiceContainer container = null;

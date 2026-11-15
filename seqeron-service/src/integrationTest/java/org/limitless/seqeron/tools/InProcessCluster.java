@@ -69,6 +69,8 @@ final class InProcessCluster implements AutoCloseable {
     /** Each member's Replayer, and the gateway host's last, which fail or stall on cue and outlive a restart of it. */
     private final FaultableReplayer[] replayers = new FaultableReplayer[MEMBERS + 1];
     private final AtomicBoolean[] fatal = new AtomicBoolean[MEMBERS + 1];
+    /** The archive context each member's service container clones for every snapshot it takes. */
+    private final AeronArchive.Context[] snapshotArchives = new AeronArchive.Context[MEMBERS];
     private final AtomicBoolean terminated = new AtomicBoolean();
     private ReplayerServer gatewayHost;
     private ExpandableArrayBuffer gatewayRow;
@@ -230,7 +232,7 @@ final class InProcessCluster implements AutoCloseable {
         nodes.set(
             m,
             SequencerServer.launch(config, () -> terminated.set(true), () -> isFatal.set(true), udpFaults, clocks[m],
-                                   replayers[m]::wrap));
+                                   replayers[m]::wrap, ctx -> snapshotArchives[m] = ctx));
         if (recordQueues) {
             recordQueues(m);
         }
@@ -324,6 +326,17 @@ final class InProcessCluster implements AutoCloseable {
     FaultableReplayer replayer(final int m) {
         return replayers[m];
     }
+
+    /**
+     * Points the archive connection member {@code m}'s service container makes for each snapshot at a stream no archive
+     * serves, so the next snapshot fails within a second, before Aeron calls the service. Holds until it restarts.
+     */
+    void breakSnapshotArchive(final int m) {
+        snapshotArchives[m].controlRequestStreamId(UNSERVED_STREAM_ID).messageTimeoutNs(TimeUnit.SECONDS.toNanos(1));
+    }
+
+    /** A stream id no archive here serves control requests on. */
+    private static final int UNSERVED_STREAM_ID = 4_919;
 
     /** Steps member {@code m}'s consensus clock by {@code millis}, backward when negative. */
     void stepClock(final int m, final long millis) {

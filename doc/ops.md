@@ -493,6 +493,10 @@ It exits 70, too, when its log is truncated below what it applied ([`fault-toler
 `[SequencerServer/N] FATAL: the log was truncated below what this node applied …`. Restart it as above, and see that section before
 serving its history.
 
+It exits 70 when a cluster snapshot failed before its service applied the round ([`fault-tolerance.md`](fault-tolerance.md) §1.5):
+`[SequencerService/N] FATAL: a cluster snapshot failed outside this node's service …`, behind the archive error
+that failed it. Restart it as above; if it exits 70 again at the same snapshot, its archive is the fault.
+
 ## A gateway that fences itself
 
 A gateway built on the client tier's `Gateway` stops itself when it can no longer trust its view of the log

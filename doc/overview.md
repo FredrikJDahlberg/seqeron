@@ -200,6 +200,7 @@ sent them; authentication belongs at the system's external edges.
 | member lost | the others keep quorum | the member restarts and replays the log, rebuilding its queues |
 | a member cannot publish its queue | the member terminates (exit 70) rather than drop a frame | as for a lost member |
 | a member's log is truncated below what it applied (an Aeron Cluster 1.53.2 fault) | the member terminates (exit 70) rather than go on from state the log no longer has | as for a lost member |
+| a member's cluster snapshot fails before its service applies the round | the member terminates (exit 70) rather than sequence on without the round its peers applied | as for a lost member |
 | slow consumer | its media driver drops it within about 0.2 s; the queue is not held back | it resumes over the gap from the Replayer |
 | message missed on the queue | the next message reveals the gap | the client resumes from the last message it delivered, holding live messages meanwhile |
 | gateway instance fails | its cluster session closes | the sequencer designates the standby |

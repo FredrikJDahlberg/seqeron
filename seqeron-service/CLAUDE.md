@@ -35,7 +35,8 @@ queues over the log replay it does anyway. The 1 Hz heartbeat runs the same live
 back-pressures nothing at all (the untethered app subscribers keep the publication connected) and would otherwise
 be silent. `QueuePublisher`'s names and messages still say "recording" for that subscriber. A node whose consensus module truncates its log below what it applied terminates itself
 too, which Aeron Cluster 1.53.2 does to a committed entry (`SequencerServer.truncatesAppliedLog`,
-`doc/fault-tolerance.md` §1.4).
+`doc/fault-tolerance.md` §1.4), and so does one whose cluster snapshot failed before Aeron called `onTakeSnapshot`, which
+left it without the round its peers applied (`SequencerService.onServiceError`, §1.5).
 
 Besides forwarded ingress, the sequencer synthesizes its own frames on the same `clusterSeqNo` counter:
 `SessionClosed` (one per cluster session close: nothing from that session reaches the log after it),

@@ -142,7 +142,21 @@ replays the log the others kept and rebuilds the member's queues from it.
 It cannot undo what was read before. The member's queue, and the restarted follower's, carried frames at
 clusterSeqNos the log now gives to others, and a client that consumed them acted on history the cluster discarded.
 
-### 1.5 Shutdown and restart
+### 1.5 A node whose snapshot skips its service takes itself down
+
+A cluster snapshot is also a round: `onTakeSnapshot` publishes its `SnapshotStarted` and advances `clusterSeqNo`.
+Aeron Cluster 1.53.2 calls it only after the member's archive has started the snapshot's recording, and acks a
+failure before that, such as an archive connect timeout, as it acks a refusal: the member skips the snapshot and
+sequences on. Every peer that took it applied the round, so from there on this member's queues would carry each frame
+one `clusterSeqNo` and `groupSeqNo` below theirs, and below its own Replayer's derivation, which applies every round
+in the log.
+
+The failure reaches the service container's error handler on the service thread before the next log entry.
+`SequencerService` recognises it by its stack, which passed through Aeron's `onTakeSnapshot` and not its own (a
+failure after its own returned looks the same, and is treated alike), applies nothing more, takes no snapshot, and exits the node with 70 (`ClusterSnapshotTest` breaks one member's archive
+connection to cause it). The restart replays the log, whose snapshot action it applies, and its peers keep quorum.
+
+### 1.6 Shutdown and restart
 
 `clusterctl shutdown` runs on the leader. It publishes a `ClusterStopped` marker, waits (best effort) for it
 on the queue, then calls `ClusterTool.abort`. `SequencerServer` connects

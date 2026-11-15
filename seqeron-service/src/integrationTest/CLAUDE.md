@@ -53,7 +53,8 @@ purge has moved, and holds a gateway host to the markers it reports, to its purg
 restarted from a snapshot, and to stopping once every member trimmed its log past it, which a restart recovers. It
 also holds a member to trimming its log past its first segment by itself once its cuts are restart-safe, above what
 its queues need, and to starting a host after, and a snapshot toggled with no policy to being refused while the
-cluster sequences on.
+cluster sequences on. A member whose snapshot archive connection `InProcessCluster.breakSnapshotArchive` points at no
+archive (through `SequencerServer.launch`'s `serviceArchive` overload) is held to raising a fatal at the next round.
 `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;
