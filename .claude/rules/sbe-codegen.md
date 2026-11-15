@@ -8,31 +8,33 @@ paths:
 
 # SBE code generation
 
-Four schemas, split by who speaks them — `sbe-frame`, `sbe-replay` and `sbe-cluster` under
-`seqeron-client/src/main/sbe`, `sbe-probe` under `seqeron-service/src/main/sbe` — each generating into
+Six schemas, split by who speaks them — `sbe-frame`, `sbe-replay`, `sbe-hosted` and `sbe-cluster` under
+`seqeron-client/src/main/sbe`, `sbe-probe` and `sbe-sequencer` under `seqeron-service/src/main/sbe` — each generating into
 a distinct namespace so one include path
 covers all of them:
 
 - `sbe-frame.xml` (schema 210) — the nine top-level templates, their four header composites, and the
-  twelve submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
-  list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`, the snapshot frames). No system message carries
+  thirteen submitted **system** payloads (`SystemFrame`'s `systemEventType` table). No system message carries
   a `header` field — the frame's is the only one. Seqeron's own, and the only thing this tier decodes.
 - `sbe-replay.xml` (schema 212) — the three **replay control** messages, node-local between a
   `ReplayerService` and its co-located app replicas, never sequenced and never recorded.
 - `sbe-probe.xml` (schema 214) — core's own application payload (`payloadId` 5): one message,
   `ProbeMarker`, carrying a submitter-side `seqNo` and variable-length filler. What `tools/ClusterProbe`
-  speaks, so the e2e scripts can drive a cluster with no product binary built. A payload rather than a
+  speaks, so the system tests can drive a cluster with no product binary built. A payload rather than a
   system event precisely because the sequencer decodes no `payloadId` at all — a probe frame exercises the
   real copy-through path and needs no change to `sbe-frame.xml`. **Java only**, which keeps the C++
   `generated/sbe/core` root free of any application codec. `payloadId` 5 is private (one publisher, one
   consumer, both the probe), so it needs no `PayloadIdRegistered` row; its `sourceId` is 8
   (`ClusterProbe.PROBE_SOURCE_ID`).
 - `sbe-cluster.xml` (schema 111) — trimmed mirror of `io.aeron.cluster.codecs` (SessionConnectRequest,
-  SessionEvent, SessionKeepAlive, …), replacing a hand-written `ClusterProtocol.hpp`. Its last section is
+  SessionEvent, SessionKeepAlive, …). No language generates codecs from it. Its last section is
   decode-only — the consensus-module log entries (`TimerEvent`, `SessionOpenEvent`, …) that
-  `SbeLogPrinter --schema cluster` reads out of a Raft-log recording; the client never sends them. Java
-  side is **IR-only** (`generateClusterSbeIr`, no codecs), since the Java side speaks the cluster protocol
+  `SbeLogPrinter --schema cluster` reads out of a Raft-log recording. Java
+  stages its IR only (`generateClusterSbeIr`), since the Java side speaks the cluster protocol
   through `io.aeron.cluster.codecs` and the stubs would be dead classes.
+- `sbe-hosted.xml` (schema 218) — the hosted-façade protocol between a host and a client stub (draft).
+  Java, and C++ committed under `generated/sbe/core`.
+- `sbe-sequencer.xml` (schema 216) — the `Sequencer`'s cluster-snapshot state. Node-local, **Java only**.
 
 A module's `sbe` directory is a codegen input, not a resource one, so no jar ships an XML. The one
 file a

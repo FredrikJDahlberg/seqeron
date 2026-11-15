@@ -50,12 +50,7 @@ Transform tasks into verifiable goals:
 "Add validation" → "Write tests for invalid inputs, then make them pass"
 "Fix the bug" → "Write a test that reproduces it, then make it pass"
 "Refactor X" → "Ensure tests pass before and after"
-For multi-step tasks, state a brief plan:
-
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-   Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
 5. Commits
 
@@ -94,9 +89,9 @@ at its package root and its client in `.client` beside it (`sequencer` / `sequen
 `replayer.server` / `replayer.client`), and the wire contract both sides share is `protocol` —
 `FrameLayer`, `SystemFrame`, `PortLayout`,
 `SequencedFrameDecoder`, `ReplayProtocol`, `SeqeronCounters`, `Publish`. Each module publishes one jar: `seqeron`
-(the **client tier**: `protocol`, `sequencer.client`, `replayer.client`, `app`, `util`, the frame and
-replay codecs and the cluster mirror's IR) and `seqeron-service` (the **service tier**: `sequencer`,
-`replayer.server`, `tools`, `metrics` and the probe codecs). No package is in both, so both jars carry an
+(the **client tier**: `protocol`, `sequencer.client`, `replayer.client`, `app`, `util`, the frame,
+replay and hosted codecs and the cluster mirror's IR) and `seqeron-service` (the **service tier**: `sequencer`,
+`replayer.server`, `proxy`, `tools`, `metrics` and the probe and sequencer-snapshot codecs). No package is in both, so both jars carry an
 `Automatic-Module-Name`. A process that merely talks to a cluster takes the first alone, and
 `seqeron-examples` is the proof: it resolves `org.limitless:seqeron` and compiles. Its
 `ColocatedApp.java` proves the narrower claim that `app` is sufficient on its own — `checkFacadeOnly`
@@ -255,6 +250,6 @@ log-based systems version their protocols, as background to `upgrades.md`). The 
 and a change to the client tier's surface changes all three.
 
 ## Code Formatting Mandate
-- Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.
-- Before completing an edit or creating a file, ensure it complies with our Clang-Format criteria.
+- New files, and the lines you change, follow the local `.clang-format`. Many existing files do not comply yet:
+  format only the lines you touch, so a diff carries no unrelated reformatting.
 - Keep code comments short and to the point. Do not explain design that is already documented.
