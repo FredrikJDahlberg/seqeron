@@ -418,10 +418,14 @@ the Raft log included.
 A `<snapshots>` policy turns on cluster snapshots ([`snapshot.md`](snapshot.md) §10); without one a member's recovery is
 a replay of its whole log.
 
-- **`interval` must exceed `sequencer.sessionTimeoutMs`.** The consensus module resets every client session's
-  inactivity clock at each snapshot, so rounds more often than the session timeout keep a dead client's session from
-  ever timing out, and a dead gateway from ever being replaced by its standby. `bytes` has the same effect on a busy
-  cluster that sets it low.
+- **Rounds start no closer than `sequencer.sessionTimeoutMs` plus 1 s apart**, the leader's own value. The consensus
+  module resets every client session's inactivity clock at each snapshot, so closer rounds would keep a dead client's
+  session from ever timing out, and a dead gateway from ever being replaced by its standby. An `interval`, a `bytes`
+  threshold or an operator's request that falls due sooner waits out the gap, so an `interval` below it is the gap,
+  and `bytes` bounds history only while the cluster sequences less than `bytes` in it. The first round waits for
+  nothing. Request rounds with `clusterctl request-snapshot`, never Aeron's `ClusterTool snapshot`: it sets the
+  consensus module's toggle directly, so its rounds skip the gap, and run more often than the session timeout they
+  keep a dead gateway's session open.
 - **Every consumer of a member's queue must be able to restart from a snapshot file.** A restarted member's queue starts
   at a cut, so a process that can only walk the queue from `groupSeqNo` 1, a bare `ReplayerStreamReceiver` such as
   `ClusterProbe follow`, is fenced with `FirstFrameNotOne`. Only an `Application` or `Gateway` with a

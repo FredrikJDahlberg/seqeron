@@ -23,7 +23,7 @@ discipline is not what stands in the way. Five things do:
 - queue publication on the consensus thread, which lets a stray subscriber take members down (4);
 - exactly-once ingress that ends when the producer process ends (5).
 
-1 is fixed. 2 is a small fix. 3 and 5 change the protocol, so they belong before 1.0, while a breaking release is still
+1 and 2 are fixed. 3 and 5 change the protocol, so they belong before 1.0, while a breaking release is still
 cheap.
 
 ## Defects
@@ -69,6 +69,14 @@ the sequencer never sees.
 - **Fix.** Enforce a minimum spacing in replicated state. Give `SnapshotPolicyRegistered` a minimum gap between rounds
   that applies to the byte and operator triggers too, and have `clusterctl load-topology` refuse a gap at or below the
   session timeout it is told.
+- **Fixed, without the wire change.** Only the leader asks for a round, and the leader's own consensus module times
+  sessions out, so the leader's own `sequencer.sessionTimeoutMs` is the value that matters, and the service already
+  has it. `SequencerService.requestRound` now asks only once the session timeout plus one heartbeat has passed since
+  the last round started (`Sequencer.snapshotDue(timestamp, minGapNs)`), for every trigger. The first round is
+  exempt. No log entry changes, so neither `LOG_VERSION` nor schema 210 changes. Any gap above the timeout lets a
+  dead session expire eventually, and the extra heartbeat makes it expire at the next round. `clusterctl
+  request-snapshot` now waits 30 s for its round. A round toggled through Aeron's own `ClusterTool` still bypasses
+  the gap. `SequencerTest` covers the gate. `doc/ops.md`, `snapshot.md` §10.2 and spec §7.3 describe it.
 
 **3. The sequencer's code is part of the recorded history, and nothing detects a change to it.** A member recovers,
 and its Replayer derives every queue, by running the current `Sequencer` over the whole log (`LogDeriver`). Spec V-3
@@ -147,8 +155,8 @@ own exceptions and raises the fatal. A deterministic bug then crash-loops every 
 
 **8. Configuration is about 50 system-property reads under six prefixes, with almost no cross-checks.** The prefixes
 are `sequencer.*`, `replayer.*`, `proxy.*`, `probe.*`, `aeron.*` and environment variables. `SequencerServer.Config`
-is an unvalidated record. Two documented constraints are not enforced: the session timeout must stay well above the
-leader heartbeat timeout, and the snapshot interval must exceed the session timeout (2). An enterprise deployment
+is an unvalidated record. One documented constraint is not enforced: the session timeout must stay well above the
+leader heartbeat timeout. The other, round spacing against the session timeout, is now enforced (2). An enterprise deployment
 wants three things: one validated configuration per process, the effective values printed at start, and a refusal to
 start on inconsistent combinations. `ClientProxy` already refuses invalid values; the member does not.
 

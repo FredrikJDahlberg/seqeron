@@ -691,7 +691,9 @@ frame published to the queues, each counted once however many queues it reaches.
    toward the next round, and before any round at the latest policy row.
 
 A round that is due stays due until the snapshot action publishes its `SnapshotStarted`, and a heartbeat that meets
-both the interval and the byte trigger makes one round due. Rounds are numbered
+both the interval and the byte trigger makes one round due. The leader asks for a due round no sooner than its
+session timeout plus one heartbeat interval after the last `SnapshotStarted`, the first round excepted: each
+snapshot resets every client session's inactivity clock, so closer rounds would keep a dead session open. Rounds are numbered
 from 1, and each `SnapshotStarted` supersedes the one before it. A policy row sequenced after the first
 round changes the interval and the threshold but not the point either counts from.
 

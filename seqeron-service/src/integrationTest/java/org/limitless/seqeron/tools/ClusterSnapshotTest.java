@@ -145,7 +145,7 @@ class ClusterSnapshotTest {
         start("3600000", 1); // no round is ever marked safe: the join window outlasts the test
         final int leader = cluster.awaitLeader();
         final int member = (leader + 1) % InProcessCluster.MEMBERS;
-        while (QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, 0, 40).stream()
+        while (QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, 0, 20).stream()
                    .noneMatch(frame -> frame.systemEventType() == SystemFrame.SNAPSHOT_STARTED)) {
             Tests.sleep(200);
         }
@@ -160,9 +160,9 @@ class ClusterSnapshotTest {
             Tests.sleep(50);
         }
         assertEquals(0, listedStart(member));
-        final List<QueueFrames.Frame> own = QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, 0, 40);
+        final List<QueueFrames.Frame> own = QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, 0, 20);
         assertEquals(1, own.getFirst().groupSeqNo(), "the whole queue, from its first frame");
-        assertEquals(own, QueueFrames.readFrom(cluster.aeronDir(leader), InProcessCluster.GROUP_ID, 0, 40),
+        assertEquals(own, QueueFrames.readFrom(cluster.aeronDir(leader), InProcessCluster.GROUP_ID, 0, 20),
                      "frame for frame what the leader holds, the replayed snapshot actions' markers included");
 
         assertFalse(cluster.fatal(), "a member raised a fatal");

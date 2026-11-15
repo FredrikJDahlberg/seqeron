@@ -786,6 +786,16 @@ public final class Sequencer implements SequencerSnapshot {
     }
 
     /**
+     * Whether a round is due and may start: {@link #snapshotDue}, and at least {@code minGapNs} have passed since the
+     * last round started. The first round waits for nothing.
+     * @param timestamp now
+     * @param minGapNs  the least time between two rounds' starts
+     */
+    public boolean snapshotDue(final long timestamp, final long minGapNs) {
+        return roundDue && (snapshotRound == 0 || timestamp - lastSnapshotStart >= minGapNs);
+    }
+
+    /**
      * Publishes the next round's {@code SnapshotStarted} on every queue, its {@code clusterSeqNo} the round's cut, and
      * clears {@link #snapshotDue}. Called from the cluster's snapshot action, which every member takes at the same
      * place in the log with the same timestamp. With no group active there is no queue to cut,

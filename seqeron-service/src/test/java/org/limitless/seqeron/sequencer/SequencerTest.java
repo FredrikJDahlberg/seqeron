@@ -776,6 +776,25 @@ class SequencerTest {
     }
 
     @Test
+    @DisplayName("a round may start only the minimum gap after the last one started, and the first waits for nothing")
+    void aDueRoundWaitsForTheMinimumGap() {
+        final long gap = 6_000_000_000L;
+        sequencePolicy(sequencer, frames, 0, 1);
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        assertTrue(sequencer.snapshotDue(TIMESTAMP, gap), "the first round waits for nothing");
+        assertEquals(1L, takeRound(TIMESTAMP));
+
+        sequencer.clusterHeartbeat(TIMESTAMP + 1);
+        assertTrue(sequencer.snapshotDue(), "the byte count calls for the next round at once");
+        assertFalse(sequencer.snapshotDue(TIMESTAMP + gap - 1, gap), "but it may not start within the gap");
+        sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, 3), SESSION_ID,
+                                  TIMESTAMP + 2);
+        assertFalse(sequencer.snapshotDue(TIMESTAMP + gap - 1, gap), "nor may an operator's");
+        assertTrue(sequencer.snapshotDue(TIMESTAMP + gap, gap), "once it has passed, the round may start");
+        assertEquals(2L, takeRound(TIMESTAMP + gap));
+    }
+
+    @Test
     @DisplayName("the interval and the byte count falling due on one heartbeat call for one round")
     void snapshotIntervalAndBytesTogetherCallForOneRound() {
         final long interval = 10_000_000_000L;

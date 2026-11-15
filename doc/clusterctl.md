@@ -109,8 +109,10 @@ Starts a snapshot round now, rather than at the next interval. It publishes `Sna
 due; the leader's service then asks the cluster for a snapshot, and the command waits for the `SnapshotStarted` that
 snapshot publishes and prints the round and its `clusterSeqNo`, which is the round's cut. It is a cluster snapshot as
 well as an application round (`snapshot.md` §10).
+A round starts no sooner than the session timeout plus 1 s after the last ([`ops.md`](ops.md), "Cluster snapshots"),
+so the command waits up to 30 s for it.
 If the loaded topology has no `<snapshots>` element, nothing answers the request and the command exits 1
-after the timeout. What the participating sources then do is [`snapshot.md`](snapshot.md) §4.
+after that timeout. What the participating sources then do is [`snapshot.md`](snapshot.md) §4.
 
 ### load-topology
 

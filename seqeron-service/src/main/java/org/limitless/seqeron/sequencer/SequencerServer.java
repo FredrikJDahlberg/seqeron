@@ -425,7 +425,8 @@ public final class SequencerServer {
         final AtomicReference<DerivationStart> derivationStart = new AtomicReference<>();
         final SequencerService service =
             new SequencerService(memberId, topologyRows, fatalHandler, safeLog, cuts, derivationStart,
-                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(), queueStallTimeoutMs);
+                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(), queueStallTimeoutMs,
+                                 config.sessionTimeoutMs());
 
         final AeronArchive.Context serviceArchiveCtx = localArchiveCtx.clone();
         serviceArchive.accept(serviceArchiveCtx);

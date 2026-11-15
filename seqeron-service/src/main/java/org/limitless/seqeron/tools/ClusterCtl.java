@@ -99,6 +99,9 @@ public final class ClusterCtl {
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
+    /** How long request-snapshot waits for its round, which starts no sooner than a session timeout after the last. */
+    private static final long ROUND_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
+
     /** The longest a first load's activation holds the queues up for (spec §7.4). */
     private static final long ACTIVATION_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
@@ -329,7 +332,7 @@ public final class ClusterCtl {
             }
             publishMarker(session, SystemFrame.SNAPSHOT_REQUESTED, correlationId);
             final SnapshotStartedEchoHandler started = new SnapshotStartedEchoHandler(correlationId);
-            final long cut = awaitEcho(session, queue, started);
+            final long cut = awaitEcho(session, queue, started, ROUND_TIMEOUT_NS);
             if (cut < 0) {
                 System.err.println(started.requestSeqNo < 0
                     ? "[clusterctl] request-snapshot: no sequenced SnapshotRequested echo within timeout"
@@ -807,14 +810,20 @@ public final class ClusterCtl {
         publish(session, systemEventType, payload, encoder.encodedLength());
     }
 
+    /** {@link #awaitEcho(Session, Subscription, EchoHandler, long)} for {@link #ECHO_TIMEOUT_NS}. */
+    private static long awaitEcho(final Session session, final Subscription queue, final EchoHandler handler) {
+        return awaitEcho(session, queue, handler, ECHO_TIMEOUT_NS);
+    }
+
     /**
-     * Reads the queue until {@code handler} sees its echo, or {@link #ECHO_TIMEOUT_NS} passes, polling egress
+     * Reads the queue until {@code handler} sees its echo, or {@code timeoutNs} passes, polling egress
      * alongside so the publishing session stays alive.
      * @return the echoed frame's clusterSeqNo, or -1 on timeout
      */
-    private static long awaitEcho(final Session session, final Subscription queue, final EchoHandler handler) {
+    private static long awaitEcho(final Session session, final Subscription queue, final EchoHandler handler,
+                                  final long timeoutNs) {
         final FragmentAssembler assembler = new FragmentAssembler(handler);
-        final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
+        final long deadline = System.nanoTime() + timeoutNs;
         while (!handler.found && System.nanoTime() < deadline) {
             final int fragments = queue.poll(assembler, 10);
             session.sender.pollEgress();

@@ -75,6 +75,12 @@ public final class SequencerService implements ClusteredService {
     private final int nodeTermLength;
     private final int nodeMtu;
 
+    /**
+     * The least time between two rounds' starts: the session timeout and one heartbeat. Each snapshot resets every
+     * session's inactivity clock, so closer rounds would keep a dead client's session open.
+     */
+    private final long roundGapNs;
+
     /** The cluster's snapshot toggle, or null until found. */
     private AtomicCounter controlToggle;
 
@@ -127,12 +133,14 @@ public final class SequencerService implements ClusteredService {
      * @param nodeTermLength the IPC term length of the node's driver, which its queues are published with
      * @param nodeMtu        the IPC MTU of the node's driver
      * @param stallTimeoutMs how long one queue offer may stay back-pressured before this node terminates
+     * @param sessionTimeoutMs the consensus module's session timeout, which spaces snapshot rounds
      */
     public SequencerService(final int memberId, final Queue<byte[]> topologyRows, final Runnable fatalHandler,
                             final RestartSafeLog safeLog, final Queue<CutHandover> cuts,
                             final AtomicReference<DerivationStart> derivationStart, final int nodeTermLength,
-                            final int nodeMtu, final long stallTimeoutMs) {
+                            final int nodeMtu, final long stallTimeoutMs, final long sessionTimeoutMs) {
         this.queue = new QueuePublisher(new QueueActions(), TimeUnit.MILLISECONDS.toNanos(stallTimeoutMs));
+        this.roundGapNs = TimeUnit.MILLISECONDS.toNanos(sessionTimeoutMs) + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
         this.topologyRows = topologyRows;
         this.safeLog = safeLog;
         this.cuts = cuts;
@@ -361,13 +369,15 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Asks the cluster for a snapshot while a round is due and this node leads. The consensus
-     * module reads its toggle only on the leader, outside an election, so a request set elsewhere would wait and take an
-     * extra snapshot once that member leads; and it switches only from neutral, by compare-and-set, so a request that
-     * meets an operator's or one in progress fails and is made again at the next callback.
+     * Asks the cluster for a snapshot while a round is due and this node leads, once {@link #roundGapNs} has passed
+     * since the last round started. The leader's consensus module times sessions out, so its own session timeout is
+     * the one that counts. The consensus module reads its toggle only on the leader, outside an election, so a request
+     * set elsewhere would wait and take an extra snapshot once that member leads; and it switches only from neutral, by
+     * compare-and-set, so a request that meets an operator's or one in progress fails and is made again at the next
+     * callback.
      */
     private void requestRound() {
-        if (!sequencer.snapshotDue() || cluster.role() != Cluster.Role.LEADER) {
+        if (!sequencer.snapshotDue(cluster.time(), roundGapNs) || cluster.role() != Cluster.Role.LEADER) {
             return;
         }
         if (controlToggle == null) {
