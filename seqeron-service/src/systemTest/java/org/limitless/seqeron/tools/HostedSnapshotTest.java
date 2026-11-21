@@ -247,8 +247,9 @@ class HostedSnapshotTest {
         }
         check("the hosted member was elected (after " + attempts + " pause(s) of the leader)",
               cluster.awaitLeader() == hostedMember);
-        check("the gate opened", poll(() -> client.lastLine("now leading") != null));
-        check("the client applied the host's gate epoch", poll(this::epochsAgree));
+        check("the gate opened", poll(() -> clientLeads(true)));
+        check("the client applied the host's gate epoch",
+              poll(() -> lastNumber(host, "gate epoch", GATE_EPOCH) > followerEpoch && epochsAgree()));
         final long leadingEpoch = lastNumber(host, "gate epoch", GATE_EPOCH);
         check("the host's gate epoch rose (" + followerEpoch + " to " + leadingEpoch + ")", leadingEpoch > followerEpoch);
         check("the host dropped the marker sent under the previous epoch (H-3), and said nothing back",
@@ -261,13 +262,18 @@ class HostedSnapshotTest {
 
         // 2. Leadership leaves it, the pair alive throughout.
         final long markersBefore = stateMarkers(client);
-        pauseLeaderUntilDeposed();
-        check("the gate closed", poll(() -> client.lastLine("not leading") != null));
-        check("the client applied the host's gate epoch", poll(this::epochsAgree));
+        int pauses = 0;
+        do {
+            pauseLeaderUntilDeposed();
+        } while (cluster.awaitLeader() == hostedMember && ++pauses < MAX_ELECTIONS);
+        check("another member leads (after " + (pauses + 1) + " pause(s) of the hosted member)",
+              cluster.awaitLeader() != hostedMember);
+        check("the gate closed", poll(() -> clientLeads(false)));
+        check("the client applied the host's gate epoch",
+              poll(() -> lastNumber(host, "gate epoch", GATE_EPOCH) > leadingEpoch && epochsAgree()));
         final long followingEpoch = lastNumber(host, "gate epoch", GATE_EPOCH);
         check("the host's gate epoch rose again (" + leadingEpoch + " to " + followingEpoch + ")",
               followingEpoch > leadingEpoch);
-        check("another member leads", poll(() -> cluster.awaitLeader() != hostedMember));
         sleep(2500);
         final long published = lastNumber(client, "state: ", PUBLISHED);
         sleep(4500);
@@ -417,6 +423,12 @@ class HostedSnapshotTest {
     private static final Pattern EPOCH_DROPS = Pattern.compile("epochDrops (\\d+)");
     private static final Pattern OWN = Pattern.compile("own (\\d+)");
     private static final Pattern GATE_EPOCH = Pattern.compile("gate epoch (\\d+)");
+
+    /** Whether the client's last leadership transition was to {@code leading}, not merely one it logged earlier. */
+    private boolean clientLeads(final boolean leading) {
+        final String line = client.lastLine("leading — ");
+        return line != null && line.contains(leading ? "now leading" : "not leading");
+    }
 
     /** The client's last applied gate epoch is the host's current one. */
     private boolean epochsAgree() {
