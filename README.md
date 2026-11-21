@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/github/license/FredrikJDahlberg/seqeron)](LICENSE)
 
 The replicated core of the sequencer architecture. Every message from every producer is
-assigned one global, gap-free total order by an Aeron Cluster (Raft) state machine, stamped with the
+assigned one global, gap-free total order by an [Aeron Cluster](https://github.com/aeron-io/aeron) (Raft) state machine, stamped with the
 consensus clock, and recorded on every node. Services downstream of it become deterministic state machines
 over a single log rather than peers that coordinate with each other: a replica, a hot standby or an audit
 process that reads the same log reaches the same state, and a restart is a replay.
