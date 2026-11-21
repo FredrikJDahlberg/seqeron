@@ -1,0 +1,18 @@
+# A Nordic cash-equity day on Nasdaq Stockholm's timetable (CET), for TradingDayBench: <name> <seconds> <from msg/s>
+# <to msg/s>. A rate counts every message: new orders, cancels and trades. Nasdaq's Nordic and Baltic share trading
+# averages about 700k trades a day (April 2026); at about 20 new orders and 20 cancels to a trade (cancel-to-trade
+# measured near 20 in 2013 by ESMA and the SEC) that is about 29M messages. The 200k msg/s peak is an assumption;
+# day.scale calibrates it. Quiet stretches are compressed, the uncrosses run in real time.
+#
+# phase              run s   from     to        the day
+pre-open               30     2000     2000   # before 08:45
+opening-call           60     6700    40000   # 08:45-09:00
+opening-uncross         5   200000   200000   # 09:00:00-09:00:05, the random uncross
+open                   55   200000   100000   # 09:00:05-09:05
+morning                90   100000    40000   # 09:05-12:00
+midday                 60    40000    40000   # 12:00-15:30
+us-open                60   100000    70000   # 15:30-15:45, the US open
+afternoon              90    70000    80000   # 15:45-17:25
+closing-call          120    80000   130000   # 17:25-17:29:30
+closing-uncross        30   170000   170000   # 17:29:30-17:30, the random uncross
+post-close             10     2000     2000   # after 17:30

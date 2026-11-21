@@ -1,6 +1,6 @@
 # Tests on EC2
 
-Five measurements that a laptop, a Docker bridge or a shared 4-vCPU CI runner cannot make: they need separate hosts
+Six measurements that a laptop, a Docker bridge or a shared 4-vCPU CI runner cannot make: they need separate hosts
 on a real network, dedicated cores, or both. This document says what each one answers, what it costs, how long it
 runs and how far its result carries to bare metal, and how to run it with the scripts in
 `seqeron-service/src/test/scripts/multihost`.
@@ -279,11 +279,35 @@ Forcing the archive and catalog adds about 6.5 ms at the median and 9 ms at p99,
 The three arms agree within 2% with sync on, so the idle strategy's 60 µs does not show. The p99.9 is 9.5–12.6 ms and the maxima
 12.8–31 ms; with sync off the maxima are 0.2–3.4 ms.
 
-### Test 4: the application ramp
+### Test 4: a trading day
+
+Tests 1 and 3 hold one rate per run. `trading-day.sh` replays a day's shape instead: `TradingDayBench`, on the leader's
+host, sends 50-byte messages through an `Application` on the leader's driver at a rate a profile gives, phase by phase,
+and times each from its scheduled send until it comes back sequenced. Sends follow the schedule, not the replies, so a
+stall shows as latency, and `behind_max` shows where the bench itself fell behind. Arrivals are Poisson. Orders and
+trades are not told apart: their messages are all about 50 bytes (ITCH 5.0 Trade 44, OUCH 5.0 Enter Order 47).
+
+A profile is a line per phase, `<name> <seconds> <from msg/s> <to msg/s>`, the rate moving linearly across the phase.
+Two ship in `seqeron-service/src/test/resources`, with quiet stretches compressed and the auctions in real time:
+
+| Profile | Timetable | Assumed peak | Run | Messages |
+| --- | --- | --- | --- | --- |
+| `trading-day-us.txt` | Nasdaq, 04:00–20:00 ET, crosses at 09:30 and 16:00 | 400k msg/s | 15 min | 183 M |
+| `trading-day-nordic.txt` | Nasdaq Stockholm, 08:45–17:30 CET, uncrosses at 09:00 and 17:29:30, the US open at 15:30 | 200k msg/s | 10 min | 49 M |
+
+No public figure gives a venue's peak order rate, so the peaks are placeholders: `DAY_SCALE` multiplies every rate, and a
+deployment's own peak replaces them. A rate counts new orders, cancels and trades. For scale, the US consolidated quote
+feed's 1 s peak is 865k msg/s across every venue (UTP, May 2026), but it counts top-of-book quotes, not order messages.
+At a cancel-to-trade ratio near 20 (ESMA and the SEC, 2013) each trade comes with about 40 order messages: Nasdaq's
+Nordic and Baltic share trading averages about 700k trades a day (April 2026), about 29 M messages, and Nasdaq's 2–3 B
+matched shares a day (2025), at an assumed 100 shares a trade, about 1 B. With the queue recorded, the US profile adds
+about 27 GB to each member's archive and the Nordic one about 7 GB.
+
+### Test 5: the application ramp
 
 Every ramp so far has had one producer, so the ceiling it found between 909k and 1.14M msg/s may be the producer's
 ([`ec2-results.md`](ec2-results.md) §3). A deployment runs several co-located applications, each a replica on every member
-that reads its group's queue and, on the leader, writes. Test 4 ramps their number instead of the rate.
+that reads its group's queue and, on the leader, writes. Test 5 ramps their number instead of the rate.
 
 **The question.** As co-located applications are added, each writing a fixed rate, at what count does the cluster stop
 holding, and what runs out first: the cluster, or the member hosts' cores that the applications share? How do the writers'
@@ -378,9 +402,9 @@ No rule: the test is reported, not judged.
   2 s warm-up may not cover the JIT at N = 16; the per-second percentiles of the step's first writers show whether it does.
 
 **Not covered.** Producers off the cluster (gateways over UDP ingress, gateway hosts), a slow or stopped reader, a fixed
-total rate split N ways, which is Test 1b's producer sweep, and C#, which runs on Windows (Test 5).
+total rate split N ways, which is Test 1b's producer sweep, and C#, which runs on Windows (Test 6).
 
-### Test 5: the C# client on Windows
+### Test 6: the C# client on Windows
 
 The C# client is deployed on Windows: the members run on Linux, and the C# applications run on a Windows host beside a
 gateway host, whose relay copies a member's Raft log over UDP and derives the queues onto the host's own driver. Its only
@@ -398,7 +422,7 @@ from a member), timed from `publish` until it sees its own frame on the host's q
 | --- | --- | --- |
 | `csharp-windows` | C# `Application`, `Seqeron.HopBench` | Windows Server 2022 |
 | `csharp-linux` | as `csharp-windows` | Linux, the same instance type |
-| `java-linux` | Java `Application`, `AppHopBench` (Test 4) | Linux, as `csharp-linux` |
+| `java-linux` | Java `Application`, `AppHopBench` (Test 5) | Linux, as `csharp-linux` |
 
 `csharp-linux` against `java-linux` is the language; `csharp-windows` against `csharp-linux` is the operating system. The
 three share one cluster per rate, and their runs are interleaved within it, the order randomised.
@@ -511,13 +535,13 @@ the 400 MB/s the recorded arm writes at the top step, and a second 100 GB gp3 at
 `DISK_DEFAULT_VOLUME`; an EBS volume's settings change once in 6 hours, so both are set at launch. The members need
 passwordless `sudo`, for the writeback and the cache drops. Its parts ran in 45 min of the hosts' time, about $5.
 
-Test 4 is ten ramps: six in `hosted` (three variants, two each) and four in `java` (two variants). A ramp is a cluster start of
+Test 5 is ten ramps: six in `hosted` (three variants, two each) and four in `java` (two variants). A ramp is a cluster start of
 about 15 s and five steps. Each step takes about 30 s: the replicas' attach and catch-up, 10 s measured, and the collection.
 A `java` step also starts N JVMs per member, so allow about 4 minutes for a `java` ramp and 3 for a `hosted` one: about
 35 minutes in all, 50 with the order checks. With the launch and setup (about 25 minutes), it is about 1.3 h on the four
 Test 1 hosts: about $8.50, or $17 for a first attempt.
 
-Test 5 is 4 rates × 3 arms × 5 runs of about 70 s with startup (70 minutes), and the busy-spinning set at 20k (another
+Test 6 is 4 rates × 3 arms × 5 runs of about 70 s with startup (70 minutes), and the busy-spinning set at 20k (another
 18 minutes). A Windows launch and its checks add about 20 minutes to the usual 25, so the session is about 2.3 h on five
 hosts: the three members, the driver host as the Linux gateway host, and the Windows host. At $8.00/hr that is about $18,
 or $36 for a first attempt.
@@ -580,6 +604,7 @@ export MULTIHOST_SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" 
 HOP_RATES=20000 MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1 -Daeron.archive.catalog.file.sync.level=1" \
     ./hop-matrix.sh                                            # the sync comparison; run it again without the option
 REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and again with REPLAY_LOAD_DURING=1
+DAY_RUNS=2 ./trading-day.sh                                    # test 4; DAY_PROFILE=…/trading-day-nordic.txt for the other
 DISK_DEFAULT_VOLUME=/mnt/gp3-default ./disk-session.sh         # the disk session
 APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh       # test 4, once built; again with topology-test-apps-1.xml
 APP_RAMP_ARM=java APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh   # test 4's java arm, both topologies

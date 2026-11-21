@@ -29,6 +29,9 @@
 #   node.sh queue-digest <memberId>                  QueueDigest on member <memberId>'s archive: one line per recording of
 #                                                    group 1's queue, for hop-order-check.py; exits 1 on a gap;
 #                                                    MULTIHOST_DIGEST_UPTO caps the last groupSeqNo digested
+#   node.sh trading-day <memberId> <profile> <scale> <seed>
+#                                                    TradingDayBench on member <memberId>'s driver, which leads: the
+#                                                    profile's rates times <scale>; its result lines on stdout
 #   node.sh drop-caches                              write back dirty pages and drop the page cache (Linux, sudo), so a
 #                                                    replay after it reads its log or recording from the disk
 #   node.sh writeback <default|even>                 the kernel's writeback timers (Linux, sudo): default's 30 s expiry
@@ -266,6 +269,15 @@ queue-digest)
     java_main run --cpus "${MULTIHOST_COUNTER_CPUS:-0-1}" queue-digest org.limitless.seqeron.tools.QueueDigest \
         "-Ddigest.aeronDir=$(seqeron_aeron_dir "$1")" "-Ddigest.upTo=${MULTIHOST_DIGEST_UPTO:-9223372036854775807}" || status=$?
     cat "${LOG_DIR}/queue-digest.log"
+    exit "${status}"
+    ;;
+trading-day)
+    status=0
+    profile="$2"
+    [[ "${profile}" == /* ]] || profile="${SEQERON_HOME}/${profile}"
+    java_main run --cpus "${MULTIHOST_BENCH_CPUS:-}" trading-day org.limitless.seqeron.tools.TradingDayBench \
+        "-Dday.memberId=$1" "-Dday.scale=$3" "-Dday.seed=$4" -- "${profile}" || status=$?
+    cat "${LOG_DIR}/trading-day.log"
     exit "${status}"
     ;;
 writeback)
