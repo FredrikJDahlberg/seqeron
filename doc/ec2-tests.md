@@ -496,13 +496,13 @@ before step 1.
   not judged.
 
 **What each run reports.** Per member, the probe's line: the samples, min, p50, p90, p99, p99.9, p99.99, max, and the frames
-seen on one stream only. Per run, the bench's line, CPU per thread on every member (`node.sh sample`, which shows the
-shadow thread's core), and the leader's commit position. At the end of a rate, the order check of the service's queues.
+seen on one stream only. Per run, the bench's line and CPU per process on every member (`node.sh sample`); per rate,
+every member's counters (`CounterSampler`) and the order check of the service's queues.
 
-**Tooling, not built.** `shadow-lag.sh`: per rate a fresh cluster loading `topology-test-hosted-quiet.xml`, with
+**Tooling.** `shadow-lag.sh`: per rate a fresh cluster loading `topology-test-hosted-quiet.xml`, with
 `-Dsequencer.shadowQueues=true` added to `MULTIHOST_MEMBER_OPTS`; per run a probe on each member (`node.sh start`), the
 `direct` bench on the leader, the probes stopped (`node.sh kill`, whose SIGTERM makes a probe print its line) and their
-lines collected into `<results>/shadow-<stamp>.txt`. `SHADOW_RATES`, `SHADOW_RUNS`, `SHADOW_SECONDS` and
+lines collected into `<results>/shadow-<stamp>.txt`. `SHADOW_RATES`, `SHADOW_RUNS`, `SHADOW_SECONDS`, `SHADOW_PAYLOAD` and
 `MULTIHOST_PROBE_CPUS`.
 
 **Threats.** A frame that lands on one stream only is never sampled, so a stream that stops shows as unmatched frames, not
@@ -667,7 +667,7 @@ APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh       # test 5, once bu
 APP_RAMP_ARM=java APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh   # test 5's java arm, both topologies
 MULTIHOST_WINDOWS=10.0.0.15 HOP_MODES="csharp-windows csharp-linux java-linux" HOP_RATES="5000 20000 50000 100000" \
     ./hop-matrix.sh                                            # test 6, once built
-MULTIHOST_MEMBER_CPUS=2-12 MULTIHOST_PROBE_CPUS=13 ./shadow-lag.sh   # test 7, once built; again with MULTIHOST_IDLE=backoff
+MULTIHOST_MEMBER_CPUS=2-12 MULTIHOST_PROBE_CPUS=13 ./shadow-lag.sh   # test 7; again with MULTIHOST_IDLE=backoff
 ```
 
 Members record no queue (`plans/disk-load-plan.md`, step 2a), and a gateway host relays a member's Raft log. The order check
