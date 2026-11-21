@@ -514,6 +514,10 @@ consumer, which reads the service's publication today. The service still publish
 share the member's cores and memory bandwidth with work step 1 removes. The rates share a cluster, so a later rate runs
 on a longer log, still within the page cache. One launch, as for every test here.
 
+**Result.** Passed on 21 November ([`ec2-results.md`](ec2-results.md) §2.5): p50 0.5–1.2 µs, p99 1.4–10.7 µs and
+p99.9 8–17 µs in 17 of 18 member runs, and every frame matched. One follower's p99.9 was 880 µs in one run at 20k and
+8.4 µs in the next; it is not traced.
+
 **Not covered.** The service's latency without its queue (step 1 itself), a slow or stopped subscriber on the shadow (step
 3), and the gateway host, whose relay derives its queues as it does today.
 
