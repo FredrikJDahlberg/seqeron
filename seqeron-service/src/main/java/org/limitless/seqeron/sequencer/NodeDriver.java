@@ -56,7 +56,7 @@ public final class NodeDriver {
     static final long DEFAULT_UNTETHERED_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(100);
 
     /**
-     * How long a queue may stay back-pressured before the process terminates, when
+     * How long a queue may stay back-pressured before a member skips it and a gateway host terminates, when
      * {@link #queueStallTimeoutMs}'s property is not set. Above a block storage's write stalls, which can reach
      * several members at once.
      */

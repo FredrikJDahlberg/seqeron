@@ -717,25 +717,21 @@ holds the whole history, so no instance would read it.
 **What it costs.** A frame is published on every queue that carries it: a system frame once per group, an
 application frame once per bit in its mask. A member's archive records only the Raft log, and a replay of
 one group derives it from every group's log entries; a gateway host's archive records each queue it relays,
-the sum of its queues. A queue that stalls terminates its node (`doc/fault-tolerance.md` §1.3). Groups pay
+the sum of its queues. A queue held back past the stall timeout is skipped (`doc/fault-tolerance.md` §1.3). Groups pay
 off when most application frames address one group; a deployment whose frames mostly address every group
 pays the publications, saves no reads, and should declare one group. Groups are not access control: the producer chooses the mask, and every queue
 carries every system frame.
 
 **Activation.** Until its groups are active, a log has no queue. The first `GroupsRegistered` activates
-every group it declares: the sequencer builds the group table from it, then:
+every group it declares: the sequencer builds the group table from it, then writes each queue's prologue at
+`groupSeqNo` 1, in ascending `groupId`: the most recent `LeadershipChanged`, as it was sequenced. The sequencer
+keeps that frame until then.
 
-1. opens each group's queue, with a subscriber of its own to each;
-2. waits until all of those subscribers are connected, for at most 5 s in all;
-3. writes each queue's prologue at `groupSeqNo` 1, in ascending `groupId`: the most recent
-   `LeadershipChanged`, as it was sequenced. The sequencer keeps that frame until then.
-
-The wait holds up the node's processing of the log, so it is bounded. It is paid once, at the first
-load, and again by each node's restart, whose replay reaches the same frame. A node whose subscribers are
-not all connected by the deadline terminates itself, as one whose queue stops draining does
-(`doc/fault-tolerance.md` §1.3): its peers keep quorum, and its restart replays to the same frame and
-waits again. A queue is opened once, at activation, and never re-created, so a node's queue is one
-continuous run across every leader tenure. (`SequencerService`)
+A node's queue agent, which publishes its queues from the committed log, opens each queue at its first frame,
+with a subscriber of its own. A node whose subscriber does not connect within the stall timeout terminates
+itself (`doc/fault-tolerance.md` §1.3): its peers keep quorum, and its restart derives the same frame and
+waits again. A queue is reopened only when it is skipped, at the position its log gives and under a new session
+id, so a node's queue holds the log's positions across every leader tenure. (`QueueAgent`)
 
 It then emits the `GroupsRegistered` to every queue, as it emits every system frame from then on, so it
 is the second frame of every queue. Between them, the two give a group's members what they need of the

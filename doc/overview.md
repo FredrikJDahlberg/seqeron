@@ -199,6 +199,7 @@ sent them; authentication belongs at the system's external edges.
 | --- | --- | --- |
 | leader lost | Aeron Cluster elects a new leader; the sequencer emits `LeadershipChanged` | the stream continues at the next `clusterSeqNo`; producers resend what the old leader had not committed |
 | member lost | the others keep quorum | the member restarts and replays the log, rebuilding its queues |
+| a queue held back by a subscriber for the stall timeout | the member revokes the queue and reopens it at the log's position; the member keeps running | its consumers heal the skipped frames by replay |
 | a member cannot publish its queue | the member terminates (exit 70) rather than drop a frame | as for a lost member |
 | a member's log is truncated below what it applied (an Aeron Cluster 1.53.2 fault) | the member terminates (exit 70) rather than go on from state the log no longer has | as for a lost member |
 | a member's cluster snapshot fails before its service applies the round | the member terminates (exit 70) rather than sequence on without the round its peers applied | as for a lost member |

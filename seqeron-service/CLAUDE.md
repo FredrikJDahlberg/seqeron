@@ -33,11 +33,15 @@ Consumers split live from history: co-located apps subscribe to the queue **dire
 (untethered, so a slow app is dropped and heals via replay rather than back-pressuring), while the
 co-located `ReplayerService` serves cold-start/gap replay derived from the log. The agent never spins: a frame a
 queue does not take is kept, and no log entry is read while one is, so a back-pressured queue holds the agent and
-never the service, and only an untethered subscriber its driver has not yet dropped can hold it. `QueueEmitter` —
-those decisions, split off the way `Sequencer` is and unit-tested the same way — fails once a frame has stayed kept
-for the stall timeout. A member whose queue stalls so, whose own subscriber the driver closed (checked once a
-second, since a lost image back-pressures nothing while applications keep the queue connected), or whose agent
-throws **terminates itself** (`NodeDriver.EXIT_FATAL` = 70). Peers keep quorum, and the restart derives its queues
+never the service, and only a subscriber its driver has not dropped can hold it. `QueueEmitter` — those decisions,
+split off the way `Sequencer` is and unit-tested the same way — **skips** a queue back-pressured for the stall timeout
+(doc/plans/queue-off-duty-cycle-plan.md, step 3): the agent logs the subscribers at the queue's limit, revokes the
+publication (`ExclusivePublication.revoke`, since a close waits for the held subscriber to drain), derives that queue's
+frames up to the commit position without offering them, and reopens it there under a new session; consumers heal by
+replay, and `QueueSkipTest` holds a tethered subscriber that stops reading to that. A member whose queue's own
+subscriber does not connect for the stall timeout, or that the driver closed (checked once a second, since a lost
+image back-pressures nothing while applications keep the queue connected), or whose agent throws **terminates
+itself** (`NodeDriver.EXIT_FATAL` = 70). Peers keep quorum, and the restart derives its queues
 again. The service's own wait on the runtime is the cluster-clock timer, which `HeartbeatTimer` bounds the same way.
 A node whose consensus module truncates its log below what it applied terminates itself
 too, which Aeron Cluster 1.53.2 does to a committed entry (`SequencerServer.truncatesAppliedLog`,

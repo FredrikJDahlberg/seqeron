@@ -84,15 +84,17 @@ leader and takes the first every time; a leader stopped with `SIGTERM` leaves ea
 The session survives either way, so neither side sees a fault.
 §5 describes how a producer detects and resends those frames.
 
-### 1.3 A node that cannot publish its queue terminates itself
+### 1.3 A queue held back is skipped; a node that cannot publish its queue terminates itself
 
-A dropped frame would leave a member's queue behind the positions its log gives, which a client joins the live
-queue by and a replay derives, so the member's queue agent (`QueueAgent`) never drops one: a frame a queue does not
-take is kept, and no log entry is read while one is. The agent publishes from the committed log on a thread of its
-own, so a held queue holds the agent and never the service, which goes on sequencing. The queue's one tethered
-subscriber is the agent's own, which reads past each frame as it is offered, so the publication is always connected;
-client subscriptions are untethered. A client that stops polling holds the window only until its driver drops it,
-within about 0.2 s ([`ops.md`](ops.md), "Untethered subscribers"), well inside the stall timeout below.
+A dropped frame would leave a member's queue behind the positions its log gives, which a client joins the live queue
+by and a replay derives, so the member's queue agent (`QueueAgent`) never drops one in place: a frame a queue does
+not take is kept, and no log entry is read while one is. The agent publishes from the committed log on a thread of
+its own, so a held queue holds the agent and never the service, which goes on sequencing. seqeron's one tethered
+subscriber on a queue is the agent's own, which reads past each frame as it is offered, so the publication is always
+connected; seqeron's client subscriptions are untethered. A client that stops polling holds the window only until
+its driver drops it, within about 0.2 s ([`ops.md`](ops.md), "Untethered subscribers"), well inside the stall
+timeout below. A tethered subscriber, which any process on the host can open, holds it for as long as its client is
+alive.
 
 The wait is bounded. The agent's subscriber has read up to the publication's position, so it never holds a frame
 back, and `QueueEmitter` tells the cases apart:
@@ -100,9 +102,19 @@ back, and `QueueEmitter` tells the cases apart:
 | queue state | response |
 | --- | --- |
 | slow: a frame kept, then landing | keep offering; alert every 10 ms, raise the stall gauge after 200 ms |
-| stalled: a frame kept for `sequencer.queueStallTimeoutMs`, default 5 s | fatal |
+| stalled: back-pressured for `sequencer.queueStallTimeoutMs`, default 5 s | skip the queue (below) |
+| not connected for the stall timeout | fatal |
 | a frame refused for good, or landed off the position its log gives | fatal at once |
 | the agent's subscriber's image gone | fatal at the next check, within 1 s |
+
+A skip logs the registration id of each subscriber at the queue's limit, as its driver's subscriber-position
+counters show it, then revokes the queue's publication (`ExclusivePublication.revoke`), which takes down every image
+on it at once; a plain close would wait for the held subscriber to drain. The agent drops that queue's kept frames
+and derives its frames up to the commit position without offering them, then opens the queue again there under a new
+session, so the queue stays at the positions its log gives. Its consumers see their image go and come back past a
+groupSeqNo gap, as after an eviction, and heal by replay. The other queues' frames wait behind the held one until the
+skip, then land in order. The member keeps running. A tethered subscriber that is still alive and still not reading
+joins the reopened queue too, and holds it again a window later.
 
 A lost image back-pressures nothing, since the untethered client subscriptions keep the publication
 connected, so the agent checks its subscribers once a second. If the consensus module refuses the heartbeat timer
@@ -463,8 +475,9 @@ must see every frame on the queue exactly once and in order, and the other repor
 - **`clusterctl`** ([`clusterctl.md`](clusterctl.md)): `start` and `shutdown` bracket a run with sequenced
   markers; `activate` is the manual promotion (§2.2); `request-snapshot` starts an application snapshot round
   (§3.4); `snapshot` is refused.
-- **Metrics** ([`ops.md`](ops.md)): `seqeron_sequencer_queue_stalled` (set when a member is about to terminate,
-  §1.3), `seqeron_sequencer_gateway_promotion_total` (§2.2), the `seqeron_replayer_*` family (§3.1), and
+- **Metrics** ([`ops.md`](ops.md)): `seqeron_sequencer_queue_stalled` (set while a queue is held back, and when
+  a member terminates for one, §1.3),
+  `seqeron_sequencer_gateway_promotion_total` (§2.2), the `seqeron_replayer_*` family (§3.1), and
   Prometheus's per-member `up`.
 
 Each failure above has a test that produces it against a live cluster, in `seqeron-service/src/systemTest` (the

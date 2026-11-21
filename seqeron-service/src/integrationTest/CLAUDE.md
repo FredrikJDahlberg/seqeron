@@ -41,7 +41,10 @@ the member's `DerivationStart`. `QueueFrames` reads a member's queue through its
 recording. `DerivedQueueTest` holds each member's queue, as those recordings hold it, to the history its Replayer
 serves, and that history to the reference member's from where it starts, frame for frame and position for position,
 across a leader stop and a restart from a cluster snapshot, whose history opens with the round's marker where it lies
-on the reference's; `DerivationStartTest` holds a start the log's recording does not hold to
+on the reference's. `QueueSkipTest` holds a tethered subscriber that stops reading a member's queue, under the least
+stall timeout, to the queue being revoked from under it and reopened under a new session, with the member running
+and a confirm producer reading the queue throughout seeing every frame once, in order; `DerivationStartTest` holds
+a start the log's recording does not hold to
 ending the Replayer's duty cycle, and an announcement the archive refuses to being recorded once it may;
 `DerivedReplayTest` cold-starts a client on a member, and on a gateway host
 while the member the host reads stops, and prints each rate; `CheckpointedReplayTest` runs a `DerivingReplayer` of its
