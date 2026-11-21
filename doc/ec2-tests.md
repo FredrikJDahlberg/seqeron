@@ -1,6 +1,6 @@
 # Tests on EC2
 
-Six measurements that a laptop, a Docker bridge or a shared 4-vCPU CI runner cannot make: they need separate hosts
+Seven measurements that a laptop, a Docker bridge or a shared 4-vCPU CI runner cannot make: they need separate hosts
 on a real network, dedicated cores, or both. This document says what each one answers, what it costs, how long it
 runs and how far its result carries to bare metal, and how to run it with the scripts in
 `seqeron-service/src/test/scripts/multihost`.
@@ -462,14 +462,67 @@ as for every test here.
 **Not covered.** C# applications co-located on a member, which the deployment does not run; a C# `Gateway` pair, whose
 handover `csharp-windows-test.sh` checks for function; and Windows on bare metal.
 
+### Test 7: the shadow queue's lag
+
+[`plans/queue-off-duty-cycle-plan.md`](plans/queue-off-duty-cycle-plan.md) step 1 moves every queue off the service's
+duty cycle onto an agent that derives it from the committed log, and §4 of that plan puts the latency cost to this test
+before step 1 merges. With `sequencer.shadowQueues=true`, `ShadowQueueAgent` already publishes that agent's queues on
+stream 3000 + `groupId` beside the service's, and `ClusterProbe shadow` reads both on one member, on one thread and one
+clock, and reports how much later each frame lands on the shadow, by `clusterSeqNo`. A negative sample is a frame the
+service published later than the shadow: the shadow publishes at commit, the service when its thread applies the entry.
+
+On a laptop, one member, 100-byte frames, 200,000 per run, every member agent backing off: at 50 µs between frames the lag
+was p50 2.5 µs, p99 58 µs, max 1.1 ms; at 10 µs, p50 2.2 µs, p99 2.7 ms, max 102 ms. The tail may be the agent's
+backoff, the laptop's contention or the cost of reading the log.
+
+**The question.** On the leader and on a follower, at rates up to the cluster's, how much later than the service's queue
+does a frame reach the shadow, and how much of the tail goes when every agent busy-spins on a core of its own?
+
+**The rule.** Step 1 merges as planned when, on `busyspin`, the shadow's lag at every rate is within **p50 5 µs, p99 25 µs,
+p99.9 250 µs** on both members: placeholders, against the 36 µs median loop of Test 3's `direct` arm, that the owner sets
+before the first run. Past them, the plan's fast path (§4, a ring the service writes and the agent reads first) is built
+before step 1.
+
+**Shape.**
+
+- Two arms: `busyspin` (`MULTIHOST_IDLE=busyspin`), the deployment's configuration, and `backoff`, the laptop's. The idle
+  strategy is every member agent's, the shadow thread's included, so the arms differ on both streams.
+- The members run pinned as in Test 1 and one core wider, `MULTIHOST_MEMBER_CPUS=2-12`, since the shadow thread is a tenth
+  busy-spinning thread. On every member `ClusterProbe shadow` runs on CPU 13 with `probe.idleStrategy=busyspin`, and on the
+  leader the `direct` arm's bench of Test 1 writes 100-byte markers open-loop on CPUs 14–15.
+- Rates of **20k, 100k and 400k msg/s**, below the 909k msg/s a single producer reached ([`ec2-results.md`](ec2-results.md)
+  §3). A run is 30 s, three runs per rate and arm, a fresh cluster per rate. Each probe starts before the bench and stops
+  after it, so a run's samples include the bench's start; a rate's first run also holds the members' JIT, and is reported,
+  not judged.
+
+**What each run reports.** Per member, the probe's line: the samples, min, p50, p90, p99, p99.9, p99.99, max, and the frames
+seen on one stream only. Per run, the bench's line, CPU per thread on every member (`node.sh sample`, which shows the
+shadow thread's core), and the leader's commit position. At the end of a rate, the order check of the service's queues.
+
+**Tooling, not built.** `shadow-lag.sh`: per rate a fresh cluster loading `topology-test-hosted-quiet.xml`, with
+`-Dsequencer.shadowQueues=true` added to `MULTIHOST_MEMBER_OPTS`; per run a probe on each member (`node.sh start`), the
+`direct` bench on the leader, the probes stopped (`node.sh kill`, whose SIGTERM makes a probe print its line) and their
+lines collected into `<results>/shadow-<stamp>.txt`. `SHADOW_RATES`, `SHADOW_RUNS`, `SHADOW_SECONDS` and
+`MULTIHOST_PROBE_CPUS`.
+
+**Threats.** A frame that lands on one stream only is never sampled, so a stream that stops shows as unmatched frames, not
+as lag: a run with more than a few hundred, the frames in flight at its end, has failed. The probe keeps every sample, 8
+bytes each, 96 MB for a run at 400k msg/s. The lag is against the service's publication, not the commit, which neither
+stream shows; it is step 1's cost to a consumer, which reads the service's publication today. The service still publishes
+its queues, so the agent's file reads share the member's cores and memory bandwidth with work step 1 removes. One launch,
+as for every test here.
+
+**Not covered.** The service's latency without its queue (step 1 itself), a slow or stopped subscriber on the shadow (step
+3), and the gateway host, whose relay derives its queues as it does today.
+
 ## 2. Instances and cost
 
 | Role | Instance | vCPU / cores | Network | $/hr |
 | --- | --- | --- | --- | --- |
-| Member (tests 1, 3) | c6in.8xlarge, ×3 | 32 / 16 | 50 Gbps | 1.81 each |
+| Member (tests 1, 3, 7) | c6in.8xlarge, ×3 | 32 / 16 | 50 Gbps | 1.81 each |
 | Member on bare metal (tests 1, 3) | c6id.metal, ×3 | 128 / 64, two sockets | 50 Gbps | 6.45 each |
-| Driver and gateway host (tests 1, 3, 4, 5) | c6in.4xlarge | 16 / 8 | up to 50 Gbps | 0.91 |
-| Windows gateway host (test 5) | c6in.4xlarge, Windows Server 2022 | 16 / 8 | up to 50 Gbps | about 1.65, with the licence at about $0.046 a vCPU-hour |
+| Driver and gateway host (tests 1, 3–5, 7) | c6in.4xlarge | 16 / 8 | up to 50 Gbps | 0.91 |
+| Windows gateway host (test 6) | c6in.4xlarge, Windows Server 2022 | 16 / 8 | up to 50 Gbps | about 1.65, with the licence at about $0.046 a vCPU-hour |
 | Fault suite (test 2) | c7i.4xlarge, ×3, on-demand | 16 / 8 | up to 12.5 Gbps | 0.71 each |
 | Failover soak (test 2) | c7i.4xlarge, spot | 16 / 8 | up to 12.5 Gbps | about 0.25 |
 | Image build | c6in.large | 2 / 1 | up to 25 Gbps | 0.11 |
@@ -546,6 +599,10 @@ Test 6 is 4 rates × 3 arms × 5 runs of about 70 s with startup (70 minutes), a
 hosts: the three members, the driver host as the Linux gateway host, and the Windows host. At $8.00/hr that is about $18,
 or $36 for a first attempt.
 
+Test 7 is 3 rates × 2 arms × 3 runs of about 40 s with the probes' start and stop (12 minutes), and a fresh cluster per
+rate and arm (another 2). With the launch and setup (about 25 minutes), it is about 40 minutes on the four Test 1 hosts:
+about $4.25, or $8.50 for a first attempt.
+
 ## 4. Image
 
 One Ubuntu 24.04 x86_64 image serves every host. Build it on a c6in.large and save it as an AMI:
@@ -606,10 +663,11 @@ HOP_RATES=20000 MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1 -Daeron
 REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and again with REPLAY_LOAD_DURING=1
 DAY_RUNS=2 ./trading-day.sh                                    # test 4; DAY_PROFILE=…/trading-day-nordic.txt for the other
 DISK_DEFAULT_VOLUME=/mnt/gp3-default ./disk-session.sh         # the disk session
-APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh       # test 4, once built; again with topology-test-apps-1.xml
-APP_RAMP_ARM=java APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh   # test 4's java arm, both topologies
+APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh       # test 5, once built; again with topology-test-apps-1.xml
+APP_RAMP_ARM=java APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh   # test 5's java arm, both topologies
 MULTIHOST_WINDOWS=10.0.0.15 HOP_MODES="csharp-windows csharp-linux java-linux" HOP_RATES="5000 20000 50000 100000" \
-    ./hop-matrix.sh                                            # test 5, once built
+    ./hop-matrix.sh                                            # test 6, once built
+MULTIHOST_MEMBER_CPUS=2-12 MULTIHOST_PROBE_CPUS=13 ./shadow-lag.sh   # test 7, once built; again with MULTIHOST_IDLE=backoff
 ```
 
 Members record no queue (`plans/disk-load-plan.md`, step 2a), and a gateway host relays a member's Raft log. The order check
@@ -640,8 +698,9 @@ ROUNDS=200 ./gradlew :seqeron-service:networkFaultTest --tests '*DockerFailoverS
 | 1 | The hop is IPC inside one host. With pinned, spinning threads it is CPU and memory, which Nitro passes through nearly unchanged, so the direct-against-hosted comparison carries; the rule of Test 1 is applied to each environment on its own. | The commit: a UDP round trip in a placement group (about 20 µs in Aeron's c6in result) is slower than a tuned bare-metal LAN with kernel sockets, so EC2 hides the hop a little more than bare metal would. Tails are worse: hypervisor interrupts, and on c6in.8xlarge a neighbour on the same socket. BIOS settings are out of reach. |
 | 2 | Its faults are timed against the 200 ms heartbeat and the 2 s election timeout, far above anything virtualization adds. | — |
 | 3 | The relay's flow control and NAK repair over a real network card. | A single flow is capped at about 10 Gbps in a placement group, and one replay is one flow. EBS is network storage: a forced write costs about 0.5–1 ms, against tens of µs on local NVMe. For local disk, run the sync comparison on an instance with instance storage (c6id, i4i). |
-| 4 | The count at which the member hosts' application cores run out, relative to the cluster's, and the comparison of the arms: both are CPU and IPC on one host. | The absolute count: it depends on the cores a deployment gives its applications, here four. |
-| 5 | The comparison of the three arms, which share the network and the cluster. | Windows' timer and scheduler on a hypervisor are not its behaviour on bare metal; the absolute tails are an upper bound. |
+| 5 | The count at which the member hosts' application cores run out, relative to the cluster's, and the comparison of the arms: both are CPU and IPC on one host. | The absolute count: it depends on the cores a deployment gives its applications, here four. |
+| 6 | The comparison of the three arms, which share the network and the cluster. | Windows' timer and scheduler on a hypervisor are not its behaviour on bare metal; the absolute tails are an upper bound. |
+| 7 | The comparison of the two streams, which share the member, its cores and its clock, and the arms' difference. | The absolute tail, which hypervisor interrupts widen as in Test 1; the backoff arm's wake-up, which depends on the host's timer. |
 
 c6id.metal (§2) removes the hypervisor from test 1's CPU path and puts the sync comparison on local NVMe; its network
 is still ENA. Its CPU is c6in's, so its results compare with the c6in.8xlarge run's.

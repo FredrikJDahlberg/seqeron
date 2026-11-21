@@ -142,7 +142,7 @@ the Replayer's fsync.
 
 - **Latency.** Today a frame reaches the queue in the duty cycle that applies it. From the log it waits for the
   agent's next poll and a file read. On the leader the entry is in the page cache by commit, since commit waits for
-  the leader's own recording (`disk-load-plan.md` §2). Measure on EC2 (`doc/ec2-tests.md`) before step 1 merges. If
+  the leader's own recording (`disk-load-plan.md` §2). Measure on EC2 (`doc/ec2-tests.md`, Test 7) before step 1 merges. If
   the cost is too high, add a fast path: the service writes each frame into a single-producer ring, and the agent
   falls back to the log only when the ring is full.
 - **A second derivation.** The member already runs one `LogDeriver` in `LogFollower`. The agent adds another, on
