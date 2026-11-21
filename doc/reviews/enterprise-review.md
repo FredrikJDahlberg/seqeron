@@ -141,6 +141,8 @@ publication side can require it.
 - **Fix.** Take the queue off the consensus thread. The service keeps the replicated state, and a separate agent
   publishes each queue from the committed log. The log-following machinery already exists (`LogFollower`,
   `LogDeriver`). A slow subscriber then delays that one agent, never the member's consensus participation.
+  `doc/plans/queue-off-duty-cycle-plan.md` is the plan. It also shows that an untethered subscriber stalls the
+  service for up to about 200 ms before the driver evicts it.
 
 **5. Exactly-once ingress ends at the producer process boundary.** `PendingSends` confirms ingress and resends across
 leader failovers. That part is sound (see "Checked and sound"), but it is in memory only (`PendingSends.java:44`). The
@@ -174,6 +176,8 @@ The event codes are already a good basis for structured logs. What is missing:
 - an asynchronous, bounded sink with an SLF4J bridge;
 - per-code rate limiting (`Episode` already does this in the Replayer);
 - a silent sink for the derivation's `Sequencer`.
+
+`doc/plans/queue-off-duty-cycle-plan.md`, step 4, is the plan.
 
 **7. An unexpected exception in a cluster callback is logged and the node carries on.** `CLAUDE.md` notes that a throw
 in a callback drops the frame. The service's error handler (`SequencerServer.java:426`) makes that the policy for bugs
