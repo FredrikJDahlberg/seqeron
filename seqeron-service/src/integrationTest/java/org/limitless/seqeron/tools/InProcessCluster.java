@@ -30,7 +30,6 @@ import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.server.RelayedCut;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
-import org.limitless.seqeron.replayer.server.ShadowQueueAgent;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
@@ -79,7 +78,6 @@ final class InProcessCluster implements AutoCloseable {
     private ExpandableArrayBuffer applicationRow;
     private int applicationRowLength;
     private boolean recordQueues;
-    private boolean shadowQueues;
 
     InProcessCluster(final Path baseDir) {
         this.baseDir = baseDir;
@@ -207,22 +205,12 @@ final class InProcessCluster implements AutoCloseable {
     }
 
     /**
-     * Has each member's archive record its queues, as the sequencer publishes them, from the next {@link #startAll},
+     * Has each member's archive record its queues, as its queue agent publishes them, from the next {@link #startAll},
      * which records each whole, and again from each restart of a member, which records from wherever its queue has
      * reached: the reference a test holds a derivation to, since a member records no queue of its own.
      */
     void withQueueRecordings() {
         recordQueues = true;
-    }
-
-    /**
-     * As {@link #withQueueRecordings}, each member also publishing its shadow queues ({@link ShadowQueueAgent}), which
-     * its archive records beside its queues.
-     */
-    void withShadowQueues() {
-        recordQueues = true;
-        shadowQueues = true;
-        System.setProperty(ShadowQueueAgent.PROP_ENABLED, "true");
     }
 
     /** Launches member {@code m} on its directories, which a previous run of it may have left. */
@@ -264,10 +252,6 @@ final class InProcessCluster implements AutoCloseable {
             for (final int groupId : GROUP_IDS) {
                 archive.startRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.queueStreamId(groupId),
                                        SourceLocation.LOCAL);
-                if (shadowQueues) {
-                    archive.startRecording(ShadowQueueAgent.CHANNEL, ShadowQueueAgent.streamId(groupId),
-                                           SourceLocation.LOCAL);
-                }
             }
         }
     }
@@ -452,9 +436,6 @@ final class InProcessCluster implements AutoCloseable {
         }
         for (int m = 0; m < MEMBERS; m++) {
             stop(m);
-        }
-        if (shadowQueues) {
-            System.clearProperty(ShadowQueueAgent.PROP_ENABLED);
         }
     }
 }

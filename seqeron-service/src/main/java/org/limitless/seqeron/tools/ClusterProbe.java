@@ -16,7 +16,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
-import org.agrona.collections.Long2LongHashMap;
 import org.agrona.collections.LongArrayList;
 import org.agrona.collections.LongHashSet;
 import org.agrona.concurrent.IdleStrategy;
@@ -28,7 +27,6 @@ import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
-import org.limitless.seqeron.replayer.server.ShadowQueueAgent;
 import org.limitless.seqeron.sbe.probe.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.probe.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
@@ -41,7 +39,7 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * The cluster tier's own load generator and queue consumer, so its end-to-end scripts need no product
- * binary. Five modes, one message ({@code sbe-probe.xml}, {@code payloadId} 5):
+ * binary. Four modes, one message ({@code sbe-probe.xml}, {@code payloadId} 5):
  * <ul>
  *   <li><b>submit</b> — flood {@code probe.count} {@code ProbeMarker}s at ingress. Opens no queue
  *       subscription, which an unpolled flood would back-pressure.</li>
@@ -51,8 +49,6 @@ import org.limitless.seqeron.util.Logger;
  *   <li><b>confirm</b> — send {@code probe.count} through {@link ClusterStreamSender} and a
  *       {@link PendingSends} while following its own queue; exit 0 only if the queue shows seqNo 1..count
  *       exactly once, in order. {@code -Dprobe.pendingSends=false} is the control.</li>
- *   <li><b>shadow</b> — read a group's queue and its shadow queue ({@link ShadowQueueAgent}) on one member, and
- *       report how much later each frame lands on the shadow, by {@code clusterSeqNo}, until stopped.</li>
  * </ul>
  *
  * <p>System properties:
@@ -74,7 +70,7 @@ import org.limitless.seqeron.util.Logger;
  *   probe.latencyStats      — follow: record and report post-catch-up delivery latency; default false
  *   probe.faultInjection    — follow: install the SIGUSR1 queue-drop handler; default false
  *   probe.faultDropCount    — follow: frames dropped per SIGUSR1; default 1
- *   probe.idleStrategy      — follow, shadow: backoff (default), yielding or busyspin
+ *   probe.idleStrategy      — follow: backoff (default), yielding or busyspin
  * </pre>
  */
 public final class ClusterProbe {
@@ -167,7 +163,6 @@ public final class ClusterProbe {
             case "ping" -> System.exit(ping());
             case "follow" -> follow();
             case "confirm" -> System.exit(confirm(Integer.getInteger("probe.count", 1000)));
-            case "shadow" -> System.exit(shadow());
             default -> {
                 usage();
                 System.exit(mode.equals("help") ? 0 : 1);
@@ -605,119 +600,6 @@ public final class ClusterProbe {
         }
     }
 
-    // ── shadow ────────────────────────────────────────────────────────────────────
-
-    /** Frames seen on one stream and not yet on the other; past this the shadow is taken as not following. */
-    private static final int SHADOW_UNMATCHED_LIMIT = 1 << 20;
-    private static final int SHADOW_FRAGMENT_LIMIT = 64;
-    /** Samples held without growing: 30 s at 400k msg/s fits, so no copy stalls the probe mid-run. */
-    private static final int SHADOW_SAMPLES_PRESIZE = 1 << 24;
-
-    /**
-     * Reads both streams on one thread, untethered, so the gap between a frame's two arrivals is one clock's.
-     * @return 0 once stopped, 1 if the two streams stopped matching
-     */
-    private static int shadow() {
-        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR))) {
-            final int groupId = groupId(aeron, Long.MAX_VALUE);
-            final ShadowLag lag = new ShadowLag();
-            final Subscription queue =
-                aeron.addSubscription(ReplayerStreamReceiver.QUEUE_CONSUMER_CHANNEL, FrameLayer.queueStreamId(groupId));
-            final Subscription shadow =
-                aeron.addSubscription(ShadowQueueAgent.CHANNEL + "|tether=false", ShadowQueueAgent.streamId(groupId));
-            final FragmentAssembler onQueue = new FragmentAssembler(
-                (buffer, offset, length,
-                 header) -> lag.onFrame(lag.queueFirst, lag.shadowFirst, buffer, offset, length, 1));
-            final FragmentAssembler onShadow = new FragmentAssembler(
-                (buffer, offset, length,
-                 header) -> lag.onFrame(lag.shadowFirst, lag.queueFirst, buffer, offset, length, -1));
-            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
-                        "shadow: reads group %d's queue (stream %d) and shadow queue (stream %d)", groupId,
-                        FrameLayer.queueStreamId(groupId), ShadowQueueAgent.streamId(groupId));
-
-            final AtomicBoolean running = new AtomicBoolean(true);
-            final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
-            final Thread dutyThread = new Thread(() -> {
-                final IdleStrategy idle = IdleStrategies.fromProperty(IDLE_STRATEGY_PROPERTY).get();
-                while (running.get() && lag.queueFirst.size() < SHADOW_UNMATCHED_LIMIT &&
-                       lag.shadowFirst.size() < SHADOW_UNMATCHED_LIMIT) {
-                    idle.idle(queue.poll(onQueue, SHADOW_FRAGMENT_LIMIT) +
-                              shadow.poll(onShadow, SHADOW_FRAGMENT_LIMIT));
-                }
-                barrier.signalAll();
-            }, "probe-shadow");
-            dutyThread.start();
-            barrier.await();
-            running.set(false);
-            try {
-                dutyThread.join(TimeUnit.SECONDS.toMillis(5));
-            } catch (final InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            }
-            final boolean matched = lag.report(); // before close, which lets a signalled JVM exit
-            barrier.close();
-            return matched ? 0 : 1;
-        }
-    }
-
-    /** Each frame's arrival on the shadow less its arrival on the queue, in nanoseconds. */
-    private static final class ShadowLag {
-        private final SequencedFrameDecoder view = new SequencedFrameDecoder();
-        private final Long2LongHashMap queueFirst = new Long2LongHashMap(Long.MIN_VALUE);
-        private final Long2LongHashMap shadowFirst = new Long2LongHashMap(Long.MIN_VALUE);
-        private long[] samplesNs = new long[SHADOW_SAMPLES_PRESIZE];
-        private int sampleCount;
-
-        /** {@code sign} is 1 for the queue, -1 for the shadow. */
-        private void onFrame(final Long2LongHashMap mine, final Long2LongHashMap other, final DirectBuffer buffer,
-                             final int offset, final int length, final int sign) {
-            final long nowNs = System.nanoTime();
-            if (!view.wrap(buffer, offset, length)) {
-                return;
-            }
-            final long clusterSeqNo = view.clusterSeqNo();
-            final long otherNs = other.remove(clusterSeqNo);
-            if (otherNs == Long.MIN_VALUE) {
-                mine.put(clusterSeqNo, nowNs);
-                return;
-            }
-            if (sampleCount == samplesNs.length) {
-                samplesNs = Arrays.copyOf(samplesNs, samplesNs.length * 2);
-            }
-            samplesNs[sampleCount++] = sign * (otherNs - nowNs);
-        }
-
-        /** @return whether the two streams still matched */
-        private boolean report() {
-            final boolean matched =
-                queueFirst.size() < SHADOW_UNMATCHED_LIMIT && shadowFirst.size() < SHADOW_UNMATCHED_LIMIT;
-            if (!matched) {
-                Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
-                             "shadow: %d frames on the queue and %d on the shadow have no match; is "
-                                 + "sequencer.shadowQueues set, and the shadow following?",
-                             queueFirst.size(), shadowFirst.size());
-            }
-            if (sampleCount == 0) {
-                Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "shadow: no frame seen on both streams");
-                return matched;
-            }
-            final long[] sorted = Arrays.copyOf(samplesNs, sampleCount);
-            Arrays.sort(sorted);
-            Logger.info(
-                Logger.CoreComponent.ClusterProbe, MEMBER_ID,
-                "shadow lag (shadow arrival - queue arrival, n=%d, negative where the service published later): "
-                    + "min=%dns p50=%dns p90=%dns p99=%dns p99.9=%dns p99.99=%dns max=%dns; unmatched: %d "
-                    + "queue, %d shadow",
-                sampleCount, sorted[0], pct(sorted, 0.50), pct(sorted, 0.90), pct(sorted, 0.99), pct(sorted, 0.999),
-                pct(sorted, 0.9999), sorted[sampleCount - 1], queueFirst.size(), shadowFirst.size());
-            return matched;
-        }
-
-        private static long pct(final long[] sorted, final double q) {
-            return sorted[(int)(q * (sorted.length - 1))];
-        }
-    }
-
     // ── plumbing ──────────────────────────────────────────────────────────────────
 
     static AeronCluster connectCluster() {
@@ -815,13 +697,12 @@ public final class ClusterProbe {
 
     private static void usage() {
         System.err.println("""
-            Usage: ClusterProbe <submit|ping|follow|confirm|shadow>
+            Usage: ClusterProbe <submit|ping|follow|confirm>
 
               submit  flood -Dprobe.count frames at cluster ingress (default 1000)
               ping    submit one frame and wait for its sequenced echo on the queue
               follow  replay history via the co-located Replayer, then follow the queue live
               confirm send -Dprobe.count frames and check the queue shows each once, in order
-              shadow  report how much later each frame lands on the shadow queue than on the queue
 
             See the class javadoc for the -Dprobe.* properties.""");
     }

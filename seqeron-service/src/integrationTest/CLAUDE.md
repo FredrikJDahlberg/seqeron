@@ -38,8 +38,10 @@ A member records no queue (`doc/plans/disk-load-plan.md`, step 2a), so a test th
 replay with asks `InProcessCluster.withQueueRecordings()`, which has each member's archive record its queues at each
 start; a member restarted mid-test records from where its queue has reached, and the test checks that start against
 the member's `DerivationStart`. `QueueFrames` reads a member's queue through its Replayer where its archive keeps no
-recording. `DerivedQueueTest` derives a member's queues from its Raft log and checks them against those recordings
-frame for frame and position for position, and each member's shadow queues (`ShadowQueueAgent`) with them; `DerivationStartTest` holds a start the log's recording does not hold to
+recording. `DerivedQueueTest` holds each member's queue, as those recordings hold it, to the history its Replayer
+serves, and that history to the reference member's from where it starts, frame for frame and position for position,
+across a leader stop and a restart from a cluster snapshot, whose history opens with the round's marker where it lies
+on the reference's; `DerivationStartTest` holds a start the log's recording does not hold to
 ending the Replayer's duty cycle, and an announcement the archive refuses to being recorded once it may;
 `DerivedReplayTest` cold-starts a client on a member, and on a gateway host
 while the member the host reads stops, and prints each rate; `CheckpointedReplayTest` runs a `DerivingReplayer` of its

@@ -86,8 +86,7 @@ Three more processes serve the system tests ([`building.md`](building.md)):
 
 - **`ClusterProbe`** (in the service jar) drives a cluster without an application: `submit` floods
   `ProbeMarker` payloads at ingress, `ping` round-trips one through consensus and back off the queue, and
-  `follow` replays history then follows the queue live. `shadow` reads a group's queue and its shadow queue on one
-  member (`sequencer.shadowQueues`) and, when stopped, prints how much later each frame landed on the shadow.
+  `follow` replays history then follows the queue live.
 - **`TestGateway`** and **`TestApplication`** (in `seqeron-service/src/test/java`, and so in no jar) are a
   gateway pair and a co-located application that speak no application protocol but hold the same fences
   and snapshot logic as real ones, so the system tests exercise them under faults.
@@ -188,7 +187,6 @@ The sequenced stream itself has no port: the queue is `aeron:ipc` on each member
 | `sequencer.leaderHeartbeatTimeoutMs` | `2000`                  | how long a follower waits for a leader heartbeat before it starts an election ([`ops.md`](ops.md), "Consensus timeouts") |
 | `sequencer.electionTimeoutMs` | `1000`                         | how long an election stage waits on the other members |
 | `sequencer.queueStallTimeoutMs` | `5000`, at least `1000`      | how long a queue may make no progress under back-pressure before the member exits 70 ([`ops.md`](ops.md), "A node that terminates itself") |
-| `sequencer.shadowQueues`    | `false`                          | `true` also publishes each queue from the committed log, on a thread of its own, on stream 3000 + `groupId`; for measuring that path against the service's (`doc/plans/queue-off-duty-cycle-plan.md`, step 2) |
 | `aeron.cluster.max.sessions` | `64`, rather than Aeron's 10   | the most client sessions the cluster holds at once ([`ops.md`](ops.md), "Cluster sessions") |
 
 The Replayer runs in the member's JVM, on its media driver, and takes no configuration of its own.

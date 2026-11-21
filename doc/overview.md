@@ -92,12 +92,13 @@ All three speak the same protocol.
 2. The leader appends the message to the Raft log and replicates it. The entry commits once a majority of
    members hold it.
 3. Every member applies the committed entry. `Sequencer` validates the message against the fourteen ingress
-   conditions of spec §9.2, copies its 20-byte header, appends `clusterSeqNo`, the consensus timestamp and
-   the queue's `groupSeqNo`, and republishes it as a `Sequenced` message on the member's queue. The payload is copied, never decoded or
-   re-encoded.
-4. The queue offer is reliable: it retries until the message is published, since a dropped message would leave
-   a hole between the queue and the history the log gives. Only a consumer its driver has not yet dropped can
-   hold it back.
+   conditions of spec §9.2, copies its 20-byte header, and appends `clusterSeqNo`, the consensus timestamp and
+   the queue's `groupSeqNo`. The payload is copied, never decoded or re-encoded.
+4. The member's queue agent, on a thread of its own, reads the committed entry from the log's recording, derives
+   the same `Sequenced` message, and publishes it on the member's queue, so the sequencer never waits on a
+   consumer. The offer is reliable: a message the queue does not take is kept and offered again, since a dropped
+   message would leave a hole between the queue and the history the log gives. Only a consumer its driver has not
+   yet dropped can hold it back.
 5. The archive has already recorded the Raft log entry, which is what a replay derives the message from.
 6. Each client on the host reads the message off the queue, checks that its `clusterSeqNo` is the next one,
    and dispatches it. A consumer that falls behind is dropped by the media driver rather than slowing
