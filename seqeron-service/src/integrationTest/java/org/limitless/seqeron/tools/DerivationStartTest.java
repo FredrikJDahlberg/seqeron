@@ -147,6 +147,9 @@ class DerivationStartTest {
     }
 
     private LongArrayList activeAnnouncementRecordings() {
+        // Paced: a request a turn fills the control stream's 32 KiB window before a starved driver conductor moves its
+        // limit, and the archive client gives up after three tries.
+        Tests.sleep(1);
         final LongArrayList ids = new LongArrayList();
         archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", DerivationAnnouncement.STREAM_ID,
                                      (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
