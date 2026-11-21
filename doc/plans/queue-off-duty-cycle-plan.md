@@ -1,6 +1,6 @@
 # Output off the sequencer's duty cycle: plan
 
-Proposed. Step 2 runs as a shadow (below); nothing else is implemented. It answers issues 4 and 6 of
+Proposed. Step 2 runs as a shadow (below) and step 5 is implemented; nothing else is. It answers issues 4 and 6 of
 `doc/reviews/enterprise-review.md`. Aeron references are to 1.53.2.
 
 ## 1. The rule
