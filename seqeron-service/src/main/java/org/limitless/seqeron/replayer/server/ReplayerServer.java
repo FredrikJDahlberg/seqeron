@@ -282,7 +282,7 @@ public final class ReplayerServer {
      * @param derivationStart where the member's service started, or null until it has: what its replays derive
      *                        from
      * @param archiveDir      the member's archive directory, where that reads the log's segment files
-     * @param queueStallTimeoutMs how long one of the member's queues may stay back-pressured before it terminates
+     * @param queueStallTimeoutMs how long one of the member's queues may stay back-pressured before it is skipped
      */
     public static ReplayerServer launch(final int memberId, final String aeronDir,
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,

@@ -22,8 +22,9 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * The queue agent's decisions: a frame a queue does not take is kept with every frame after it, a frame that lands
- * must end where the log puts it, and a kept frame no flush lands for the stall timeout fails it. {@link QueueEmitter}
- * holds no Aeron runtime and no clock: the test passes each flush its reading.
+ * must end where the log puts it, a queue back-pressured for the stall timeout is skipped to the commit position, and
+ * a kept frame refused otherwise for as long fails it. {@link QueueEmitter} holds no Aeron runtime and no clock: the
+ * test passes each flush its reading.
  */
 class QueueEmitterTest {
     private static final int TERM_LENGTH = 64 * 1024;
@@ -39,6 +40,7 @@ class QueueEmitterTest {
         long skew;
         int alerts;
         final List<Boolean> stalledGauge = new ArrayList<>();
+        final List<String> reopenings = new ArrayList<>();
 
         @Override
         public long offer(final int groupId, final DirectBuffer buffer, final int length) {
@@ -54,6 +56,22 @@ class QueueEmitterTest {
         @Override
         public boolean isUnrecoverable(final long offerResult) {
             return offerResult == Publication.CLOSED || offerResult == Publication.MAX_POSITION_EXCEEDED;
+        }
+
+        @Override
+        public boolean isBackPressure(final long offerResult) {
+            return offerResult == Publication.BACK_PRESSURED;
+        }
+
+        @Override
+        public void revoke(final int groupId) {
+            reopenings.add("revoke " + groupId);
+        }
+
+        @Override
+        public void open(final int groupId, final long position) {
+            reopenings.add("reopen " + groupId + " at " + position);
+            positions[groupId - 1] = position;
         }
 
         @Override
@@ -181,8 +199,8 @@ class QueueEmitterTest {
     }
 
     @Test
-    @DisplayName("a kept frame no flush lands for the stall timeout fails the emitter")
-    void aKeptFramePastTheStallTimeoutFails() {
+    @DisplayName("a kept frame refused for anything but back-pressure for the stall timeout fails the emitter")
+    void aKeptFrameNotConnectedPastTheStallTimeoutFails() {
         queues.refuseWith = Publication.NOT_CONNECTED;
         publish(1, 1, 100);
         emitter.flush(0);
@@ -190,6 +208,59 @@ class QueueEmitterTest {
         assertNull(emitter.failure());
         emitter.flush(STALL_TIMEOUT_NS);
         assertNotNull(emitter.failure());
+        assertTrue(queues.reopenings.isEmpty());
+    }
+
+    @Test
+    @DisplayName("a queue back-pressured for the stall timeout is revoked, skips to the commit position and reopens")
+    void aBackPressuredQueuePastTheStallTimeoutIsSkipped() {
+        publish(1, 1, 100);
+        queues.refuseWith = Publication.BACK_PRESSURED;
+        publish(1, 2, 100);
+        publish(2, 3, 100);
+        publish(1, 4, 100);
+        emitter.flush(0);
+        emitter.flush(STALL_TIMEOUT_NS - 1);
+        assertTrue(queues.reopenings.isEmpty());
+        emitter.flush(STALL_TIMEOUT_NS);
+        assertNull(emitter.failure());
+        assertEquals(List.of("revoke 1"), queues.reopenings);
+        assertTrue(emitter.isHolding(), "group 2's frame is still kept");
+
+        queues.refuseWith = 0;
+        assertEquals(1, emitter.flush(STALL_TIMEOUT_NS + 1));
+        assertFalse(emitter.isHolding());
+        publish(1, 5, 3000); // derived, not offered: three fragments
+        publish(2, 6, 100);
+        assertEquals(List.of("1:1", "2:3", "2:6"), queues.landed);
+
+        final long derived = emitter.position(1);
+        assertEquals(QueuePositions.framedLength(100, MTU) * 3 + QueuePositions.framedLength(3000, MTU), derived);
+        emitter.onCaughtUp();
+        assertEquals(List.of("revoke 1", "reopen 1 at " + derived), queues.reopenings);
+        emitter.onCaughtUp();
+        assertEquals(2, queues.reopenings.size(), "a queue reopens once a skip");
+
+        publish(1, 7, 100);
+        assertEquals(List.of("1:1", "2:3", "2:6", "1:7"), queues.landed);
+        assertNull(emitter.failure(), "the reopened queue lands where the log puts it");
+    }
+
+    @Test
+    @DisplayName("a skip lowers the stall gauge, and the frames kept after it start a clock of their own")
+    void aSkipLowersTheGauge() {
+        queues.refuseWith = Publication.BACK_PRESSURED;
+        publish(1, 1, 100);
+        publish(2, 2, 100);
+        emitter.flush(0);
+        emitter.flush(QueueEmitter.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
+        emitter.flush(STALL_TIMEOUT_NS);
+        assertEquals(List.of(true, false), queues.stalledGauge);
+        emitter.flush(STALL_TIMEOUT_NS + 1);
+        emitter.flush(2 * STALL_TIMEOUT_NS);
+        assertEquals(List.of("revoke 1"), queues.reopenings, "group 2's clock started after the skip");
+        emitter.flush(2 * STALL_TIMEOUT_NS + 1);
+        assertEquals(List.of("revoke 1", "revoke 2"), queues.reopenings);
     }
 
     @Test
@@ -206,8 +277,8 @@ class QueueEmitterTest {
         publish(1, 3, 100);
         emitter.flush(STALL_TIMEOUT_NS);
         emitter.flush(STALL_TIMEOUT_NS + STALL_TIMEOUT_NS / 2);
-        assertNull(emitter.failure(), "the clock started at the frame kept after the last landing");
+        assertTrue(queues.reopenings.isEmpty(), "the clock started at the frame kept after the last landing");
         emitter.flush(2 * STALL_TIMEOUT_NS);
-        assertNotNull(emitter.failure());
+        assertEquals(List.of("revoke 1"), queues.reopenings);
     }
 }

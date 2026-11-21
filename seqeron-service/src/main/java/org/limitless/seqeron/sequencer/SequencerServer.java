@@ -80,7 +80,7 @@ import org.limitless.seqeron.util.Logger;
  *                               election, and how long a member copying the log waits on progress; default
  *                               2000
  *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 1000
- *   sequencer.queueStallTimeoutMs — how long a queue may stay back-pressured before the node terminates; default
+ *   sequencer.queueStallTimeoutMs — how long a queue may stay back-pressured before the node skips it; default
  *                               5000, at least 1000
  *   aeron.cluster.max.sessions — the most client sessions the cluster holds at once; default 64 rather than
  *                               Aeron's 10

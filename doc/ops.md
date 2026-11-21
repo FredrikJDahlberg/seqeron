@@ -121,7 +121,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_sequencer_gateway_promotion_total` | counter | `GatewayActive` frames promoting a standby: on a gateway session closing, or on a designated instance not publishing `GatewayStarted` within 5 s (`GATEWAY_ACTIVATION_TIMEOUT_MS`) |
 | `seqeron_sequencer_gateway_promotion_failed_total` | counter | times a gateway lost its active instance and had no standby to promote |
 | `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap `GatewayActive` is in this cluster's log, else 0 |
-| `seqeron_sequencer_queue_stalled` | gauge | 1 while a queue frame has been kept back-pressured for more than 200 ms, else 0; stays 1 when the member terminates for a queue it cannot publish ([below](#a-node-that-terminates-itself)) |
+| `seqeron_sequencer_queue_stalled` | gauge | 1 while a queue frame has been kept back-pressured for more than 200 ms, until it lands or the queue is skipped ([below](#a-queue-that-is-skipped)), else 0; stays 1 when the member terminates for a queue it cannot publish ([below](#a-node-that-terminates-itself)) |
 | `seqeron_sequencer_ingress_messages_total` | counter | ingress frames sequenced; the frames the sequencer synthesizes are not counted |
 | `seqeron_replayer_ready` | gauge | 1 once every queue it serves is listed, and replay requests are served: on a member once its derivation has caught up with the log, on a gateway host once its archive records each queue |
 | `seqeron_replayer_active_slots` | gauge | replays in progress |
@@ -384,10 +384,11 @@ on a timer: once it has been three quarters of a window behind for `aeron.unteth
 and then lingered for `aeron.untethered.linger.timeout`, each checked every `aeron.timer.interval`. Until
 then it still holds the window, and a full window behind it back-pressures the queue.
 
-A member's queue agent and a gateway host's relay terminate after the queue stall timeout of back-pressure with no
-progress ("A node that terminates itself"), and on a member a subscriber not yet dropped is what back-pressures
-the queue, so seqeron's drivers set those three to 10 ms, 100 ms and 100 ms. At Aeron's defaults of 1 s, 5 s and 5 s, a subscriber that stops for a window's worth of traffic would
-take its member down. When overriding them, keep both timeouts plus two timer intervals under half the stall
+A member's queue agent skips a queue after the queue stall timeout of back-pressure with no progress ("A queue that
+is skipped"), and a gateway host's relay terminates ("A node that terminates itself"). A subscriber not yet dropped is
+what back-pressures the queue, so seqeron's drivers set those three to 10 ms, 100 ms and 100 ms. At Aeron's defaults
+of 1 s, 5 s and 5 s, a subscriber that stops for a window's worth of traffic would cost every consumer of its queue a
+skip. When overriding them, keep both timeouts plus two timer intervals under half the stall
 timeout. A dropped subscriber rejoins at the live position after `aeron.untethered.resting.timeout`, 10 s.
 
 ## Recording checksums
@@ -460,23 +461,37 @@ a replay of its whole log.
   log of another major stops with "incompatible version"; a log written before there was a version is accepted until
   the major is raised.
 
-## A node that terminates itself
+## A queue that is skipped
 
-A queue frame may not be dropped, since the history a replay derives from the log must match what the queue
-carried. Rather than wait forever, a member exits with code **70** when its queue agent cannot publish a queue: no
-progress for `sequencer.queueStallTimeoutMs` (default 5 s) under back-pressure, or the agent's own subscriber to
-the queue gone, which means its driver is. This is deliberate, not a crash. On a member only an untethered
-subscriber its driver has not yet dropped back-pressures the queue, so a stall that long means the driver is not
-dropping it.
+A queue that makes no progress for `sequencer.queueStallTimeoutMs` (default 5 s) under back-pressure is held by a
+subscriber its driver has not dropped: a tethered one whose client is alive and not reading, since seqeron's own
+consumers subscribe untethered. The member's queue agent then skips the queue
+([`fault-tolerance.md`](fault-tolerance.md) §1.3): it revokes the queue, which takes every image on it down, drops the
+queue's frames up to the commit position, and opens it again there. The member keeps running, and the queue's
+consumers heal the skipped frames by replay, as after an eviction.
 
 - **The stall timeout** counts while one frame waits on the queue, and each frame that lands restarts it: a queue
   that is slow but still taking frames never trips it, and the `seqeron_sequencer_queue_stalled` gauge rises after
   200 ms as the warning. While it runs, the member goes on sequencing but its queues fall behind, so a long one
-  holds its co-located applications up; a short one turns a write stall of the storage into an exit, and a stall
-  that reaches several members at once, as one on shared network block storage can, into a loss of quorum. The 5 s
-  default rides out such stalls; lower it only where its stalls are measured. It may not go below 1000, which keeps
-  it over twice an untethered subscriber's eviction ("Untethered subscribers"). A gateway host's relay applies the
-  same bound to its local queue recordings, as `replayer.queueStallTimeoutMs` in the host's JVM.
+  holds its co-located applications up; a short one turns a write stall of the storage into a skip, and so into a
+  replay for every consumer of the queue. The 5 s default rides out such stalls; lower it only where its stalls are
+  measured. It may not go below 1000, which keeps it over twice an untethered subscriber's eviction ("Untethered
+  subscribers").
+- **What you see.** A `[ReplayerServer/N] group G's queue is held at position P by subscription registrationId=R`
+  line for each subscriber at the queue's limit, a `SKIPPED: group G's queue made no progress …` line, and a
+  `RECOVERED: group G's queue reopened at position …` line once the agent has reached the commit position. The
+  registration id is the subscription's, as `AeronStat` lists it on the member's driver (`sub-pos: R …`).
+- **Find the subscriber** by that registration id and fix or stop its process. While it stays alive and unread, it
+  joins the reopened queue too and holds it again a window later, costing the queue's consumers a skip each time.
+
+## A node that terminates itself
+
+A queue frame may not be dropped in place, since the history a replay derives from the log must match what the queue
+carried. A member exits with code **70** when its queue agent cannot publish a queue: its own subscriber to a queue
+not connected for `sequencer.queueStallTimeoutMs`, or gone, which means its driver is. This is deliberate, not a
+crash. A gateway host's relay exits the host's process after the same bound of back-pressure on its local queue
+recordings, as `replayer.queueStallTimeoutMs` in the host's JVM.
+
 - **What you see.** A `[ReplayerServer/N] FATAL: … terminating it` line naming the reason, and
   `seqeron_sequencer_queue_stalled{member="N"}` at 1 until the process goes; then `up{job="seqeron",member="N"}`
   falls to 0.

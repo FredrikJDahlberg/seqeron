@@ -1,6 +1,7 @@
 package org.limitless.seqeron.replayer.server;
 
 import io.aeron.Aeron;
+import io.aeron.AeronCounters;
 import io.aeron.ChannelUri;
 import io.aeron.ChannelUriStringBuilder;
 import io.aeron.Counter;
@@ -10,6 +11,7 @@ import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.ConsensusModule;
+import io.aeron.driver.status.StreamCounter;
 import io.aeron.logbuffer.BlockHandler;
 import java.io.File;
 import java.util.concurrent.TimeUnit;
@@ -31,14 +33,15 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * Publishes a member's queues from its committed log, on a thread of its own, so the service's duty cycle never waits
- * on a queue's subscribers (doc/plans/queue-off-duty-cycle-plan.md, steps 1 and 2).
+ * on a queue's subscribers (doc/plans/queue-off-duty-cycle-plan.md, steps 1 to 3).
  *
  * <p>It starts where the service did ({@link DerivationStart}), reads the log's recording from the archive's segment
  * files up to the commit position, and runs a {@link LogDeriver} over it into a {@link QueueEmitter}. A frame a queue
  * does not take is kept, and no log entry is read while one is. It holds a subscriber of its own on each queue and
  * reads it past every frame it offers, so every offer lands with no application subscribed. A queue that stays
- * back-pressured for the stall timeout, a frame that lands off the log's position, a subscriber of its own the driver
- * closed, or a duty cycle that throws, runs the member's fatal handler.
+ * back-pressured for the stall timeout is revoked, after it logs the subscribers holding it, and reopened at the
+ * commit position. A frame that lands off the log's position, a subscriber of its own the driver closed, or a duty
+ * cycle that throws, runs the member's fatal handler.
  *
  * <p>Single-threaded: its own duty cycle. {@link #logPosition} is read from the Replayer's.
  */
@@ -126,8 +129,12 @@ final class QueueAgent implements AutoCloseable {
         final long nowNs = System.nanoTime();
         int work = emitter.isHolding() ? emitter.flush(nowNs) : 0;
         if (!emitter.isHolding()) {
-            work += log.poll(handler, counters.getCounterValue(commitCounterId), ENTRY_LIMIT);
+            final long commitPosition = counters.getCounterValue(commitCounterId);
+            work += log.poll(handler, commitPosition, ENTRY_LIMIT);
             logPosition = log.position();
+            if (logPosition >= commitPosition) {
+                emitter.onCaughtUp();
+            }
         }
         if (emitter.failure() != null) {
             fail(emitter.failure());
@@ -235,20 +242,7 @@ final class QueueAgent implements AutoCloseable {
         public long offer(final int groupId, final DirectBuffer buffer, final int length) {
             final int i = groupId - 1;
             if (publications[i] == null) {
-                // The driver's term length and MTU, which the start's are: a queue at 0 is on the bare channel,
-                // which AeronReplayer.queueBacklog looks the publication up by.
-                final long position = start.queueStarts()[i];
-                final String channel = position == 0
-                    ? FrameLayer.QUEUE_CHANNEL
-                    : new ChannelUriStringBuilder(FrameLayer.QUEUE_CHANNEL)
-                          .initialPosition(position, INITIAL_TERM_ID, start.termLength())
-                          .build();
-                publications[i] = aeron.addExclusivePublication(channel, FrameLayer.queueStreamId(groupId));
-                drainSubs[i] = aeron.addSubscription(
-                    ChannelUri.addSessionId(FrameLayer.QUEUE_CHANNEL, publications[i].sessionId()),
-                    FrameLayer.queueStreamId(groupId));
-                Logger.info(Logger.CoreComponent.ReplayerServer, memberId, "group %d's queue opened at position %d",
-                            groupId, position);
+                open(groupId, start.queueStarts()[i]);
             }
             if (drains[i] == null && (drains[i] = drainSubs[i].imageBySessionId(publications[i].sessionId())) == null) {
                 return Publication.NOT_CONNECTED;
@@ -263,6 +257,68 @@ final class QueueAgent implements AutoCloseable {
         @Override
         public boolean isUnrecoverable(final long offerResult) {
             return offerResult == Publication.CLOSED || offerResult == Publication.MAX_POSITION_EXCEEDED;
+        }
+
+        @Override
+        public boolean isBackPressure(final long offerResult) {
+            return offerResult == Publication.BACK_PRESSURED;
+        }
+
+        @Override
+        public void revoke(final int groupId) {
+            final int i = groupId - 1;
+            logHolders(groupId, publications[i].sessionId());
+            CloseHelper.quietClose(drainSubs[i]);
+            publications[i].revoke();
+            publications[i] = null;
+            drainSubs[i] = null;
+            drains[i] = null;
+        }
+
+        @Override
+        public void open(final int groupId, final long position) {
+            final int i = groupId - 1;
+            // The driver's term length and MTU, which the start's are: a queue at 0 is on the bare channel,
+            // which AeronReplayer.queueBacklog looks the publication up by.
+            final String channel = position == 0
+                ? FrameLayer.QUEUE_CHANNEL
+                : new ChannelUriStringBuilder(FrameLayer.QUEUE_CHANNEL)
+                      .initialPosition(position, INITIAL_TERM_ID, start.termLength())
+                      .build();
+            publications[i] = aeron.addExclusivePublication(channel, FrameLayer.queueStreamId(groupId));
+            drainSubs[i] = aeron.addSubscription(
+                ChannelUri.addSessionId(FrameLayer.QUEUE_CHANNEL, publications[i].sessionId()),
+                FrameLayer.queueStreamId(groupId));
+            Logger.info(Logger.CoreComponent.ReplayerServer, memberId, "group %d's queue opened at position %d",
+                        groupId, position);
+        }
+
+        /** Names each subscriber at the queue's limit by the registration id its driver's counters show. */
+        private void logHolders(final int groupId, final int sessionId) {
+            final DirectBuffer metaData = counters.metaDataBuffer();
+            long lowest = Long.MAX_VALUE;
+            for (int pass = 0; pass < 2; pass++) {
+                for (int id = 0, maxId = counters.maxCounterId(); id <= maxId; id++) {
+                    if (counters.getCounterState(id) != CountersReader.RECORD_ALLOCATED ||
+                        counters.getCounterTypeId(id) != AeronCounters.DRIVER_SUBSCRIBER_POSITION_TYPE_ID) {
+                        continue;
+                    }
+                    final int key = CountersReader.metaDataOffset(id) + CountersReader.KEY_OFFSET;
+                    if (metaData.getInt(key + StreamCounter.SESSION_ID_OFFSET) != sessionId ||
+                        metaData.getInt(key + StreamCounter.STREAM_ID_OFFSET) != FrameLayer.queueStreamId(groupId)) {
+                        continue;
+                    }
+                    final long position = counters.getCounterValue(id);
+                    if (pass == 0) {
+                        lowest = Math.min(lowest, position);
+                    } else if (position == lowest) {
+                        Logger.error(Logger.CoreComponent.ReplayerServer, Logger.CoreEventCode.QueueBackpressure,
+                                     memberId, "group %d's queue is held at position %d by subscription "
+                                         + "registrationId=%d", groupId, position,
+                                     metaData.getLong(key + StreamCounter.REGISTRATION_ID_OFFSET));
+                    }
+                }
+            }
         }
 
         @Override
