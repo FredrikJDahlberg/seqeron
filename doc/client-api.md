@@ -545,7 +545,7 @@ Visible for cross-package or test access only; no compatibility guarantee.
 - **Java package-private and C# `internal` types** — the same components. `FacadeSurfaceTest` fails the
   build if a public signature names one (C#: any public type outside `App` beyond `Publish`, `Aeron` and the
   two buffer interfaces). The C# test assembly reaches them via `InternalsVisibleTo`.
-- **`seqeron-service`**: `Sequencer`, `SequencerService`, `SequencerServer`, `QueuePublisher`,
+- **`seqeron-service`**: `Sequencer`, `SequencerService`, `SequencerServer`, `HeartbeatTimer`,
   `replayer.server`, `tools`, `MetricsExporter`.
 - **`sequencer.client`**: the producer components below.
 

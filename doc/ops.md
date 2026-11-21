@@ -121,7 +121,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_sequencer_gateway_promotion_total` | counter | `GatewayActive` frames promoting a standby: on a gateway session closing, or on a designated instance not publishing `GatewayStarted` within 5 s (`GATEWAY_ACTIVATION_TIMEOUT_MS`) |
 | `seqeron_sequencer_gateway_promotion_failed_total` | counter | times a gateway lost its active instance and had no standby to promote |
 | `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap `GatewayActive` is in this cluster's log, else 0 |
-| `seqeron_sequencer_queue_stalled` | gauge | 1 while a queue offer has been back-pressured for more than 200 ms, else 0; stays 1 when the member terminates for a queue it cannot publish ([below](#a-node-that-terminates-itself)) |
+| `seqeron_sequencer_queue_stalled` | gauge | 1 while a queue frame has been kept back-pressured for more than 200 ms, else 0; stays 1 when the member terminates for a queue it cannot publish ([below](#a-node-that-terminates-itself)) |
 | `seqeron_sequencer_ingress_messages_total` | counter | ingress frames sequenced; the frames the sequencer synthesizes are not counted |
 | `seqeron_replayer_ready` | gauge | 1 once every queue it serves is listed, and replay requests are served: on a member once its derivation has caught up with the log, on a gateway host once its archive records each queue |
 | `seqeron_replayer_active_slots` | gauge | replays in progress |
@@ -379,12 +379,12 @@ different MTU.
 ## Untethered subscribers
 
 Every application subscribes to the queue untethered, so one that stops polling — a GC pause, a long
-snapshot — is dropped and heals through replay rather than holding the sequencer back. Its driver drops it
+snapshot — is dropped and heals through replay rather than holding the member's queue agent back. Its driver drops it
 on a timer: once it has been three quarters of a window behind for `aeron.untethered.window.limit.timeout`,
 and then lingered for `aeron.untethered.linger.timeout`, each checked every `aeron.timer.interval`. Until
 then it still holds the window, and a full window behind it back-pressures the queue.
 
-The sequencer and a gateway host's relay terminate after the queue stall timeout of back-pressure with no
+A member's queue agent and a gateway host's relay terminate after the queue stall timeout of back-pressure with no
 progress ("A node that terminates itself"), and on a member a subscriber not yet dropped is what back-pressures
 the queue, so seqeron's drivers set those three to 10 ms, 100 ms and 100 ms. At Aeron's defaults of 1 s, 5 s and 5 s, a subscriber that stops for a window's worth of traffic would
 take its member down. When overriding them, keep both timeouts plus two timer intervals under half the stall
@@ -462,33 +462,34 @@ a replay of its whole log.
 
 ## A node that terminates itself
 
-A queue offer may not be dropped, since the history a replay derives from the log must match what the queue
-carried. Rather than wait forever, `SequencerServer` exits with code **70** when it cannot publish a queue: no
-progress for `sequencer.queueStallTimeoutMs` (default 5 s) under back-pressure, or the service's own subscriber to
+A queue frame may not be dropped, since the history a replay derives from the log must match what the queue
+carried. Rather than wait forever, a member exits with code **70** when its queue agent cannot publish a queue: no
+progress for `sequencer.queueStallTimeoutMs` (default 5 s) under back-pressure, or the agent's own subscriber to
 the queue gone, which means its driver is. This is deliberate, not a crash. On a member only an untethered
 subscriber its driver has not yet dropped back-pressures the queue, so a stall that long means the driver is not
 dropping it.
 
 - **The stall timeout** counts while one frame waits on the queue, and each frame that lands restarts it: a queue
-  that is slow but still taking frames never trips it, and the `seqeron_sequencer_queue_stalled` gauge rises after 200 ms as the warning. While it runs, the member sequences nothing, so a long one holds a leader's co-located
-  applications up; a short one turns a write stall of the storage into an exit, and a stall that reaches several
-  members at once, as one on shared network block storage can, into a loss of quorum. The 5 s default rides out
-  such stalls; lower it only where its stalls are measured. It may not go below 1000, which keeps it over twice an
-  untethered subscriber's eviction ("Untethered subscribers"). A gateway host's relay applies the same bound to its
-  local queue recordings, as `replayer.queueStallTimeoutMs` in the host's JVM.
-- **What you see.** A `[SequencerService/N] FATAL: … terminating this node` line naming the reason, and
+  that is slow but still taking frames never trips it, and the `seqeron_sequencer_queue_stalled` gauge rises after
+  200 ms as the warning. While it runs, the member goes on sequencing but its queues fall behind, so a long one
+  holds its co-located applications up; a short one turns a write stall of the storage into an exit, and a stall
+  that reaches several members at once, as one on shared network block storage can, into a loss of quorum. The 5 s
+  default rides out such stalls; lower it only where its stalls are measured. It may not go below 1000, which keeps
+  it over twice an untethered subscriber's eviction ("Untethered subscribers"). A gateway host's relay applies the
+  same bound to its local queue recordings, as `replayer.queueStallTimeoutMs` in the host's JVM.
+- **What you see.** A `[ReplayerServer/N] FATAL: … terminating it` line naming the reason, and
   `seqeron_sequencer_queue_stalled{member="N"}` at 1 until the process goes; then `up{job="seqeron",member="N"}`
   falls to 0.
 - **The cluster carries on** with the remaining members. Every member holds the same log, so nothing is lost with
   this one, and an election moves leadership if it led. **A second member
   down is a loss of quorum**: treat it as an emergency, not a repeat.
-- **Restart it** once its driver is healthy. Recovery is the usual replay of the log, which rebuilds the queues
-  from scratch. Under a supervisor this is automatic: exit 70, against the 0 of an orderly
+- **Restart it** once its driver is healthy. Recovery is the usual replay of the log, and its queue agent derives
+  the queues again. Under a supervisor this is automatic: exit 70, against the 0 of an orderly
   `clusterctl shutdown`, is the signal to restart. A member that halted rather than shut down
   ([`fault-tolerance.md`](fault-tolerance.md) §1.3) leaves its mark files active, and a restart within
   about 10 s fails with "active mark file detected"; delay the restart by 12 s or retry it.
-- **If it exits 70 again immediately**, the driver is still broken: at start-up each queue's subscriber must
-  connect within 5 s. Fix the driver first.
+- **If it exits 70 again immediately**, the driver is still broken: at start-up each queue's own subscriber must
+  connect within the stall timeout. Fix the driver first.
 
 A member also exits 70 when its Replayer's duty cycle dies (a `[ReplayerService/N]` error names it), and 71
 when its shutdown gave up waiting for that duty cycle. Both mean restart it.

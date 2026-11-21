@@ -226,5 +226,5 @@ The scripts are in `seqeron-service/src/test/scripts/multihost`. `disk-session.s
 §2.1 is `hop-knee.sh` with `KNEE_SECONDS=10`, `KNEE_PAYLOADS=100`, `HOP_MODES=direct`, `MULTIHOST_IDLE=busyspin`,
 `MULTIHOST_MEMBER_CPUS=2-11` and `MULTIHOST_BENCH_CPUS=14-15`: from `KNEE_START=50000` with the default `KNEE_MAX`, and
 from 465656 and 909483 with `KNEE_MAX=5000000`. The cold replay is `replay-remote.sh` with `REPLAY_PRELOAD=4000000` and `REPLAY_COLD=1`, and
-`REPLAY_LOAD_DURING=1` for load. §2.5 is `shadow-lag.sh` with `MULTIHOST_IDLE=busyspin`,
+`REPLAY_LOAD_DURING=1` for load. §2.5 is `shadow-lag.sh`, since retired, with `MULTIHOST_IDLE=busyspin`,
 `MULTIHOST_MEMBER_CPUS=2-12`, `MULTIHOST_PROBE_CPUS=13` and `MULTIHOST_BENCH_CPUS=14-15`.

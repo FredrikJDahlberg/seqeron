@@ -1,26 +1,21 @@
 package org.limitless.seqeron.sequencer;
 
-import io.aeron.ChannelUri;
-import io.aeron.ChannelUriStringBuilder;
 import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
 import io.aeron.FragmentAssembler;
 import io.aeron.Image;
 import io.aeron.Publication;
-import io.aeron.Subscription;
 import io.aeron.cluster.ClusterControl;
 import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
-import io.aeron.logbuffer.BlockHandler;
 import io.aeron.logbuffer.Header;
-import io.aeron.protocol.DataHeaderFlyweight;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import org.agrona.BitUtil;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
@@ -33,12 +28,11 @@ import org.limitless.seqeron.sbe.sequencer.SequencerStateDecoder;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The Aeron adapter over {@link Sequencer}: it decides when to call the state machine and publishes what
- * comes back on this node's queues, one per group. It holds no replicated state.
+ * The Aeron adapter over {@link Sequencer}: it decides when to call the state machine. It holds no replicated state.
  *
- * <p>Every node publishes its own queues and records none: its Replayer derives a queue's history from the log
- *. Each queue's publication and drain are created once, when the log activates the
- * groups (§7.4), and span every leader tenure.
+ * <p>It publishes no queue: the member's {@code QueueAgent} publishes each from the committed log, so this duty cycle
+ * never waits on a queue's subscribers (doc/plans/queue-off-duty-cycle-plan.md, step 1). It keeps each queue's
+ * position as {@link QueuePositions} gives it, which is where each snapshot's marker starts.
  *
  * <p>A cluster snapshot is also an application round: {@link #onTakeSnapshot} publishes the
  * round's marker on every queue and writes the {@link Sequencer}'s state, and {@link #onStart} restores that state and
@@ -49,15 +43,12 @@ public final class SequencerService implements ClusteredService {
     /** Correlation id of the one repeating heartbeat timer; rescheduling it moves its deadline. */
     static final long HEARTBEAT_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
 
-    /** Where a restored queue's publication starts in its term ids; any value serves, positions being what count. */
-    private static final int INITIAL_TERM_ID = 0;
-
     private final Sequencer sequencer;
 
-    /** Everything here that can back-pressure, and the decision to terminate rather than wait. */
-    private final QueuePublisher queue;
+    /** Re-arms the cluster clock, and terminates the node rather than wait on it forever. */
+    private final HeartbeatTimer heartbeat;
 
-    /** Brings the whole node down; wired by {@link SequencerServer}. See {@link QueuePublisher}. */
+    /** Brings the whole node down; wired by {@link SequencerServer}. */
     private final Runnable fatalHandler;
 
     private final int memberId;
@@ -90,28 +81,16 @@ public final class SequencerService implements ClusteredService {
     private static final String AERON_SERVICE_AGENT = "io.aeron.cluster.service.ClusteredServiceAgent";
     private static final String TAKE_SNAPSHOT = "onTakeSnapshot";
 
-    /** What each queue's last offer returned, and the length it offered, slot groupId - 1. */
-    private final long[] lastOfferResults = new long[FrameLayer.MAX_GROUPS];
-    private final int[] lastOfferLengths = new int[FrameLayer.MAX_GROUPS];
+    /** Where each queue ends, and where its last frame starts, slot groupId - 1. */
+    private final long[] queuePositions = new long[FrameLayer.MAX_GROUPS];
+    private final long[] lastFrameStarts = new long[FrameLayer.MAX_GROUPS];
 
     // Aeron runtime
     private Cluster cluster;
     private CountersReader counters;
 
-    // Each group's queue, slot groupId - 1; null until activation opens it.
-    private final ExclusivePublication[] queuePubs = new ExclusivePublication[FrameLayer.MAX_GROUPS];
-
-    private static final BlockHandler DISCARD = (buffer, offset, length, sessionId, termId) -> { };
-
-    // Each queue's own subscriber, slot groupId - 1: it keeps the queue connected, so that every offer lands and the
-    // queue's positions are the ones the log gives.
-    private final Subscription[] queueDrainSubs = new Subscription[FrameLayer.MAX_GROUPS];
-    private final Image[] queueDrains = new Image[FrameLayer.MAX_GROUPS];
-
     // Operator counters
     private Counter clusterSeqNoCounter;
-    private Counter queueBackPressureAlertCounter;
-    private Counter queueStalledCounter;
     private Counter rejectedIngressCounter;
     private Counter leadershipChangeCounter;
     private Counter currentLeaderMemberIdCounter;
@@ -125,21 +104,20 @@ public final class SequencerService implements ClusteredService {
      * @param memberId       this node's cluster memberId
      * @param topologyRows   receives a copy of each topology row the default queue carries, which the co-located
      *                       replayer resolves instances' queues from (spec R-6)
-     * @param fatalHandler   run once, from a cluster callback, when this node can no longer record its own
-     *                       queue. Must not block: it signals a shutdown and returns.
+     * @param fatalHandler   run once, from a cluster callback, when this node skipped a round. Must not block: it
+     *                       signals a shutdown and returns.
      * @param safeLog        this member's {@code restart-safe.log}
      * @param cuts           receives each cluster snapshot this member takes, for its Replayer
      * @param derivationStart receives where this service starts, for its Replayer
      * @param nodeTermLength the IPC term length of the node's driver, which its queues are published with
      * @param nodeMtu        the IPC MTU of the node's driver
-     * @param stallTimeoutMs how long one queue offer may stay back-pressured before this node terminates
      * @param sessionTimeoutMs the consensus module's session timeout, which spaces snapshot rounds
      */
     public SequencerService(final int memberId, final Queue<byte[]> topologyRows, final Runnable fatalHandler,
                             final RestartSafeLog safeLog, final Queue<CutHandover> cuts,
                             final AtomicReference<DerivationStart> derivationStart, final int nodeTermLength,
-                            final int nodeMtu, final long stallTimeoutMs, final long sessionTimeoutMs) {
-        this.queue = new QueuePublisher(new QueueActions(), TimeUnit.MILLISECONDS.toNanos(stallTimeoutMs));
+                            final int nodeMtu, final long sessionTimeoutMs) {
+        this.heartbeat = new HeartbeatTimer(new TimerActions());
         this.roundGapNs = TimeUnit.MILLISECONDS.toNanos(sessionTimeoutMs) + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
         this.topologyRows = topologyRows;
         this.safeLog = safeLog;
@@ -152,13 +130,15 @@ public final class SequencerService implements ClusteredService {
             @Override
             public void activate(final int[] groupIds) {
                 rows.onActivate(groupIds);
-                queue.activate(groupIds);
+                Logger.info(Logger.CoreComponent.Sequencer, memberId, "groups %s active at clusterSeqNo=%d",
+                            Arrays.toString(groupIds), sequencer.clusterSeqNo());
             }
 
             @Override
             public void publish(final int groupId, final DirectBuffer buffer, final int length) {
-                lastOfferResults[groupId - 1] = queue.emit(groupId, buffer, length);
-                lastOfferLengths[groupId - 1] = length;
+                final int i = groupId - 1;
+                lastFrameStarts[i] = QueuePositions.frameStart(queuePositions[i], length, nodeTermLength, nodeMtu);
+                queuePositions[i] = lastFrameStarts[i] + QueuePositions.framedLength(length, nodeMtu);
                 rows.onPublish(groupId, buffer, length);
             }
         });
@@ -227,13 +207,12 @@ public final class SequencerService implements ClusteredService {
             final int[] groupIds = sequencer.activeGroups();
             rows.onActivate(groupIds);
             sequencer.replayTopologyRows(topologyRows::add);
-            queue.activate(groupIds, groupId -> {
-                final QueueStart.Decision start =
+            for (final int groupId : groupIds) {
+                queueStarts[groupId - 1] =
                     QueueStart.decide(true, sequencer.markerPosition(groupId), sequencer.queueTermLength(groupId),
-                                      sequencer.queueMtu(groupId), nodeTermLength, nodeMtu);
-                queueStarts[groupId - 1] = start.position();
-                return start;
-            });
+                                      sequencer.queueMtu(groupId), nodeTermLength, nodeMtu).position();
+                queuePositions[groupId - 1] = queueStarts[groupId - 1];
+            }
             sequencer.reemitMarker();
         }
         derivationStart.set(
@@ -257,9 +236,6 @@ public final class SequencerService implements ClusteredService {
     /** Creates this node's operator counters. */
     private void createCounters() {
         clusterSeqNoCounter = counter(SeqeronCounters.SEQUENCER_CLUSTER_SEQ_NO_TYPE_ID, "clusterSeqNo");
-        queueBackPressureAlertCounter =
-            counter(SeqeronCounters.SEQUENCER_QUEUE_BACKPRESSURE_ALERTS_TYPE_ID, "queueBackPressureAlerts");
-        queueStalledCounter = counter(SeqeronCounters.SEQUENCER_QUEUE_STALLED_TYPE_ID, "queueStalled");
         rejectedIngressCounter =
             counter(SeqeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID, "rejectedIngressCount");
         leadershipChangeCounter =
@@ -358,14 +334,13 @@ public final class SequencerService implements ClusteredService {
             updateCounters();
             requestRound();
             lastHeartbeatTimestampCounter.set(TimeUnit.NANOSECONDS.toMillis(timestamp)); // exported as ms
-            queue.checkRecordingAlive();
             scheduleHeartbeat();
         }
     }
 
-    /** Re-arms the cluster clock one heartbeat ahead; see {@link QueuePublisher#scheduleHeartbeat}. */
+    /** Re-arms the cluster clock one heartbeat ahead; see {@link HeartbeatTimer#scheduleHeartbeat}. */
     private void scheduleHeartbeat() {
-        queue.scheduleHeartbeat(cluster.time() + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS);
+        heartbeat.scheduleHeartbeat(cluster.time() + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS);
     }
 
     /**
@@ -419,8 +394,9 @@ public final class SequencerService implements ClusteredService {
         writeState(snapshotPublication);
         if (live && sequencer.isActive()) {
             final long[] markerPositions = new long[FrameLayer.MAX_GROUPS];
-            for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
-                markerPositions[groupId - 1] = queuePubs[groupId - 1] == null ? -1 : sequencer.markerPosition(groupId);
+            Arrays.fill(markerPositions, -1);
+            for (final int groupId : sequencer.activeGroups()) {
+                markerPositions[groupId - 1] = sequencer.markerPosition(groupId);
             }
             cuts.add(new CutHandover(sequencer.snapshotRound(), sequencer.clusterSeqNo(), logPosition, markerPositions));
         }
@@ -468,15 +444,10 @@ public final class SequencerService implements ClusteredService {
         return false;
     }
 
-    /** Tells the {@link Sequencer} where each queue's marker started, and what the queue was published with. */
+    /** Tells the {@link Sequencer} where each queue's marker started, and what the queue is published with. */
     private void recordQueueCuts() {
         for (final int groupId : sequencer.activeGroups()) {
-            final ExclusivePublication publication = queuePubs[groupId - 1];
-            final long end = lastOfferResults[groupId - 1];
-            final int frame = BitUtil.align(lastOfferLengths[groupId - 1] + DataHeaderFlyweight.HEADER_LENGTH,
-                                            io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT);
-            sequencer.queueCut(groupId, end - frame, publication.termBufferLength(),
-                               publication.maxPayloadLength() + DataHeaderFlyweight.HEADER_LENGTH);
+            sequencer.queueCut(groupId, lastFrameStarts[groupId - 1], nodeTermLength, nodeMtu);
         }
     }
 
@@ -554,17 +525,14 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onTerminate(final Cluster cluster) {
-        CloseHelper.quietCloseAll(queueDrainSubs);
-        CloseHelper.quietCloseAll(queuePubs);
         closeCounters();
     }
 
     /** Closes the operator counters; a node whose start was refused created none. */
     private void closeCounters() {
-        CloseHelper.quietCloseAll(clusterSeqNoCounter, queueBackPressureAlertCounter, queueStalledCounter,
-                                  rejectedIngressCounter, leadershipChangeCounter, currentLeaderMemberIdCounter,
-                                  lastHeartbeatTimestampCounter, gatewayPromotionCounter, gatewayPromotionFailedCounter,
-                                  bootstrapActivatedCounter, messagesSequencedCounter);
+        CloseHelper.quietCloseAll(clusterSeqNoCounter, rejectedIngressCounter, leadershipChangeCounter,
+                                  currentLeaderMemberIdCounter, lastHeartbeatTimestampCounter, gatewayPromotionCounter,
+                                  gatewayPromotionFailedCounter, bootstrapActivatedCounter, messagesSequencedCounter);
     }
 
     /** Mirrors the sequencer's state onto the operator counters after a callback. */
@@ -575,45 +543,8 @@ public final class SequencerService implements ClusteredService {
         bootstrapActivatedCounter.set(sequencer.bootstrapActivationEmitted() ? 1 : 0);
     }
 
-    /** The Aeron half of {@link QueuePublisher}: calls through to the runtime, no decisions. */
-    private final class QueueActions implements QueuePublisher.Actions {
-        @Override
-        public void openQueue(final int groupId, final QueueStart.Decision start) {
-            final int streamId = FrameLayer.queueStreamId(groupId);
-            final String channel = start.kind() == QueueStart.Kind.AT_POSITION
-                ? new ChannelUriStringBuilder(FrameLayer.QUEUE_CHANNEL)
-                      .initialPosition(start.position(), INITIAL_TERM_ID, nodeTermLength)
-                      .build()
-                : FrameLayer.QUEUE_CHANNEL;
-            queuePubs[groupId - 1] = cluster.context().aeron().addExclusivePublication(channel, streamId);
-            queueDrainSubs[groupId - 1] = cluster.context().aeron().addSubscription(
-                ChannelUri.addSessionId(FrameLayer.QUEUE_CHANNEL, queuePubs[groupId - 1].sessionId()), streamId);
-        }
-
-        @Override
-        public boolean attachRecording(final int groupId) {
-            queueDrains[groupId - 1] = queueDrainSubs[groupId - 1].imageBySessionId(queuePubs[groupId - 1].sessionId());
-            return queueDrains[groupId - 1] != null;
-        }
-
-        @Override
-        public long offerFrame(final int groupId, final DirectBuffer buffer, final int length) {
-            final long result = queuePubs[groupId - 1].offer(buffer, 0, length);
-            if (result > 0) {
-                final Image drain = queueDrains[groupId - 1];
-                while (drain.position() < result && !drain.isClosed()) {
-                    drain.blockPoll(DISCARD, Integer.MAX_VALUE); // a block ends with its term
-                }
-            }
-            return result;
-        }
-
-        @Override
-        public boolean isUnrecoverable(final long offerResult) {
-            return offerResult == ExclusivePublication.CLOSED
-                || offerResult == ExclusivePublication.MAX_POSITION_EXCEEDED;
-        }
-
+    /** The Aeron half of {@link HeartbeatTimer}: calls through to the runtime, no decisions. */
+    private final class TimerActions implements HeartbeatTimer.Actions {
         @Override
         public boolean scheduleTimer(final long deadline) {
             return cluster.scheduleTimer(HEARTBEAT_TIMER_CORRELATION_ID, deadline);
@@ -627,26 +558,6 @@ public final class SequencerService implements ClusteredService {
         @Override
         public long nanoTime() {
             return System.nanoTime();
-        }
-
-        @Override
-        public boolean recordingActive(final int groupId) {
-            return !queueDrains[groupId - 1].isClosed();
-        }
-
-        @Override
-        public void queueBackPressureAlert() {
-            queueBackPressureAlertCounter.increment();
-        }
-
-        @Override
-        public void queueStalled(final boolean stalled) {
-            queueStalledCounter.set(stalled ? 1 : 0);
-        }
-
-        @Override
-        public void signalFatal() {
-            fatalHandler.run();
         }
 
         @Override
