@@ -4,18 +4,17 @@
 # every member reports how much later each frame lands on the shadow queue than on the service's. Each run is a line per
 # member in <results>/shadow-<stamp>.txt.
 #
-# For each rate a fresh cluster loads topology-test-hosted-quiet.xml. A run starts a probe on every member, runs the
-# bench for SHADOW_SECONDS, and stops the probes, whose SIGTERM makes each print its line. A run whose leader is not the
-# rate's fails the script rather than measure an election. Every member's /proc counters (node.sh sample) are taken
-# before and after each run into shadow-<stamp>.samples, and each member's driver counters every MULTIHOST_COUNTER_MS
-# (default 10, 0 for none) by CounterSampler, into its counter-sampler.log in the rate's logs. Before a rate's cluster
-# goes down the members' queues are compared (hop-order-check.py), into a "# order" line of the results.
+# One cluster loads topology-test-hosted-quiet.xml and serves every rate, lowest first, after a 10 s warm-up at the
+# first rate, which is reported and not judged. A run starts a probe on every member, runs the bench for SHADOW_SECONDS,
+# and stops the probes, whose SIGTERM makes each print its line. A run whose leader is not the cluster's first fails the
+# script rather than measure an election. Every member's /proc counters (node.sh sample) are taken before and after each
+# run into shadow-<stamp>.samples, and each member's driver counters every MULTIHOST_COUNTER_MS (default 10, 0 for none)
+# by CounterSampler, into its counter-sampler.log in the logs.
 #
-# MULTIHOST_IDLE is the arm: busyspin, or backoff (the default), every member agent's idle strategy, the shadow
-# thread's included.
+# MULTIHOST_IDLE is every member agent's idle strategy, the shadow thread's included; the test's is busyspin.
 #
 #   SHADOW_RATES          msg/s, space-separated            (default "20000 100000 400000")
-#   SHADOW_RUNS           runs at each rate                 (default 3)
+#   SHADOW_RUNS           runs at each rate                 (default 2)
 #   SHADOW_SECONDS        length of a run                   (default 30)
 #   SHADOW_PAYLOAD        marker length in bytes            (default 100)
 #   MULTIHOST_PROBE_CPUS  taskset CPU list for each probe   (default unpinned)
@@ -24,7 +23,7 @@
 # Prerequisites on every host: ./gradlew uberJar and MULTIHOST_DIRECT_BENCH, as hop-matrix.sh's direct arm needs.
 #
 # Usage:
-#   MULTIHOST_MEMBERS=10.0.0.11,10.0.0.12,10.0.0.13 ./shadow-lag.sh
+#   MULTIHOST_MEMBERS=10.0.0.11,10.0.0.12,10.0.0.13 MULTIHOST_IDLE=busyspin ./shadow-lag.sh
 
 set -euo pipefail
 
@@ -32,7 +31,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 source "${MH_DIR}/hop-common.sh"
 
 RATES="${SHADOW_RATES:-20000 100000 400000}"
-RUNS="${SHADOW_RUNS:-3}"
+RUNS="${SHADOW_RUNS:-2}"
 RUN_SECONDS="${SHADOW_SECONDS:-30}"
 PAYLOAD="${SHADOW_PAYLOAD:-100}"
 PROBE=org.limitless.seqeron.tools.ClusterProbe
@@ -72,7 +71,7 @@ start_probes() {
     done
 }
 
-# stop_probes <run> <leader> — stops every probe and appends its report, and an unmatched-frames error if it logged one.
+# stop_probes <run> — stops every probe and appends its report, and an unmatched-frames error if it logged one.
 stop_probes() {
     local id role line unmatched
     for id in 0 1 2; do
@@ -80,7 +79,7 @@ stop_probes() {
     done
     for id in 0 1 2; do
         role=follower
-        [[ "${id}" == "$2" ]] && role=leader
+        [[ "${id}" == "${LEADER}" ]] && role=leader
         line="$(node "${MEMBERS[$id]}" last-line "shadow-${id}" "shadow lag")"
         [[ -n "${line}" ]] || line="$(node "${MEMBERS[$id]}" last-line "shadow-${id}" "no frame seen")"
         unmatched="$(node "${MEMBERS[$id]}" last-line "shadow-${id}" "have no match")"
@@ -88,37 +87,40 @@ stop_probes() {
     done
 }
 
+# measure <label> <rate> <seconds> — one run: the probes, the bench on the leader, each member's report.
+measure() {
+    local current line
+    current="$(leader)" || current=none
+    if [[ "${current}" != "${LEADER}" ]]; then
+        echo "ERROR: leader moved from member ${LEADER} to ${current} before $1" >&2
+        exit 1
+    fi
+    mh_log "$1 on member ${LEADER} ($(( $2 * $3 )) markers)"
+    start_probes
+    sample_members "${1// /-}" before
+    line="$(run_mode direct "${LEADER}" "$2" "$(( $2 * $3 ))" "${PAYLOAD}")"
+    sample_members "${1// /-}" after
+    echo "$1 bench ${line}" | tee -a "${RESULTS}"
+    stop_probes "$1"
+}
+
 trap cluster_down EXIT
 
-for rate in ${RATES}; do
-    mh_log "rate ${rate} msg/s: fresh cluster"
-    cluster_up "${RESOURCES}/topology-test-hosted-quiet.xml"
-    rate_leader="$(await_leader 60)"
-    if [[ "${MULTIHOST_COUNTER_MS:-10}" != 0 ]]; then
-        for id in 0 1 2; do
-            node "${MEMBERS[$id]}" counter-sampler "${id}"
-        done
-    fi
-    count=$(( rate * RUN_SECONDS ))
-    for (( run = 1; run <= RUNS; run++ )); do
-        current="$(leader)" || current=none
-        if [[ "${current}" != "${rate_leader}" ]]; then
-            echo "ERROR: leader moved from member ${rate_leader} to ${current} during rate ${rate}" >&2
-            exit 1
-        fi
-        mh_log "rate ${rate} run ${run} on member ${rate_leader} (${count} markers)"
-        label="rate=${rate} run=${run}"
-        start_probes
-        sample_members "${label// /-}" before
-        line="$(run_mode direct "${rate_leader}" "${rate}" "${count}" "${PAYLOAD}")"
-        sample_members "${label// /-}" after
-        echo "${label} bench ${line}" | tee -a "${RESULTS}"
-        stop_probes "${label}" "${rate_leader}"
+cluster_up "${RESOURCES}/topology-test-hosted-quiet.xml"
+LEADER="$(await_leader 60)"
+if [[ "${MULTIHOST_COUNTER_MS:-10}" != 0 ]]; then
+    for id in 0 1 2; do
+        node "${MEMBERS[$id]}" counter-sampler "${id}"
     done
-    order_line="$(check_order "rate=${rate}" || true)"
-    echo "${order_line}" | tee -a "${RESULTS}"
-    cluster_down
+fi
+read -r first_rate _ <<< "${RATES}"
+measure "warmup rate=${first_rate}" "${first_rate}" 10
+for rate in ${RATES}; do
+    for (( run = 1; run <= RUNS; run++ )); do
+        measure "rate=${rate} run=${run}" "${rate}" "${RUN_SECONDS}"
+    done
 done
+cluster_down
 trap - EXIT
 
 mh_log "results in ${RESULTS}"
