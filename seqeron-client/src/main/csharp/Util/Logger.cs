@@ -5,7 +5,8 @@ namespace Org.Limitless.Seqeron.Util;
 
 /// <summary>
 /// Structured logging: call sites report a <see cref="LoggerEvent"/> to the installed <see cref="ILoggerSink"/>.
-/// The default sink prints <c>[Component/memberId] message</c> to stderr.
+/// The default sink formats and prints <c>[Component/memberId] message</c> to stderr from a logging thread of its
+/// own (<see cref="AsyncLoggerSink"/>), so a call site formats nothing.
 /// <para>Components and event codes are any enum, so a consumer declares its own beside
 /// <see cref="CoreComponent"/> and <see cref="CoreEventCode"/>; a value prints as its name.</para>
 /// </summary>
@@ -142,21 +143,43 @@ public static class Logger
         ClusterOfferFailed,
 
         /// <summary>The co-located member did not answer IPC ingress, so the sender fell back to UDP.</summary>
-        ClusterIpcFallback
+        ClusterIpcFallback,
+
+        /// <summary>The default sink's queue was full, and it dropped records.</summary>
+        LogRecordsDropped
     }
 
-    /// <summary>One log record, as a sink receives it.</summary>
+    /// <summary>
+    /// One log record, as a sink receives it: the format and its arguments, formatted by <see cref="Message"/> when
+    /// the sink writes it.
+    /// </summary>
     /// <param name="Component">who is reporting</param>
     /// <param name="Severity">how bad it is</param>
     /// <param name="Code">which anomaly class, or <see cref="CoreEventCode.Info"/></param>
     /// <param name="MemberId">the node it happened on, or null where there is no member context</param>
-    /// <param name="Message">the formatted text</param>
-    public sealed record LoggerEvent(Enum Component, Severity Severity, Enum Code, int? MemberId, string Message);
+    /// <param name="Format">the composite format string, or the whole text where <paramref name="Args"/> is
+    /// empty</param>
+    /// <param name="Args">the values it formats</param>
+    public sealed record LoggerEvent(Enum Component, Severity Severity, Enum Code, int? MemberId, string Format,
+                                     object[] Args)
+    {
+        /// <summary>A record of text already formatted.</summary>
+        public LoggerEvent(Enum component, Severity severity, Enum code, int? memberId, string message)
+            : this(component, severity, code, memberId, message, Array.Empty<object>())
+        {
+        }
+
+        /// <summary>The formatted text; formatted on each read.</summary>
+        public string Message => Args.Length == 0 ? Format : string.Format(CultureInfo.InvariantCulture, Format, Args);
+    }
 
     /// <summary>Where every log call lands. Install one with <see cref="Install"/>.</summary>
     public interface ILoggerSink
     {
-        /// <summary>Called on the reporting thread, in call order; a sink that blocks stalls a duty cycle.</summary>
+        /// <summary>
+        /// Called on the reporting thread, in call order; a sink that blocks stalls a duty cycle unless it is wrapped
+        /// in an <see cref="AsyncLoggerSink"/>, as the default is.
+        /// </summary>
         /// <param name="loggerEvent">the record</param>
         void Record(LoggerEvent loggerEvent);
     }
@@ -172,7 +195,8 @@ public static class Logger
         }
     }
 
-    private static readonly ILoggerSink DefaultSink = new StderrLoggerSink();
+    private static readonly AsyncLoggerSink DefaultSink =
+        new AsyncLoggerSink(new StderrLoggerSink(), AsyncLoggerSink.DefaultCapacity);
     private static volatile ILoggerSink _installedSink = DefaultSink;
 
     /// <summary>
@@ -190,6 +214,9 @@ public static class Logger
     {
         _installedSink = DefaultSink;
     }
+
+    /// <summary>Records the default sink has dropped, its queue being full.</summary>
+    public static long Dropped => DefaultSink.Dropped;
 
     /// <summary>Logs routine status, at <see cref="Severity.Info"/> under <see cref="CoreEventCode.Info"/>.</summary>
     /// <param name="component">who is reporting</param>
@@ -225,8 +252,9 @@ public static class Logger
     }
 
     /// <summary>
-    /// The one call the others reach: formats <paramref name="args"/> into <paramref name="format"/> and hands the
-    /// record to the installed sink.
+    /// The one call the others reach: hands <paramref name="format"/> and <paramref name="args"/> to the installed
+    /// sink unformatted. The default sink formats them on its logging thread, so each argument must be a value that
+    /// no longer changes.
     /// </summary>
     /// <param name="component">who is reporting</param>
     /// <param name="severity">how bad it is</param>
@@ -237,7 +265,6 @@ public static class Logger
     public static void Log(Enum component, Severity severity, Enum code, int? memberId, string format,
                            params object[] args)
     {
-        string message = args.Length == 0 ? format : string.Format(CultureInfo.InvariantCulture, format, args);
-        _installedSink.Record(new LoggerEvent(component, severity, code, memberId, message));
+        _installedSink.Record(new LoggerEvent(component, severity, code, memberId, format, args));
     }
 }

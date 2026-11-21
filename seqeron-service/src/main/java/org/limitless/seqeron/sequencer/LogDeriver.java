@@ -50,7 +50,7 @@ public final class LogDeriver {
      * @param sink     receives every frame of every queue, in {@code clusterSeqNo} order
      */
     public LogDeriver(final int memberId, final Sequencer.FrameSink sink) {
-        this.sequencer = new Sequencer(memberId, sink);
+        this.sequencer = new Sequencer(memberId, sink, false);
     }
 
     /**

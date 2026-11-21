@@ -91,6 +91,9 @@ public final class SeqeronCounters {
      */
     public static final int REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
 
+    /** Count of log records this process's default sink dropped, its queue being full ({@code Logger.dropped()}). */
+    public static final int REPLAYER_LOG_RECORDS_DROPPED_COUNT_TYPE_ID = 5112;
+
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
     // Core reserves 5200 and 5297-5299; a consumer allocates its own in 5201-5296.
     // Published by the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.

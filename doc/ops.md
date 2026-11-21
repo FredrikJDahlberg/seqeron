@@ -130,6 +130,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_replayer_control_replies_dropped_total` | counter | control replies dropped, rather than retried indefinitely, because a client stopped reading. Each costs that client one resend interval, so the rate, not the total, identifies a stuck client |
 | `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because, on a gateway host, a queue recording trailed the queue by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the host's recorder is falling behind the queue. A member, which records no queue, never throttles |
 | `seqeron_replayer_archive_errors_total` | counter | local-archive calls that threw. A request one fails is answered `ReplayPending` and the client's resend is the retry; the Replayer's own call, its readiness check, waits a second before the next. Live delivery is unaffected, so a sustained rate means only that history is not being served. A replay its client does not subscribe to within the archive's 5 s connect timeout counts one too, logged as a refused replay with `no connection established`: a client paused that long between its request and the answer, by a GC pause for one, requests again 5 s after it resumes, so isolated counts are not an archive fault |
+| `seqeron_replayer_log_records_dropped_total` | counter | log records the process dropped because its logging thread had fallen 4096 records behind, such as on a stderr pipe that blocks; the logging thread writes a line with the number once it catches up. The process's duty cycles never wait on the write |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a Replayer that never answers and a gap this member's recording cannot cover; the client's own log line names which |
 | `seqeron_hosted_lag_bytes` | gauge | how far a hosted client trails its host: the bytes of the queue the host has dispatched and the client not yet applied (`seqeron-protocol-spec.md` **H-14**). The counter exists only while a client is attached, so no client is no series rather than 0. Labelled `client` with the host's `proxy.clientId`, its façade's, which is unique on the node as every client's is ([Client ids](#client-ids)). A lag that only grows is a client falling behind |
 | `seqeron_app_snapshot_round` | gauge | the last snapshot round this client confirmed against its source's sequenced `SnapshotEnd` and holds a durable file for ([`snapshot.md`](snapshot.md) §5), 0 until its process confirms one; also labelled `client`, and its label names the `source`. Every instance of a participating source should follow the latest round; one that lags is missing rounds |
@@ -263,11 +264,13 @@ closes, telling the client, which drops the session once the cut heals.
 
 ## Driver threads
 
-A member runs nine agent threads: the media driver's conductor, sender and receiver, the archive's
-conductor, recorder and replayer, the consensus module, the service container and the Replayer. Each idles on
-`sequencer.idleStrategy` (`replayer.idleStrategy` on a gateway host), and the driver's three are dedicated
+A member runs ten agent threads: the media driver's conductor, sender and receiver, the archive's
+conductor, recorder and replayer, the consensus module, the service container, the Replayer and its queue agent.
+Each idles on `sequencer.idleStrategy` (`replayer.idleStrategy` on a gateway host), and the driver's three are dedicated
 unless `aeron.threading.mode` names `SHARED_NETWORK` (sender and receiver on one thread) or `SHARED` (all three
 on one). The archive's follow `aeron.archive.threading.mode`, Aeron's property, whose default is dedicated too.
+Every process also runs a logging thread, which writes its log lines and sleeps 1 ms whenever it has none, so
+it needs no core of its own.
 
 Dedicated threads pay only when each has a core. Where they do not, as with several members on one host, a
 small virtual machine or a container with a CPU quota, a starved member can miss the 2 s leader heartbeat
