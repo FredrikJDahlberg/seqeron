@@ -610,6 +610,8 @@ public final class ClusterProbe {
     /** Frames seen on one stream and not yet on the other; past this the shadow is taken as not following. */
     private static final int SHADOW_UNMATCHED_LIMIT = 1 << 20;
     private static final int SHADOW_FRAGMENT_LIMIT = 64;
+    /** Samples held without growing: 30 s at 400k msg/s fits, so no copy stalls the probe mid-run. */
+    private static final int SHADOW_SAMPLES_PRESIZE = 1 << 24;
 
     /**
      * Reads both streams on one thread, untethered, so the gap between a frame's two arrivals is one clock's.
@@ -663,7 +665,7 @@ public final class ClusterProbe {
         private final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final Long2LongHashMap queueFirst = new Long2LongHashMap(Long.MIN_VALUE);
         private final Long2LongHashMap shadowFirst = new Long2LongHashMap(Long.MIN_VALUE);
-        private long[] samplesNs = new long[1 << 16];
+        private long[] samplesNs = new long[SHADOW_SAMPLES_PRESIZE];
         private int sampleCount;
 
         /** {@code sign} is 1 for the queue, -1 for the shadow. */
