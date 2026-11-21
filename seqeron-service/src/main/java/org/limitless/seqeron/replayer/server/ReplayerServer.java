@@ -106,6 +106,9 @@ public final class ReplayerServer {
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final Thread replayerThread;
     private final Thread relayThread;
+    /** A member's shadow queues, while {@link ShadowQueueAgent#PROP_ENABLED} is set; null otherwise. */
+    private final ShadowQueueAgent shadowQueues;
+    private final Thread shadowThread;
 
     /**
      * A gateway host's settings, which {@link #fromProperties()} reads from the system properties above.
@@ -335,12 +338,23 @@ public final class ReplayerServer {
         if (archiveEndpoints == null) {
             deriving[0] = new DerivingReplayer(recorded, aeron, archive, archiveDir, memberId, derivationStart);
         }
+        if (archiveEndpoints == null && Boolean.getBoolean(ShadowQueueAgent.PROP_ENABLED)) {
+            shadowQueues = new ShadowQueueAgent(aeron, archiveDir, memberId, derivationStart);
+            final IdleStrategy shadowIdleStrategy = idleStrategies.get();
+            shadowThread = new Thread(() -> shadowQueues.run(running, shadowIdleStrategy), "shadow-queues-" + memberId);
+        } else {
+            shadowQueues = null;
+            shadowThread = null;
+        }
         final Replayer served = deriving[0] == null ? recorded : deriving[0];
         final ReplayerService replayer = new ReplayerService(wrapper.apply(served), memberId, idleStrategy,
                                                              topologyRows, relayedGroups, fatalHandler, cutIntake);
         replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         if (relayThread != null) {
             relayThread.start();
+        }
+        if (shadowThread != null) {
+            shadowThread.start();
         }
         replayerThread.start();
 
@@ -360,9 +374,11 @@ public final class ReplayerServer {
      */
     public boolean stop() {
         running.set(false);
-        final boolean stopped = join(replayerThread) & (relayThread == null || join(relayThread));
+        final boolean stopped = join(replayerThread) & (relayThread == null || join(relayThread)) &
+            (shadowThread == null || join(shadowThread));
         if (stopped) {
             CloseHelper.quietClose(logRelay);
+            CloseHelper.quietClose(shadowQueues);
             archive.close();
             aeron.close();
             CloseHelper.quietClose(driver);

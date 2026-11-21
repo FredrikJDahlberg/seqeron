@@ -39,20 +39,24 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
+import org.limitless.seqeron.replayer.server.ShadowQueueAgent;
 import org.limitless.seqeron.sequencer.LogDeriver;
 import org.limitless.seqeron.sequencer.QueuePositions;
+import org.limitless.seqeron.sequencer.RestartSafeLog;
 import org.limitless.seqeron.sequencer.Sequencer;
 
 /**
  * A member's queues derived from its Raft log alone: {@link LogDeriver} over the log's
  * recording, read up to the commit position, must give the frames the sequencer published on each queue, byte for byte
  * and at the same positions. The reference is a recording of each queue the test has a member's archive make from the
- * start, and every member's queues are that member's, frame for frame: each member derives from its own log. Each run
+ * start, and every member's queues are that member's, frame for frame: each member derives from its own log. Each
+ * member's shadow queues ({@link ShadowQueueAgent}), recorded by its archive, are held to the same reference. Each run
  * also reports how fast the derivation is with the archive out of the way.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class DerivedQueueTest {
     private static final String IPC_TERM_PROPERTY = "aeron.ipc.term.buffer.length";
+    private static final String JOIN_PROPERTY = "replayer.snapshotJoinMs";
     private static final int RESPONSE_STREAM_ID = 125; // beside QueueFrames' and NodeDriver's
     private static final String REPLAY_CHANNEL = "aeron:ipc";
     private static final int QUEUE_REPLAY_STREAM_ID = 1207;
@@ -60,6 +64,7 @@ class DerivedQueueTest {
     private static final long TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
     private static final long PACING_NS = TimeUnit.MICROSECONDS.toNanos(100);
     private static final long MEASURE_NS = TimeUnit.SECONDS.toNanos(2);
+    private static final long SAFE_CHECK_NS = TimeUnit.MILLISECONDS.toNanos(50);
 
     @RegisterExtension final SystemTestWatcher watcher = new SystemTestWatcher();
 
@@ -67,6 +72,7 @@ class DerivedQueueTest {
 
     private InProcessCluster cluster;
     private String ipcTerm;
+    private String joinMs;
 
     /** One frame of a queue: where it starts, and its bytes. */
     private record Frame(long position, byte[] bytes) { }
@@ -79,6 +85,7 @@ class DerivedQueueTest {
     @BeforeEach
     void remember() {
         ipcTerm = System.getProperty(IPC_TERM_PROPERTY);
+        joinMs = System.getProperty(JOIN_PROPERTY);
         watcher.dataCollector().add(baseDir);
     }
 
@@ -92,6 +99,11 @@ class DerivedQueueTest {
         } else {
             System.setProperty(IPC_TERM_PROPERTY, ipcTerm);
         }
+        if (joinMs == null) {
+            System.clearProperty(JOIN_PROPERTY);
+        } else {
+            System.setProperty(JOIN_PROPERTY, joinMs);
+        }
     }
 
     /** Frames above the MTU on 256 KiB terms: fragments, term-end padding, a leader stop and a full-log restart. */
@@ -100,7 +112,7 @@ class DerivedQueueTest {
     void theLogDerivesEachQueueAcrossALeaderStop() throws Exception {
         System.setProperty(IPC_TERM_PROPERTY, "256k");
         cluster = new InProcessCluster(baseDir);
-        cluster.withQueueRecordings();
+        cluster.withShadowQueues();
         cluster.startAll();
         final int leader = cluster.awaitLeader();
         final int member = (leader + 1) % InProcessCluster.MEMBERS;
@@ -124,25 +136,50 @@ class DerivedQueueTest {
         assertEachMemberDerivesItsQueues(member, until);
     }
 
-    /** Small frames through snapshot rounds, whose markers come from the log's snapshot actions. */
+    /**
+     * Small frames through snapshot rounds, whose markers come from the log's snapshot actions, and a follower
+     * restarted from a cluster snapshot, whose queues start at its cut.
+     */
     @Test
     @InterruptAfter(180)
-    void theLogDerivesEachQueueAcrossSnapshotRounds() {
+    void theLogDerivesEachQueueAcrossSnapshotRounds() throws Exception {
+        System.setProperty(JOIN_PROPERTY, "200");
         cluster = new InProcessCluster(baseDir);
-        cluster.withQueueRecordings();
+        cluster.withShadowQueues();
         cluster.startAll(1, 0);
-        final int member = (cluster.awaitLeader() + 1) % InProcessCluster.MEMBERS;
+        final int leader = cluster.awaitLeader();
+        final int member = (leader + 1) % InProcessCluster.MEMBERS;
+        final int restarted = (leader + 2) % InProcessCluster.MEMBERS;
+        final int count = 60_000;
         final long until;
-        try (ConfirmProducer producer = new ConfirmProducer(cluster.aeronDir(member), member, 60_000, PACING_NS)) {
+        try (ConfirmProducer producer = new ConfirmProducer(cluster.aeronDir(member), member, count, PACING_NS)) {
+            CompletableFuture<Void> restarting = null;
+            long nextSafeCheckNs = 0;
             while (!producer.isDrained() && !producer.isStalled()) {
                 producer.doWork();
+                if (restarting == null && producer.sent() > count / 2 && System.nanoTime() > nextSafeCheckNs) {
+                    nextSafeCheckNs = System.nanoTime() + SAFE_CHECK_NS;
+                    if (!safeLog(restarted).safe().isEmpty()) {
+                        restarting = CompletableFuture.runAsync(() -> {
+                            cluster.stop(restarted);
+                            cluster.start(restarted);
+                        });
+                    }
+                }
                 Tests.yield();
             }
+            restarting.get(30, TimeUnit.SECONDS);
             assertTrue(producer.isDrained(), "the producer still held " + producer.held() + " frame(s)");
             until = producer.lastClusterSeqNo();
         }
+        assertTrue(cluster.derivationStart(restarted).restored(),
+                   "member " + restarted + " restarted from a cluster snapshot");
         final int markers = assertEachMemberDerivesItsQueues(member, until);
         assertTrue(markers >= 2, "the run crossed " + markers + " snapshot round(s), not two");
+    }
+
+    private RestartSafeLog.State safeLog(final int member) {
+        return RestartSafeLog.read(baseDir.resolve("cluster-" + member).resolve(RestartSafeLog.FILE_NAME));
     }
 
     /**
@@ -154,7 +191,11 @@ class DerivedQueueTest {
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(reference)));
              AeronArchive archive = connectArchive(aeron)) {
             for (final int groupId : InProcessCluster.GROUP_IDS) {
-                recorded[groupId - 1] = readQueue(aeron, archive, reference, groupId, untilClusterSeqNo);
+                recorded[groupId - 1] =
+                    readQueue(aeron, archive, "member " + reference + "'s queue of group " + groupId,
+                              FrameLayer.queueStreamId(groupId), untilClusterSeqNo);
+                assertEquals(0, recorded[groupId - 1].startPosition(),
+                             "member " + reference + "'s recording of group " + groupId + " is whole");
             }
         }
         int markers = 0;
@@ -206,6 +247,7 @@ class DerivedQueueTest {
                 }
                 System.out.printf("%s: %d frame(s) derived byte for byte, positions to %d%n", queue, expected.size(),
                                   expected.getLast().position());
+                assertShadowQueue(aeron, archive, member, groupId, expected, untilClusterSeqNo);
             }
             if (member == 0) {
                 reportThroughput(log, logLength);
@@ -216,20 +258,49 @@ class DerivedQueueTest {
         }
     }
 
-    /** The active recording of a group's queue, to the first frame at or past {@code untilClusterSeqNo}. */
-    private static Recorded readQueue(final Aeron aeron, final AeronArchive archive, final int member,
-                                      final int groupId, final long untilClusterSeqNo) {
-        final Span span = awaitActive(archive, FrameLayer.queueStreamId(groupId), "member " + member + "'s queue");
-        assertEquals(0, span.startPosition(), "member " + member + "'s recording of group " + groupId + " is whole");
+    /**
+     * A member's shadow queue of a group, from where its archive started recording it, must be the reference frame for
+     * frame and position for position.
+     */
+    private static void assertShadowQueue(final Aeron aeron, final AeronArchive archive, final int member,
+                                          final int groupId, final List<Frame> expected, final long untilClusterSeqNo) {
+        final String queue = "member " + member + "'s shadow queue of group " + groupId;
+        final List<Frame> shadow =
+            readQueue(aeron, archive, queue, ShadowQueueAgent.streamId(groupId), untilClusterSeqNo).frames();
+        int from = 0;
+        while (from < expected.size() && expected.get(from).position() < shadow.getFirst().position()) {
+            from++;
+        }
+        assertTrue(from < expected.size(),
+                   queue + " starts at " + shadow.getFirst().position() + ", past the reference");
+        assertTrue(shadow.size() >= expected.size() - from,
+                   queue + " holds " + shadow.size() + " frame(s), the reference " + (expected.size() - from));
+        for (int i = from; i < expected.size(); i++) {
+            assertEquals(expected.get(i).position(), shadow.get(i - from).position(),
+                         queue + ": the position of frame " + (i + 1));
+            assertArrayEquals(expected.get(i).bytes(), shadow.get(i - from).bytes(), queue + ": frame " + (i + 1));
+        }
+        System.out.printf("%s: %d frame(s) byte for byte from position %d%n", queue, expected.size() - from,
+                          shadow.getFirst().position());
+    }
+
+    /** A stream's active recording, from its first whole frame to the first at or past {@code untilClusterSeqNo}. */
+    private static Recorded readQueue(final Aeron aeron, final AeronArchive archive, final String what,
+                                      final int streamId, final long untilClusterSeqNo) {
+        final Span span = awaitActive(archive, streamId, what);
         final List<Frame> frames = new ArrayList<>();
         final ExpandableArrayBuffer assembled = new ExpandableArrayBuffer(4096);
-        final long[] state = { 0, 0, 0 }; // the frame's start, its length so far, the last clusterSeqNo
+        // the frame's start, its length so far or -1 before one begins, the last clusterSeqNo
+        final long[] state = { 0, -1, 0 };
         final SequencedFrameDecoder decoder = new SequencedFrameDecoder();
         final FragmentHandler handler = (buffer, offset, length, header) -> {
             if ((header.flags() & FrameDescriptor.BEGIN_FRAG_FLAG) != 0) {
                 state[0] = LogBufferDescriptor.computePosition(header.termId(), header.termOffset(),
                                                                header.positionBitsToShift(), header.initialTermId());
                 state[1] = 0;
+            }
+            if (state[1] < 0) {
+                return; // the recording started inside a frame
             }
             assembled.putBytes((int)state[1], buffer, offset, length);
             state[1] += length;
@@ -250,8 +321,7 @@ class DerivedQueueTest {
             while (state[2] < untilClusterSeqNo) {
                 if (subscription.poll(handler, 100) == 0) {
                     if (System.nanoTime() > deadline) {
-                        fail("member " + member + "'s recording of group " + groupId + " reached clusterSeqNo " +
-                             state[2] + " of " + untilClusterSeqNo);
+                        fail(what + "'s recording reached clusterSeqNo " + state[2] + " of " + untilClusterSeqNo);
                     }
                     Tests.yield();
                 }

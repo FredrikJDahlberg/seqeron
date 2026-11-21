@@ -30,6 +30,7 @@ import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.server.RelayedCut;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
+import org.limitless.seqeron.replayer.server.ShadowQueueAgent;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
@@ -78,6 +79,7 @@ final class InProcessCluster implements AutoCloseable {
     private ExpandableArrayBuffer applicationRow;
     private int applicationRowLength;
     private boolean recordQueues;
+    private boolean shadowQueues;
 
     InProcessCluster(final Path baseDir) {
         this.baseDir = baseDir;
@@ -213,6 +215,16 @@ final class InProcessCluster implements AutoCloseable {
         recordQueues = true;
     }
 
+    /**
+     * As {@link #withQueueRecordings}, each member also publishing its shadow queues ({@link ShadowQueueAgent}), which
+     * its archive records beside its queues.
+     */
+    void withShadowQueues() {
+        recordQueues = true;
+        shadowQueues = true;
+        System.setProperty(ShadowQueueAgent.PROP_ENABLED, "true");
+    }
+
     /** Launches member {@code m} on its directories, which a previous run of it may have left. */
     void start(final int m) {
         final SequencerServer.Config config = new SequencerServer.Config(
@@ -252,6 +264,10 @@ final class InProcessCluster implements AutoCloseable {
             for (final int groupId : GROUP_IDS) {
                 archive.startRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.queueStreamId(groupId),
                                        SourceLocation.LOCAL);
+                if (shadowQueues) {
+                    archive.startRecording(ShadowQueueAgent.CHANNEL, ShadowQueueAgent.streamId(groupId),
+                                           SourceLocation.LOCAL);
+                }
             }
         }
     }
@@ -436,6 +452,9 @@ final class InProcessCluster implements AutoCloseable {
         }
         for (int m = 0; m < MEMBERS; m++) {
             stop(m);
+        }
+        if (shadowQueues) {
+            System.clearProperty(ShadowQueueAgent.PROP_ENABLED);
         }
     }
 }

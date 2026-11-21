@@ -1,7 +1,7 @@
 # Output off the sequencer's duty cycle: plan
 
-Proposed; nothing here is implemented. It answers issues 4 and 6 of `doc/reviews/enterprise-review.md`. Aeron
-references are to 1.53.2.
+Proposed. Step 2 runs as a shadow (below); nothing else is implemented. It answers issues 4 and 6 of
+`doc/reviews/enterprise-review.md`. Aeron references are to 1.53.2.
 
 ## 1. The rule
 
@@ -88,6 +88,12 @@ An agent in the member's JVM, on its own `AgentRunner`, publishes every queue:
 - The `queueBackPressureAlerts` and `queueStalled` counters move to it.
 
 Its decisions sit in a class free of Aeron, unit-tested the way `QueuePublisher` and `LogRelay` are.
+
+Step 2 lands before step 1, as a shadow: `ShadowQueueAgent`, on a thread of the member's `ReplayerServer` while
+`sequencer.shadowQueues` is set, publishes every queue on stream 3000 + `groupId` beside the service's, and its
+decisions are `QueueEmitter`'s. `DerivedQueueTest` holds each member's shadow queues to its queues, frame for frame
+and position for position, across a leader stop and a restart from a cluster snapshot. The latency measurement below
+compares the two streams on one member (`ClusterProbe shadow`), and step 1 then retires the service's.
 
 ### Step 3: bound how far the agent falls behind
 

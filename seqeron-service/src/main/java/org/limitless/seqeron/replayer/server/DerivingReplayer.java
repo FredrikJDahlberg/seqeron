@@ -203,7 +203,7 @@ public final class DerivingReplayer implements Replayer {
         final DerivationStart start = derivationStart.get();
         final ArchiveRecording log =
             start == null ? null : ArchiveRecording.activeOf(archive, ConsensusModule.Configuration.logStreamId());
-        final int counterId = commitPositionCounterId();
+        final int counterId = commitPositionCounterId(aeron.countersReader());
         if (log == null || counterId == CountersReader.NULL_COUNTER_ID) {
             return;
         }
@@ -219,9 +219,10 @@ public final class DerivingReplayer implements Replayer {
         announcer.start(follower, counterId);
     }
 
-    private int commitPositionCounterId() {
+    /** The consensus module's commit position counter, or {@link CountersReader#NULL_COUNTER_ID}. */
+    static int commitPositionCounterId(final CountersReader counters) {
         final MutableInteger id = new MutableInteger(CountersReader.NULL_COUNTER_ID);
-        aeron.countersReader().forEach((counterId, typeId, keyBuffer, label) -> {
+        counters.forEach((counterId, typeId, keyBuffer, label) -> {
             if (typeId == ConsensusModule.Configuration.COMMIT_POSITION_TYPE_ID) {
                 id.set(counterId);
             }

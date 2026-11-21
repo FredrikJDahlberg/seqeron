@@ -82,6 +82,8 @@ import org.limitless.seqeron.util.Logger;
  *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 1000
  *   sequencer.queueStallTimeoutMs — how long a queue's recording may make no progress under back-pressure before
  *                               the node terminates; default 5000, at least 1000
+ *   sequencer.shadowQueues     — true also publishes each queue from the committed log, off the service's thread, on
+ *                               stream 3000 + groupId (ShadowQueueAgent); default false
  *   aeron.cluster.max.sessions — the most client sessions the cluster holds at once; default 64 rather than
  *                               Aeron's 10
  *   aeron.threading.mode       — the embedded driver's threading mode; default DEDICATED

@@ -39,7 +39,7 @@ replay with asks `InProcessCluster.withQueueRecordings()`, which has each member
 start; a member restarted mid-test records from where its queue has reached, and the test checks that start against
 the member's `DerivationStart`. `QueueFrames` reads a member's queue through its Replayer where its archive keeps no
 recording. `DerivedQueueTest` derives a member's queues from its Raft log and checks them against those recordings
-frame for frame and position for position; `DerivationStartTest` holds a start the log's recording does not hold to
+frame for frame and position for position, and each member's shadow queues (`ShadowQueueAgent`) with them; `DerivationStartTest` holds a start the log's recording does not hold to
 ending the Replayer's duty cycle, and an announcement the archive refuses to being recorded once it may;
 `DerivedReplayTest` cold-starts a client on a member, and on a gateway host
 while the member the host reads stops, and prints each rate; `CheckpointedReplayTest` runs a `DerivingReplayer` of its
