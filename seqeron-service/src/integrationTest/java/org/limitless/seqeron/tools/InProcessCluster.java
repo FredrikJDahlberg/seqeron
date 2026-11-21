@@ -28,13 +28,14 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
-import org.limitless.seqeron.replayer.server.DerivationStart;
 import org.limitless.seqeron.replayer.server.RelayedCut;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
+import org.limitless.seqeron.replayer.server.ShadowQueueAgent;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
+import org.limitless.seqeron.sequencer.DerivationStart;
 import org.limitless.seqeron.sequencer.SequencerServer;
 import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.client.IngressPublisher;
@@ -69,6 +70,8 @@ final class InProcessCluster implements AutoCloseable {
     /** Each member's Replayer, and the gateway host's last, which fail or stall on cue and outlive a restart of it. */
     private final FaultableReplayer[] replayers = new FaultableReplayer[MEMBERS + 1];
     private final AtomicBoolean[] fatal = new AtomicBoolean[MEMBERS + 1];
+    /** The archive context each member's service container clones for every snapshot it takes. */
+    private final AeronArchive.Context[] snapshotArchives = new AeronArchive.Context[MEMBERS];
     private final AtomicBoolean terminated = new AtomicBoolean();
     private ReplayerServer gatewayHost;
     private ExpandableArrayBuffer gatewayRow;
@@ -76,6 +79,7 @@ final class InProcessCluster implements AutoCloseable {
     private ExpandableArrayBuffer applicationRow;
     private int applicationRowLength;
     private boolean recordQueues;
+    private boolean shadowQueues;
 
     InProcessCluster(final Path baseDir) {
         this.baseDir = baseDir;
@@ -211,6 +215,16 @@ final class InProcessCluster implements AutoCloseable {
         recordQueues = true;
     }
 
+    /**
+     * As {@link #withQueueRecordings}, each member also publishing its shadow queues ({@link ShadowQueueAgent}), which
+     * its archive records beside its queues.
+     */
+    void withShadowQueues() {
+        recordQueues = true;
+        shadowQueues = true;
+        System.setProperty(ShadowQueueAgent.PROP_ENABLED, "true");
+    }
+
     /** Launches member {@code m} on its directories, which a previous run of it may have left. */
     void start(final int m) {
         final SequencerServer.Config config = new SequencerServer.Config(
@@ -230,7 +244,7 @@ final class InProcessCluster implements AutoCloseable {
         nodes.set(
             m,
             SequencerServer.launch(config, () -> terminated.set(true), () -> isFatal.set(true), udpFaults, clocks[m],
-                                   replayers[m]::wrap));
+                                   replayers[m]::wrap, ctx -> snapshotArchives[m] = ctx));
         if (recordQueues) {
             recordQueues(m);
         }
@@ -250,6 +264,10 @@ final class InProcessCluster implements AutoCloseable {
             for (final int groupId : GROUP_IDS) {
                 archive.startRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.queueStreamId(groupId),
                                        SourceLocation.LOCAL);
+                if (shadowQueues) {
+                    archive.startRecording(ShadowQueueAgent.CHANNEL, ShadowQueueAgent.streamId(groupId),
+                                           SourceLocation.LOCAL);
+                }
             }
         }
     }
@@ -324,6 +342,17 @@ final class InProcessCluster implements AutoCloseable {
     FaultableReplayer replayer(final int m) {
         return replayers[m];
     }
+
+    /**
+     * Points the archive connection member {@code m}'s service container makes for each snapshot at a stream no archive
+     * serves, so the next snapshot fails within a second, before Aeron calls the service. Holds until it restarts.
+     */
+    void breakSnapshotArchive(final int m) {
+        snapshotArchives[m].controlRequestStreamId(UNSERVED_STREAM_ID).messageTimeoutNs(TimeUnit.SECONDS.toNanos(1));
+    }
+
+    /** A stream id no archive here serves control requests on. */
+    private static final int UNSERVED_STREAM_ID = 4_919;
 
     /** Steps member {@code m}'s consensus clock by {@code millis}, backward when negative. */
     void stepClock(final int m, final long millis) {
@@ -423,6 +452,9 @@ final class InProcessCluster implements AutoCloseable {
         }
         for (int m = 0; m < MEMBERS; m++) {
             stop(m);
+        }
+        if (shadowQueues) {
+            System.clearProperty(ShadowQueueAgent.PROP_ENABLED);
         }
     }
 }

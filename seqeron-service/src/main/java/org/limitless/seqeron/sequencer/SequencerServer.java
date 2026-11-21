@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
@@ -35,13 +36,9 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.limitless.seqeron.protocol.PortLayout;
-import org.limitless.seqeron.replayer.server.CutHandover;
 import org.limitless.seqeron.replayer.server.CutIntake;
-import org.limitless.seqeron.replayer.server.DerivationStart;
-import org.limitless.seqeron.replayer.server.NodeDriver;
 import org.limitless.seqeron.replayer.server.Replayer;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
-import org.limitless.seqeron.replayer.server.RestartSafeLog;
 import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
@@ -85,6 +82,8 @@ import org.limitless.seqeron.util.Logger;
  *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 1000
  *   sequencer.queueStallTimeoutMs — how long a queue's recording may make no progress under back-pressure before
  *                               the node terminates; default 5000, at least 1000
+ *   sequencer.shadowQueues     — true also publishes each queue from the committed log, off the service's thread, on
+ *                               stream 3000 + groupId (ShadowQueueAgent); default false
  *   aeron.cluster.max.sessions — the most client sessions the cluster holds at once; default 64 rather than
  *                               Aeron's 10
  *   aeron.threading.mode       — the embedded driver's threading mode; default DEDICATED
@@ -261,8 +260,8 @@ public final class SequencerServer {
      * @param config          the node's settings
      * @param terminationHook run when the consensus module or the service container terminates the node, but not
      *                        during {@link #stop()}
-     * @param fatalHandler    run when the node cannot go on: its queue recording stopped, its Replayer failed, or
-     *                        its log was truncated below what it applied
+     * @param fatalHandler    run when the node cannot go on: its queue recording stopped, its Replayer failed, its
+     *                        log was truncated below what it applied, or a cluster snapshot skipped its service
      * @return the running node, which {@link #stop()} stops
      */
     public static SequencerServer launch(final Config config, final Runnable terminationHook,
@@ -304,6 +303,19 @@ public final class SequencerServer {
                                          final Runnable fatalHandler, final UdpFaults udpFaults,
                                          final ClusterClock clusterClock,
                                          final UnaryOperator<Replayer> replayerWrapper) {
+        return launch(config, terminationHook, fatalHandler, udpFaults, clusterClock, replayerWrapper, ctx -> { });
+    }
+
+    /**
+     * As above, handing {@code serviceArchive} the archive context the service container takes its snapshots through,
+     * which Aeron clones for each one. Test harnesses only: a snapshot whose archive connect fails.
+     *
+     * @param serviceArchive receives the service container's archive context before the node launches
+     */
+    public static SequencerServer launch(final Config config, final Runnable terminationHook,
+                                         final Runnable fatalHandler, final UdpFaults udpFaults,
+                                         final ClusterClock clusterClock, final UnaryOperator<Replayer> replayerWrapper,
+                                         final Consumer<AeronArchive.Context> serviceArchive) {
         final int memberId = config.memberId();
         final String host = config.host();
         final String aeronDir = config.aeronDir();
@@ -415,21 +427,26 @@ public final class SequencerServer {
         final AtomicReference<DerivationStart> derivationStart = new AtomicReference<>();
         final SequencerService service =
             new SequencerService(memberId, topologyRows, fatalHandler, safeLog, cuts, derivationStart,
-                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(), queueStallTimeoutMs);
+                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(), queueStallTimeoutMs,
+                                 config.sessionTimeoutMs());
 
+        final AeronArchive.Context serviceArchiveCtx = localArchiveCtx.clone();
+        serviceArchive.accept(serviceArchiveCtx);
         final ClusteredServiceContainer.Context serviceCtx =
             new ClusteredServiceContainer.Context()
                 .aeronDirectoryName(aeronDir)
-                .archiveContext(localArchiveCtx.clone())
+                .archiveContext(serviceArchiveCtx)
                 .clusterDir(clusterDir)
                 .clusteredService(service)
                 .appVersion(LogVersion.APP_VERSION)
                 .appVersionValidator(LogVersion.VALIDATOR)
                 .terminationHook(unlessStopping)
                 .idleStrategySupplier(idleStrategySupplier)
-                .errorHandler(t
-                              -> Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError,
-                                              memberId, "%s", describe(t)));
+                .errorHandler(t -> {
+                    Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError, memberId,
+                                 "%s", describe(t));
+                    service.onServiceError(t);
+                });
 
         ClusteredMediaDriver driver = null;
         ClusteredServiceContainer container = null;

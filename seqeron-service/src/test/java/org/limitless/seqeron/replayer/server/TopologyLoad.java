@@ -15,6 +15,7 @@ import org.limitless.seqeron.sbe.frame.GroupsRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedEncoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemEncoder;
+import org.limitless.seqeron.sequencer.DefaultQueueRows;
 import org.limitless.seqeron.sequencer.Sequencer;
 
 /**

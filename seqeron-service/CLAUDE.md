@@ -35,7 +35,8 @@ queues over the log replay it does anyway. The 1 Hz heartbeat runs the same live
 back-pressures nothing at all (the untethered app subscribers keep the publication connected) and would otherwise
 be silent. `QueuePublisher`'s names and messages still say "recording" for that subscriber. A node whose consensus module truncates its log below what it applied terminates itself
 too, which Aeron Cluster 1.53.2 does to a committed entry (`SequencerServer.truncatesAppliedLog`,
-`doc/fault-tolerance.md` §1.4).
+`doc/fault-tolerance.md` §1.4), and so does one whose cluster snapshot failed before Aeron called `onTakeSnapshot`, which
+left it without the round its peers applied (`SequencerService.onServiceError`, §1.5).
 
 Besides forwarded ingress, the sequencer synthesizes its own frames on the same `clusterSeqNo` counter:
 `SessionClosed` (one per cluster session close: nothing from that session reaches the log after it),
@@ -65,9 +66,11 @@ Replayer writes `safe` (`RestartSafety`). Before the consensus module starts, th
 the head of `recording.log` that the file does not name as safe (`SnapshotChoice`), so an unsafe cut costs a longer
 replay and never a fenced application. `LogVersion` is the major of Aeron's `appVersion`.
 
-**A policy's `interval` must exceed the session timeout.** The consensus module resets every client session's
-inactivity clock at each snapshot, so rounds more often than `sequencer.sessionTimeoutMs` keep a dead client's session
-from ever timing out, and a dead gateway from ever being replaced by its standby.
+**Rounds start at least the session timeout plus one heartbeat apart.** The consensus module resets every client
+session's inactivity clock at each snapshot, so rounds more often than `sequencer.sessionTimeoutMs` would keep a dead
+client's session from ever timing out, and a dead gateway from ever being replaced by its standby. The leader's service
+asks for a due round only past that gap (`Sequencer.snapshotDue(timestamp, minGapNs)`), with its own session timeout,
+which is the one its consensus module enforces; the first round waits for nothing.
 
 **Application snapshots are local files the log confirms instead** (`doc/snapshot.md`). The sequencer
 synthesizes `SnapshotStarted` as a round's cut; every instance of a participating source serializes its state

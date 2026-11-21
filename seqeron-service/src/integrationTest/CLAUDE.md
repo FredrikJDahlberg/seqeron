@@ -39,7 +39,7 @@ replay with asks `InProcessCluster.withQueueRecordings()`, which has each member
 start; a member restarted mid-test records from where its queue has reached, and the test checks that start against
 the member's `DerivationStart`. `QueueFrames` reads a member's queue through its Replayer where its archive keeps no
 recording. `DerivedQueueTest` derives a member's queues from its Raft log and checks them against those recordings
-frame for frame and position for position; `DerivationStartTest` holds a start the log's recording does not hold to
+frame for frame and position for position, and each member's shadow queues (`ShadowQueueAgent`) with them; `DerivationStartTest` holds a start the log's recording does not hold to
 ending the Replayer's duty cycle, and an announcement the archive refuses to being recorded once it may;
 `DerivedReplayTest` cold-starts a client on a member, and on a gateway host
 while the member the host reads stops, and prints each rate; `CheckpointedReplayTest` runs a `DerivingReplayer` of its
@@ -53,7 +53,8 @@ purge has moved, and holds a gateway host to the markers it reports, to its purg
 restarted from a snapshot, and to stopping once every member trimmed its log past it, which a restart recovers. It
 also holds a member to trimming its log past its first segment by itself once its cuts are restart-safe, above what
 its queues need, and to starting a host after, and a snapshot toggled with no policy to being refused while the
-cluster sequences on.
+cluster sequences on. A member whose snapshot archive connection `InProcessCluster.breakSnapshotArchive` points at no
+archive (through `SequencerServer.launch`'s `serviceArchive` overload) is held to raising a fatal at the next round.
 `SystemTestWatcher` fails
 a test on any error a driver, archive or consensus module logs, less the ones a test names and explains. It runs on
 JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in CI's `java integration` job;

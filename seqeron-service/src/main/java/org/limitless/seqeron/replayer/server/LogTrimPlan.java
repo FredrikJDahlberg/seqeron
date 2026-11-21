@@ -4,6 +4,7 @@ import io.aeron.cluster.RecordingLog;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
+import org.limitless.seqeron.sequencer.RestartSafeLog;
 
 /**
  * What a trim of a member's Raft log removes, free of Aeron's archive. The member keeps its two

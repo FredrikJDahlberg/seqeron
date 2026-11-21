@@ -1,4 +1,4 @@
-package org.limitless.seqeron.replayer.server;
+package org.limitless.seqeron.sequencer;
 
 /**
  * A cluster snapshot as the service takes it, handed to the member's Replayer.

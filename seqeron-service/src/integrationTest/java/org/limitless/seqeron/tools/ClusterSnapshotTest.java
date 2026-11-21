@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.aeron.Aeron;
 import io.aeron.archive.CatalogView;
 import io.aeron.cluster.ClusterControl;
 import io.aeron.cluster.RecordingLog;
@@ -24,26 +25,25 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
-import org.limitless.seqeron.replayer.server.RelayedCut;
-import io.aeron.Aeron;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
-import org.limitless.seqeron.app.ClusterError;
-import org.limitless.seqeron.app.Gateway;
-import org.limitless.seqeron.app.GroupDirectory;
-import org.limitless.seqeron.app.Payload;
-import org.limitless.seqeron.app.SnapshotListener;
-import org.limitless.seqeron.protocol.PortLayout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.app.ClusterError;
+import org.limitless.seqeron.app.Gateway;
+import org.limitless.seqeron.app.GroupDirectory;
+import org.limitless.seqeron.app.Payload;
+import org.limitless.seqeron.app.SnapshotListener;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SystemFrame;
+import org.limitless.seqeron.replayer.server.RelayedCut;
 import org.limitless.seqeron.replayer.server.Replayer;
-import org.limitless.seqeron.replayer.server.RestartSafeLog;
+import org.limitless.seqeron.sequencer.RestartSafeLog;
 
 /**
  * Cluster snapshots: a round is taken by the cluster's snapshot action, a member restarts from
@@ -145,7 +145,7 @@ class ClusterSnapshotTest {
         start("3600000", 1); // no round is ever marked safe: the join window outlasts the test
         final int leader = cluster.awaitLeader();
         final int member = (leader + 1) % InProcessCluster.MEMBERS;
-        while (QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, 0, 40).stream()
+        while (QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, 0, 20).stream()
                    .noneMatch(frame -> frame.systemEventType() == SystemFrame.SNAPSHOT_STARTED)) {
             Tests.sleep(200);
         }
@@ -160,9 +160,9 @@ class ClusterSnapshotTest {
             Tests.sleep(50);
         }
         assertEquals(0, listedStart(member));
-        final List<QueueFrames.Frame> own = QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, 0, 40);
+        final List<QueueFrames.Frame> own = QueueFrames.readFrom(cluster.aeronDir(member), InProcessCluster.GROUP_ID, 0, 20);
         assertEquals(1, own.getFirst().groupSeqNo(), "the whole queue, from its first frame");
-        assertEquals(own, QueueFrames.readFrom(cluster.aeronDir(leader), InProcessCluster.GROUP_ID, 0, 40),
+        assertEquals(own, QueueFrames.readFrom(cluster.aeronDir(leader), InProcessCluster.GROUP_ID, 0, 20),
                      "frame for frame what the leader holds, the replayed snapshot actions' markers included");
 
         assertFalse(cluster.fatal(), "a member raised a fatal");
@@ -206,6 +206,35 @@ class ClusterSnapshotTest {
             }
         }
         assertFalse(cluster.fatal(), "a member raised a fatal");
+        assertFalse(cluster.terminated(), "a member terminated");
+    }
+
+    /**
+     * Aeron reaches {@code onTakeSnapshot} only once the member's archive has taken the snapshot's recording, and acks
+     * a failure before that with no recording, as it does a refusal. That member's sequencer never applied the round
+     * its peers did, so it must not sequence on.
+     */
+    @Test
+    @InterruptAfter(120)
+    void aMemberWhoseSnapshotFailsBeforeItsServiceIsCalledRaisesAFatal() {
+        watcher.ignoreErrorsMatching(s -> s.contains("Archive connect timeout"));
+        watcher.ignoreErrorsMatching(s -> s.contains("failed to take snapshot"));
+        start("200", 0);
+        final int leader = cluster.awaitLeader();
+        final int broken = (leader + 1) % InProcessCluster.MEMBERS;
+        cluster.breakSnapshotArchive(broken);
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(cluster.aeronDir(leader)))) {
+            final AtomicCounter toggle = ClusterControl.findControlToggle(aeron.countersReader(), 0);
+            assertTrue(ClusterControl.ToggleState.SNAPSHOT.toggle(toggle), "the toggle was not neutral");
+        }
+        for (int i = 0; i < 600 && !cluster.fatal(broken); i++) {
+            Tests.sleep(50);
+        }
+
+        assertTrue(cluster.fatal(broken), "member " + broken + " sequenced on without the round its peers applied");
+        for (int m = 0; m < InProcessCluster.MEMBERS; m++) {
+            assertTrue(m == broken || !cluster.fatal(m), "member " + m + " raised a fatal");
+        }
         assertFalse(cluster.terminated(), "a member terminated");
     }
 

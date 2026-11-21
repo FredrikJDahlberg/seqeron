@@ -1,6 +1,6 @@
 # Tests on EC2
 
-Four measurements that a laptop, a Docker bridge or a shared 4-vCPU CI runner cannot make: they need separate hosts
+Seven measurements that a laptop, a Docker bridge or a shared 4-vCPU CI runner cannot make: they need separate hosts
 on a real network, dedicated cores, or both. This document says what each one answers, what it costs, how long it
 runs and how far its result carries to bare metal, and how to run it with the scripts in
 `seqeron-service/src/test/scripts/multihost`.
@@ -303,13 +303,227 @@ Nordic and Baltic share trading averages about 700k trades a day (April 2026), a
 matched shares a day (2025), at an assumed 100 shares a trade, about 1 B. With the queue recorded, the US profile adds
 about 27 GB to each member's archive and the Nordic one about 7 GB.
 
+### Test 5: the application ramp
+
+Every ramp so far has had one producer, so the ceiling it found between 909k and 1.14M msg/s may be the producer's
+([`ec2-results.md`](ec2-results.md) §3). A deployment runs several co-located applications, each a replica on every member
+that reads its group's queue and, on the leader, writes. Test 5 ramps their number instead of the rate.
+
+**The question.** As co-located applications are added, each writing a fixed rate, at what count does the cluster stop
+holding, and what runs out first: the cluster, or the member hosts' cores that the applications share? How do the writers'
+latency and the readers' lag change on the way, with one group and with several?
+
+**Arms.** An application is one of two clients, and each arm has a bench that prints `hosted_hop_bench`'s line, so
+`hop-analyze.py` reads both:
+
+| arm | an application | beside it |
+| --- | --- | --- |
+| `hosted` | `hosted_hop_bench` over the hosted C++ `Application` | one `ClientProxy` per member, hosting every application there (`proxy.hosts=a1,…,a16`, each with its own `sourceId`, `clientId`, host name and snapshot directory) |
+| `java` | `AppHopBench` over the Java `Application`, one JVM per replica, on the member's driver | nothing |
+
+The arms differ in more than the language: a `hosted` application is a C++ process plus its share of a proxy JVM that runs
+the Java `Application` for it, and a `java` application is one JVM. The comparison is of the two ways an application is
+deployed, not of C++ against Java.
+
+**Shape.**
+
+- The applications back off, as many sharing a host would: `proxy.spin=false` and `hosted_hop_bench`'s default idle strategy
+  (`SEQERON_IDLE_STRATEGY` unset); `AppHopBench`'s default backoff. The members busy-spin, pinned as in Test 1
+  (`MULTIHOST_MEMBER_CPUS=2-11`). In `hosted` the proxy runs on CPUs 12–13 and the benches on 14–15, shared by all N; in
+  `java` the JVMs share 12–15. Each `java` JVM has a fixed heap (`-Xms` equal to `-Xmx`, 256 MB, `-XX:+AlwaysPreTouch`) and
+  logs its GC, so a pause is placed in its step.
+- Each application's replica on the leader writes 100-byte markers open-loop at **100k msg/s**, timed from the intended send
+  time as in Test 1's knee. Every replica, the leader's included, reads its group's queue. A follower's replica never writes.
+- The steps are N = 1, 2, 4, 8 and 16 applications, so the total offered is 100k, 200k, 400k, 800k and 1.6M msg/s. A step lasts
+  10 s, and its first 2 s are discarded. At each step N applications start on every member and exit at its end. The writers
+  start their schedules at one wall-clock instant, so the N streams overlap for the whole step.
+- One fresh cluster per ramp, not per step: a cluster started cold at 909k built a backlog that a ramp did not.
+- A step saturates as in `hop-knee.sh`: any writer's p99 above 10 ms, a lost marker, or a change of leader. A reader's lag
+  is recorded, not judged.
+
+**Variants**, two ramps each in `hosted`; `java` runs the first two, since the two-bit variant tests the sequencer and
+not the client. Application *i* writes to its own group. A reader receives every writer of its group, so the
+deliveries a member host serves grow faster than the offered rate:
+
+| variant | groups | deliveries a second per member host, N = 1, 2, 4, 8, 16 |
+| --- | --- | --- |
+| one group | every application in group 1 | 0.1M, 0.4M, 1.6M, 6.4M, 25.6M (N × N × 100k) |
+| four groups | application *i* in group *i* mod 4 + 1 | 0.1M, 0.2M, 0.4M, 1.6M, 6.4M |
+| four groups, two bits | as four groups; 10% of each writer's markers also name the next group | about 10% more than four groups |
+
+The one-group variant will probably run out of the hosts' four application cores at N = 8 or 16, before the cluster. That is
+a result in itself: how many co-located applications a member host carries at this rate. The four-group variant then shows
+whether the cluster holds 1.6M msg/s from 16 producers, which no single producer reached.
+
+**What each step reports.**
+
+- Per writer: p50, p99, p99.9, max, declines and the achieved rate; per step, the writers' merged histogram and its worst writer.
+- Per reader: frames received, frames behind its group's queue at the end of the step, and the replays it needed (the driver
+  drops an untethered reader that falls a window behind, and it heals by replay).
+- The rate the cluster sequenced, from the leader's commit position (`CounterSampler`).
+- CPU per process on every member host (the member, the proxy, the benches or the JVMs), before and after each step, so a
+  saturated step says which ran out; in `java`, each JVM's GC pauses in the step.
+- The hosts' dirty pages and the recorder's longest write, as in Test 1's knee.
+- The order check, for every group: each member's queue gap-free, and the three identical up to the position all hold.
+
+No rule: the test is reported, not judged.
+
+**Tooling, not built.**
+
+- `app-ramp.sh`: the ramp. One fresh cluster per arm, variant and ramp, loading the variant's topology. Per step, it starts N
+  benches on every member, collects their lines, applies the saturation rule and takes the samples. `APP_RAMP_ARM`
+  (`hosted` or `java`), `APP_RAMP_COUNTS` (default `1 2 4 8 16`), `APP_RAMP_RATE` (100000), `APP_RAMP_SECONDS` (10),
+  `APP_RAMP_TOPOLOGY` and `APP_RAMP_RUNS` (2).
+- `AppHopBench`, in `seqeron-service/src/test/java` beside `TestApplication`: the Java twin of `hosted_hop_bench` over
+  `app/Application`, with the same options (`--rate`, `--count`, `--payload`, `--source-id`, `--warmup-ms`, and the three
+  below), the same open-loop schedule, ProbeMarker and result line, its histogram in the same 3% buckets.
+- `--read-only`, in both benches: attach and read for the step's length without writing, then print the frames received,
+  the frames behind and the replays. A follower's replica runs it: today `hosted_hop_bench` waits there for a gate that
+  never opens.
+- `--start-at <epoch ms>`, in both: the schedule's start, shared by every writer of a step. A writer whose gate is not yet
+  open at that instant counts the wait against itself, since its latency runs from the intended send time.
+- `--mask <groupMask> --mask-share <percent>`, in `hosted_hop_bench`: that share of markers published to `groupMask` as well
+  as the application's own group (`hosted::Application::publish(groupMask, …)`).
+- Two topology documents of 16 application rows, `sourceId` 16–31: `topology-test-apps-1.xml` (one group) and
+  `topology-test-apps-4.xml` (four groups).
+- `QueueDigest` and `hop-order-check.py` over every group's queue, not group 1's alone.
+- `hop-analyze.py`: merge a step's writers, and name the worst.
+- The proxy's and the benches' CPU ticks in `node.sh sample`.
+
+**Threats.**
+
+- A replica that attaches replays its queue's history before its gate opens. On one cluster per ramp, the last step
+  catches up on about 15 million frames. Record each replica's catch-up time; `--start-at` is set past it.
+- Readers report counts, not latency: their copies arrive on other hosts, and a cross-host latency would need the hosts'
+  clocks to agree to a few µs.
+- One launch, as for every test here: repeat it on a second launch before a result decides anything.
+
+- A `java` step starts N JVMs per member, whose start and JIT compete with the running members for the shared cores. The
+  2 s warm-up may not cover the JIT at N = 16; the per-second percentiles of the step's first writers show whether it does.
+
+**Not covered.** Producers off the cluster (gateways over UDP ingress, gateway hosts), a slow or stopped reader, a fixed
+total rate split N ways, which is Test 1b's producer sweep, and C#, which runs on Windows (Test 6).
+
+### Test 6: the C# client on Windows
+
+The C# client is deployed on Windows: the members run on Linux, and the C# applications run on a Windows host beside a
+gateway host, whose relay copies a member's Raft log over UDP and derives the queues onto the host's own driver. Its only
+measurements are `HotPathAllocationTest`, which holds queue dispatch and confirmed publish to zero bytes a frame without a
+cluster, and the functional runs of `csharp-client-test.sh` and `csharp-windows-test.sh`. Nothing times it, and
+[`hosted-facade.md`](hosted-facade.md) §3.4 lists it as not measured.
+
+**The question.** What loop latency does a C# application on a Windows gateway host see, up to what rate, and how much of
+it is the C# client, how much Windows and how much the off-cluster path that any client on a gateway host pays?
+
+**Arms.** Each is an off-cluster `Application` on a gateway host (`offCluster`, UDP ingress to the leader, the queue relayed
+from a member), timed from `publish` until it sees its own frame on the host's queue:
+
+| arm | client | gateway host |
+| --- | --- | --- |
+| `csharp-windows` | C# `Application`, `Seqeron.HopBench` | Windows Server 2022 |
+| `csharp-linux` | as `csharp-windows` | Linux, the same instance type |
+| `java-linux` | Java `Application`, `AppHopBench` (Test 5) | Linux, as `csharp-linux` |
+
+`csharp-linux` against `java-linux` is the language; `csharp-windows` against `csharp-linux` is the operating system. The
+three share one cluster per rate, and their runs are interleaved within it, the order randomised.
+
+**Set.** 100-byte markers at 5k, 20k, 50k and 100k msg/s, five runs per arm and rate of 60 s, the first 12 s discarded, with
+the client's default idle strategy; and the same at 20k with a busy-spinning client, to show what the default costs. The
+members are pinned and busy-spinning, as in Test 1. On Windows the client and the gateway host run with a processor
+affinity apart (`start /affinity`), the power plan at high performance, and the timer resolution recorded.
+
+**What a run records.** The loop's p50, p99, p99.9 and max, the declines and the achieved rate, the histogram in
+`hosted_hop_bench`'s buckets; the order check of Test 1, the gateway host's queue included; on .NET, the process's
+allocated bytes and gen-0, 1 and 2 collections over the measured window (`dotnet-counters`), which shows whether
+`HotPathAllocationTest`'s zero holds under load; on Linux, as Test 1; on Windows, CPU per process from performance
+counters.
+
+No rule: the test is reported, not judged. If the C# client moves to a hosted stub
+([`hosted-facade.md`](hosted-facade.md) §5), the same set with the stub as a fourth arm is that plan's step 4.
+
+**Tooling, not built.**
+
+- `Seqeron.HopBench`, a new project beside `seqeron-client/src/test/csharp-probe`: the C# twin of `AppHopBench`, with its options, schedule,
+  ProbeMarker and result line. ProbeMarker is encoded by hand, as `Seqeron.ClusterProbe` does, since schema 214 generates
+  no C# codecs.
+- A Windows side for the drivers. `node.sh` is bash over ssh; Windows Server's OpenSSH can run a PowerShell twin,
+  `node.ps1`, for the commands this test uses: start and stop the gateway host and the bench, fetch the logs, sample CPU.
+- `hop-matrix.sh` arms for the three, with `MULTIHOST_CLIENT` naming the Linux gateway host and `MULTIHOST_WINDOWS` the
+  Windows one.
+- A Windows image: Windows Server 2022, JDK 21 for the gateway host, the .NET SDK and the bench's build, and OpenSSH with the
+  driver host's key.
+
+**Threats.** Windows schedules and times differently from Linux: a backing-off thread wakes on the timer resolution, so
+record it; Defender's real-time scanning of the Aeron directory and the archive, so exclude both and say so. The gateway
+host's relay, derivation and recording are in every arm's loop and are the same Java on both systems, so a difference
+between the C# arms is Windows' scheduling and network stack under both processes, not the C# client alone. One launch,
+as for every test here.
+
+**Not covered.** C# applications co-located on a member, which the deployment does not run; a C# `Gateway` pair, whose
+handover `csharp-windows-test.sh` checks for function; and Windows on bare metal.
+
+### Test 7: the shadow queue's lag
+
+[`plans/queue-off-duty-cycle-plan.md`](plans/queue-off-duty-cycle-plan.md) step 1 moves every queue off the service's
+duty cycle onto an agent that derives it from the committed log, and §4 of that plan puts the latency cost to this test
+before step 1 merges. With `sequencer.shadowQueues=true`, `ShadowQueueAgent` already publishes that agent's queues on
+stream 3000 + `groupId` beside the service's, and `ClusterProbe shadow` reads both on one member, on one thread and one
+clock, and reports how much later each frame lands on the shadow, by `clusterSeqNo`. A negative sample is a frame the
+service published later than the shadow: the shadow publishes at commit, the service when its thread applies the entry.
+
+On a laptop, one member, 100-byte frames, 200,000 per run, every member agent backing off: at 50 µs between frames the lag
+was p50 2.5 µs, p99 58 µs, max 1.1 ms; at 10 µs, p50 2.2 µs, p99 2.7 ms, max 102 ms. The tail may be the agent's
+backoff, the laptop's contention or the cost of reading the log.
+
+**The question.** On the leader and on a follower, at rates up to the cluster's, with every agent busy-spinning on a core
+of its own, how much later than the service's queue does a frame reach the shadow?
+
+**The rule.** Step 1 merges as planned when, on `busyspin`, the shadow's lag at every rate is within **p50 5 µs, p99 25 µs,
+p99.9 250 µs** on both members, set against the 36 µs median loop of Test 3's `direct` arm. Past them, the plan's fast
+path (§4, a ring the service writes and the agent reads first) is built
+before step 1.
+
+**Shape.**
+
+- One arm, `busyspin` (`MULTIHOST_IDLE=busyspin`), the deployment's configuration: every member agent's idle strategy,
+  the shadow thread's included. Whether the laptop's tail was its backoff is left open, since the rule does not judge it.
+- The members run pinned as in Test 1 and one core wider, `MULTIHOST_MEMBER_CPUS=2-12`, since the shadow thread is a tenth
+  busy-spinning thread. On every member `ClusterProbe shadow` runs on CPU 13 with `probe.idleStrategy=busyspin`, and on the
+  leader the `direct` arm's bench of Test 1 writes 100-byte markers open-loop on CPUs 14–15.
+- Rates of **20k, 100k and 400k msg/s**, below the 909k msg/s a single producer reached ([`ec2-results.md`](ec2-results.md)
+  §3), lowest first, on one cluster. A 10 s warm-up at 20k holds the members' JIT and is reported, not judged; then two
+  runs of 30 s per rate. Each probe starts before the bench and stops after it, so a run's samples include the bench's
+  start.
+
+**What each run reports.** Per member, the probe's line: the samples, min, p50, p90, p99, p99.9, p99.99, max, and the frames
+seen on one stream only. Per run, the bench's line and CPU per process on every member (`node.sh sample`); throughout,
+every member's counters (`CounterSampler`). No order check: `DerivedQueueTest` holds the shadow to the queue frame for
+frame, and a stream that stops shows as unmatched frames.
+
+**Tooling.** `shadow-lag.sh`: one cluster loading `topology-test-hosted-quiet.xml`, with
+`-Dsequencer.shadowQueues=true` added to `MULTIHOST_MEMBER_OPTS`; per run a probe on each member (`node.sh start`), the
+`direct` bench on the leader, the probes stopped (`node.sh kill`, whose SIGTERM makes a probe print its line) and their
+lines collected into `<results>/shadow-<stamp>.txt`. `SHADOW_RATES`, `SHADOW_RUNS`, `SHADOW_SECONDS`, `SHADOW_PAYLOAD` and
+`MULTIHOST_PROBE_CPUS`.
+
+**Threats.** A frame that lands on one stream only is never sampled, so a stream that stops shows as unmatched frames, not
+as lag: a run with more than a few hundred, the frames in flight at its end, has failed. The probe keeps every sample, 8
+bytes each, 96 MB for a run at 400k msg/s. The lag is against the service's publication, not the commit, which neither
+stream shows; it is step 1's cost to a consumer, which reads the service's publication today. The service still publishes
+its queues, so the agent's file reads share the member's cores and memory bandwidth with work step 1 removes. The rates
+share a cluster, so a later rate runs on a longer log, still within the page cache. One launch, as for every test here.
+
+**Not covered.** The service's latency without its queue (step 1 itself), a slow or stopped subscriber on the shadow (step
+3), and the gateway host, whose relay derives its queues as it does today.
+
 ## 2. Instances and cost
 
 | Role | Instance | vCPU / cores | Network | $/hr |
 | --- | --- | --- | --- | --- |
-| Member (tests 1, 3) | c6in.8xlarge, ×3 | 32 / 16 | 50 Gbps | 1.81 each |
+| Member (tests 1, 3, 7) | c6in.8xlarge, ×3 | 32 / 16 | 50 Gbps | 1.81 each |
 | Member on bare metal (tests 1, 3) | c6id.metal, ×3 | 128 / 64, two sockets | 50 Gbps | 6.45 each |
-| Driver and gateway host (tests 1, 3) | c6in.4xlarge | 16 / 8 | up to 50 Gbps | 0.91 |
+| Driver and gateway host (tests 1, 3–5, 7) | c6in.4xlarge | 16 / 8 | up to 50 Gbps | 0.91 |
+| Windows gateway host (test 6) | c6in.4xlarge, Windows Server 2022 | 16 / 8 | up to 50 Gbps | about 1.65, with the licence at about $0.046 a vCPU-hour |
 | Fault suite (test 2) | c7i.4xlarge, ×3, on-demand | 16 / 8 | up to 12.5 Gbps | 0.71 each |
 | Failover soak (test 2) | c7i.4xlarge, spot | 16 / 8 | up to 12.5 Gbps | about 0.25 |
 | Image build | c6in.large | 2 / 1 | up to 25 Gbps | 0.11 |
@@ -375,6 +589,28 @@ the 400 MB/s the recorded arm writes at the top step, and a second 100 GB gp3 at
 `DISK_DEFAULT_VOLUME`; an EBS volume's settings change once in 6 hours, so both are set at launch. The members need
 passwordless `sudo`, for the writeback and the cache drops. Its parts ran in 45 min of the hosts' time, about $5.
 
+Test 5 is ten ramps: six in `hosted` (three variants, two each) and four in `java` (two variants). A ramp is a cluster start of
+about 15 s and five steps. Each step takes about 30 s: the replicas' attach and catch-up, 10 s measured, and the collection.
+A `java` step also starts N JVMs per member, so allow about 4 minutes for a `java` ramp and 3 for a `hosted` one: about
+35 minutes in all, 50 with the order checks. With the launch and setup (about 25 minutes), it is about 1.3 h on the four
+Test 1 hosts: about $8.50, or $17 for a first attempt.
+
+Test 6 is 4 rates × 3 arms × 5 runs of about 70 s with startup (70 minutes), and the busy-spinning set at 20k (another
+18 minutes). A Windows launch and its checks add about 20 minutes to the usual 25, so the session is about 2.3 h on five
+hosts: the three members, the driver host as the Linux gateway host, and the Windows host. At $8.00/hr that is about $18,
+or $36 for a first attempt.
+
+Test 7 is one invocation of `shadow-lag.sh` on the four Test 1 hosts, in a session booked for another test on them:
+
+| Step | Each | Count | Total |
+|---|---|---|---|
+| The cluster started and serving replay, and stopped | about 30 s | 1 | about 30 s |
+| The warm-up: probes started (about 5 s), the bench (10 s), probes stopped and collected (about 10 s) | about 25 s | 1 | about 25 s |
+| A run: probes started, the bench (30 s and its connect), probes stopped and collected | about 45 s | 3 rates × 2 runs | about 4.5 minutes |
+
+About 6 minutes, or 40 cents at $6.34/hr. On a launch of its own (about 25 minutes) it is about 30 minutes: about
+$3.20, or $6.40 for a first attempt.
+
 ## 4. Image
 
 One Ubuntu 24.04 x86_64 image serves every host. Build it on a c6in.large and save it as an AMI:
@@ -435,6 +671,11 @@ HOP_RATES=20000 MULTIHOST_MEMBER_OPTS="-Daeron.archive.file.sync.level=1 -Daeron
 REPLAY_PRELOAD=4000000 ./replay-remote.sh                      # test 3, and again with REPLAY_LOAD_DURING=1
 DAY_RUNS=2 ./trading-day.sh                                    # test 4; DAY_PROFILE=…/trading-day-nordic.txt for the other
 DISK_DEFAULT_VOLUME=/mnt/gp3-default ./disk-session.sh         # the disk session
+APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh       # test 5, once built; again with topology-test-apps-1.xml
+APP_RAMP_ARM=java APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh   # test 5's java arm, both topologies
+MULTIHOST_WINDOWS=10.0.0.15 HOP_MODES="csharp-windows csharp-linux java-linux" HOP_RATES="5000 20000 50000 100000" \
+    ./hop-matrix.sh                                            # test 6, once built
+MULTIHOST_MEMBER_CPUS=2-12 MULTIHOST_PROBE_CPUS=13 ./shadow-lag.sh   # test 7
 ```
 
 Members record no queue (`plans/disk-load-plan.md`, step 2a), and a gateway host relays a member's Raft log. The order check
@@ -465,6 +706,9 @@ ROUNDS=200 ./gradlew :seqeron-service:networkFaultTest --tests '*DockerFailoverS
 | 1 | The hop is IPC inside one host. With pinned, spinning threads it is CPU and memory, which Nitro passes through nearly unchanged, so the direct-against-hosted comparison carries; the rule of Test 1 is applied to each environment on its own. | The commit: a UDP round trip in a placement group (about 20 µs in Aeron's c6in result) is slower than a tuned bare-metal LAN with kernel sockets, so EC2 hides the hop a little more than bare metal would. Tails are worse: hypervisor interrupts, and on c6in.8xlarge a neighbour on the same socket. BIOS settings are out of reach. |
 | 2 | Its faults are timed against the 200 ms heartbeat and the 2 s election timeout, far above anything virtualization adds. | — |
 | 3 | The relay's flow control and NAK repair over a real network card. | A single flow is capped at about 10 Gbps in a placement group, and one replay is one flow. EBS is network storage: a forced write costs about 0.5–1 ms, against tens of µs on local NVMe. For local disk, run the sync comparison on an instance with instance storage (c6id, i4i). |
+| 5 | The count at which the member hosts' application cores run out, relative to the cluster's, and the comparison of the arms: both are CPU and IPC on one host. | The absolute count: it depends on the cores a deployment gives its applications, here four. |
+| 6 | The comparison of the three arms, which share the network and the cluster. | Windows' timer and scheduler on a hypervisor are not its behaviour on bare metal; the absolute tails are an upper bound. |
+| 7 | The comparison of the two streams, which share the member, its cores and its clock. | The absolute tail, which hypervisor interrupts widen as in Test 1. |
 
 c6id.metal (§2) removes the hypervisor from test 1's CPU path and puts the sync comparison on local NVMe; its network
 is still ENA. Its CPU is c6in's, so its results compare with the c6in.8xlarge run's.

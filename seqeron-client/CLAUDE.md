@@ -10,8 +10,8 @@ than their twins because `AeronCluster` already is the cluster protocol that the
 deliberate and documented in the class: the payload arrives pre-encoded rather than through a `Fill` over an
 encoder (Java's SBE codecs share no interface), and leadership moving off the co-located member costs a
 session rather than a publication swap (`AeronCluster` owns its publication). `IngressSender` exists so
-`IngressPublisher` has a seam the Java suite can drive without an Aeron runtime — the retired C++ transport seam
-had no Java equivalent, so the state machine its 868 test lines covered is Aeron's here, not ours.
+`IngressPublisher` has a seam the Java suite can drive without an Aeron runtime; the transport's own state machine
+is Aeron's, not ours.
 What is left of ours that is easy to get wrong is split off and unit-tested: **`IngressStallPolicy`**
 (which offer results are terminal — `CLOSED` is not, it is an election in progress). `ClusterStreamSender`
 itself is then the Aeron adapter, whose one other decision — replacing an IPC session whose leader moved
@@ -40,7 +40,7 @@ header-only INTERFACE target and the only binaries the build produces are `core_
 
 ## C++ build
 
-C++23, and fetches Aeron 1.53.2 (unless an installed one is found) and GoogleTest from source. **The core SBE codecs are generated and
+C++23, and fetches Aeron at the `versions.properties` pin (unless an installed one is found) and GoogleTest from source. **The core SBE codecs are generated and
 committed**, under `seqeron-client/src/main/generated/sbe/core` — the git tag is the C++ artifact, so
 shipping them
 with it is what lets a consumer build with no SBE tool and no JDK of seqeron's asking (Aeron's own

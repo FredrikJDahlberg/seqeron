@@ -24,6 +24,8 @@ import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
+import org.limitless.seqeron.sequencer.CutHandover;
+import org.limitless.seqeron.sequencer.RestartSafeLog;
 
 /**
  * A member's Replayer purging its queue recording below the newest restart-safe cut.

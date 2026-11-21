@@ -23,7 +23,6 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
-import org.limitless.seqeron.sequencer.SequencerService;
 import org.limitless.seqeron.util.Clocks;
 
 /**

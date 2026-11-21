@@ -26,8 +26,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.replayer.server.AeronReplayer;
 import org.limitless.seqeron.replayer.server.DerivationAnnouncement;
-import org.limitless.seqeron.replayer.server.DerivationStart;
 import org.limitless.seqeron.replayer.server.DerivingReplayer;
+import org.limitless.seqeron.sequencer.DerivationStart;
 
 /**
  * How a member's derivation of its queues starts. A member has no recorded path to

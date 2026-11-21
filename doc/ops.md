@@ -329,7 +329,7 @@ member on Linux whose two timers are the kernel's defaults warns at start. They 
 writes only its log: under the kernel's defaults a member at 909k msg/s of 100-byte messages sequenced 680k in one
 ramp, with a 2.7 s tail, and its p99.9 rose above 466k msg/s. The archive's volume bounds the rate too: on gp3 at
 its default 125 MB/s a member holds about 580k msg/s of 100-byte messages, where the log writes about 130 MB/s
-(`ec2-results.md` §2.1).
+(`ec2-results.md` §2.2).
 
 Two things keep the stalls short. Every log buffer is a memory-mapped file in the driver's
 Aeron directory, so on Linux it belongs on tmpfs, such as `/dev/shm`: on a disk, writing back its dirty pages
@@ -418,10 +418,14 @@ the Raft log included.
 A `<snapshots>` policy turns on cluster snapshots ([`snapshot.md`](snapshot.md) §10); without one a member's recovery is
 a replay of its whole log.
 
-- **`interval` must exceed `sequencer.sessionTimeoutMs`.** The consensus module resets every client session's
-  inactivity clock at each snapshot, so rounds more often than the session timeout keep a dead client's session from
-  ever timing out, and a dead gateway from ever being replaced by its standby. `bytes` has the same effect on a busy
-  cluster that sets it low.
+- **Rounds start no closer than `sequencer.sessionTimeoutMs` plus 1 s apart**, the leader's own value. The consensus
+  module resets every client session's inactivity clock at each snapshot, so closer rounds would keep a dead client's
+  session from ever timing out, and a dead gateway from ever being replaced by its standby. An `interval`, a `bytes`
+  threshold or an operator's request that falls due sooner waits out the gap, so an `interval` below it is the gap,
+  and `bytes` bounds history only while the cluster sequences less than `bytes` in it. The first round waits for
+  nothing. Request rounds with `clusterctl request-snapshot`, never Aeron's `ClusterTool snapshot`: it sets the
+  consensus module's toggle directly, so its rounds skip the gap, and run more often than the session timeout they
+  keep a dead gateway's session open.
 - **Every consumer of a member's queue must be able to restart from a snapshot file.** A restarted member's queue starts
   at a cut, so a process that can only walk the queue from `groupSeqNo` 1, a bare `ReplayerStreamReceiver` such as
   `ClusterProbe follow`, is fenced with `FirstFrameNotOne`. Only an `Application` or `Gateway` with a
@@ -492,6 +496,10 @@ when its shutdown gave up waiting for that duty cycle. Both mean restart it.
 It exits 70, too, when its log is truncated below what it applied ([`fault-tolerance.md`](fault-tolerance.md) §1.4):
 `[SequencerServer/N] FATAL: the log was truncated below what this node applied …`. Restart it as above, and see that section before
 serving its history.
+
+It exits 70 when a cluster snapshot failed before its service applied the round ([`fault-tolerance.md`](fault-tolerance.md) §1.5):
+`[SequencerService/N] FATAL: a cluster snapshot failed outside this node's service …`, behind the archive error
+that failed it. Restart it as above; if it exits 70 again at the same snapshot, its archive is the fault.
 
 ## A gateway that fences itself
 

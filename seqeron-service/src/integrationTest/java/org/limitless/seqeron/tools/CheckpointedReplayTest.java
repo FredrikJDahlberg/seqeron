@@ -32,7 +32,7 @@ import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.replayer.server.AeronReplayer;
 import org.limitless.seqeron.replayer.server.DerivingReplayer;
 import org.limitless.seqeron.replayer.server.Replayer;
-import org.limitless.seqeron.replayer.server.RestartSafeLog;
+import org.limitless.seqeron.sequencer.RestartSafeLog;
 
 /**
  * A replay derived from the Raft log is the archive's replay of the queue's recording, fragment for fragment, from

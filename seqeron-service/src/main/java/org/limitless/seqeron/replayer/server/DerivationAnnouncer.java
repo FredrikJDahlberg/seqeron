@@ -6,6 +6,7 @@ import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.codecs.SourceLocation;
 import java.util.ArrayDeque;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.seqeron.sequencer.DerivationStart;
 import org.limitless.seqeron.util.Logger;
 
 /**

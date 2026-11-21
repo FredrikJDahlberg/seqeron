@@ -18,8 +18,8 @@ import io.aeron.logbuffer.Header;
 import io.aeron.protocol.DataHeaderFlyweight;
 import java.util.List;
 import java.util.Queue;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.agrona.BitUtil;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
@@ -29,11 +29,6 @@ import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SeqeronCounters;
-import org.limitless.seqeron.replayer.server.CutHandover;
-import org.limitless.seqeron.replayer.server.DefaultQueueRows;
-import org.limitless.seqeron.replayer.server.DerivationStart;
-import org.limitless.seqeron.replayer.server.NodeDriver;
-import org.limitless.seqeron.replayer.server.RestartSafeLog;
 import org.limitless.seqeron.sbe.sequencer.SequencerStateDecoder;
 import org.limitless.seqeron.util.Logger;
 
@@ -80,8 +75,20 @@ public final class SequencerService implements ClusteredService {
     private final int nodeTermLength;
     private final int nodeMtu;
 
+    /**
+     * The least time between two rounds' starts: the session timeout and one heartbeat. Each snapshot resets every
+     * session's inactivity clock, so closer rounds would keep a dead client's session open.
+     */
+    private final long roundGapNs;
+
     /** The cluster's snapshot toggle, or null until found. */
     private AtomicCounter controlToggle;
+
+    /** Latched when a cluster snapshot failed before reaching {@link #onTakeSnapshot}: nothing is applied after it. */
+    private boolean skippedRound;
+
+    private static final String AERON_SERVICE_AGENT = "io.aeron.cluster.service.ClusteredServiceAgent";
+    private static final String TAKE_SNAPSHOT = "onTakeSnapshot";
 
     /** What each queue's last offer returned, and the length it offered, slot groupId - 1. */
     private final long[] lastOfferResults = new long[FrameLayer.MAX_GROUPS];
@@ -126,12 +133,14 @@ public final class SequencerService implements ClusteredService {
      * @param nodeTermLength the IPC term length of the node's driver, which its queues are published with
      * @param nodeMtu        the IPC MTU of the node's driver
      * @param stallTimeoutMs how long one queue offer may stay back-pressured before this node terminates
+     * @param sessionTimeoutMs the consensus module's session timeout, which spaces snapshot rounds
      */
     public SequencerService(final int memberId, final Queue<byte[]> topologyRows, final Runnable fatalHandler,
                             final RestartSafeLog safeLog, final Queue<CutHandover> cuts,
                             final AtomicReference<DerivationStart> derivationStart, final int nodeTermLength,
-                            final int nodeMtu, final long stallTimeoutMs) {
+                            final int nodeMtu, final long stallTimeoutMs, final long sessionTimeoutMs) {
         this.queue = new QueuePublisher(new QueueActions(), TimeUnit.MILLISECONDS.toNanos(stallTimeoutMs));
+        this.roundGapNs = TimeUnit.MILLISECONDS.toNanos(sessionTimeoutMs) + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
         this.topologyRows = topologyRows;
         this.safeLog = safeLog;
         this.cuts = cuts;
@@ -295,6 +304,9 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
+        if (skippedRound) {
+            return;
+        }
         if (sequencer.sessionClosed(session.id(), timestamp)) {
             Logger.info(Logger.CoreComponent.SequencerService, memberId,
                         "gateway session %d closed (%s) — promoting standby", session.id(), closeReason);
@@ -315,6 +327,9 @@ public final class SequencerService implements ClusteredService {
     @Override
     public void onSessionMessage(final ClientSession session, final long timestamp, final DirectBuffer buffer,
                                  final int offset, final int length, final Header header) {
+        if (skippedRound) {
+            return;
+        }
         if (session == null) {
             rejectedIngressCounter.increment();
             Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.MalformedIngressMessage,
@@ -338,7 +353,7 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onTimerEvent(final long correlationId, final long timestamp) {
-        if (correlationId == HEARTBEAT_TIMER_CORRELATION_ID) {
+        if (correlationId == HEARTBEAT_TIMER_CORRELATION_ID && !skippedRound) {
             sequencer.clusterHeartbeat(timestamp);
             updateCounters();
             requestRound();
@@ -354,13 +369,15 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Asks the cluster for a snapshot while a round is due and this node leads. The consensus
-     * module reads its toggle only on the leader, outside an election, so a request set elsewhere would wait and take an
-     * extra snapshot once that member leads; and it switches only from neutral, by compare-and-set, so a request that
-     * meets an operator's or one in progress fails and is made again at the next callback.
+     * Asks the cluster for a snapshot while a round is due and this node leads, once {@link #roundGapNs} has passed
+     * since the last round started. The leader's consensus module times sessions out, so its own session timeout is
+     * the one that counts. The consensus module reads its toggle only on the leader, outside an election, so a request
+     * set elsewhere would wait and take an extra snapshot once that member leads; and it switches only from neutral, by
+     * compare-and-set, so a request that meets an operator's or one in progress fails and is made again at the next
+     * callback.
      */
     private void requestRound() {
-        if (!sequencer.snapshotDue() || cluster.role() != Cluster.Role.LEADER) {
+        if (!sequencer.snapshotDue(cluster.time(), roundGapNs) || cluster.role() != Cluster.Role.LEADER) {
             return;
         }
         if (controlToggle == null) {
@@ -383,6 +400,10 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
+        if (skippedRound) {
+            throw new IllegalStateException(
+                "[SequencerService] Refusing to take a snapshot: this node skipped a round");
+        }
         if (!sequencer.hasSnapshotPolicy()) {
             throw new IllegalStateException(
                 "[SequencerService] Refusing to take a snapshot: no <snapshots> policy is loaded, so recovery is "
@@ -404,6 +425,47 @@ public final class SequencerService implements ClusteredService {
             cuts.add(new CutHandover(sequencer.snapshotRound(), sequencer.clusterSeqNo(), logPosition, markerPositions));
         }
         updateCounters();
+    }
+
+    /**
+     * The service container's error handler, on the service thread before it applies the next log entry. A cluster
+     * snapshot that failed before Aeron called {@link #onTakeSnapshot} left this node without the round every peer
+     * applied, so it applies nothing more and terminates; its restart replays the log. One that failed after it is
+     * treated alike, since the two are told apart by nothing but the stack.
+     * @param error what the container caught
+     */
+    void onServiceError(final Throwable error) {
+        if (!skippedRound && skippedSnapshot(error.getStackTrace(), Thread.currentThread().getStackTrace())) {
+            skippedRound = true;
+            Logger.fault(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError, memberId,
+                         "FATAL: a cluster snapshot failed outside this node's service, which may have left it without "
+                             + "the round its peers applied, at clusterSeqNo=%d — terminating this node; its restart "
+                             + "replays the log",
+                         sequencer.clusterSeqNo());
+            fatalHandler.run();
+        }
+    }
+
+    /**
+     * Whether an error escaped Aeron's snapshot without passing through {@link #onTakeSnapshot}: Aeron connects to the
+     * archive and starts the recording first, or completes it after. One raised from inside a snapshot still in
+     * progress, such as an error the client conductor reports while it idles, did not escape.
+     * @param errorStack   where the error was raised
+     * @param handlerStack where its handler runs
+     */
+    static boolean skippedSnapshot(final StackTraceElement[] errorStack, final StackTraceElement[] handlerStack) {
+        return onStack(errorStack, AERON_SERVICE_AGENT) && !onStack(errorStack, SequencerService.class.getName()) &&
+            !onStack(handlerStack, AERON_SERVICE_AGENT);
+    }
+
+    /** Whether {@code className}'s {@code onTakeSnapshot} is on {@code stack}. */
+    private static boolean onStack(final StackTraceElement[] stack, final String className) {
+        for (final StackTraceElement frame : stack) {
+            if (frame.getClassName().equals(className) && frame.getMethodName().equals(TAKE_SNAPSHOT)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Tells the {@link Sequencer} where each queue's marker started, and what the queue was published with. */
@@ -452,6 +514,9 @@ public final class SequencerService implements ClusteredService {
     public void onNewLeadershipTermEvent(final long leadershipTermId, final long logPosition, final long timestamp,
                                          final long termBaseLogPosition, final int leaderMemberId,
                                          final int logSessionId, final TimeUnit timeUnit, final int appVersion) {
+        if (skippedRound) {
+            return;
+        }
         applyLeadership(leadershipTermId, leaderMemberId, timestamp);
         scheduleHeartbeat(); // Arm (or re-arm) the internal cluster clock here
     }

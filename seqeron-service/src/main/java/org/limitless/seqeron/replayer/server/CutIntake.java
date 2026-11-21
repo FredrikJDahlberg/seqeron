@@ -2,6 +2,8 @@ package org.limitless.seqeron.replayer.server;
 
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import org.limitless.seqeron.sequencer.CutHandover;
+import org.limitless.seqeron.sequencer.RestartSafeLog;
 
 /**
  * What a Replayer is given to track its cluster snapshots: the cuts a member's service hands

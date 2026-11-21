@@ -10,7 +10,7 @@ measured, and what it does not establish.
 ## 1. Summary
 
 The loop latency below was not measured again on derived members, and its 2–3 ms p99.9 from 50k msg/s is the size
-[`ec2-results.md`](ec2-results.md) §2.1 measured from the recorder's writes on recorded members:
+a saturation ramp of 13 November measured from the recorder's writes on recorded members, 2.1–3.7 ms at every step:
 
 | Question | Result | Confidence |
 | --- | --- | --- |
@@ -83,7 +83,7 @@ Eight runs per arm, interleaved; leader member 1 at 50k and member 2 at 100k. La
   the direct client shows the same tail.
 - **The archive's writes are the candidate.** An earlier session traced multi-millisecond waits of the archive recorder
   to the kernel's writeback of dirty archive pages (`ec2-tests.md`, "Archive writes on EBS"). The writeback timers set
-  here shortened those waits to 5–8 ms, and this p99.9 is what remains. This session did not trace it again; [`ec2-results.md`](ec2-results.md) §2.1 measured
+  here shortened those waits to 5–8 ms, and this p99.9 is what remains. This session did not trace it again; a saturation ramp of 13 November measured
   a p99.9 of the same size on recorded members and none on derived ones.
 
 **The hosted façade against the direct client.** The hosted median minus the direct median, per percentile:

@@ -15,6 +15,7 @@ import java.util.function.LongSupplier;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
+import org.limitless.seqeron.sequencer.RestartSafeLog;
 import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
 
