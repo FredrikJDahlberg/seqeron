@@ -1,7 +1,7 @@
 # Benchmark results: three-member cluster on EC2
 
 What a three-member seqeron cluster sustains on AWS, what limits it, and what the measurements leave open. Each member
-derives its queues from the Raft log and records nothing but the log. The sessions ran on 11 and 13 November 2026.
+derives its queues from the Raft log and records nothing but the log. The sessions ran on 11, 13 and 21 November 2026.
 
 ## 1. Summary
 
@@ -13,6 +13,7 @@ derives its queues from the Raft log and records nothing but the log. The sessio
 | What do the kernel's default writeback timers cost? | In one of two ramps the 909k step sequenced 680k msg/s, with a 2.7 s tail. The cause is not established. | Two ramps, one launch, earlier code (§2.2). |
 | How long does a cold replay of 4,000,000 messages take? | 5.3 s on a member, or 10.8 s while the cluster takes more load. A gateway host on a fourth machine is serving after 1.5–1.6 s; its end-to-end time was not measured. | One run each, earlier code (§2.3). |
 | Does the disk stall commits at a moderate rate? | No interval of 10 ms or more without a commit in two 600 s runs at 49k msg/s. | Two runs, three members on one host. |
+| How much later than the sequencer's queue does a queue derived from the log arrive? | At 20k, 100k and 400k msg/s: p50 0.5–1.2 µs, p99 1.4–10.7 µs, p99.9 8–17 µs, in 17 of 18 member runs; one follower's p99.9 was 880 µs. | Six runs, one launch (§2.5). |
 
 **For sizing.** One producer of 100-byte messages has been shown to hold 909k msg/s, on a log volume provisioned well above
 its write rate and with the writeback timers of §2. That figure is the highest rate shown to hold, not a capacity. It
@@ -167,6 +168,36 @@ Each run had 67–79 intervals of 5–9 ms without a commit; the 3 ms sampling r
 costs about 126 bytes of log (3.7 GB over 29.4 million messages), so these runs wrote about 6 MB/s: they show the
 writeback's bursts at a low write rate, not at the rates of §2.1.
 
+### 2.5 The shadow queue's lag (21 November, the current code)
+
+**Method.** `ec2-tests.md` Test 7. The members ran with `sequencer.shadowQueues=true`, so `ShadowQueueAgent` published
+each queue a second time from the committed log, beside the sequencer's. On every member `ClusterProbe shadow` read
+both on one thread and reported each frame's arrival on the shadow less its arrival on the queue, matched by
+`clusterSeqNo`. One cluster served every rate, lowest first: a 10 s warm-up at 20k msg/s, not reported here, then two
+30 s runs at each of 20k, 100k and 400k msg/s of 100-byte messages from the producer on the leader's host. The members
+ran pinned to cores 2–12, a core wider than in §2.1 for the shadow's thread, each probe on core 13, every agent
+busy-spinning. The hosts were a new launch in another Availability Zone. Member 2 led throughout.
+
+| Rate, run | p50 | p99, followers | p99, leader | p99.9 | p99.99 | Producer's loop p50 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 20k, 1 | 0.54–0.63 µs | 2.0–2.5 µs | 5.1 µs | 12–14 µs; member 1, **880 µs** | 0.24–2.8 ms | 51 µs |
+| 20k, 2 | 0.54–0.60 µs | 1.4–1.6 µs | 4.9 µs | 8.4–10.4 µs | 73–108 µs | 52 µs |
+| 100k, 1 | 0.50–0.67 µs | 1.7–2.0 µs | 8.0 µs | 11.4–16.3 µs | 124–524 µs | 94 µs |
+| 100k, 2 | 0.56–0.69 µs | 1.9–2.4 µs | 8.0 µs | 14.5–16.6 µs | 0.12–1.6 ms | 92 µs |
+| 400k, 1 | 0.64–1.23 µs | 3.1–3.2 µs | 10.7 µs | 13.5–16.9 µs | 91–109 µs | 101 µs |
+| 400k, 2 | 0.61–1.12 µs | 2.8–2.9 µs | 8.0 µs | 13.4–14.5 µs | 81–103 µs | 99 µs |
+
+Every frame arrived on both streams in every run. The producer kept up at every rate: 54 offers were declined, all in
+the first run at 400k. The leader's p99 is 2–5 times a follower's: its shadow publishes at commit, while its sequencer
+publishes as it applies the entry. Every run had a maximum of 3–9 ms, and five of the six a minimum of −1 to −6 ms,
+where the sequencer's queue arrived that much after the shadow's: stalls that hold either stream, not the shadow's
+lag.
+
+**Against the rule.** Test 7's rule is p50 5 µs, p99 25 µs and p99.9 250 µs on both roles at every rate. 17 of the 18
+member runs are within it. The exception, follower 1's p99.9 in the first run at 20k, is not traced: the host's steal
+time did not move during the run, and its JVM's longest safepoint was 0.12 ms. The same follower's p99.9 was 8.4 µs in
+the second run. It is taken as a pass: the queue agent's lag does not need the plan's fast path.
+
 ## 3. What this does not show
 
 - **A second launch.** Each result comes from one launch. §2.1's 909k held on one launch and §2.2's on another, but with
@@ -185,6 +216,8 @@ writeback's bursts at a low write rate, not at the rates of §2.1.
 - **Six untraced results.** The p99.9 of 21.7 ms (with a p99 of 8.0 ms) at 582k and 3.3 ms at 122k in §2.1's ramp 1; the
   p99 of 1.5–3.6 ms at 909k after a start at 466k, against 0.14 ms after the full ramp; the backlog of a cluster that
   starts at 909k; and in §2.2 under default writeback, the 909k step that sequenced 680k and the 12 ms p99.9 at 582k.
+- **The shadow's lag under other conditions.** §2.5 ran on one launch, with the sequencer still publishing its own
+  queues, and without a slow subscriber on either stream.
 - **Raw data.** The result files and logs are not in the repository.
 
 ## 4. Reproducing
@@ -193,4 +226,5 @@ The scripts are in `seqeron-service/src/test/scripts/multihost`. `disk-session.s
 §2.1 is `hop-knee.sh` with `KNEE_SECONDS=10`, `KNEE_PAYLOADS=100`, `HOP_MODES=direct`, `MULTIHOST_IDLE=busyspin`,
 `MULTIHOST_MEMBER_CPUS=2-11` and `MULTIHOST_BENCH_CPUS=14-15`: from `KNEE_START=50000` with the default `KNEE_MAX`, and
 from 465656 and 909483 with `KNEE_MAX=5000000`. The cold replay is `replay-remote.sh` with `REPLAY_PRELOAD=4000000` and `REPLAY_COLD=1`, and
-`REPLAY_LOAD_DURING=1` for load.
+`REPLAY_LOAD_DURING=1` for load. §2.5 is `shadow-lag.sh` with `MULTIHOST_IDLE=busyspin`,
+`MULTIHOST_MEMBER_CPUS=2-12`, `MULTIHOST_PROBE_CPUS=13` and `MULTIHOST_BENCH_CPUS=14-15`.
