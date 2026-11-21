@@ -160,6 +160,14 @@ final class QueueFrames {
     /** Sends a replay request, and again every 500 ms, until it is answered with a replay: its session and end. */
     static long[] ask(final Subscription control, final Publication requests, final long clientId, final long requestId,
                       final int groupId, final long fromPosition, final long deadline, final String reached) {
+        return ask(control, requests, clientId, requestId, groupId, fromPosition, ReplayProtocol.NO_CUT, deadline,
+                   reached);
+    }
+
+    /** As above, for a restore's replay from the snapshot cut {@code cutClusterSeqNo}. */
+    static long[] ask(final Subscription control, final Publication requests, final long clientId, final long requestId,
+                      final int groupId, final long fromPosition, final long cutClusterSeqNo, final long deadline,
+                      final String reached) {
         final MutableDirectBuffer buffer = new ExpandableArrayBuffer(64);
         final ReplayRequestEncoder request = new ReplayRequestEncoder();
         request.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder())
@@ -167,7 +175,7 @@ final class QueueFrames {
             .requestId(requestId)
             .fromPosition(fromPosition)
             .queueId(groupId)
-            .cutClusterSeqNo(ReplayProtocol.NO_CUT);
+            .cutClusterSeqNo(cutClusterSeqNo);
         final int length = MessageHeaderEncoder.ENCODED_LENGTH + request.encodedLength();
         final MessageHeaderDecoder header = new MessageHeaderDecoder();
         final ReplayingDecoder replaying = new ReplayingDecoder();

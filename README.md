@@ -31,15 +31,16 @@ Features
   exactly one per message with no gaps or reuse, and the Raft consensus timestamp in nanoseconds. A 1 Hz
   `ClusterHeartbeat` gives every consumer the same clock, which keeps advancing while producers are silent.
 - **Replication.** The order is decided by Raft consensus: a message is sequenced once a majority of members
-  hold it. Every member then republishes the sequenced stream onto node-local queues, one per group, that its
-  own Aeron Archive records, so each member holds a complete, identical copy of history without copying it
-  from a peer.
+  hold it. Every member records the Raft log in its own Aeron Archive and publishes the sequenced stream from it
+  onto node-local queues, one per group, so each member holds a complete, identical copy of history without
+  copying it from a peer.
 - **Application groups.** The topology declares up to 16 groups, and every gateway and application belongs
   to one. Each group has its own queue, numbered by its own gap-free `groupSeqNo`. A producer chooses, message
   by message, which groups an application message reaches by setting their bits in its `groupMask`, and every
   system message reaches every group. An instance reads, replays and relays only its group's queue, so its
   read cost and recovery time follow the traffic addressed to its group rather than the whole deployment's.
-  The cost is one archive write per queue a message reaches.
+  The cost is one queue write per group a message reaches, and on a gateway host one archive write per queue it
+  relays.
 - **Fault tolerance.** The cluster runs one to seven members, three or five in practice, survives the loss of a
   minority of them, and a new leader resumes at
   the next `clusterSeqNo`. Producers confirm their messages on the stream and resend what a failover lost, so
@@ -49,8 +50,10 @@ Features
   gateway promotions, connection lifecycle and snapshot rounds are all sequenced messages, byte-identical on
   every member. Any replica that applies the log reaches the same state, with nothing to ask anyone else.
 - **Replay and snapshots.** A client recovers by replaying the log, never by state transfer. A Replayer on
-  each host serves cold starts and gaps from the local recording, while consumers read the live stream
-  untethered, so a slow consumer is dropped and heals by replay instead of holding up the cluster. To restart
+  each host serves cold starts and gaps from the queue history it derives from the local recording of the Raft
+  log, while consumers read the live stream untethered, so a slow consumer is dropped and heals by replay instead
+  of holding up the cluster. A tethered subscriber that stops reading is cut off at the stall timeout and heals
+  the same way, and its member keeps sequencing throughout. To restart
   from a known point rather than the start of its queue, a client takes snapshots of its own state: at each round's
   cut in the log every instance writes its state to a local file, and the log carries a digest every
   instance checks its file against. The API hides all of it: an application supplies only a listener that
@@ -76,12 +79,13 @@ Limitations
 
 - **Without a `<snapshots>` policy, a node replays the whole Raft log on restart.** Recovery time and archive size
   grow with the history the archive holds, so it suits a deployment whose archive is reset between runs. With a
-  policy, each member purges its queue recordings below the newest restart-safe cut
+  policy, each node purges its queues' history below its newest restart-safe cut
   ([design](doc/snapshot.md#10-cluster-snapshots)).
 - **The Raft log is trimmed only with a `<snapshots>` policy.** Aeron's open-source release trims nothing; each
   member trims its own log below its two newest restart-safe snapshots, and `clusterctl trim-log` asks it to.
-- **Gateway hosts do not purge.** A gateway host's queue recordings grow with uptime. A host whose relay is cut off
-  from every member while they purge past it stops relaying, with error logs, until it is restarted.
+- **A gateway host left behind by every member's trim stops.** A host whose relay is cut off from every member
+  while they trim their logs past it stops with a fatal, and its restart derives its queues again from a member's
+  start.
 - **Groups are fixed for the life of an archive.** A deployment that starts from an empty archive can declare any
   groups. On an existing archive no group can be added, removed or renamed, and no gateway or application can move
   to another group.

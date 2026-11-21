@@ -39,7 +39,7 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * The cluster tier's own load generator and queue consumer, so its end-to-end scripts need no product
- * binary. Four modes, one message ({@code sbe-probe.xml}, {@code payloadId} 5):
+ * binary. Five modes, one message ({@code sbe-probe.xml}, {@code payloadId} 5):
  * <ul>
  *   <li><b>submit</b> — flood {@code probe.count} {@code ProbeMarker}s at ingress. Opens no queue
  *       subscription, which an unpolled flood would back-pressure.</li>
@@ -49,6 +49,8 @@ import org.limitless.seqeron.util.Logger;
  *   <li><b>confirm</b> — send {@code probe.count} through {@link ClusterStreamSender} and a
  *       {@link PendingSends} while following its own queue; exit 0 only if the queue shows seqNo 1..count
  *       exactly once, in order. {@code -Dprobe.pendingSends=false} is the control.</li>
+ *   <li><b>hold</b> — subscribe the queue tethered and read it, so a {@code SIGSTOP} holds the queue's window
+ *       until the member's queue agent skips it.</li>
  * </ul>
  *
  * <p>System properties:
@@ -163,6 +165,7 @@ public final class ClusterProbe {
             case "ping" -> System.exit(ping());
             case "follow" -> follow();
             case "confirm" -> System.exit(confirm(Integer.getInteger("probe.count", 1000)));
+            case "hold" -> hold();
             default -> {
                 usage();
                 System.exit(mode.equals("help") ? 0 : 1);
@@ -544,6 +547,23 @@ public final class ClusterProbe {
         }
     }
 
+    /** Reads the queue through a tethered subscription until the process is killed. */
+    private static void hold() {
+        final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR));
+        final int groupId = groupId(aeron, Long.MAX_VALUE);
+        final Subscription queue =
+            aeron.addSubscription(FrameLayer.QUEUE_CHANNEL + "|tether=true", FrameLayer.queueStreamId(groupId));
+        final IdleStrategy idle = new YieldingIdleStrategy();
+        while (!queue.isConnected()) {
+            idle.idle();
+        }
+        Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "holding group %d's queue, tethered", groupId);
+        final FragmentHandler discard = (buffer, offset, length, header) -> { };
+        while (!queue.isClosed()) {
+            idle.idle(queue.poll(discard, 10));
+        }
+    }
+
     /**
      * Counts delivered frames and, when enabled, the cluster-commit → queue delivery latency of the ones
      * delivered while caught up. Replayed history is excluded: its "latency" is the age of the archive.
@@ -697,12 +717,13 @@ public final class ClusterProbe {
 
     private static void usage() {
         System.err.println("""
-            Usage: ClusterProbe <submit|ping|follow|confirm>
+            Usage: ClusterProbe <submit|ping|follow|confirm|hold>
 
               submit  flood -Dprobe.count frames at cluster ingress (default 1000)
               ping    submit one frame and wait for its sequenced echo on the queue
               follow  replay history via the co-located Replayer, then follow the queue live
               confirm send -Dprobe.count frames and check the queue shows each once, in order
+              hold    read the queue through a tethered subscription
 
             See the class javadoc for the -Dprobe.* properties.""");
     }
