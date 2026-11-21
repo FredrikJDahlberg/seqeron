@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -65,5 +66,32 @@ class RestartSafeLogTest {
         final RestartSafeLog.State state = RestartSafeLog.read(file);
         assertEquals(Set.of(100L, 200L), state.cuts());
         assertEquals(Set.of(), state.safe());
+    }
+
+    @Test
+    @DisplayName("cut and safe lines written at once from two threads are each read back whole")
+    void concurrentAppendsKeepEveryLine() throws Exception {
+        final int count = 500;
+        try (RestartSafeLog log = RestartSafeLog.open(directory)) {
+            final Thread replayer = new Thread(() -> {
+                for (int i = 0; i < count; i++) {
+                    log.appendSafe(i);
+                }
+            });
+            replayer.start();
+            for (int i = 0; i < count; i++) {
+                log.appendCut(i);
+            }
+            replayer.join();
+            assertEquals(count, log.safeCount());
+        }
+
+        final Set<Long> expected = new HashSet<>();
+        for (long i = 0; i < count; i++) {
+            expected.add(i);
+        }
+        final RestartSafeLog.State state = RestartSafeLog.read(directory.resolve(RestartSafeLog.FILE_NAME));
+        assertEquals(expected, state.cuts());
+        assertEquals(expected, state.safe());
     }
 }

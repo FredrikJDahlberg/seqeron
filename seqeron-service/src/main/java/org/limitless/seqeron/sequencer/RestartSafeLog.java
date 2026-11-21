@@ -19,7 +19,8 @@ import java.util.Set;
  *   safe &lt;logPosition&gt;   every co-located application that joined its round holds a confirmed file for it
  * </pre>
  * Each line is forced to disk before the call that wrote it returns. Written from the service thread ({@code cut})
- * and the Replayer's ({@code safe}), so every method is synchronized.
+ * and the Replayer's ({@code safe}). The monitor guards the in-memory sets alone and the force is outside every lock,
+ * so neither thread waits on the other's fsync (doc/plans/queue-off-duty-cycle-plan.md, step 5).
  */
 public final class RestartSafeLog implements AutoCloseable {
     /** The file's name in the cluster directory. */
@@ -32,6 +33,7 @@ public final class RestartSafeLog implements AutoCloseable {
     private final FileChannel channel;
     private final Set<Long> cuts;
     private final Set<Long> safe;
+    private final Object writeLock = new Object();
 
     private RestartSafeLog(final Path directory, final FileChannel channel, final State state) {
         this.directory = directory;
@@ -112,15 +114,19 @@ public final class RestartSafeLog implements AutoCloseable {
     }
 
     /** Records that a snapshot was taken at {@code logPosition}; durable on return. */
-    public synchronized void appendCut(final long logPosition) {
+    public void appendCut(final long logPosition) {
         append("cut " + logPosition);
-        cuts.add(logPosition);
+        synchronized (this) {
+            cuts.add(logPosition);
+        }
     }
 
     /** Records that the snapshot at {@code logPosition} may be restarted from; durable on return. */
-    public synchronized void appendSafe(final long logPosition) {
+    public void appendSafe(final long logPosition) {
         append("safe " + logPosition);
-        safe.add(logPosition);
+        synchronized (this) {
+            safe.add(logPosition);
+        }
     }
 
     /** Whether a snapshot at {@code logPosition} was taken in this run or an earlier one. */
@@ -151,8 +157,11 @@ public final class RestartSafeLog implements AutoCloseable {
     private void append(final String line) {
         try {
             final ByteBuffer bytes = ByteBuffer.wrap((line + "\n").getBytes(StandardCharsets.US_ASCII));
-            while (bytes.hasRemaining()) {
-                channel.write(bytes);
+            // A partial write must not let the other thread's line into the middle of this one.
+            synchronized (writeLock) {
+                while (bytes.hasRemaining()) {
+                    channel.write(bytes);
+                }
             }
             channel.force(true);
         } catch (final IOException ex) {
@@ -161,7 +170,7 @@ public final class RestartSafeLog implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
+    public void close() {
         try {
             channel.close();
         } catch (final IOException ex) {
