@@ -79,6 +79,10 @@ public final class MetricsExporter {
                                  "Count of local-archive calls that threw; a sustained rate means the archive is "
                                      + "not serving replays.",
                                  "counter")),
+        Map.entry(SeqeronCounters.REPLAYER_LOG_RECORDS_DROPPED_COUNT_TYPE_ID,
+                  new MetricMeta("seqeron_replayer_log_records_dropped_total",
+                                 "Count of log records the process dropped, its logging queue being full.",
+                                 "counter")),
         Map.entry(SeqeronCounters.REPLAYER_READY_TYPE_ID,
                   new MetricMeta("seqeron_replayer_ready",
                                  "1 once every served queue is listed and replay requests are being served.", "gauge")),

@@ -526,7 +526,7 @@ codecs ship but are used only by `ReplayerStreamReceiver`.
 
 ## Support code
 
-`util` (`Logger`, `IdleStrategies`/`IdleStrategy.hpp`, `Clocks`, C++ `Env.hpp`, C# `SbeBuffers`) and
+`util` (`Logger`, `AsyncLoggerSink`, `IdleStrategies`/`IdleStrategy.hpp`, `Clocks`, C++ `Env.hpp`, C# `SbeBuffers`) and
 `protocol.SeqeronCounters` ship because the API uses them. They are usable but carry no stability
 guarantee, except `SbeBuffers`, which C# SBE decoding requires. `Clocks.monotonicMs()` is the time base for
 every duty-cycle deadline; C++ uses the free function `nowMs()`.

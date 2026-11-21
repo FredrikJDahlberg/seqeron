@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.management.ThreadMXBean;
 import java.lang.management.ManagementFactory;
+import java.util.ArrayList;
+import java.util.List;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.DisplayName;
@@ -23,6 +25,7 @@ import org.limitless.seqeron.sbe.frame.LeadershipChangedDecoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.SessionClosedDecoder;
 import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
+import org.limitless.seqeron.util.Logger;
 
 /**
  * Unit tests for the sequencer's replicated state machine.
@@ -266,6 +269,28 @@ class SequencerTest {
 
         assertFalse(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
         assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo());
+    }
+
+    @Test
+    @DisplayName("a silent sequencer, as a LogDeriver's is, counts a rejection and logs nothing")
+    void aSilentSequencerLogsNoRejection() {
+        final List<Logger.LoggerEvent> logged = new ArrayList<>();
+        Logger.install(logged::add);
+        try {
+            final FrameRecorder recorded = new FrameRecorder();
+            final Sequencer silent = activated(new Sequencer(0, recorded, false), recorded);
+            final int ingressLength = encodeIngressPayload(ingress, 0);
+            new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).schemaId(999);
+
+            assertFalse(silent.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+            assertEquals(1, silent.rejectedFrameCount());
+            assertTrue(logged.isEmpty(), logged.toString());
+
+            assertFalse(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+            assertEquals(1, logged.size(), "the service's sequencer still logs it");
+        } finally {
+            Logger.reset();
+        }
     }
 
     // -- Frame validation ------------------------------------------------------

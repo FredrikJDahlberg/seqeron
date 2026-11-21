@@ -43,7 +43,9 @@ serves, and that history to the reference member's from where it starts, frame f
 across a leader stop and a restart from a cluster snapshot, whose history opens with the round's marker where it lies
 on the reference's. `QueueSkipTest` holds a tethered subscriber that stops reading a member's queue, under the least
 stall timeout, to the queue being revoked from under it and reopened under a new session, with the member running
-and a confirm producer reading the queue throughout seeing every frame once, in order; `DerivationStartTest` holds
+and a confirm producer reading the queue throughout seeing every frame once, in order; `LogFloodTest` blocks the
+logging thread's writes to stderr through a flood of rejected frames, and holds every member's service to applying it
+all and sequencing on, with the log records it could not write dropped and counted; `DerivationStartTest` holds
 a start the log's recording does not hold to
 ending the Replayer's duty cycle, and an announcement the archive refuses to being recorded once it may;
 `DerivedReplayTest` cold-starts a client on a member, and on a gateway host

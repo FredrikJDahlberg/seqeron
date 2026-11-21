@@ -298,6 +298,7 @@ if(SEQERON_BUILD_TESTS)
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/SequencedFrameTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/SnapshotFormatTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/helpers/SplitMix64Test.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/util/AsyncLoggerSinkTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/util/EnvTest.cpp
         seqeron-client/src/main/cpp/org/limitless/seqeron/util/Logger.hpp
     )

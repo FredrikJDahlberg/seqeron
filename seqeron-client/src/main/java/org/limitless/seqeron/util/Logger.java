@@ -2,7 +2,8 @@ package org.limitless.seqeron.util;
 
 /**
  * Structured logging: call sites report a {@link LoggerEvent} to the installed {@link LoggerSink}. The
- * default sink prints {@code [Component/memberId] message} to stderr.
+ * default sink formats and prints {@code [Component/memberId] message} to stderr from a logging thread of its own
+ * ({@link AsyncLoggerSink}), so a call site formats nothing.
  */
 public final class Logger {
     private Logger() {
@@ -58,7 +59,7 @@ public final class Logger {
 
     /**
      * Core's anomaly classes: one per condition worth telling apart, plus {@link #Info} for the routine
-     * lines that identify no anomaly at all. The last seven are the client tier's, and the C++ twin uses
+     * lines that identify no anomaly at all. The last eight are the client tier's, and the C++ twin uses
      * the same names.
      */
     public enum CoreEventCode implements EventCode {
@@ -109,24 +110,44 @@ public final class Logger {
         /** Cluster ingress took no frame for long enough to call the session lost. */
         ClusterOfferFailed,
         /** The co-located member did not answer IPC ingress, so the sender fell back to UDP. */
-        ClusterIpcFallback
+        ClusterIpcFallback,
+        /** The default sink's queue was full, and it dropped records. */
+        LogRecordsDropped
     }
 
     /**
-     * One log record, as a sink receives it.
+     * One log record, as a sink receives it: the format and its arguments, formatted by {@link #message} when the
+     * sink writes it.
      *
      * @param component who is reporting
      * @param severity  how bad it is
      * @param code      which anomaly class, or {@link CoreEventCode#Info}
      * @param memberId  the node it happened on, or null where there is no member context
-     * @param message   the formatted text
+     * @param format    the {@link String#format} template, or the whole text where {@code args} is empty
+     * @param args      the values it formats
      */
-    public record
-        LoggerEvent(Component component, Severity severity, EventCode code, Integer memberId, String message) { }
+    public record LoggerEvent(Component component, Severity severity, EventCode code, Integer memberId, String format,
+                              Object[] args) {
+        /** A record of text already formatted. */
+        public LoggerEvent(final Component component, final Severity severity, final EventCode code,
+                           final Integer memberId, final String message) {
+            this(component, severity, code, memberId, message, NO_ARGS);
+        }
+
+        /** The formatted text; formatted on each call. */
+        public String message() {
+            return args.length == 0 ? format : String.format(format, args);
+        }
+    }
+
+    private static final Object[] NO_ARGS = { };
 
     /** Where every log call lands. Install one with {@link #install}. */
     public interface LoggerSink {
-        /** Called on the reporting thread, in call order; a sink that blocks stalls a duty cycle. */
+        /**
+         * Called on the reporting thread, in call order; a sink that blocks stalls a duty cycle unless it is
+         * wrapped in an {@link AsyncLoggerSink}, as the default is.
+         */
         void record(LoggerEvent event);
     }
 
@@ -140,7 +161,8 @@ public final class Logger {
         }
     }
 
-    private static final LoggerSink DEFAULT_SINK = new StderrLoggerSink();
+    private static final AsyncLoggerSink DEFAULT_SINK =
+        new AsyncLoggerSink(new StderrLoggerSink(), AsyncLoggerSink.DEFAULT_CAPACITY);
     private static volatile LoggerSink installedSink = DEFAULT_SINK;
 
     /**
@@ -154,6 +176,11 @@ public final class Logger {
     /** Restores the default sink, which prints to stderr. */
     public static void reset() {
         installedSink = DEFAULT_SINK;
+    }
+
+    /** Records the default sink has dropped, its queue being full. */
+    public static long dropped() {
+        return DEFAULT_SINK.dropped();
     }
 
     /** Logs routine status, at {@link Severity#Info} under {@link CoreEventCode#Info}. */
@@ -181,12 +208,11 @@ public final class Logger {
     }
 
     /**
-     * The one call the others reach: formats {@code args} into {@code format} and hands the record to the
-     * installed sink.
+     * The one call the others reach: hands {@code format} and {@code args} to the installed sink unformatted. The
+     * default sink formats them on its logging thread, so each argument must be a value that no longer changes.
      */
     public static void log(final Component component, final Severity severity, final EventCode code,
                            final Integer memberId, final String format, final Object... args) {
-        final String message = args.length == 0 ? format : String.format(format, args);
-        installedSink.record(new LoggerEvent(component, severity, code, memberId, message));
+        installedSink.record(new LoggerEvent(component, severity, code, memberId, format, args));
     }
 }

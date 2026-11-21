@@ -301,13 +301,26 @@ public final class Sequencer implements SequencerSnapshot {
     /** This node's memberId, for the log lines only. */
     private final int memberId;
 
+    /** False for a {@code LogDeriver}'s, which re-applies entries the service has already logged. */
+    private final boolean logs;
+
     /**
      * @param memberId this node's cluster memberId, for the log lines only
      * @param sink     where every frame goes
      */
     public Sequencer(final int memberId, final FrameSink sink) {
+        this(memberId, sink, true);
+    }
+
+    /**
+     * @param memberId this node's cluster memberId, for the log lines only
+     * @param sink     where every frame goes
+     * @param logs     whether it logs rejections and failed promotions
+     */
+    public Sequencer(final int memberId, final FrameSink sink, final boolean logs) {
         this.memberId = memberId;
         this.sink = sink;
+        this.logs = logs;
     }
 
     /** The last assigned sequence number; 0 before anything has been sequenced. */
@@ -718,8 +731,10 @@ public final class Sequencer implements SequencerSnapshot {
      */
     private boolean reject(final String reason) {
         rejectedFrameCount++;
-        Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.MalformedIngressMessage, memberId,
-                     "skipping malformed ingress message: %s (clusterSeqNo stays %d)", reason, clusterSeqNo);
+        if (logs) {
+            Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.MalformedIngressMessage, memberId,
+                         "skipping malformed ingress message: %s (clusterSeqNo stays %d)", reason, clusterSeqNo);
+        }
         return false;
     }
 
@@ -878,10 +893,12 @@ public final class Sequencer implements SequencerSnapshot {
         final GatewayRow promoted = promotionTarget((int)closedGatewayId);
         if (promoted == null) {
             gatewayPromotionFailedCount++;
-            Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
-                         "gateway instance %d's session closed with no standby to promote — this logical "
-                             + "gateway has no active instance until one starts (clusterSeqNo stays %d)",
-                         closedGatewayId, clusterSeqNo);
+            if (logs) {
+                Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
+                             "gateway instance %d's session closed with no standby to promote — this logical "
+                                 + "gateway has no active instance until one starts (clusterSeqNo stays %d)",
+                             closedGatewayId, clusterSeqNo);
+            }
             return false;
         }
         promote(promoted.gatewayId, timestamp);
@@ -900,17 +917,21 @@ public final class Sequencer implements SequencerSnapshot {
         final GatewayRow promoted = promotionTarget(designated);
         if (promoted == null) {
             gatewayPromotionFailedCount++;
-            Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
-                         "gateway instance %d never declared itself started within %dms and has no sibling to "
-                             + "promote — this logical gateway has no active instance until one starts "
-                             + "(clusterSeqNo stays %d)",
-                         designated, GATEWAY_ACTIVATION_TIMEOUT_MS, clusterSeqNo);
+            if (logs) {
+                Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
+                             "gateway instance %d never declared itself started within %dms and has no sibling to "
+                                 + "promote — this logical gateway has no active instance until one starts "
+                                 + "(clusterSeqNo stays %d)",
+                             designated, GATEWAY_ACTIVATION_TIMEOUT_MS, clusterSeqNo);
+            }
             return;
         }
-        Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayActivationTimeout, memberId,
-                     "gateway instance %d never declared itself started within %dms of being designated — "
-                         + "handing the role to instance %d",
-                     designated, GATEWAY_ACTIVATION_TIMEOUT_MS, promoted.gatewayId);
+        if (logs) {
+            Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayActivationTimeout, memberId,
+                         "gateway instance %d never declared itself started within %dms of being designated — "
+                             + "handing the role to instance %d",
+                         designated, GATEWAY_ACTIVATION_TIMEOUT_MS, promoted.gatewayId);
+        }
         promote(promoted.gatewayId, timestamp);
     }
 

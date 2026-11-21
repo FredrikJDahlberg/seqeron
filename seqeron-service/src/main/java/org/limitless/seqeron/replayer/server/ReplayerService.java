@@ -120,6 +120,7 @@ public final class ReplayerService {
     private final AtomicCounter replaysServedCounter;
     private final AtomicCounter controlRepliesDroppedCounter;
     private final AtomicCounter throttledRequestsCounter;
+    private final AtomicCounter logRecordsDroppedCounter;
 
     private final MessageHeaderDecoder inHeaderDecoder = new MessageHeaderDecoder();
     private final ReplayRequestDecoder replayRequestDecoder = new ReplayRequestDecoder();
@@ -209,6 +210,8 @@ public final class ReplayerService {
             counter(SeqeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID, "controlRepliesDroppedCount");
         this.throttledRequestsCounter =
             counter(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID, "throttledRequestsCount");
+        this.logRecordsDroppedCounter =
+            counter(SeqeronCounters.REPLAYER_LOG_RECORDS_DROPPED_COUNT_TYPE_ID, "logRecordsDroppedCount");
     }
 
     /**
@@ -267,6 +270,7 @@ public final class ReplayerService {
             // An error answers one request and leaves the session open.
             onArchiveError("a replay", new IllegalStateException(archiveError));
         }
+        logRecordsDroppedCounter.setOrdered(Logger.dropped()); // the process's: one ReplayerService per node process
         int work = drainTopologyRows() + replayer.doWork();
         work += cutIntake == null ? 0 : trackCuts() + purgeBelowFloors();
         work += replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);

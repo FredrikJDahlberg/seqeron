@@ -1,6 +1,6 @@
 # Output off the sequencer's duty cycle: plan
 
-Steps 1, 2, 3 and 5 are implemented; step 4 is not. Step 3 revokes the queue
+Steps 1 to 5 are implemented. Step 3 revokes the queue
 (`ExclusivePublication.revoke`) rather than closing it, since a close leaves every image up while the held
 subscriber blocks the drain. It answers issues 4 and 6 of
 `doc/reviews/enterprise-review.md`. Aeron references are to 1.53.2.
@@ -114,13 +114,29 @@ property's meaning changes from "halt after" to "skip after".
 
 ### Step 4: logging off the calling thread (review issue 6)
 
-- `Logger` hands each record to a bounded ring drained by one logging thread per process, which formats and writes.
-  `String.format` and the write leave the calling thread. The boxing of `Object...` arguments stays, to be measured.
-- A full ring drops the record and counts it in a new counter.
-- Records are rate-limited per event code, as `Episode` does in the Replayer.
-- The `LogDeriver`s that follow the log log nothing, so a restart does not repeat every historical rejection.
-- `Logger` is client-tier API with C++ and C# twins (`Logger.hpp`, `Logger.cs`). The default sink changes in all
-  three, and `doc/client-api.md` with it. `LoggerSink.record` is then called on the logging thread.
+`LoggerSink` is the seam: the change is a sink, and `Logger`'s API and the sink contract stay.
+
+- **4a.** The `LogDeriver`s that follow the log log nothing: `LogDeriver` builds its `Sequencer` silent, so a
+  rejection or promotion failure is logged once per member, by the service, instead of once per `Sequencer` (three
+  per member). The service's own log replay at restart still logs.
+- **4b.** `AsyncLoggerSink` wraps another sink. `record` offers the event to a bounded queue (Agrona's
+  `ManyToOneConcurrentArrayQueue`) and returns; one logging thread per sink takes events off and calls the wrapped
+  sink. The default sink becomes an `AsyncLoggerSink` around the stderr sink. `Logger.log` formats nothing: the
+  event carries the format string and its arguments, and `LoggerEvent.message()` formats them when the sink writes
+  the event, on the logging thread. An argument must therefore be a value that no longer changes; every call site
+  passes primitives, strings, enums, exceptions or collections it no longer modifies. A sink a test or an
+  application installs replaces the default and is called on the reporting thread, as today.
+  - A full queue drops the event and counts it. The logging thread writes "N log records dropped" once it has
+    drained, and `ReplayerService` copies the count to a new counter, `seqeron.replayer.logRecordsDropped`.
+  - A `Fault` event waits, up to 1 s, until the logging thread has written it, since the process halts after one.
+  - A shutdown hook drains what is queued at a normal exit.
+- **4c.** The same sink in C# (`Logger.cs`) and C++ (`Logger.hpp`). C# defers formatting as Java does. C++ still
+  formats on the calling thread: its `printf` arguments include `const char*` that need not outlive the call, and
+  `vsnprintf` into the `LoggerEvent`'s fixed 256-byte text allocates nothing. The event then copies into a ring slot.
+
+Per-code rate limiting is left out: the bounded queue caps what a flood costs the calling thread, and the drop
+count reports it. A `RateLimitingSink` wrapper, `Episode`-style per (component, code), can be added if the
+service's log replay or a flood proves noisy in practice.
 
 ### Step 5: `RestartSafeLog`
 
@@ -138,7 +154,8 @@ the Replayer's fsync.
   `clusterSeqNo` keeps advancing at the same ingress latency, the other members' queues keep advancing, and the
   stopped member's queue skips and its consumers heal.
 - A flood of rejected frames with a sink that blocks: the service's apply rate does not change, and the drops are
-  counted.
+  counted. `LogFloodTest` blocks the logging thread's writes to stderr through a flood every member must apply,
+  and `AsyncLoggerSink`'s own tests cover the drop count, the `Fault` wait and the drain at close.
 
 ## 4. Costs and open questions
 

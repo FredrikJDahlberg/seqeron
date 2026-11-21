@@ -59,6 +59,8 @@ inline constexpr std::int32_t REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5
 inline constexpr std::int32_t REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;
 // Count of local-archive calls that threw; a sustained rate means the archive is not serving replays.
 inline constexpr std::int32_t REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
+// Count of log records the process's default sink dropped, its queue being full.
+inline constexpr std::int32_t REPLAYER_LOG_RECORDS_DROPPED_COUNT_TYPE_ID = 5112;
 
 // ── Co-located application replicas (5200-5299) ──────────────────────────────────────────────
 // Core reserves 5200 and 5297-5299; a consumer allocates its own in 5201-5296.
