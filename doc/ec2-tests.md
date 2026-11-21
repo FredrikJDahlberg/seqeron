@@ -443,7 +443,7 @@ No rule: the test is reported, not judged. If the C# client moves to a hosted st
 
 **Tooling, not built.**
 
-- `Seqeron.HopBench`, in `seqeron-client/src/test/csharp-bench`: the C# twin of `AppHopBench`, with its options, schedule,
+- `Seqeron.HopBench`, a new project beside `seqeron-client/src/test/csharp-probe`: the C# twin of `AppHopBench`, with its options, schedule,
   ProbeMarker and result line. ProbeMarker is encoded by hand, as `Seqeron.ClusterProbe` does, since schema 214 generates
   no C# codecs.
 - A Windows side for the drivers. `node.sh` is bash over ssh; Windows Server's OpenSSH can run a PowerShell twin,
