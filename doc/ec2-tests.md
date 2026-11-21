@@ -508,10 +508,11 @@ lines collected into `<results>/shadow-<stamp>.txt`. `SHADOW_RATES`, `SHADOW_RUN
 
 **Threats.** A frame that lands on one stream only is never sampled, so a stream that stops shows as unmatched frames, not
 as lag: a run with more than a few hundred, the frames in flight at its end, has failed. The probe keeps every sample, 8
-bytes each, 96 MB for a run at 400k msg/s. The lag is against the service's publication, not the commit, which neither
-stream shows; it is step 1's cost to a consumer, which reads the service's publication today. The service still publishes
-its queues, so the agent's file reads share the member's cores and memory bandwidth with work step 1 removes. The rates
-share a cluster, so a later rate runs on a longer log, still within the page cache. One launch, as for every test here.
+bytes each, 96 MB for a run at 400k msg/s, in an array sized up front for 16M samples, so no copy stalls it mid-run. The
+lag is against the service's publication, not the commit, which neither stream shows; it is step 1's cost to a
+consumer, which reads the service's publication today. The service still publishes its queues, so the agent's file reads
+share the member's cores and memory bandwidth with work step 1 removes. The rates share a cluster, so a later rate runs
+on a longer log, still within the page cache. One launch, as for every test here.
 
 **Not covered.** The service's latency without its queue (step 1 itself), a slow or stopped subscriber on the shadow (step
 3), and the gateway host, whose relay derives its queues as it does today.
