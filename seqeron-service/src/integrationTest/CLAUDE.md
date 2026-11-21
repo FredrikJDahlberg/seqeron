@@ -41,7 +41,8 @@ the member's `DerivationStart`. `QueueFrames` reads a member's queue through its
 recording. `DerivedQueueTest` holds each member's queue, as those recordings hold it, to the history its Replayer
 serves, and that history to the reference member's from where it starts, frame for frame and position for position,
 across a leader stop and a restart from a cluster snapshot, whose history opens with the round's marker where it lies
-on the reference's. `QueueSkipTest` holds a tethered subscriber that stops reading a member's queue, under the least
+on the reference's, and a restore's replay from each marker's cut, which the Replayer answers from the positions the
+service recorded, to opening on that marker. `QueueSkipTest` holds a tethered subscriber that stops reading a member's queue, under the least
 stall timeout, to the queue being revoked from under it and reopened under a new session, with the member running
 and a confirm producer reading the queue throughout seeing every frame once, in order; `LogFloodTest` blocks the
 logging thread's writes to stderr through a flood of rejected frames, and holds every member's service to applying it

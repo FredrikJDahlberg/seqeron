@@ -29,12 +29,14 @@ Do not give `FAULTERON_DIR` a relative path on the gradle command line.
 Replayer and then follows the queue live (`follow`), or streams through `ClusterStreamSender` and
 `sequencer/client/PendingSends` and checks its own queue shows every frame exactly once, in order (`confirm`, which
 `FailoverProcessTest` runs across the leader kill, and `GatewayHostTest` runs on a gateway host across the loss of the
-relay's member). The probe attaches to a member's own embedded driver, or a gateway host's, so no test needs a
+relay's member), or reads the queue through a tethered subscription a test can `SIGSTOP` to hold it (`hold`, which
+`StoppedHolderTest` and `csharp-client-test.sh` run until the member skips the queue). The probe attaches to a member's own embedded driver, or a gateway host's, so no test needs a
 standalone `aeronmd`. `SessionReplaceTest` drives `TestApplication` (below) through the loss of its cluster session,
 and fails if a replacement stops its duty cycle.
 
 **The C# harnesses.** `csharp-client-test.sh` drives the C# client tier: `Seqeron.ClusterProbe`
-(`seqeron-client/src/test/csharp-probe`), the C# twin of the probe's `confirm` and `follow`, then the C# examples, its
+(`seqeron-client/src/test/csharp-probe`), the C# twin of the probe's `confirm` and `follow`, a `follow` across a queue
+skipped under a stopped tethered subscriber, then the C# examples, its
 gateway pair through a handover, `SnapshotApp` restored from a round it confirmed, and last a `follow` that must fail
 on a member restarted at a cut. It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`.
 `csharp-windows-test.sh` runs the same C# client on Windows, where it is deployed: one member in WSL1 (three elect

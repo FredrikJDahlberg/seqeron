@@ -48,7 +48,8 @@ import org.limitless.seqeron.sequencer.RestartSafeLog;
  * the same log: each member's queue, as its archive records it, must be what its Replayer serves, frame for frame and
  * position for position, and each member's history must be the reference member's from where it starts. A member
  * restarted from a cluster snapshot starts its queues at the cut its snapshot recorded, with the round's marker, and
- * that must be where the marker lies on the reference's.
+ * that must be where the marker lies on the reference's. A restore's replay from each marker's cut, which the Replayer
+ * answers from the marker positions the service recorded, must open on that marker where the queue holds it.
  */
 @ExtendWith(InterruptingTestCallback.class)
 class DerivedQueueTest {
@@ -222,6 +223,7 @@ class DerivedQueueTest {
                     assertTrue(isMarker(served.getFirst()), history + " opens with the restored round's marker");
                 }
                 assertFrom(references.get(i), served, history);
+                assertCutsServed(aeron, history, groupId, served);
 
                 final String queue = "member " + member + "'s queue of group " + groupId;
                 assertFrom(served, readQueue(aeron, archive, queue, groupId, untilClusterSeqNo).frames(), queue);
@@ -229,6 +231,54 @@ class DerivedQueueTest {
         } finally {
             CloseHelper.closeAll(archive, aeron);
         }
+    }
+
+    /**
+     * Each marker in {@code history}, asked for as a restore's cut, must be where a replay of it opens: the position a
+     * member's service recorded for its round, as its Replayer holds it, against the frame its queue agent offered.
+     */
+    private static void assertCutsServed(final Aeron aeron, final String what, final int groupId,
+                                         final List<Frame> history) {
+        final SequencedFrameDecoder decoder = new SequencedFrameDecoder();
+        int cuts = 0;
+        for (final Frame marker : history) {
+            if (!isMarker(marker)) {
+                continue;
+            }
+            decoder.wrap(new UnsafeBuffer(marker.bytes()), 0, marker.bytes().length);
+            final long cut = decoder.clusterSeqNo();
+            final Frame opened = cutServed(aeron, what + "'s replay from cut " + cut, groupId, cut);
+            assertEquals(marker.position(), opened.position(), what + ": where the replay from cut " + cut + " opens");
+            assertArrayEquals(marker.bytes(), opened.bytes(),
+                              what + ": the frame the replay from cut " + cut + " opens on");
+            cuts++;
+        }
+        System.out.printf("%s: %d cut(s) served at their markers%n", what, cuts);
+    }
+
+    /** The first frame of a restore's replay of a group's queue from {@code cutClusterSeqNo}. */
+    private static Frame cutServed(final Aeron aeron, final String what, final int groupId,
+                                   final long cutClusterSeqNo) {
+        final Frames frames = new Frames(cutClusterSeqNo);
+        final long deadline = System.nanoTime() + TIMEOUT_NS;
+        try (Subscription control =
+                 aeron.addSubscription(ReplayProtocol.IPC_CHANNEL + "|tether=false", ReplayProtocol.CONTROL_STREAM_ID);
+             Publication requests =
+                 aeron.addPublication(ReplayProtocol.IPC_CHANNEL, ReplayProtocol.REQUEST_STREAM_ID)) {
+            final long[] replay = QueueFrames.ask(control, requests, aeron.nextCorrelationId(), 1, groupId,
+                                                  ReplayProtocol.FROM_START, cutClusterSeqNo, deadline, what);
+            assertTrue(replay[0] != ReplayProtocol.NO_REPLAY_NEEDED, what + " was refused");
+            try (Subscription subscription = aeron.addSubscription(
+                     ReplayProtocol.IPC_CHANNEL + "|session-id=" + (int)replay[0], ReplayProtocol.REPLAY_STREAM_ID)) {
+                while (frames.list.isEmpty()) {
+                    if (subscription.poll(frames, 1) == 0) {
+                        assertTrue(System.nanoTime() < deadline, what + " delivered no frame");
+                        Tests.yield();
+                    }
+                }
+            }
+        }
+        return frames.list.getFirst();
     }
 
     /** {@code actual} must be {@code expected} from {@code actual}'s first frame on, frame for frame and position. */

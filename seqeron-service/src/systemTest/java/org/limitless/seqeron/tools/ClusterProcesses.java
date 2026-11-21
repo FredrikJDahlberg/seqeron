@@ -54,14 +54,19 @@ final class ClusterProcesses implements AutoCloseable {
     private final Child[] members = new Child[MEMBERS];
     private final boolean[] killed = new boolean[MEMBERS];
     private final List<Child> children = Collections.synchronizedList(new ArrayList<>());
+    private List<String> memberProperties = List.of();
 
     ClusterProcesses(final Path baseDir, final Path logDir) {
         this.baseDir = baseDir;
         this.logDir = logDir;
     }
 
-    /** Starts every member and waits for each consensus module to be active under exactly one leader. */
-    void startAll() {
+    /**
+     * Starts every member and waits for each consensus module to be active under exactly one leader.
+     * @param properties {@code key=value} system properties for every member, this start and each restart
+     */
+    void startAll(final String... properties) {
+        memberProperties = List.of(properties);
         for (int m = 0; m < MEMBERS; m++) {
             startMember(m, "seq-" + m);
         }
@@ -76,10 +81,12 @@ final class ClusterProcesses implements AutoCloseable {
     Child startMember(final int m, final String logName) {
         final String hosts = String.join(",", "localhost", "localhost", "localhost");
         killed[m] = false;
-        members[m] = launch(logName,
-                            List.of("-Xlog:gc", "-Dsequencer.memberId=" + m, "-Dsequencer.baseDir=" + baseDir,
-                                    "-Dsequencer.aeronDir=" + aeronDir(m), "-Dsequencer.hosts=" + hosts, "-jar", JAR),
-                            Map.of());
+        final List<String> args =
+            new ArrayList<>(List.of("-Xlog:gc", "-Dsequencer.memberId=" + m, "-Dsequencer.baseDir=" + baseDir,
+                                    "-Dsequencer.aeronDir=" + aeronDir(m), "-Dsequencer.hosts=" + hosts));
+        memberProperties.forEach(property -> args.add("-D" + property));
+        args.addAll(List.of("-jar", JAR));
+        members[m] = launch(logName, args, Map.of());
         return members[m];
     }
 

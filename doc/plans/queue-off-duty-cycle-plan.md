@@ -149,10 +149,14 @@ the Replayer's fsync.
 - The agent's decisions: a kept frame on back-pressure, no read while one is kept, the position check, the skip
   after the stall timeout.
 - `DerivedQueueTest` compares the live queue with the derivation frame for frame; it also compares the marker
-  positions the service records with the ones the agent's offers produce.
+  positions the service records with the ones the agent's offers produce: a restore's replay from each marker's cut,
+  which the Replayer answers from the service's `CutHandover`, must open on that marker where the queue holds it.
 - A system test that stops (`SIGSTOP`) a child JVM holding a tethered queue subscription during high-rate ingress:
   `clusterSeqNo` keeps advancing at the same ingress latency, the other members' queues keep advancing, and the
-  stopped member's queue skips and its consumers heal.
+  stopped member's queue skips and its consumers heal. `StoppedHolderTest` stops a `ClusterProbe hold` on the leader
+  under a flood and holds the leader's `clusterSeqNo` to advancing while its queue is held, a ping through another
+  member's queue to its echo, the queue to its skip and a follower of it to re-converging. It asserts no latency;
+  `doc/ec2-results.md` §2.5 measures it.
 - A flood of rejected frames with a sink that blocks: the service's apply rate does not change, and the drops are
   counted. `LogFloodTest` blocks the logging thread's writes to stderr through a flood every member must apply,
   and `AsyncLoggerSink`'s own tests cover the drop count, the `Fault` wait and the drain at close.
@@ -166,9 +170,15 @@ the Replayer's fsync.
   p99.9 under 17 µs, within the test's rule, so step 1 needs no fast path (a single-producer ring the service writes
   and the agent reads before the log).
 - **A second derivation.** The member already runs one `LogDeriver` in `LogFollower`. The agent adds another, on
-  another thread. Sharing one would need a thread-safe hand-off of the follower's runs and checkpoints; whether that
-  is worth it is open.
+  another thread. Closed: not shared. `doc/ec2-results.md` §2.5 ran three derivations per member (the sequencer's
+  own queues, a shadow agent's and `LogFollower`'s) at up to 400k msg/s within Test 7's rule, so the second costs
+  nothing a benchmark shows. Sharing one would couple the agent and the Replayer both ways (a full hand-off holds
+  the agent, a held agent holds the follower's tip) to save it.
 - **Re-created queues.** Step 3 relies on `ReplayerRecovery` healing across a queue publication replaced
-  mid-run, with a new session id. Verify it in Java and C#, and in the C++ hosted stubs.
+  mid-run, with a new session id. Verified: the receiver polls the queue's subscription rather than an image, so a
+  revoked image and a new session are an eviction or a `clusterSeqNo` jump, which `ReplayerRecoveryTest` covers case
+  for case in Java and C#. `QueueSkipTest` and `StoppedHolderTest` heal a Java receiver across the reopen, and
+  `csharp-client-test.sh`'s phase F a C# one. The C++ hosted stubs read no queue: `ClientProxy`'s Java façade does,
+  so the Java tests cover them.
 - **Documents to change with the code.** `seqeron-service/CLAUDE.md`, `doc/overview.md`, `doc/fault-tolerance.md`
   and `doc/ops.md` (the stall timeout's meaning, the counters).

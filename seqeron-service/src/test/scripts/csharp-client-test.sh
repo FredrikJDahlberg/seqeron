@@ -2,18 +2,19 @@
 # The C# client tier against a live three-node cluster.
 #
 # Seqeron.ClusterProbe (seqeron-client/src/test/csharp-probe) is the C# twin of ClusterProbe's confirm and follow
-# modes, on Aeron.NET against the members' own embedded Java drivers. Eight phases:
+# modes, on Aeron.NET against the members' own embedded Java drivers. Nine phases:
 #
 #   A  UDP ingress from a follower's host, through PendingSends            confirm EXACT
 #   B  IPC ingress co-located with the leader (ConnectColocated)            confirm EXACT, no UDP fallback
 #   C  ConnectColocated on a follower, which never answers IPC ingress      confirm EXACT, after the UDP fallback
 #   D  the leader killed mid-stream, PendingSends beside an untracked control   tracked confirm EXACT
 #   E  a cold start on the new leader's node, replayed from groupSeqNo 1    follow CONTIGUOUS, >= 1 replay served
-#   F  the C# examples, built against the packed NuGet package: FollowStream and ColocatedApp echo their pings,
+#   F  a stopped tethered subscriber holds the queue, which the member skips   follow CONTIGUOUS past the skip
+#   G  the C# examples, built against the packed NuGet package: FollowStream and ColocatedApp echo their pings,
 #      and the active GatewayApp of the pair in seqeron-examples/topology-csharp.xml is killed — the standby
 #      is designated, resumes past its predecessor's connection id, and serves
-#   G  SnapshotApp confirms a snapshot round, and its restart restores from it with the ledger's total intact
-#   H  a member restarted at a cut: a ReplayerStreamReceiver with no snapshot file walks it from its start
+#   H  SnapshotApp confirms a snapshot round, and its restart restores from it with the ledger's total intact
+#   I  a member restarted at a cut: a ReplayerStreamReceiver with no snapshot file walks it from its start
 #                                                                            follow FAILED
 #
 # and no member logs a rejected ingress frame. D SIGKILLs the leader, as FailoverProcessTest does, so the run costs
@@ -54,7 +55,8 @@ for ex in FollowStream ColocatedApp GatewayApp SnapshotApp; do
     >> "$LOG_DIR/build.log" 2>&1 || { echo "$ex build failed: $LOG_DIR/build.log"; exit 1; }
 done
 
-JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
+# The least queue stall timeout, so F's skip comes before the stopped subscriber's client times out.
+JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}" -Dsequencer.queueStallTimeoutMs=2000)
 BASE_DIR="${TMP_DIR}/seqeron-seqcs"
 SNAPSHOT_DIR="${BASE_DIR}/snapshot-app"
 CLUSTER_HOSTS="$(cluster_hosts_string 3)"
@@ -109,7 +111,7 @@ for m in 0 1 2; do
   wait_for_log "$LOG_DIR/seq-$m.log" "Running" 30 || { echo "seq $m not up"; exit 1; }
 done
 # topology-csharp.xml less its gateway list first, since the cluster refuses everything before its groups; the
-# list lands in F, once both instances are up.
+# list lands in G, once both instances are up.
 sed -e '/<gateways>/,/<\/gateways>/d' "${REPO_ROOT}/seqeron-examples/topology-csharp.xml" > "$LOG_DIR/topology-groups.xml"
 "${REPO_ROOT}/seqeron-service/src/main/scripts/clusterctl.sh" load-topology "$LOG_DIR/topology-groups.xml" \
   > "$LOG_DIR/load-groups.log" 2>&1 || { echo "load-topology failed: $LOG_DIR/load-groups.log"; exit 1; }
@@ -174,50 +176,82 @@ REPLY_ID=$(grep -oE "requests replays as client [0-9]+" "$LOG_DIR/follow.log" | 
 REPLAYS=$(grep -c "replay for client ${REPLY_ID:-none}:" "$LOG_DIR/seq-${L2:-$P}.log")
 echo "    replays served to client 36: $REPLAYS"
 
-echo "=== F: the C# examples, and a gateway handover"
 L2="${L2:-$P}"
+# Before G loads the snapshot policy, whose rounds may trim L2's history from groupSeqNo 1. The flood and the frames
+# after it are all on the default queue, so a follow that heals the skip dispatches every one of them.
+echo "=== F: a stopped tethered subscriber on member $L2's queue"
+F_OK=1
+SKIP_FRAMES=2100
+JAVA_PROBE=(java "${SEQERON_JAVA_OPTS[@]}" -Dprobe.memberId="$L2" -Dprobe.aeronDir="$(aeron_dir "$L2")")
+PROBE_MAIN=(-cp "$JAR" org.limitless.seqeron.tools.ClusterProbe)
+probe held follow "$L2" 38 --live-seconds 30 &
+HELD_PID=$!
+BG_PIDS+=("$HELD_PID")
+wait_for_log "$LOG_DIR/held.log" "following live" 30 || { echo "    the follow never caught up"; F_OK=0; }
+"${JAVA_PROBE[@]}" "${PROBE_MAIN[@]}" hold > "$LOG_DIR/holder.log" 2>&1 &
+HOLDER_PID=$!
+BG_PIDS+=("$HOLDER_PID")
+wait_for_log "$LOG_DIR/holder.log" "holding group" 30 || { echo "    the holder never subscribed"; F_OK=0; }
+kill -STOP "$HOLDER_PID"
+# More than two 8 MiB windows of the default 16 MiB IPC term.
+"${JAVA_PROBE[@]}" -Dprobe.count=2000 -Dprobe.fillerBytes=8800 "${PROBE_MAIN[@]}" submit > "$LOG_DIR/flood.log" 2>&1 ||
+  { echo "    the flood failed: $LOG_DIR/flood.log"; F_OK=0; }
+wait_for_log "$LOG_DIR/seq-$L2.log" "SKIPPED: group" 30 || { echo "    member $L2 never skipped its queue"; F_OK=0; }
+kill -CONT "$HOLDER_PID" 2>/dev/null
+kill "$HOLDER_PID" 2>/dev/null
+wait "$HOLDER_PID" 2>/dev/null
+"${JAVA_PROBE[@]}" -Dprobe.count=100 -Dprobe.pacingMicros=10000 "${PROBE_MAIN[@]}" submit > "$LOG_DIR/after.log" 2>&1 ||
+  { echo "    the frames after the skip failed: $LOG_DIR/after.log"; F_OK=0; }
+wait "$HELD_PID"; HELD_RC=$?
+echo "    $(verdict held)"
+CAUGHT_AT=$(grep -oE "Caught up at groupSeqNo [0-9]+" "$LOG_DIR/held.log" | grep -oE "[0-9]+$" | head -1)
+LAST_AT=$(grep -oE "dispatched groupSeqNo [0-9]+ to [0-9]+" "$LOG_DIR/held.log" | grep -oE "[0-9]+$" | tail -1)
+((HELD_RC == 0 && ${LAST_AT:-0} - ${CAUGHT_AT:-0} >= SKIP_FRAMES)) ||
+  { echo "    dispatched groupSeqNo ${CAUGHT_AT:-?} to ${LAST_AT:-?}, not past the $SKIP_FRAMES frames sent"; F_OK=0; }
+
+echo "=== G: the C# examples, and a gateway handover"
 Q=$(( 3 - L1 - L2 ))
 example follow-ex FollowStream "$Q"; FOLLOW_PID=$!
 example colocated-ex ColocatedApp "$L2"; COLOCATED_PID=$!
 example gw-a GatewayApp "$Q" SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-CS-A; GW_A_PID=$!
 example gw-b GatewayApp "$L2" SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-CS-B; GW_B_PID=$!
-F_OK=1
+G_OK=1
 # Both instances are up before the list lands, and read their queue as soon as their rows do, so the bootstrap
-# designation is answered inside its 5 s. topology.xml's round every 10 s comes with it, for G's restore and H's
+# designation is answered inside its 5 s. topology.xml's round every 10 s comes with it, for H's restore and I's
 # cut; of the C# examples only SnapshotApp has a SnapshotListener, so it is the one that joins a round.
 sed -e 's/ group="\([a-z]*\)"/ group="\1" snapshot="true"/' \
     -e 's|</topology>|<snapshots interval="10"/></topology>|' \
     "${REPO_ROOT}/seqeron-examples/topology-csharp.xml" > "$LOG_DIR/topology-snapshots.xml"
 CLUSTERCTL_MEMBER_ID="$Q" "${REPO_ROOT}/seqeron-service/src/main/scripts/clusterctl.sh" load-topology \
   "$LOG_DIR/topology-snapshots.xml" > "$LOG_DIR/load-topology.log" 2>&1 ||
-  { echo "    load-topology failed: $LOG_DIR/load-topology.log"; F_OK=0; }
+  { echo "    load-topology failed: $LOG_DIR/load-topology.log"; G_OK=0; }
 for f in gw-a gw-b; do
-  wait_for_log "$LOG_DIR/$f.log" "# caught up" 60 || { echo "    $f never caught up"; F_OK=0; }
+  wait_for_log "$LOG_DIR/$f.log" "# caught up" 60 || { echo "    $f never caught up"; G_OK=0; }
 done
-wait_for_count gw-a "ping echoed on connection 0" 3 30 || { echo "    GW-EX-CS-A never served connection 0"; F_OK=0; }
+wait_for_count gw-a "ping echoed on connection 0" 3 30 || { echo "    GW-EX-CS-A never served connection 0"; G_OK=0; }
 wait_for_log "$LOG_DIR/gw-b.log" "# connection 0 opened (example-client)" 10 ||
-  { echo "    the standby never saw connection 0 open"; F_OK=0; }
+  { echo "    the standby never saw connection 0 open"; G_OK=0; }
 kill -9 "$GW_A_PID" 2>/dev/null
 wait "$GW_A_PID" 2>/dev/null
 echo "    killed the active instance, GW-EX-CS-A"
 # Resuming past the predecessor's id is what keeps the pair's connection ids unique across the handover.
-wait_for_count gw-b "ping echoed on connection 1" 3 30 || { echo "    GW-EX-CS-B never served connection 1"; F_OK=0; }
+wait_for_count gw-b "ping echoed on connection 1" 3 30 || { echo "    GW-EX-CS-B never served connection 1"; G_OK=0; }
 grep -q "designated — serving, connection ids from 1" "$LOG_DIR/gw-b.log" ||
-  { echo "    GW-EX-CS-B did not resume at connection id 1"; F_OK=0; }
-wait_for_count follow-ex "ping echoed" 3 10 || { echo "    FollowStream echoed no pings"; F_OK=0; }
-wait_for_count colocated-ex "ping echoed" 3 10 || { echo "    ColocatedApp echoed no pings"; F_OK=0; }
+  { echo "    GW-EX-CS-B did not resume at connection id 1"; G_OK=0; }
+wait_for_count follow-ex "ping echoed" 3 10 || { echo "    FollowStream echoed no pings"; G_OK=0; }
+wait_for_count colocated-ex "ping echoed" 3 10 || { echo "    ColocatedApp echoed no pings"; G_OK=0; }
 kill "$FOLLOW_PID" "$COLOCATED_PID" "$GW_B_PID" 2>/dev/null
 wait "$FOLLOW_PID"; FOLLOW_RC=$?   # 1 on a gap in groupSeqNo
 wait "$COLOCATED_PID"; COLOCATED_RC=$?
 wait "$GW_B_PID"; GW_B_RC=$?
 ((FOLLOW_RC == 0 && COLOCATED_RC == 0 && GW_B_RC == 0)) ||
-  { echo "    exits: FollowStream=$FOLLOW_RC ColocatedApp=$COLOCATED_RC GW-EX-CS-B=$GW_B_RC"; F_OK=0; }
+  { echo "    exits: FollowStream=$FOLLOW_RC ColocatedApp=$COLOCATED_RC GW-EX-CS-B=$GW_B_RC"; G_OK=0; }
 echo "    GW-EX-CS-A: $(grep -c "ping echoed" "$LOG_DIR/gw-a.log") pings echoed;" \
      "GW-EX-CS-B: $(grep -m1 "designated" "$LOG_DIR/gw-b.log"), $(grep -c "ping echoed" "$LOG_DIR/gw-b.log") pings echoed"
 
 # On the leader, so the replica submits transfers and its rounds' SnapshotEnd.
-echo "=== G: SnapshotApp restores from its own confirmed snapshot"
-G_OK=1
+echo "=== H: SnapshotApp restores from its own confirmed snapshot"
+H_OK=1
 example snap-1 SnapshotApp "$L2" SEQERON_EXAMPLE_SNAPSHOT_DIR="$SNAPSHOT_DIR"; SNAP_PID=$!
 CONFIRMED=""
 for ((i = 0; i < 80; i++)); do
@@ -225,48 +259,48 @@ for ((i = 0; i < 80; i++)); do
   [[ -n "$CONFIRMED" ]] && break
   sleep 0.5
 done
-[[ -n "$CONFIRMED" ]] || { echo "    no round confirmed a snapshot in 40 s"; G_OK=0; }
+[[ -n "$CONFIRMED" ]] || { echo "    no round confirmed a snapshot in 40 s"; H_OK=0; }
 kill "$SNAP_PID" 2>/dev/null
 wait "$SNAP_PID"; SNAP_1_RC=$?
 echo "    confirmed $(basename "${CONFIRMED:-none}") after $(grep -c " transfer " "$LOG_DIR/snap-1.log") transfers"
 example snap-2 SnapshotApp "$L2" SEQERON_EXAMPLE_SNAPSHOT_DIR="$SNAPSHOT_DIR"; SNAP_PID=$!
-wait_for_log "$LOG_DIR/snap-2.log" "# caught up" 30 || { echo "    the restart never caught up"; G_OK=0; }
-grep -q "# restored after" "$LOG_DIR/snap-2.log" || { echo "    the restart restored no snapshot"; G_OK=0; }
+wait_for_log "$LOG_DIR/snap-2.log" "# caught up" 30 || { echo "    the restart never caught up"; H_OK=0; }
+grep -q "# restored after" "$LOG_DIR/snap-2.log" || { echo "    the restart restored no snapshot"; H_OK=0; }
 # Transfers move money and never make it: eight accounts of 1000.
-grep -q "# caught up at .* total 8000$" "$LOG_DIR/snap-2.log" || { echo "    the ledger's total changed"; G_OK=0; }
+grep -q "# caught up at .* total 8000$" "$LOG_DIR/snap-2.log" || { echo "    the ledger's total changed"; H_OK=0; }
 kill "$SNAP_PID" 2>/dev/null
 wait "$SNAP_PID"; SNAP_2_RC=$?
-((SNAP_1_RC == 0 && SNAP_2_RC == 0)) || { echo "    exits: SnapshotApp=$SNAP_1_RC, restarted=$SNAP_2_RC"; G_OK=0; }
+((SNAP_1_RC == 0 && SNAP_2_RC == 0)) || { echo "    exits: SnapshotApp=$SNAP_1_RC, restarted=$SNAP_2_RC"; H_OK=0; }
 echo "    $(grep -m1 "# restored after" "$LOG_DIR/snap-2.log")"
 
 # Q's restart restores the newest restart-safe round and records each queue from the cut. With L1 still down, the
 # cluster has no quorum until Q is back.
-echo "=== H: a cold start on member $Q, restarted at a cut"
-H_OK=1
+echo "=== I: a cold start on member $Q, restarted at a cut"
+I_OK=1
 for ((i = 0; i < 120; i++)); do
   grep -q "^safe " "$BASE_DIR/cluster-$Q/restart-safe.log" 2>/dev/null && break
   sleep 0.5
 done
-grep -q "^safe " "$BASE_DIR/cluster-$Q/restart-safe.log" 2>/dev/null || { echo "    member $Q has no restart-safe cut"; H_OK=0; }
+grep -q "^safe " "$BASE_DIR/cluster-$Q/restart-safe.log" 2>/dev/null || { echo "    member $Q has no restart-safe cut"; I_OK=0; }
 kill "${SEQ_PIDS[$Q]}" 2>/dev/null; wait "${SEQ_PIDS[$Q]}" 2>/dev/null
 java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$Q" -Dsequencer.baseDir="$BASE_DIR" \
      -Dsequencer.hosts="$CLUSTER_HOSTS" -jar "$JAR" > "$LOG_DIR/seq-$Q-restart.log" 2>&1 &
 SEQ_PIDS[$Q]=$!
-wait_for_log "$LOG_DIR/seq-$Q-restart.log" "serving replay" 60 || { echo "    member $Q not back"; H_OK=0; }
+wait_for_log "$LOG_DIR/seq-$Q-restart.log" "serving replay" 60 || { echo "    member $Q not back"; I_OK=0; }
 # With no snapshot file, the ReplayerStreamReceiver walks the recording from its start, and its Poll throws.
 probe walk follow "$Q" 37 --live-seconds 1; WALK_RC=$?
 echo "    $(verdict walk)"
 ((WALK_RC != 0)) && grep -q "follow failed: .*expected 1" "$LOG_DIR/walk.log" ||
-  { echo "    expected the walk from the recording's start to fail on the cut"; H_OK=0; }
+  { echo "    expected the walk from the recording's start to fail on the cut"; I_OK=0; }
 
 REJECTED=$(cat "$LOG_DIR"/seq-*.log | grep -cE "skipping (malformed )?ingress message")
 echo "=== ingress frames rejected by the sequencer: $REJECTED"
 
 if ((A_RC == 0 && B_RC == 0 && B_FELL_BACK == 0 && C_RC == 0 && C_FELL_BACK == 1 && D_RC == 0 && E_RC == 0 &&
-      REPLAYS >= 1 && F_OK == 1 && G_OK == 1 && H_OK == 1 && REJECTED == 0)); then
+      REPLAYS >= 1 && F_OK == 1 && G_OK == 1 && H_OK == 1 && I_OK == 1 && REJECTED == 0)); then
   echo "C# CLIENT TEST: PASS"; exit 0
 else
   echo "C# CLIENT TEST: FAIL (A=$A_RC B=$B_RC/fallback $B_FELL_BACK C=$C_RC/fallback $C_FELL_BACK D=$D_RC E=$E_RC" \
-       "replays=$REPLAYS F=$F_OK G=$G_OK H=$H_OK rejected=$REJECTED)"
+       "replays=$REPLAYS F=$F_OK G=$G_OK H=$H_OK I=$I_OK rejected=$REJECTED)"
   exit 1
 fi
