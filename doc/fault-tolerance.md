@@ -87,43 +87,45 @@ The session survives either way, so neither side sees a fault.
 ### 1.3 A node that cannot publish its queue terminates itself
 
 A dropped frame would leave a member's queue behind the positions its log gives, which a client joins the live
-queue by and a replay derives, so `QueuePublisher.emit` retries the queue offer until it succeeds. The queue's
-one tethered subscriber is the service's own, which reads past each frame as it is offered, so the publication
-is always connected; client subscriptions are untethered. A client that stops polling holds the window only
-until its driver drops it, within about 0.2 s ([`ops.md`](ops.md), "Untethered subscribers"), well inside the
-stall timeout below.
+queue by and a replay derives, so the member's queue agent (`QueueAgent`) never drops one: a frame a queue does not
+take is kept, and no log entry is read while one is. The agent publishes from the committed log on a thread of its
+own, so a held queue holds the agent and never the service, which goes on sequencing. The queue's one tethered
+subscriber is the agent's own, which reads past each frame as it is offered, so the publication is always connected;
+client subscriptions are untethered. A client that stops polling holds the window only until its driver drops it,
+within about 0.2 s ([`ops.md`](ops.md), "Untethered subscribers"), well inside the stall timeout below.
 
-The retry is bounded. The service's subscriber has read up to the publication's position, so it never holds a
-frame back, and `QueuePublisher` tells three cases apart:
+The wait is bounded. The agent's subscriber has read up to the publication's position, so it never holds a frame
+back, and `QueueEmitter` tells the cases apart:
 
 | queue state | response |
 | --- | --- |
-| slow: an offer back-pressured, then landing | keep retrying; raise the back-pressure alert after 200 ms |
-| stalled: one offer back-pressured for `sequencer.queueStallTimeoutMs`, default 5 s | fatal |
-| the subscriber's image gone | fatal at once |
+| slow: a frame kept, then landing | keep offering; alert every 10 ms, raise the stall gauge after 200 ms |
+| stalled: a frame kept for `sequencer.queueStallTimeoutMs`, default 5 s | fatal |
+| a frame refused for good, or landed off the position its log gives | fatal at once |
+| the agent's subscriber's image gone | fatal at the next check, within 1 s |
 
 A lost image back-pressures nothing, since the untethered client subscriptions keep the publication
-connected, so the 1 Hz heartbeat also calls `QueuePublisher.checkRecordingAlive`. If the consensus module
-refuses the heartbeat timer for 1 s without a break, that is fatal too; otherwise the cluster clock would
-stop with no visible signal.
+connected, so the agent checks its subscribers once a second. If the consensus module refuses the heartbeat timer
+for 1 s without a break, that is fatal too (`HeartbeatTimer`); otherwise the cluster clock would stop with no
+visible signal.
 
-A fatal condition logs `FATAL: … terminating this node`, sets `seqeron_sequencer_queue_stalled`, and exits
-with code 70 (`NodeDriver.EXIT_FATAL`); [`ops.md`](ops.md) has the operator's procedure. It does not throw:
+A fatal condition logs `FATAL: … terminating`, sets `seqeron_sequencer_queue_stalled` when it is the queue's, and
+exits with code 70 (`NodeDriver.EXIT_FATAL`); [`ops.md`](ops.md) has the operator's procedure. It does not throw:
 a cluster callback that throws has already had its log position advanced, and `AgentRunner` keeps the agent
 running, so the frame would be silently dropped (spec §9.4).
 
-How the process ends depends on where the condition is found. Inside a retry — a stalled queue, an
-offer no retry can clear, a refused timer — the service thread cannot leave it, and a graceful shutdown
-waits for that thread, so the process halts at once and a failed leader is replaced within the election
-timeout. From the heartbeat check the callback returns, and the member shuts down gracefully. Any shutdown
+How the process ends depends on where the condition is found. The queue agent runs the member's fatal handler and
+the member shuts down gracefully. A refused timer is found inside a retry the service thread cannot leave, and a
+graceful shutdown waits for that thread, so the process halts at once and a failed leader is replaced within the
+election timeout. Any shutdown
 after a fatal, including a Replayer's, is halted 15 s after it began (`FATAL_SHUTDOWN_BACKSTOP_MS`), since
 it closes the archive that may be what failed. A halted member leaves its mark files active, and a restart
 is refused until their liveness timeout (about 10 s) has passed.
 
 The remaining members hold the same log and keep quorum, and an election moves leadership if the
 failed member led. In a three-member cluster a second failure loses quorum. A restarted member replays the
-log, from the start or from its newest safe snapshot (§0), and rebuilds its queues. Start-up has the same bound —
-each queue's subscriber must connect within 5 s (`QUEUE_RECORDING_START_TIMEOUT_MS`) — so a member that exits 70
+log, from the start or from its newest safe snapshot (§0), and derives its queues again. Start-up has the same bound:
+a queue whose own subscriber does not connect keeps its first frame for the stall timeout, so a member that exits 70
 again at once still has a broken driver.
 
 ### 1.4 A node whose applied log is truncated takes itself down

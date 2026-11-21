@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -106,9 +107,9 @@ public final class ReplayerServer {
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final Thread replayerThread;
     private final Thread relayThread;
-    /** A member's shadow queues, while {@link ShadowQueueAgent#PROP_ENABLED} is set; null otherwise. */
-    private final ShadowQueueAgent shadowQueues;
-    private final Thread shadowThread;
+    /** A member's queues; null on a gateway host. */
+    private final QueueAgent queues;
+    private final Thread queueThread;
 
     /**
      * A gateway host's settings, which {@link #fromProperties()} reads from the system properties above.
@@ -270,7 +271,7 @@ public final class ReplayerServer {
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake) {
         return launch(memberId, aeronDir, idleStrategies, topologyRows, fatalHandler, cutIntake,
-                      UnaryOperator.identity(), () -> null, null);
+                      UnaryOperator.identity(), () -> null, null, NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS);
     }
 
     /**
@@ -281,22 +282,24 @@ public final class ReplayerServer {
      * @param derivationStart where the member's service started, or null until it has: what its replays derive
      *                        from
      * @param archiveDir      the member's archive directory, where that reads the log's segment files
+     * @param queueStallTimeoutMs how long one of the member's queues may stay back-pressured before it terminates
      */
     public static ReplayerServer launch(final int memberId, final String aeronDir,
                                         final Supplier<IdleStrategy> idleStrategies, final Queue<byte[]> topologyRows,
                                         final Runnable fatalHandler, final CutIntake cutIntake,
                                         final UnaryOperator<Replayer> wrapper,
-                                        final Supplier<DerivationStart> derivationStart, final File archiveDir) {
+                                        final Supplier<DerivationStart> derivationStart, final File archiveDir,
+                                        final long queueStallTimeoutMs) {
         return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, List.of(), topologyRows,
-                                  null, idleStrategies, fatalHandler, cutIntake,
-                                  NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS, wrapper, derivationStart, archiveDir);
+                                  null, idleStrategies, fatalHandler, cutIntake, queueStallTimeoutMs, wrapper,
+                                  derivationStart, archiveDir);
     }
 
     private ReplayerServer(final int memberId, final ArchivingMediaDriver driver, final String aeronDir,
                            final List<String> archiveEndpoints, final String host, final List<Integer> groups,
                            final Queue<byte[]> topologyRows, final Queue<RelayedCut> cutReports,
                            final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler,
-                           final CutIntake cutIntake, final long relayStallTimeoutMs,
+                           final CutIntake cutIntake, final long queueStallTimeoutMs,
                            final UnaryOperator<Replayer> wrapper, final Supplier<DerivationStart> derivationStart,
                            final File archiveDir) {
         this.memberId = memberId;
@@ -324,27 +327,28 @@ public final class ReplayerServer {
             relayThread = null;
         } else {
             logRelay = new AeronLogRelay(aeron, archive, archiveEndpoints, host, memberId, groups, topologyRows,
-                                         cutReports, idleStrategies.get(), fatalHandler, relayStallTimeoutMs);
+                                         cutReports, idleStrategies.get(), fatalHandler, queueStallTimeoutMs);
             final IdleStrategy relayIdleStrategy = idleStrategies.get();
             relayThread = new Thread(() -> logRelay.run(running, relayIdleStrategy), "relay-" + memberId);
         }
-        // The derivation needs the log from its first checkpoint, which only it knows, so the trim asks it.
+        if (archiveEndpoints == null) {
+            queues = new QueueAgent(aeron, archiveDir, memberId, derivationStart,
+                                    TimeUnit.MILLISECONDS.toNanos(queueStallTimeoutMs), fatalHandler);
+            final IdleStrategy queueIdleStrategy = idleStrategies.get();
+            queueThread = new Thread(() -> queues.run(running, queueIdleStrategy), "queues-" + memberId);
+        } else {
+            queues = null;
+            queueThread = null;
+        }
+        // The derivation needs the log from its first checkpoint, and the queues from where they read, which only each
+        // knows, so the trim asks them.
         final DerivingReplayer[] deriving = { null };
         final LogTrimmer trimmer = cutIntake == null || cutIntake.log() == null
             ? null
-            : new LogTrimmer(aeron, archive, memberId, cutIntake.log(),
-                             () -> deriving[0] == null ? Long.MAX_VALUE : deriving[0].firstCheckpointLogPosition());
+            : new LogTrimmer(aeron, archive, memberId, cutIntake.log(), () -> logFloor(deriving[0], queues));
         final Replayer recorded = new AeronReplayer(aeron, archive, memberId, trimmer);
         if (archiveEndpoints == null) {
             deriving[0] = new DerivingReplayer(recorded, aeron, archive, archiveDir, memberId, derivationStart);
-        }
-        if (archiveEndpoints == null && Boolean.getBoolean(ShadowQueueAgent.PROP_ENABLED)) {
-            shadowQueues = new ShadowQueueAgent(aeron, archiveDir, memberId, derivationStart);
-            final IdleStrategy shadowIdleStrategy = idleStrategies.get();
-            shadowThread = new Thread(() -> shadowQueues.run(running, shadowIdleStrategy), "shadow-queues-" + memberId);
-        } else {
-            shadowQueues = null;
-            shadowThread = null;
         }
         final Replayer served = deriving[0] == null ? recorded : deriving[0];
         final ReplayerService replayer = new ReplayerService(wrapper.apply(served), memberId, idleStrategy,
@@ -353,8 +357,8 @@ public final class ReplayerServer {
         if (relayThread != null) {
             relayThread.start();
         }
-        if (shadowThread != null) {
-            shadowThread.start();
+        if (queueThread != null) {
+            queueThread.start();
         }
         replayerThread.start();
 
@@ -375,10 +379,10 @@ public final class ReplayerServer {
     public boolean stop() {
         running.set(false);
         final boolean stopped = join(replayerThread) & (relayThread == null || join(relayThread)) &
-            (shadowThread == null || join(shadowThread));
+            (queueThread == null || join(queueThread));
         if (stopped) {
             CloseHelper.quietClose(logRelay);
-            CloseHelper.quietClose(shadowQueues);
+            CloseHelper.quietClose(queues);
             archive.close();
             aeron.close();
             CloseHelper.quietClose(driver);
@@ -389,6 +393,20 @@ public final class ReplayerServer {
                          SHUTDOWN_JOIN_TIMEOUT_MS);
         }
         return stopped;
+    }
+
+    /**
+     * The lowest log position the derivation and the queues need, {@link LogTrimmer#HOLD} while either has not started,
+     * or {@link Long#MAX_VALUE} on a gateway host, which has neither.
+     */
+    private static long logFloor(final DerivingReplayer deriving, final QueueAgent queues) {
+        if (deriving == null) {
+            return Long.MAX_VALUE;
+        }
+        final long derivation = deriving.firstCheckpointLogPosition();
+        final long queued = queues.logPosition();
+        return derivation == LogTrimmer.HOLD || queued == LogTrimmer.HOLD ? LogTrimmer.HOLD
+                                                                         : Math.min(derivation, queued);
     }
 
     /**

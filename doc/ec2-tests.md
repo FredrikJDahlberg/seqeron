@@ -464,6 +464,9 @@ handover `csharp-windows-test.sh` checks for function; and Windows on bare metal
 
 ### Test 7: the shadow queue's lag
 
+**Retired.** Step 1 merged on its result: the service publishes no queue, so there is no second stream to compare, and
+the shadow, `ClusterProbe shadow` and `shadow-lag.sh` are gone. The section is the test's record.
+
 [`plans/queue-off-duty-cycle-plan.md`](plans/queue-off-duty-cycle-plan.md) step 1 moves every queue off the service's
 duty cycle onto an agent that derives it from the committed log, and §4 of that plan puts the latency cost to this test
 before step 1 merges. With `sequencer.shadowQueues=true`, `ShadowQueueAgent` already publishes that agent's queues on
@@ -605,7 +608,8 @@ Test 6 is 4 rates × 3 arms × 5 runs of about 70 s with startup (70 minutes), a
 hosts: the three members, the driver host as the Linux gateway host, and the Windows host. At $8.00/hr that is about $18,
 or $36 for a first attempt.
 
-Test 7 is one invocation of `shadow-lag.sh` on the four Test 1 hosts, in a session booked for another test on them:
+Test 7, now retired, was one invocation of `shadow-lag.sh` on the four Test 1 hosts, in a session booked for another
+test on them:
 
 | Step | Each | Count | Total |
 |---|---|---|---|
@@ -680,7 +684,6 @@ APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh       # test 5, once bu
 APP_RAMP_ARM=java APP_RAMP_TOPOLOGY=topology-test-apps-4.xml ./app-ramp.sh   # test 5's java arm, both topologies
 MULTIHOST_WINDOWS=10.0.0.15 HOP_MODES="csharp-windows csharp-linux java-linux" HOP_RATES="5000 20000 50000 100000" \
     ./hop-matrix.sh                                            # test 6, once built
-MULTIHOST_MEMBER_CPUS=2-12 MULTIHOST_PROBE_CPUS=13 ./shadow-lag.sh   # test 7
 ```
 
 Members record no queue (`plans/disk-load-plan.md`, step 2a), and a gateway host relays a member's Raft log. The order check

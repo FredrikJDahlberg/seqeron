@@ -80,10 +80,8 @@ import org.limitless.seqeron.util.Logger;
  *                               election, and how long a member copying the log waits on progress; default
  *                               2000
  *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 1000
- *   sequencer.queueStallTimeoutMs — how long a queue's recording may make no progress under back-pressure before
- *                               the node terminates; default 5000, at least 1000
- *   sequencer.shadowQueues     — true also publishes each queue from the committed log, off the service's thread, on
- *                               stream 3000 + groupId (ShadowQueueAgent); default false
+ *   sequencer.queueStallTimeoutMs — how long a queue may stay back-pressured before the node terminates; default
+ *                               5000, at least 1000
  *   aeron.cluster.max.sessions — the most client sessions the cluster holds at once; default 64 rather than
  *                               Aeron's 10
  *   aeron.threading.mode       — the embedded driver's threading mode; default DEDICATED
@@ -427,8 +425,7 @@ public final class SequencerServer {
         final AtomicReference<DerivationStart> derivationStart = new AtomicReference<>();
         final SequencerService service =
             new SequencerService(memberId, topologyRows, fatalHandler, safeLog, cuts, derivationStart,
-                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(), queueStallTimeoutMs,
-                                 config.sessionTimeoutMs());
+                                 driverCtx.ipcTermBufferLength(), driverCtx.ipcMtuLength(), config.sessionTimeoutMs());
 
         final AeronArchive.Context serviceArchiveCtx = localArchiveCtx.clone();
         serviceArchive.accept(serviceArchiveCtx);
@@ -458,7 +455,7 @@ public final class SequencerServer {
                 ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, topologyRows, fatalHandler,
                                       new CutIntake(cuts, safeLog, Long.getLong(PROP_SNAPSHOT_JOIN_MS,
                                                                                 DEFAULT_SNAPSHOT_JOIN_MS)),
-                                      replayerWrapper, derivationStart::get, archiveDir),
+                                      replayerWrapper, derivationStart::get, archiveDir, queueStallTimeoutMs),
                 safeLog, stopping, derivationStart::get);
         } catch (final RuntimeException ex) {
             CloseHelper.quietCloseAll(container, driver, safeLog);

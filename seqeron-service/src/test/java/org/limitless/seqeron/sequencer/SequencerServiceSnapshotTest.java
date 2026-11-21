@@ -26,7 +26,7 @@ class SequencerServiceSnapshotTest {
         try (RestartSafeLog log = RestartSafeLog.open(clusterDir)) {
             final SequencerService service = new SequencerService(
                 0, new ArrayDeque<>(), () -> { }, log, new ArrayDeque<>(), new AtomicReference<>(), 1 << 24, 4096,
-                NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS, SequencerServer.DEFAULT_SESSION_TIMEOUT_MS);
+                SequencerServer.DEFAULT_SESSION_TIMEOUT_MS);
 
             assertThrows(IllegalStateException.class, () -> service.onTakeSnapshot(null));
             org.junit.jupiter.api.Assertions.assertFalse(log.isCut(0), "no cut was recorded");
@@ -80,7 +80,7 @@ class SequencerServiceSnapshotTest {
         try (RestartSafeLog log = RestartSafeLog.open(clusterDir)) {
             final SequencerService service =
                 new SequencerService(0, new ArrayDeque<>(), fatals::incrementAndGet, log, new ArrayDeque<>(),
-                                     new AtomicReference<>(), 1 << 24, 4096, NodeDriver.DEFAULT_QUEUE_STALL_TIMEOUT_MS,
+                                     new AtomicReference<>(), 1 << 24, 4096,
                                      SequencerServer.DEFAULT_SESSION_TIMEOUT_MS);
             final RuntimeException timeout = new RuntimeException("Archive connect timeout");
             timeout.setStackTrace(attempt(frame("io.aeron.archive.client.AeronArchive", "connect")));
