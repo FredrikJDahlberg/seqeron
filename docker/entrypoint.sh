@@ -22,6 +22,14 @@ mkdir -p "$(dirname "${LOG_FILE}")"
 # across restarts regardless.
 exec > >(tee "${LOG_FILE}") 2>&1
 
+# Docker's DNS knows a container only once it has started, and the media driver's lookup of a peer it does not
+# know yet can outlast the driver's 10 s client timeout, failing the node. Wait up to 60 s for every member's name.
+deadline=$((SECONDS + 60))
+for host in ${SEQERON_HOSTS//,/ }; do
+    until getent hosts "${host}" > /dev/null || ((SECONDS >= deadline)); do sleep 0.5; done
+    getent hosts "${host}" > /dev/null || echo "[entrypoint] ${host} does not resolve; starting anyway"
+done
+
 JAVA_OPTS=("${SEQERON_SERVER_JAVA_OPTS[@]}")
 
 if [[ "${ROLE:-member}" == gateway-host ]]; then
