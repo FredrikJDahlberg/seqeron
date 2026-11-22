@@ -227,7 +227,7 @@ final class HostHopBench {
                     if (System.nanoTime() >= due && app.canPublish()) {
                         final int length = marker.encodePayload(due, ClusterProbe.NO_FILLER);
                         if (app.publish(ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(), 0, length) ==
-                            Publish.Published) {
+                            Publish.PUBLISHED) {
                             next++;
                             haveDue = false;
                         }
@@ -314,7 +314,7 @@ final class HostHopBench {
             phase.receipts.add(stamp, System.nanoTime());
             final int payloadLength = length - BODY;
             buffer.getBytes(offset + BODY, scratch, 0, payloadLength);
-            if (holder[0].publish(ClusterProbe.PROBE_PAYLOAD_ID, scratch, 0, payloadLength) != Publish.Published) {
+            if (holder[0].publish(ClusterProbe.PROBE_PAYLOAD_ID, scratch, 0, payloadLength) != Publish.PUBLISHED) {
                 out.putByte(0, VERDICT);
                 out.putLong(8, stamp);
                 offer(events, out, BODY, stop);

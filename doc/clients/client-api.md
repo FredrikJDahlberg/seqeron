@@ -60,7 +60,7 @@ is not a fence; it raises from `doWork()`.
   lose the session. A
   `Gateway` instance that announced its activation on that session is fenced; an `Application`, or any other
   `Gateway` instance, opens a new session, starting an attempt at most once a second without blocking its duty
-  cycle, and is fenced only if none opens within the queue-stall timeout and the attempt then under way fails. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
+  cycle, and is fenced only if none opens within the queue-stall timeout and the attempt then under way fails. The result is `protocol.Publish` (Java's constants are `PUBLISHED`, `DECLINED` and `REFUSED`, as `ClusterError`'s are upper case): `Published` (offered — not yet sequenced; confirmed
   ingress tracks it to the producer's own queue), `Declined` (not placed; retryable), or `Refused` (never
   placeable).
 - **Flyweights.** `Payload` and `SequencedEvent` are views over the receive buffer, valid only for the
@@ -273,6 +273,7 @@ gateway.close();
 | `gateClosed()` | the edge closed on its own (failed dial, counterparty hang-up). The designation stands; `doWork()` reopens it via `onActivated` without a new `GatewayStarted`. Places `ConnectionClosed` for every connection the log has seen opened and drops any it has not. For initiators; acceptors never call it |
 | `keepAlive()` | session keep-alive for a callback that spins; `doWork()` already sends one per cycle |
 | `canAccept()` | serving, and ingress not held for a post-failover resend |
+| `canPublish()` | the same condition, for a publish: serving, and ingress not held |
 | `openConnection()` / `openConnection(data, offset, length)` | allocate a connection id and place `ConnectionOpened`, retried by `doWork()` |
 | `closeConnection(id)` | place `ConnectionClosed`; dropped for a connection the cluster never saw |
 | `publish(connectionId, payloadId, payload, offset, length)`, `publish(connectionId, groupMask, payloadId, payload, offset, length)` | submit a payload under this gateway's `sourceId`, to its own group or to those `groupMask` names ([Groups](#groups)); `Declined` while not serving |

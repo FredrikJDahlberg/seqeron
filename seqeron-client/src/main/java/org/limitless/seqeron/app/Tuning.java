@@ -3,7 +3,7 @@ package org.limitless.seqeron.app;
 /**
  * The policy knobs a producer rarely changes, kept off its builder so that holds only identity and wiring.
  *
- * @param pendingCapacity        messages tracked by confirmed ingress; beyond it {@code publish} returns {@code Declined}
+ * @param pendingCapacity        messages tracked by confirmed ingress; beyond it {@code publish} is {@code DECLINED}
  * @param queueStallTimeoutMs    no {@code ClusterHeartbeat} for this long fences an instance that acts with
  *                               {@link ClusterError#QUEUE_STALLED}; any other logs it
  * @param recoveryStallTimeoutMs recovery dispatching nothing for this long fences, as above, with {@link

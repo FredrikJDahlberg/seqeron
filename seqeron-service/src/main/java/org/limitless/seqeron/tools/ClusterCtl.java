@@ -779,11 +779,11 @@ public final class ClusterCtl {
                                 final ExpandableArrayBuffer body, final int bodyLength) {
         Publish outcome;
         while ((outcome = session.publisher.publishSystem(session.sender, RESERVED_SOURCE_ID, NO_ID, systemEventType,
-                                                          body, bodyLength)) == Publish.Declined &&
+                                                          body, bodyLength)) == Publish.DECLINED &&
                session.sender.isConnected() && !session.sender.isSessionLost()) {
             IDLE.idle(session.sender.pollEgress());
         }
-        if (outcome != Publish.Published) {
+        if (outcome != Publish.PUBLISHED) {
             throw new IllegalStateException("cluster ingress " + outcome + " a " + systemEventType + " marker");
         }
     }

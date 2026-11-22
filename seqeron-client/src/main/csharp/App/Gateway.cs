@@ -181,7 +181,11 @@ public sealed class Gateway : IDisposable
     /// <summary>Whether a connection may be taken right now: this instance is serving, and ingress is not held
     /// behind a failover's resend. Check it before accepting or dialling — a connection taken while ingress is held
     /// could not have its <c>ConnectionOpened</c> placed.</summary>
-    public bool CanAccept => _lifecycle.IsServing && !_session.IsHolding;
+    public bool CanAccept => CanPublish;
+
+    /// <summary>Whether a publish may reach ingress right now: this instance is serving, and ingress is not
+    /// held.</summary>
+    public bool CanPublish => _lifecycle.IsServing && !_session.IsHolding;
 
     /// <summary>Takes one connection into the cluster's view of this gateway: allocates its id from the resume point
     /// and adds its <c>ConnectionOpened</c> to the backlog that <see cref="DoWork"/> places and retries.</summary>

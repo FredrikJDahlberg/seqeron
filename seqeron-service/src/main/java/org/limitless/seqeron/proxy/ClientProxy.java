@@ -433,7 +433,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private void afterDoWork() {
         final long now = System.nanoTime();
         exportLag();
-        final boolean canPublish = app != null ? app.canPublish() : gateway != null && gateway.canAccept();
+        final boolean canPublish = app != null ? app.canPublish() : gateway != null && gateway.canPublish();
         if (canPublish != lastCanPublish) {
             lastCanPublish = canPublish;
             sendGate();
@@ -844,19 +844,19 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             openIn.getData(scratch, 0, dataLength);
             final int id = gateway.openConnection(scratch, 0, dataLength);
             if (id == Gateway.NO_CONNECTION) {
-                result = Publish.Refused;
+                result = Publish.REFUSED;
             } else if (id != openIn.connectionId()) {
                 breach = "connection id " + openIn.connectionId() + " but the façade allocated " + id;
-                result = Publish.Refused;
+                result = Publish.REFUSED;
             } else {
                 connectionsOpened++;
                 log("opened connection %d", id);
-                result = Publish.Published;
+                result = Publish.PUBLISHED;
             }
         }
         case CloseConnectionDecoder.TEMPLATE_ID -> {
             gateway.closeConnection((int)closeIn.connectionId());
-            result = Publish.Published;
+            result = Publish.PUBLISHED;
         }
         case GateClosedDecoder.TEMPLATE_ID -> {
             gateway.gateClosed();
@@ -864,7 +864,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             lastCanPublish = false;
             log("gate closed by the client — gate epoch %d", ledger.epoch());
             sendGate();
-            result = Publish.Published;
+            result = Publish.PUBLISHED;
         }
         default -> {
             final int payloadLength = publishIn.bodyLength();
@@ -1112,7 +1112,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     // ── Sends ────────────────────────────────────────────────────────────────────────────────────────────────
 
     private boolean canPublishNow() {
-        return app != null ? app.canPublish() : gateway != null && (gateway.canAccept() || activating);
+        return app != null ? app.canPublish() : gateway != null && (gateway.canPublish() || activating);
     }
 
     private void sendGate() {

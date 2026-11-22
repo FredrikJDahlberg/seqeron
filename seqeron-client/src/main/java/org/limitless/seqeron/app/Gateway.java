@@ -260,6 +260,11 @@ public final class Gateway implements AutoCloseable {
      * could not have its {@code ConnectionOpened} placed.
      */
     public boolean canAccept() {
+        return canPublish();
+    }
+
+    /** Whether a publish may reach ingress right now: this instance is serving, and ingress is not held. */
+    public boolean canPublish() {
         return lifecycle.isServing() && !session.isHolding();
     }
 
@@ -297,10 +302,10 @@ public final class Gateway implements AutoCloseable {
      * @param payload      the buffer holding the payload's bytes, its own {@code MessageHeader} included
      * @param offset       where they start in {@code payload}
      * @param length       how many there are
-     * @return {@code Published}; {@code Declined}, nothing placed, to retry from the duty cycle, while this instance
+     * @return {@code PUBLISHED}; {@code DECLINED}, nothing placed, to retry from the duty cycle, while this instance
      *     is not serving, the connection's {@code ConnectionOpened} has not landed, ingress is held behind a
      *     failover's resend, confirmed ingress is full, the session is lost or being replaced, or cluster ingress is
-     *     back-pressured or electing a leader; {@code Refused}, permanently. Never blocks.
+     *     back-pressured or electing a leader; {@code REFUSED}, permanently. Never blocks.
      */
     public Publish publish(final int connectionId, final int payloadId, final DirectBuffer payload, final int offset,
                            final int length) {
@@ -310,13 +315,13 @@ public final class Gateway implements AutoCloseable {
     /**
      * The same to the groups {@code groups} names as well as its own.
      *
-     * @param groups from the {@link GroupDirectory}; one naming a group the table lacks is {@code Refused}
+     * @param groups from the {@link GroupDirectory}; one naming a group the table lacks is {@code REFUSED}
      */
     public Publish publish(final int connectionId, final GroupMask groups, final int payloadId,
                            final DirectBuffer payload, final int offset, final int length) {
         // Not serving declines: S-6 would sequence a standby's payload, as its session is bound to nothing.
         if (!connections.mayPublish(connectionId)) {
-            return Publish.Declined;
+            return Publish.DECLINED;
         }
         return session.publishPayload(lifecycle.gatewaySourceId(), connectionId, groups.bits(), payloadId, payload,
                                       offset, length);
@@ -408,10 +413,10 @@ public final class Gateway implements AutoCloseable {
 
     /** A refused frame is this class's own bug, never a condition to wait out. */
     private static boolean published(final Publish result) {
-        if (result == Publish.Refused) {
+        if (result == Publish.REFUSED) {
             throw new IllegalStateException("a frame the sequencer would reject");
         }
-        return result == Publish.Published;
+        return result == Publish.PUBLISHED;
     }
 
     /** What this instance derives from the frames before a cut, for the round it starts (§6). */

@@ -338,10 +338,10 @@ public final class TestGateway {
 
     /** A refusal is this harness's own bug, never a condition to wait out. */
     private static boolean published(final Publish result) {
-        if (result == Publish.Refused) {
+        if (result == Publish.REFUSED) {
             throw new IllegalStateException("a frame the sequencer would reject");
         }
-        return result == Publish.Published;
+        return result == Publish.PUBLISHED;
     }
 
     // ── the gateway ───────────────────────────────────────────────────────────────

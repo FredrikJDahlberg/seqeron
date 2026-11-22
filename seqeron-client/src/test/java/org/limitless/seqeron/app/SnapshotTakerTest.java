@@ -73,11 +73,11 @@ class SnapshotTakerTest {
         public Publish publishEnd(final long round, final int recordCount, final long length, final long crc32c,
                                   final int formatVersion) {
             if (budget == 0) {
-                return Publish.Declined;
+                return Publish.DECLINED;
             }
             budget--;
             ends.add(new long[] {round, recordCount, length, crc32c, formatVersion});
-            return Publish.Published;
+            return Publish.PUBLISHED;
         }
     }
 

@@ -137,11 +137,11 @@ final class TradingDayBench {
             final int phase = day.phaseAt(offset);
             final Publish verdict =
                 app.publish(ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(), 0, marker.encodePayload(due, filler));
-            if (verdict == Publish.Published) {
+            if (verdict == Publish.PUBLISHED) {
                 sent[phase]++;
                 behindMaxNs[phase] = Math.max(behindMaxNs[phase], now - due);
                 offset = day.nextArrival(offset, random);
-            } else if (verdict == Publish.Declined) {
+            } else if (verdict == Publish.DECLINED) {
                 declines[phase]++;
             } else {
                 fail("publish refused");

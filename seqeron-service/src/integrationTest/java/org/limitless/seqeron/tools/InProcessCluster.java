@@ -131,20 +131,20 @@ final class InProcessCluster implements AutoCloseable {
             sender.connect(aeron, "aeron:udp?endpoint=" + PortLayout.DEFAULT_HOST + ":0",
                            PortLayout.ingressEndpoints(MEMBERS));
             while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
-                                           SystemFrame.GROUPS_REGISTERED, body, length) != Publish.Published) {
+                                           SystemFrame.GROUPS_REGISTERED, body, length) != Publish.PUBLISHED) {
                 Tests.yield();
             }
             if (applicationRow != null) {
                 while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
                                                SystemFrame.APPLICATION_REGISTERED, applicationRow,
-                                               applicationRowLength) != Publish.Published) {
+                                               applicationRowLength) != Publish.PUBLISHED) {
                     Tests.yield();
                 }
             }
             if (gatewayRow != null) {
                 while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
-                                               SystemFrame.GATEWAY_REGISTERED, gatewayRow, gatewayRowLength)
-                       != Publish.Published) {
+                                               SystemFrame.GATEWAY_REGISTERED, gatewayRow,
+                                               gatewayRowLength) != Publish.PUBLISHED) {
                     Tests.yield();
                 }
             }
@@ -156,8 +156,8 @@ final class InProcessCluster implements AutoCloseable {
                                              .bytes(snapshotBytes)
                                              .encodedLength();
                 while (publisher.publishSystem(sender, TopologyDocument.RESERVED_SOURCE_ID, -1,
-                                               SystemFrame.SNAPSHOT_POLICY_REGISTERED, policy, policyLength)
-                       != Publish.Published) {
+                                               SystemFrame.SNAPSHOT_POLICY_REGISTERED, policy,
+                                               policyLength) != Publish.PUBLISHED) {
                     Tests.yield();
                 }
             }

@@ -73,17 +73,17 @@ public final class IngressPublisher {
 
     private Publish offer(final IngressSender sender, final int length) {
         if (length == SystemFrame.REFUSED) {
-            return Publish.Refused;
+            return Publish.REFUSED;
         }
         if (tracker != null && (tracker.isHolding() || tracker.isFull())) {
-            return Publish.Declined;
+            return Publish.DECLINED;
         }
         if (!sender.send(frame, length)) {
-            return Publish.Declined;
+            return Publish.DECLINED;
         }
         if (tracker != null) {
             tracker.track(frame, length, sender.clusterSessionId(), sender.leadershipTermId());
         }
-        return Publish.Published;
+        return Publish.PUBLISHED;
     }
 }

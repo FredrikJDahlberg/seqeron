@@ -207,8 +207,9 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
      * @return frames placed
      */
     int submit(final Actions actions) {
-        if (!publishing || actions.publishEnd(round, recordCount, length, crc.getValue(), listener.formatVersion())
-            != Publish.Published) {
+        if (!publishing ||
+            actions.publishEnd(round, recordCount, length, crc.getValue(), listener.formatVersion()) !=
+                Publish.PUBLISHED) {
             return 0;
         }
         publishing = false;

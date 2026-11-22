@@ -100,8 +100,8 @@ class ApplicationBuilderTest {
         final UnsafeBuffer payload = new UnsafeBuffer(new byte[32]);
         assertFalse(application.isLeading());
         assertFalse(application.isCaughtUp());
-        assertEquals(Publish.Declined, application.publish(5, payload, 8, 16));
-        assertEquals(Publish.Declined, application.publish(GroupMask.of(1), 5, payload, 8, 16));
-        assertEquals(Publish.Declined, application.reply(new ReplyAddress(2, 9, 1), 5, payload, 8, 16));
+        assertEquals(Publish.DECLINED, application.publish(5, payload, 8, 16));
+        assertEquals(Publish.DECLINED, application.publish(GroupMask.of(1), 5, payload, 8, 16));
+        assertEquals(Publish.DECLINED, application.reply(new ReplyAddress(2, 9, 1), 5, payload, 8, 16));
     }
 }

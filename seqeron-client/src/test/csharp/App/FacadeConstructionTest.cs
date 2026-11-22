@@ -245,6 +245,7 @@ public class FacadeConstructionTest
         Assert.Equal(Gateway.Unresolved, gateway.SourceId);
         Assert.Equal(Gateway.Unresolved, gateway.GatewayId);
         Assert.False(gateway.CanAccept);
+        Assert.False(gateway.CanPublish);
         Assert.False(gateway.IsActivated);
         Assert.False(gateway.IsServing);
         Assert.False(gateway.IsCaughtUp);

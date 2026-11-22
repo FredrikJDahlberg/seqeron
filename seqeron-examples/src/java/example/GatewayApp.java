@@ -105,11 +105,11 @@ public final class GatewayApp implements Gateway.Listener {
             }
             final long now = System.nanoTime();
             if (connectionId != Gateway.NO_CONNECTION && now >= nextPingNs) {
-                // Declined until the connection's ConnectionOpened has landed, and while ingress is held or
+                // DECLINED until the connection's ConnectionOpened has landed, and while ingress is held or
                 // back-pressured. Next second's ping is the retry.
                 pingSentNs = now;
                 pingBody.putLong(0, now, ByteOrder.LITTLE_ENDIAN);
-                if (gateway.publish(connectionId, PING_PAYLOAD_ID, pingBody, 0, Long.BYTES) != Publish.Published) {
+                if (gateway.publish(connectionId, PING_PAYLOAD_ID, pingBody, 0, Long.BYTES) != Publish.PUBLISHED) {
                     pingSentNs = 0;
                 }
                 nextPingNs = now + PING_INTERVAL_NS;

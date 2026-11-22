@@ -104,16 +104,16 @@ public final class CommandLedger {
     }
 
     /**
-     * The façade's answer for the head: Declined keeps it where it is, anything else removes it.
+     * The façade's answer for the head: {@code DECLINED} keeps it where it is, anything else removes it.
      *
      * @return whether the head has left the queue
      */
     public boolean settle(final Publish result, final int length, final boolean windowed, final long commandSeq) {
-        if (result == Publish.Declined) {
+        if (result == Publish.DECLINED) {
             headDeclines++;
             return false;
         }
-        if (result == Publish.Published) {
+        if (result == Publish.PUBLISHED) {
             placed++;
             if (commandSeq != NO_SEQ) {
                 closeRun();

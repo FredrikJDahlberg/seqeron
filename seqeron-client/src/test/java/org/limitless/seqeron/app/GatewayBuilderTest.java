@@ -84,6 +84,7 @@ class GatewayBuilderTest {
         final Gateway gateway = complete().build();
         final UnsafeBuffer data = new UnsafeBuffer(new byte[8]);
         assertFalse(gateway.canAccept());
+        assertFalse(gateway.canPublish());
         assertFalse(gateway.isActivated());
         assertFalse(gateway.isCaughtUp());
         assertEquals(Gateway.NO_CONNECTION, gateway.openConnection());
