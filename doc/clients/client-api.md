@@ -55,8 +55,9 @@ is not a fence; it raises from `doWork()`.
 - **Bounded callbacks.** The duty cycle carries the cluster session keep-alive. A session idle for
   `sequencer.sessionTimeoutMs` (default 5 s) is closed by the cluster; for a gateway, that hands over to the
   standby. A callback that must spin calls `keepAlive()`.
-- **Back pressure blocks, bounded.** `publish`/`reply` spin through ingress back pressure and leader
-  elections until the offer lands, for at most 10 s; beyond that the session is treated as lost. A
+- **Back pressure declines.** `publish`/`reply` never block: ingress back pressure and a leader election return
+  `Declined`, to retry from the duty cycle. Offers that keep failing for 10 s, retried at least once a second,
+  lose the session. A
   `Gateway` instance that announced its activation on that session is fenced; an `Application`, or any other
   `Gateway` instance, opens a new session, starting an attempt at most once a second without blocking its duty
   cycle, and is fenced only if none opens within the queue-stall timeout and the attempt then under way fails. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
@@ -185,7 +186,7 @@ top-level rather than nested, per .NET design guidelines.
 | `snapshots` (listener, directory) | ✓ | ✓ | none | participate in snapshot rounds; the listener and this instance's snapshot directory are one setting (Java `snapshots(listener, dir)`, C# `Snapshots`; C++ `Config::snapshots` is the listener alone, the directory being the host's `proxy.snapshotDir`) |
 | `tuning` | ✓ | ✓ | `Tuning.DEFAULT` | the policy knobs below, in one value (Java `Tuning` record with `withX` methods, C# `Tuning` options class) |
 | `ipcConnectTimeoutMs` | | ✓ | 500 | wait for IPC ingress to the local member while it leads; empty by default so that `offCluster` can tell it was not set |
-| `idleStrategy` (C# `IdleStrategy`) | ✓ | ✓ | a yielding spin; Aeron's own connect wait | what a call that blocks waits on: a `publish` spinning through an election (up to 10 s) and the cluster connect in `start`. One that also does the caller's periodic work keeps it going meanwhile. Java and C# only |
+| `idleStrategy` (C# `IdleStrategy`) | ✓ | ✓ | Aeron's own connect wait | what the cluster connect in `start` waits on. One that also does the caller's periodic work keeps it going meanwhile. Java and C# only |
 
 | `tuning` field | default | meaning |
 |---|---|---|
@@ -557,7 +558,7 @@ producer takes a façade.
 
 | type | role |
 |---|---|
-| `ClusterStreamSender` | The cluster session (Java and C# wrap `AeronCluster`). `connectColocated(aeron, memberId, …)` uses IPC ingress to the local member, falling back to UDP when it is not leader; `connect(…)` is UDP only. Both take the UDP ingress endpoint list `"0=host:port,1=host:port,…"`, needed for fallback and reconnect. The default (`PortLayout.ingressEndpoints()`, offset by `SEQERON_PORT_BASE`) covers the hosts in `SEQERON_HOSTS`, else every member on `localhost`; `PortLayout.parseHosts` and `ingressEndpoints(List)` build any other. `send` spins through back pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
+| `ClusterStreamSender` | The cluster session (Java and C# wrap `AeronCluster`). `connectColocated(aeron, memberId, …)` uses IPC ingress to the local member, falling back to UDP when it is not leader; `connect(…)` is UDP only. Both take the UDP ingress endpoint list `"0=host:port,1=host:port,…"`, needed for fallback and reconnect. The default (`PortLayout.ingressEndpoints()`, offset by `SEQERON_PORT_BASE`) covers the hosts in `SEQERON_HOSTS`, else every member on `localhost`; `PortLayout.parseHosts` and `ingressEndpoints(List)` build any other. `send` offers once and never blocks; it returns false through back pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
 | `IngressPublisher` | Encode and offer; returns `protocol.Publish`: `Published`, `Refused` (above `MAX_PAYLOAD_LENGTH`; nothing offered; final), or `Declined` (transport result; retryable). `publishPayload` takes the frame's `groupMask`, own group's bit included. `publishPayload`/`publishSystem` take pre-encoded bytes. |
 | `SystemFrame` (Java, C#) | Wraps an encoded payload in its envelope and returns the length; the offer is the caller's. |
 | `PendingSends` | Confirmed ingress. A successful offer is not a sequenced message, and a failover or a closed session silently drops what the leader had not committed. Install it as `IngressPublisher`'s tracker and on the sender via `setIngressHold`, feed it every frame off your own queue and each leadership term, and call `resendMissing` every duty cycle (spec §16 A-4, A-5). `isClosed(clusterSessionId)` says the queue has shown that session closed: replace it. |

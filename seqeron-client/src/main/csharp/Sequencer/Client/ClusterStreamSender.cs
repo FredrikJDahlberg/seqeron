@@ -15,8 +15,7 @@ namespace Org.Limitless.Seqeron.Sequencer.Client;
 /// The cluster session a producer submits on, with the method names and semantics of <c>ClusterStreamSender.java</c>
 /// and <c>sequencer/client/ClusterStreamSender.hpp</c>. Small, because Aeron.NET's <c>AeronCluster</c> already is the
 /// cluster protocol the C++ class implements by hand; this adds only <see cref="ConnectColocated"/>, a
-/// <see cref="Send"/> that spins through back-pressure and elections, and a self-throttling
-/// <see cref="KeepAlive"/>.
+/// <see cref="Send"/> that never blocks, and a self-throttling <see cref="KeepAlive"/>.
 /// <para>As in Java, when leadership moves off the co-located member this reconnects (a new cluster session id)
 /// where C++ swaps the publication, because <c>AeronCluster</c> owns its publication.</para>
 /// <para>Every timeout Java sets is set here explicitly: Aeron.NET's defaults are Aeron's, and its new-leader
@@ -43,12 +42,11 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     // Well inside the cluster's sequencer.sessionTimeoutMs (5s), as the twins' is.
     private const long KeepAliveIntervalMs = 200;
 
-    // How long Send spins before calling the session what it has become.
+    // How long offers may keep failing before Send calls the session what it has become.
     private const long IngressStallFatalTimeoutMs = 10_000;
 
     private const long BackpressureAlertIntervalMs = 1_000;
 
-    private readonly IIdleStrategy _idle;
     private readonly IIdleStrategy _connectIdle;
     private readonly SessionListener _listener;
 
@@ -79,7 +77,6 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     // Whether _connecting is over the co-located member's aeron:ipc, which falls back to UDP.
     private bool _connectingOverIpc;
     private IIngressTracker _hold;
-    private bool _newLeaderDuringSend;
     private long _lastKeepAliveMs;
 
     // Keep-alives refused in a row: the first is logged, and the run when one is accepted again.
@@ -91,13 +88,11 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     {
     }
 
-    /// <summary>The same, waiting on <paramref name="idle"/> wherever it blocks: the <see cref="Send"/> spin and a
-    /// session's connect.</summary>
-    /// <param name="idle">what to wait on, or null for a yielding send spin and <c>AeronCluster</c>'s own connect
-    /// wait</param>
+    /// <summary>The same, waiting on <paramref name="idle"/> in a blocking <see cref="Connect"/> or
+    /// <see cref="ConnectColocated"/>.</summary>
+    /// <param name="idle">what to wait on, or null for <c>AeronCluster</c>'s own connect wait</param>
     public ClusterStreamSender(IIdleStrategy idle)
     {
-        _idle = idle ?? new YieldingIdleStrategy();
         _connectIdle = idle;
         _listener = new SessionListener(this);
     }
@@ -207,7 +202,7 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     /// <summary>Whether <see cref="Reconnect"/> has an attempt under way, which only further calls advance.</summary>
     public bool IsReconnecting => _connecting != null;
 
-    /// <summary>Hears every <c>NewLeader</c>, and gives up a send that met one while it holds.</summary>
+    /// <summary>Hears every <c>NewLeader</c>, so that it holds until what the old leader lost is resent.</summary>
     /// <param name="hold">the tracker, normally the producer's <see cref="PendingSends"/></param>
     public void SetIngressHold(IIngressTracker hold)
     {
@@ -215,19 +210,16 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     }
 
     /// <summary>
-    /// Offers one pre-encoded frame to cluster ingress, spinning until it lands. <c>CLOSED</c> is not terminal:
-    /// once it sees the leader's egress end, <c>AeronCluster</c> closes the ingress publication and waits for a
-    /// <c>NewLeader</c>, which <see cref="PollEgress"/> installs — hence the spin polls. A leader that dies ends no
-    /// egress, so its publication takes frames until the <c>NewLeader</c>, which discards what it has not sent: a frame
-    /// that lands can still be lost, and only the queue confirms it. Bounded, since
-    /// losing quorum would otherwise stop the caller's duty cycle. No keep-alive from in here: it would offer on the
-    /// same stuck publication.
+    /// Offers one pre-encoded frame to cluster ingress, once. A frame refused by back-pressure or an election is the
+    /// caller's to offer again from its duty cycle, whose <see cref="PollEgress"/> installs the <c>NewLeader</c>: once
+    /// it sees the leader's egress end, <c>AeronCluster</c> closes the ingress publication until then. A leader that
+    /// dies ends no egress, so its publication takes frames until the <c>NewLeader</c>, which discards what it has not
+    /// sent: a frame that lands can still be lost, and only the queue confirms it. Offers that keep failing for the
+    /// stall timeout lose the session.
     /// </summary>
     /// <param name="frame">the frame, from offset 0</param>
     /// <param name="length">its length in bytes</param>
-    /// <returns>false when there is no session left to take it, or when a <c>NewLeader</c> arrived mid-spin while
-    /// the <see cref="IIngressTracker"/> holds: nothing was placed, and the frame goes again once it
-    /// releases</returns>
+    /// <returns>whether it landed; false places nothing</returns>
     public bool Send(IDirectBuffer frame, int length)
     {
         if (!IsConnected || length == 0)
@@ -239,38 +231,30 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
             throw new ArgumentException(
                 $"ingress frame {length} exceeds MaxIngressLength {FrameLayer.MaxIngressLength}");
         }
-        long result;
-        _newLeaderDuringSend = false;
-        while ((result = _cluster.Offer(frame, 0, length)) < 0)
+        long result = _cluster.Offer(frame, 0, length);
+        if (result >= 0)
         {
-            long now = Clocks.MonotonicMs();
-            switch (_stallPolicy.OnOfferFailed(now, result, _sessionLost && !_reconnectDue, !IsConnected))
-            {
-                case IngressStallPolicy.Action.Fatal:
-                    throw new InvalidOperationException("cluster ingress offer failed: " + result);
-                case IngressStallPolicy.Action.SessionGone:
-                    return false;
-                case IngressStallPolicy.Action.Stalled:
-                    Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, Member,
-                                 "cluster ingress took no frame for {0}s — calling the session lost",
-                                 IngressStallFatalTimeoutMs / 1000);
-                    _sessionLost = true;
-                    return false;
-                case IngressStallPolicy.Action.Alert:
-                    Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, Member,
-                                 "cluster ingress has refused this frame ({0}) for {1}ms — still retrying",
-                                 Publication.ErrorString(result), _stallPolicy.BlockedMs(now));
-                    break;
-            }
-            PollEgress();
-            if (_newLeaderDuringSend && _hold != null && _hold.IsHolding)
-            {
-                return false;
-            }
-            _idle.Idle();
+            _stallPolicy.OnOffered();
+            return true;
         }
-        _stallPolicy.OnOffered();
-        return true;
+        long now = Clocks.MonotonicMs();
+        switch (_stallPolicy.OnOfferFailed(now, result, _sessionLost && !_reconnectDue, !IsConnected))
+        {
+            case IngressStallPolicy.Action.Fatal:
+                throw new InvalidOperationException("cluster ingress offer failed: " + result);
+            case IngressStallPolicy.Action.Stalled:
+                Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, Member,
+                             "cluster ingress took no frame for {0}s — calling the session lost",
+                             IngressStallFatalTimeoutMs / 1000);
+                _sessionLost = true;
+                break;
+            case IngressStallPolicy.Action.Alert:
+                Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, Member,
+                             "cluster ingress has refused every offer ({0}) for {1}ms", Publication.ErrorString(result),
+                             _stallPolicy.BlockedMs(now));
+                break;
+        }
+        return false;
     }
 
     /// <summary>Sends a keep-alive if the interval has elapsed; call it every duty-cycle iteration.</summary>
@@ -328,8 +312,7 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     /// <inheritdoc/>
     public long ClusterSessionId => _cluster == null ? Aeron.NULL_VALUE : _cluster.ClusterSessionId;
 
-    /// <summary><c>AeronCluster</c> moves its stamp only inside <see cref="PollEgress"/>, which <see cref="Send"/>
-    /// polls between failed offers.</summary>
+    /// <summary><c>AeronCluster</c> moves its stamp only inside <see cref="PollEgress"/>.</summary>
     public long LeadershipTermId => _cluster == null ? Aeron.NULL_VALUE : _cluster.LeadershipTermId;
 
     /// <summary>Closes the session, and any attempt to replace it. The Aeron client is the caller's and is left
@@ -490,7 +473,6 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
                                 string ingressEndpoints)
         {
             _sender._newLeaderMemberId = leaderMemberId;
-            _sender._newLeaderDuringSend = true;
             _sender._hold?.OnNewLeader(leadershipTermId);
             // Leadership coming back is deliberately not chased, unlike the C++ twin: it would cost a session.
             _sender._reconnectDue = _sender._overIpc && leaderMemberId != _sender._colocatedMemberId;

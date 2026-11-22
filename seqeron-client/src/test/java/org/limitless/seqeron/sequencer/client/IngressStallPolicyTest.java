@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.sequencer.client.IngressStallPolicy.Action;
 
 /**
- * Unit tests for the verdict inside {@code ClusterStreamSender.send}'s spin. No Aeron runtime: the offer
+ * Unit tests for the verdict {@code ClusterStreamSender.send} reaches on a failed offer. No Aeron runtime: the offer
  * result and the two session flags are exactly what the sender reads, and the clock is the caller's.
  */
 class IngressStallPolicyTest {
@@ -24,8 +24,15 @@ class IngressStallPolicyTest {
 
     private final IngressStallPolicy policy = new IngressStallPolicy(STALL_MS, ALERT_MS);
 
+    /** A caller retrying back-pressured offers once an alert interval, from {@code fromMs} to before {@code toMs}. */
+    private void failEveryAlertInterval(final long fromMs, final long toMs) {
+        for (long now = fromMs; now < toMs; now += ALERT_MS) {
+            policy.onOfferFailed(now, Publication.BACK_PRESSURED, false, false);
+        }
+    }
+
     @Test
-    @DisplayName("CLOSED is an election in progress, not a dead session: the spin keeps going")
+    @DisplayName("CLOSED is an election in progress, not a dead session: it is retried")
     void closedIsRetriedForTheLengthOfAnElection() {
         // The regression this class exists for. A leader that dies has AeronCluster close the ingress
         // publication while it awaits a NewLeader event, so every offer returns CLOSED meanwhile — on a
@@ -33,7 +40,7 @@ class IngressStallPolicyTest {
         assertEquals(Action.RETRY, policy.onOfferFailed(seconds(0), Publication.CLOSED, false, false));
         for (long s = 1; s < 5; s++) {
             final Action action = policy.onOfferFailed(seconds(s), Publication.CLOSED, false, false);
-            assertEquals(Action.ALERT, action, "second " + s + " should alert and keep spinning");
+            assertEquals(Action.ALERT, action, "second " + s + " should alert and be retried");
         }
         // …and the frame lands once the new leader's publication is installed.
         policy.onOffered();
@@ -63,32 +70,43 @@ class IngressStallPolicyTest {
     }
 
     @Test
-    @DisplayName("a session the cluster closed ends the spin — there is nothing left to retry on")
-    void sessionLostEndsTheSpin() {
+    @DisplayName("a session the cluster closed is gone — there is nothing left to retry on")
+    void sessionLostIsGone() {
         assertEquals(Action.RETRY, policy.onOfferFailed(T0, Publication.CLOSED, false, false));
         assertEquals(Action.SESSION_GONE, policy.onOfferFailed(seconds(1), Publication.CLOSED, true, false));
     }
 
     @Test
     @DisplayName("a client that closed itself ends it too")
-    void closedClientEndsTheSpin() {
+    void closedClientIsGone() {
         assertEquals(Action.SESSION_GONE, policy.onOfferFailed(T0, Publication.CLOSED, false, true));
     }
 
     @Test
     @DisplayName("nothing accepted for the fatal timeout: the session is called what it has become")
     void sustainedBlockStalls() {
-        assertEquals(Action.RETRY, policy.onOfferFailed(T0, Publication.BACK_PRESSURED, false, false));
+        failEveryAlertInterval(T0, T0 + STALL_MS);
         assertEquals(Action.STALLED,
                      policy.onOfferFailed(T0 + STALL_MS, Publication.BACK_PRESSURED, false, false));
     }
 
     @Test
+    @DisplayName("a failure after a quiet gap starts a new block: one refused offer then silence is no stall")
+    void aQuietGapStartsANewBlock() {
+        assertEquals(Action.RETRY, policy.onOfferFailed(T0, Publication.BACK_PRESSURED, false, false));
+        assertEquals(Action.RETRY, policy.onOfferFailed(T0 + STALL_MS, Publication.BACK_PRESSURED, false, false));
+        assertEquals(0, policy.blockedMs(T0 + STALL_MS));
+        assertEquals(Action.RETRY,
+                     policy.onOfferFailed(T0 + STALL_MS + ALERT_MS + 1, Publication.BACK_PRESSURED, false, false));
+        assertEquals(0, policy.blockedMs(T0 + STALL_MS + ALERT_MS + 1));
+    }
+
+    @Test
     @DisplayName("the fatal clock is per block: a landed offer resets it, so two short blocks are not one long one")
     void aLandedOfferResetsTheClock() {
-        assertEquals(Action.RETRY, policy.onOfferFailed(T0, Publication.BACK_PRESSURED, false, false));
+        failEveryAlertInterval(T0, T0 + STALL_MS - ALERT_MS);
         assertEquals(Action.ALERT,
-                     policy.onOfferFailed(T0 + STALL_MS - 1, Publication.BACK_PRESSURED, false, false));
+                     policy.onOfferFailed(T0 + STALL_MS - ALERT_MS, Publication.BACK_PRESSURED, false, false));
         policy.onOffered();
         // A new block starting just before the old clock would have fired must anchor its own.
         assertEquals(Action.RETRY,

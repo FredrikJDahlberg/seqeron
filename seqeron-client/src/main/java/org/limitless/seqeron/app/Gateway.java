@@ -299,9 +299,8 @@ public final class Gateway implements AutoCloseable {
      * @param length       how many there are
      * @return {@code Published}; {@code Declined}, nothing placed, to retry from the duty cycle, while this instance
      *     is not serving, the connection's {@code ConnectionOpened} has not landed, ingress is held behind a
-     *     failover's resend, confirmed ingress is full, or the session is lost or being replaced; {@code Refused},
-     *     permanently. Back-pressure is not a decline: the call spins through it, and through an election, for up to 10
-     * s.
+     *     failover's resend, confirmed ingress is full, the session is lost or being replaced, or cluster ingress is
+     *     back-pressured or electing a leader; {@code Refused}, permanently. Never blocks.
      */
     public Publish publish(final int connectionId, final int payloadId, final DirectBuffer payload, final int offset,
                            final int length) {
@@ -689,10 +688,9 @@ public final class Gateway implements AutoCloseable {
         }
 
         /**
-         * What a call that blocks waits on between attempts: a {@code publish} or a lifecycle frame that spins through
-         * an election, up to 10 s, and the cluster connect in {@code start}. A yielding spin and Aeron's own connect
-         * wait by default. One that also does the caller's periodic work, such as writing a heartbeat, keeps it going
-         * while the call blocks.
+         * What the cluster connect in {@code start} waits on between attempts; Aeron's own connect wait by default.
+         * One that also does the caller's periodic work, such as writing a heartbeat, keeps it going while
+         * {@code start} blocks.
          */
         public Builder idleStrategy(final IdleStrategy idleStrategy) {
             this.idleStrategy = Objects.requireNonNull(idleStrategy, "idleStrategy");

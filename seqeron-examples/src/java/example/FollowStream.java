@@ -171,8 +171,7 @@ public final class FollowStream {
         PING_BODY.putLong(0, pingSentNs, ByteOrder.LITTLE_ENDIAN);
         if (PUBLISHER.publishPayload(sender, PING_SOURCE_ID, CONNECTION_ID, PING_PAYLOAD_ID, PING_GROUP_MASK,
                                      PING_BODY, Long.BYTES) != Publish.Published) {
-            // Declined: the sender spun through back-pressure and an election and found no session at the
-            // end of it. Next second's ping is the retry.
+            // Declined: back-pressure, an election, or no session. Next second's ping is the retry.
             pingSentNs = 0;
         }
     }

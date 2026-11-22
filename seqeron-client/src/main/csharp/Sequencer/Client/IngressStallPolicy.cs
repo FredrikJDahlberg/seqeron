@@ -3,8 +3,11 @@ using Adaptive.Aeron;
 namespace Org.Limitless.Seqeron.Sequencer.Client;
 
 /// <summary>
-/// Decides what <c>ClusterStreamSender.Send</c>'s spin does about a failed offer: keep spinning, alert, give the
-/// session up, or fail. Split off so it is unit-testable; the sender cannot run without Aeron.
+/// Decides what <c>ClusterStreamSender.Send</c> does about a failed offer: decline it, alert, give the session up, or
+/// fail. Split off so it is unit-testable; the sender cannot run without Aeron.
+/// <para>A send makes one offer, so a block spans calls: it lasts while the caller's retries keep failing, and a
+/// failure further than the alert interval from the last one starts a new block, since how long ingress refused frames
+/// nobody offered is unknown.</para>
 /// <para><b><c>CLOSED</c> is a retry.</b> During an election <c>AeronCluster</c> closes the ingress publication
 /// and waits for a <c>NewLeader</c>, on a session the cluster still holds; reading it as terminal fails every
 /// submit made during a leadership change. The Aeron import is for the result constants only.</para>
@@ -15,11 +18,11 @@ internal sealed class IngressStallPolicy
     /// <summary>What the sender should do about the offer that just failed.</summary>
     public enum Action
     {
-        /// <summary>Keep spinning: transient back-pressure, a publication not yet connected, or an
+        /// <summary>Decline, to be retried: transient back-pressure, a publication not yet connected, or an
         /// election.</summary>
         Retry,
 
-        /// <summary>Still blocked, and the alert interval has elapsed: say so, then keep spinning.</summary>
+        /// <summary>Still blocked, and the alert interval has elapsed: say so, then decline.</summary>
         Alert,
 
         /// <summary>The cluster closed this session, or the client closed itself. Nothing left to retry
@@ -38,10 +41,12 @@ internal sealed class IngressStallPolicy
 
     // Monotonic ms reading when the current block started; 0 when no offer is failing.
     private long _blockedSinceMs;
+    private long _lastFailedMs;
     private long _nextAlertMs;
 
     /// <param name="stallTimeoutMs">how long offers may keep failing before the session is called lost</param>
-    /// <param name="alertIntervalMs">how often a still-blocked spin says so</param>
+    /// <param name="alertIntervalMs">how often a block still in place says so, and the longest gap between two
+    /// failures of one block</param>
     public IngressStallPolicy(long stallTimeoutMs, long alertIntervalMs)
     {
         _stallTimeoutMs = stallTimeoutMs;
@@ -65,7 +70,9 @@ internal sealed class IngressStallPolicy
         {
             return Action.SessionGone;
         }
-        if (_blockedSinceMs == 0)
+        bool quiet = nowMs - _lastFailedMs > _alertIntervalMs;
+        _lastFailedMs = nowMs;
+        if (_blockedSinceMs == 0 || quiet)
         {
             _blockedSinceMs = nowMs;
             _nextAlertMs = nowMs + _alertIntervalMs;

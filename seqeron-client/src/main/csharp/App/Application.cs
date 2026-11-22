@@ -169,8 +169,8 @@ public sealed class Application : IDisposable
     /// <param name="length">how many there are</param>
     /// <returns><c>Published</c>; <c>Declined</c>, nothing placed, to retry from the duty cycle, while the gate is
     /// shut, ingress is held behind a failover's resend, confirmed ingress is full, or the session is lost or being
-    /// replaced; <c>Refused</c>, permanently. Back-pressure is not a decline: the call spins through it, and through
-    /// an election, for up to 10 s.</returns>
+    /// replaced, or cluster ingress is back-pressured or electing a leader; <c>Refused</c>, permanently. Never
+    /// blocks.</returns>
     public Publish Publish(int payloadId, IDirectBuffer payload, int offset, int length)
     {
         return Submit(_sourceId, NoConnection, 0, payloadId, payload, offset, length);

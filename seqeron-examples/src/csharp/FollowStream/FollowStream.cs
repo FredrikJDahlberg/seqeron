@@ -162,8 +162,7 @@ public sealed class FollowStream
         if (_publisher.PublishPayload(sender, PingSourceId, ConnectionId, PingPayloadId, PingGroupMask, _pingBody,
                                       sizeof(long)) != Publish.Published)
         {
-            // Declined: the sender spun through back-pressure and an election and found no session at the end of
-            // it. Next second's ping is the retry.
+            // Declined: back-pressure, an election, or no session. Next second's ping is the retry.
             _pingSentTicks = 0;
         }
     }

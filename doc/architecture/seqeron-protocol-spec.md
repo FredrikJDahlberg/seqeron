@@ -1511,10 +1511,10 @@ concern the listener apply unchanged.
 - **H-5. The host reads stream 304 every duty cycle, and queues the commands.** As the consensus module reads a
   service's messages and acks from one stream and appends the messages from its own tracker, the host never stops
   reading at a command it cannot place yet. It moves each queued message (§17.3) into a FIFO of its own and handles
-  the others as it reads them, including while it waits in `onActivated` or in a cut. The one stretch it reads
-  neither 301 nor 304 is a façade send that spins through an election, up to the send's 10 s stall bound (**H-10**).
+  the others as it reads them, including while it waits in `onActivated` or in a cut. A façade send never blocks.
   Each duty cycle it places commands from the head of the queue by **H-3**, up to a per-cycle limit, until the queue
-  is empty or the façade declines one (ingress held, its tracker full, the transport back-pressured, or a `Publish`
+  is empty or the façade declines one (ingress held, its tracker full, the transport back-pressured or electing a
+  leader, or a `Publish`
   whose connection's `ConnectionOpened` is not yet placed); that one stays at the head for the next cycle. The host
   places commands only from its own duty cycle, never inside a façade callback, so a `reply` made inside
   `onSequenced` is placed on a later cycle, in the order the commands were offered.
@@ -1531,8 +1531,8 @@ concern the listener apply unchanged.
   **What cannot be declined is outside the window.** `closeConnection()` and `gateClosed()` return nothing, and
   `Activated`, `SnapshotRecord` and `SnapshotEnd` answer the host, so the stub retries each offer within the call
   until it lands, writing the client heartbeat on every spin, as a direct `closeConnection` puts its work in a
-  backlog rather than fail. The retry is bounded by the host's duty cycle, or by the send spin when the host is in
-  one, and the heartbeat keeps a host that returns from that spin from judging the client lost. The host's queue
+  backlog rather than fail. The retry is bounded by the host's duty cycle, and the heartbeat keeps the host from
+  judging the client lost meanwhile. The host's queue
   holds at most the window, one `CloseConnection` per open connection and one `GateClosed`.
 - **H-6. A snapshot cut is a barrier.** The host sends `SnapshotCut` at the point the façade calls `onSnapshot` for
   the round: after the last `Payload` the façade dispatched before the cut and before any later one, and sends
@@ -1586,10 +1586,10 @@ concern the listener apply unchanged.
   gateway's pair no longer to hand over than a hung direct gateway does. In return the host's duty cycle keeps the
   cluster session alive while a client callback runs, and so does its wait in a snapshot cut (**H-6**); a slow
   callback costs the cluster no more than a slow direct one. Liveness is read from a counter, so time the host
-  spends blocked in the façade, in a send that spins through an election, costs the client nothing. **Nor does it
-  cost the host**: the façade's builder takes the `IdleStrategy` that send and the cluster connect spin on
-  (`hosted-facade.md` §1), and the host's writes the host heartbeat on every spin. The client's `hostTimeoutMs`, the counterpart of `clientTimeoutMs`, is therefore not tied to the
-  send's 10 s stall bound. A hung host's session times out within `sequencer.sessionTimeoutMs` whatever the client
+  spends blocked in the façade costs the client nothing. **Nor does it cost the host**: a façade send never blocks,
+  and the façade's builder takes the `IdleStrategy` the cluster connect waits on (`hosted-facade.md` §1), on which
+  the host's writes the host heartbeat. The client's `hostTimeoutMs`, the counterpart of `clientTimeoutMs`, is
+  therefore tied to no stall bound of the façade's. A hung host's session times out within `sequencer.sessionTimeoutMs` whatever the client
   does, so `hostTimeoutMs` decides only how soon the client restarts the pair.
 - **H-11. `Reply` names its request by value.** `Payload` carries the request's `sourceId`, `connectionId` and
   `groupMask`, which are its `ReplyAddress`, and `Reply` carries the same three, as the direct `reply` takes a

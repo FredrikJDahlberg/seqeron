@@ -158,7 +158,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private final long allocWarmupFrames;
     private final long allocWindowFrames;
     private final ThreadMXBean threads = (ThreadMXBean)ManagementFactory.getThreadMXBean();
-    /** What the façade's blocking calls wait on: a yielding spin that writes the host heartbeat (H-10). */
+    /** What the façade's cluster connect waits on: a yielding spin that writes the host heartbeat (H-10). */
     private final IdleStrategy facadeIdle = new IdleStrategy() {
         @Override
         public void idle(final int workCount) {

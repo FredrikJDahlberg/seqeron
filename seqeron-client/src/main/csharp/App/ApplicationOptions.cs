@@ -50,10 +50,9 @@ public sealed class ApplicationOptions
     /// <summary>The stall and capacity policy.</summary>
     public Tuning Tuning { get; init; } = new Tuning();
 
-    /// <summary>What a call that blocks waits on between attempts: a publish that spins through an election, up to
-    /// 10 s, and the cluster connect in <c>Start</c>. A yielding spin and Aeron's own connect wait by default. One
-    /// that also does the caller's periodic work, such as writing a heartbeat, keeps it going while the call
-    /// blocks.</summary>
+    /// <summary>What the cluster connect in <c>Start</c> waits on between attempts; Aeron's own connect wait by
+    /// default. One that also does the caller's periodic work, such as writing a heartbeat, keeps it going while
+    /// <c>Start</c> blocks.</summary>
     public IIdleStrategy IdleStrategy { get; init; }
 
     /// <summary>How long to wait for IPC ingress to the local member while it leads before using UDP,

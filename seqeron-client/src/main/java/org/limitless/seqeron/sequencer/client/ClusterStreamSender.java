@@ -12,7 +12,6 @@ import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
-import org.agrona.concurrent.YieldingIdleStrategy;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.util.Clocks;
@@ -22,7 +21,7 @@ import org.limitless.seqeron.util.Logger;
  * The cluster session a producer submits on — the Java twin of {@code sequencer/client/ClusterStreamSender.hpp},
  * with the same method names and semantics. Far smaller, because {@code AeronCluster} already is the
  * cluster protocol the C++ class implements by hand; this adds only {@link #connectColocated}, a
- * {@link #send} that spins through back-pressure and elections, and a self-throttling {@link #keepAlive}.
+ * {@link #send} that never blocks, and a self-throttling {@link #keepAlive}.
  *
  * <p>One divergence: when leadership moves off the co-located member this reconnects (a new cluster session
  * id) where C++ swaps the publication, because {@code AeronCluster} owns its publication.
@@ -36,12 +35,11 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     }
 
     /**
-     * The same, waiting on {@code idle} wherever it blocks: the {@link #send} spin and a session's connect.
+     * The same, waiting on {@code idle} in a blocking {@link #connect} or {@link #connectColocated}.
      *
-     * @param idle what to wait on, or null for a yielding send spin and {@code AeronCluster}'s own connect wait
+     * @param idle what to wait on, or null for {@code AeronCluster}'s own connect wait
      */
     public ClusterStreamSender(final IdleStrategy idle) {
-        this.idle = idle != null ? idle : new YieldingIdleStrategy();
         this.connectIdle = idle;
     }
 
@@ -66,12 +64,11 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     /** Well inside the cluster's {@code sequencer.sessionTimeoutMs} (5s), as the C++ twin's is. */
     private static final long KEEP_ALIVE_INTERVAL_MS = 200;
 
-    /** How long {@link #send} spins before calling the session what it has become. */
+    /** How long offers may keep failing before {@link #send} calls the session what it has become. */
     private static final long INGRESS_STALL_FATAL_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(10);
 
     private static final long BACKPRESSURE_ALERT_INTERVAL_MS = TimeUnit.SECONDS.toMillis(1);
 
-    private final IdleStrategy idle;
     private final IdleStrategy connectIdle;
     private final EgressListener listener = new SessionListener();
 
@@ -100,7 +97,6 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     /** Whether {@link #connecting} is over the co-located member's {@code aeron:ipc}, which falls back to UDP. */
     private boolean connectingOverIpc;
     private IngressTracker hold;
-    private boolean newLeaderDuringSend;
     private long lastKeepAliveMs;
     /** Keep-alives refused in a row: the first is logged, and the run when one is accepted again. */
     private int keepAliveFailures;
@@ -251,22 +247,20 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         return Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
     }
 
-    /** Hears every {@code NewLeader}, and gives up a send that met one while it holds. */
+    /** Hears every {@code NewLeader}, so that it holds until what the old leader lost is resent. */
     public void setIngressHold(final IngressTracker hold) {
         this.hold = hold;
     }
 
     /**
-     * Offers one pre-encoded frame to cluster ingress, spinning until it lands. {@code CLOSED} is not
-     * terminal: once it sees the leader's egress end, {@code AeronCluster} closes the ingress publication and
-     * waits for a {@code NewLeader}, which {@code pollEgress} installs — hence the spin polls. A leader that dies
-     * ends no egress, so its publication takes frames until the {@code NewLeader}, which discards what it has not
-     * sent: a frame that lands can still be lost, and only the queue confirms it.
-     * Bounded, since losing quorum would otherwise stop the caller's duty cycle. No keep-alive from in here: it
-     * would offer on the same stuck publication.
+     * Offers one pre-encoded frame to cluster ingress, once. A frame refused by back-pressure or an election is the
+     * caller's to offer again from its duty cycle, whose {@link #pollEgress} installs the {@code NewLeader}: once it
+     * sees the leader's egress end, {@code AeronCluster} closes the ingress publication until then. A leader that
+     * dies ends no egress, so its publication takes frames until the {@code NewLeader}, which discards what it has
+     * not sent: a frame that lands can still be lost, and only the queue confirms it. Offers that keep failing for
+     * the stall timeout lose the session.
      *
-     * @return false when there is no session left to take it, or when a {@code NewLeader} arrived mid-spin
-     *     while the {@link IngressTracker} holds: nothing was placed, and the frame goes again once it releases
+     * @return whether it landed; false places nothing
      */
     @Override
     public boolean send(final DirectBuffer frame, final int length) {
@@ -277,38 +271,32 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             throw new IllegalArgumentException("ingress frame " + length + " exceeds MAX_INGRESS_LENGTH "
                                                + FrameLayer.MAX_INGRESS_LENGTH);
         }
-        long result;
-        newLeaderDuringSend = false;
-        while ((result = cluster.offer(frame, 0, length)) < 0) {
-            final long now = Clocks.monotonicMs();
-            switch (stallPolicy.onOfferFailed(now, result, sessionLost && !reconnectDue, !isConnected())) {
-            case FATAL:
-                throw new IllegalStateException("cluster ingress offer failed: " + result);
-            case SESSION_GONE:
-                return false;
-            case STALLED:
-                Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, member(),
-                             "cluster ingress took no frame for %ds — calling the session lost",
-                             TimeUnit.MILLISECONDS.toSeconds(INGRESS_STALL_FATAL_TIMEOUT_MS));
-                sessionLost = true;
-                return false;
-            case ALERT:
-                Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, member(),
-                             "cluster ingress has refused this frame (%s) for %dms — still retrying",
-                             Publication.errorString(result), stallPolicy.blockedMs(now));
-                break;
-            case RETRY:
-            default:
-                break;
-            }
-            pollEgress();
-            if (newLeaderDuringSend && hold != null && hold.isHolding()) {
-                return false;
-            }
-            idle.idle();
+        final long result = cluster.offer(frame, 0, length);
+        if (result >= 0) {
+            stallPolicy.onOffered();
+            return true;
         }
-        stallPolicy.onOffered();
-        return true;
+        final long now = Clocks.monotonicMs();
+        switch (stallPolicy.onOfferFailed(now, result, sessionLost && !reconnectDue, !isConnected())) {
+        case FATAL:
+            throw new IllegalStateException("cluster ingress offer failed: " + result);
+        case STALLED:
+            Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, member(),
+                         "cluster ingress took no frame for %ds — calling the session lost",
+                         TimeUnit.MILLISECONDS.toSeconds(INGRESS_STALL_FATAL_TIMEOUT_MS));
+            sessionLost = true;
+            break;
+        case ALERT:
+            Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, member(),
+                         "cluster ingress has refused every offer (%s) for %dms", Publication.errorString(result),
+                         stallPolicy.blockedMs(now));
+            break;
+        case SESSION_GONE:
+        case RETRY:
+        default:
+            break;
+        }
+        return false;
     }
 
     /** Sends a keep-alive if the interval has elapsed; call it every duty-cycle iteration. */
@@ -367,7 +355,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         return cluster == null ? Aeron.NULL_VALUE : cluster.clusterSessionId();
     }
 
-    /** {@code AeronCluster} moves its stamp only inside {@link #pollEgress}, which send polls between failed offers. */
+    /** {@code AeronCluster} moves its stamp only inside {@link #pollEgress}. */
     @Override
     public long leadershipTermId() {
         return cluster == null ? Aeron.NULL_VALUE : cluster.leadershipTermId();
@@ -455,7 +443,6 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         public void onNewLeader(final long clusterSessionId, final long leadershipTermId,
                                final int leaderMemberId, final String ingressEndpoints) {
             newLeaderMemberId = leaderMemberId;
-            newLeaderDuringSend = true;
             if (hold != null) {
                 hold.onNewLeader(leadershipTermId);
             }
