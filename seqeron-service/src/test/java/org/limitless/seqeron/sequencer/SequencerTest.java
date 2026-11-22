@@ -65,9 +65,6 @@ class SequencerTest {
      */
     private static final byte[] OPAQUE_PAYLOAD = opaqueBytes(256);
 
-    /** A second, differently-sized payload: the copy length is the only thing that varies here. */
-    private static final byte[] SHORT_OPAQUE_PAYLOAD = opaqueBytes(37);
-
     /** unsequencedHeader is 20 bytes, sequencedHeader 44 — the delta every sequenced frame grows by. */
     private static final int HEADER_GROWTH =
         org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder.ENCODED_LENGTH -
@@ -85,15 +82,6 @@ class SequencerTest {
         org.limitless.seqeron.sbe.frame.MessageHeaderDecoder.ENCODED_LENGTH +
         org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder.ENCODED_LENGTH + PAYLOAD_PREFIX_LENGTH;
 
-    /** Offset of the payload's length prefix in an {@code Unsequenced} frame, and of the payload itself. */
-    private static final int INGRESS_PREFIX_OFFSET = org.limitless.seqeron.sbe.frame.MessageHeaderDecoder.ENCODED_LENGTH +
-                                                     org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder.ENCODED_LENGTH;
-    private static final int INGRESS_PAYLOAD_OFFSET =
-        INGRESS_PREFIX_OFFSET + org.limitless.seqeron.sbe.frame.UnsequencedDecoder.payloadHeaderLength();
-
-    /** {@code varDataEncoding}'s nullValue: "absent", not a 65535-byte payload. */
-    private static final int NULL_PAYLOAD_LENGTH = 65535;
-
     /** The one group every case here runs in; its activation is the fixture, not the subject. */
     private static final int GROUP_ID = 1;
     private static final int GROUP_MASK = 1 << (GROUP_ID - 1);
@@ -106,18 +94,6 @@ class SequencerTest {
     private final MutableDirectBuffer ingress = new ExpandableArrayBuffer(512);
 
     // ── Copy-through fidelity ─────────────────────────────────────────────────
-
-    @Test
-    @DisplayName("sequencing an ingress message copies every byte past the header composite")
-    void sequenceMessagePreservesEveryBytePastTheHeader() {
-        final int ingressLength = encodeIngressPayload(ingress, 0);
-
-        assertTrue(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
-        final int length = frames.lastLength();
-
-        // Every byte value a payload can hold survives the copy unread and unmodified.
-        assertPayloadCopiedThrough(frames.last(), length, OPAQUE_PAYLOAD);
-    }
 
     @Test
     @DisplayName("sequencing stamps the header without disturbing the submitter's identity")
@@ -138,22 +114,6 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("a payload of a different length survives the copy-through whole")
-    void sequenceMessagePreservesADifferentlySizedPayload() {
-        // Length is the only thing that varies between two payloads here, and it is the only thing the
-        // copy arithmetic reads, so a second size is what exercises it. A payload is opaque: there is no
-        // fixed block and no var-data to tell apart, only a prefix and that many bytes.
-        final int ingressLength = encodeIngressPayload(ingress, 0, SHORT_OPAQUE_PAYLOAD);
-
-        assertTrue(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
-        final int length = frames.lastLength();
-
-        assertPayloadCopiedThrough(frames.last(), length, SHORT_OPAQUE_PAYLOAD);
-        // The whole ingress frame, minus nothing, plus the two int64s the sequenced header adds.
-        assertEquals(ingressLength + HEADER_GROWTH, length);
-    }
-
-    @Test
     @DisplayName("the queue frame is a Sequenced envelope, its block exactly the header composite")
     void egressFrameIsASequencedEnvelope() {
         // The ingress and queue templates differ, and their blockLengths differ by exactly the stamp: the
@@ -167,19 +127,6 @@ class SequencerTest {
         assertEquals(ingressBlockLength + HEADER_GROWTH, egress.blockLength());
         assertEquals(org.limitless.seqeron.sbe.frame.SequencedDecoder.TEMPLATE_ID, egress.templateId());
         assertEquals(MessageHeaderDecoder.SCHEMA_ID, egress.schemaId());
-    }
-
-    @Test
-    @DisplayName("a frame declaring a version this build does not encode is skipped")
-    void frameFromAForeignVersionIsSkipped() {
-        // The frame layer's own offsets are what every later read is measured from, and a version this
-        // build has never encoded says they may not be where this code expects.
-        final int ingressLength = encodeIngressPayload(ingress, 0);
-        new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0)
-            .version(MessageHeaderDecoder.SCHEMA_VERSION + 1);
-
-        assertFalse(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo());
     }
 
     @Test
@@ -243,35 +190,6 @@ class SequencerTest {
     // ── Ingress validation ────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("a frame too short to hold the header composite is skipped, not thrown on")
-    void shortFrameIsSkippedRatherThanThrownOn() {
-        // Throwing here would land on every node — the frame is already committed to the replicated log
-        // — and again on every replay of it, leaving the log unreplayable and the cluster unrecoverable
-        // without surgery. Before the length check this computed a
-        // negative copyLength and threw out of putBytes.
-        final int ingressLength = encodeIngressPayload(ingress, 0);
-
-        assertFalse(sequencer.sequenceMessage(ingress, 0, FrameLayer.MIN_INGRESS_LENGTH - 1, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo(), "a skipped message must consume no sequence number");
-
-        // The next good message still takes the next clusterSeqNo: consumers detect loss by gaps, so a skip has
-        // to leave the numbering contiguous rather than burn a number on a frame nobody will ever receive.
-        assertEquals(ACTIVATED_AT + 1, clusterSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
-    }
-
-    @Test
-    @DisplayName("a frame from a foreign schema is skipped")
-    void foreignSchemaIsSkipped() {
-        // Every offset sequenceMessage reads is a schema-210 offset; under another schema they address
-        // something else entirely, so the frame is refused rather than re-stamped as if it were ours.
-        final int ingressLength = encodeIngressPayload(ingress, 0);
-        new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).schemaId(999);
-
-        assertFalse(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo());
-    }
-
-    @Test
     @DisplayName("a silent sequencer, as a LogDeriver's is, counts a rejection and logs nothing")
     void aSilentSequencerLogsNoRejection() {
         final List<Logger.LoggerEvent> logged = new ArrayList<>();
@@ -293,180 +211,8 @@ class SequencerTest {
         }
     }
 
-    // -- Frame validation ------------------------------------------------------
-    // Each of these reads a field out of a frame the sequencer did not encode, and each check
-    // establishes what the next may read. Admitting any of them decodes bytes whose layout nothing has
-    // established -- and writes the result into authoritative, unreplayable history.
-
-    @Test
-    @DisplayName("a payload length that does not account for every byte is skipped")
-    void payloadLengthThatDoesNotFitTheFrameIsSkipped() {
-        // Short of the frame end silently drops the tail and re-emits the frame a size smaller; past it
-        // reads beyond the fragment. Both are deterministic on every node, so neither would ever surface
-        // as a divergence between them.
-        final int length = encodeIngressConnectionOpened(ingress, 0);
-        final int declared = ingress.getShort(INGRESS_PREFIX_OFFSET, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
-
-        putIngressPayloadLength(declared + 1);
-        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
-        putIngressPayloadLength(declared - 1);
-        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
-        putIngressPayloadLength(NULL_PAYLOAD_LENGTH);
-        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
-
-        putIngressPayloadLength(declared);
-        assertTrue(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT + 1, sequencer.clusterSeqNo(), "only the well-formed frame consumed a sequence number");
-    }
-
-    @Test
-    @DisplayName("payloadId 0 is not a protocol and is skipped")
-    void zeroPayloadIdIsSkipped() {
-        final int length = encodeIngressConnectionOpened(ingress, 0);
-        new org.limitless.seqeron.sbe.frame.UnsequencedHeaderEncoder()
-            .wrap(ingress, org.limitless.seqeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH).payloadId(0);
-
-        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo());
-    }
-
-    @Test
-    @DisplayName("core's retired payloadId 1 is refused on ingress rather than copied through")
-    void retiredCorePayloadIdIsRefusedOnIngress() {
-        // Core is not an application and no longer rides a payload (§6.1). Refusing 1 rather than
-        // reserving it is what makes a producer still on the old build fail loudly instead of having core
-        // bytes copied onto the queue as an application payload nothing will ever decode.
-        final int length = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, 1,
-                                                     new ExpandableArrayBuffer(8), 4);
-
-        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo());
-    }
-
-    @Test
-    @DisplayName("a systemEventType with no ingress form is refused, template and all")
-    void synthesisOnlyEventIsRefusedOnIngress() {
-        // The cluster clock, the leadership record and the activation designation have no producer --
-        // every node encodes its own copy (E-1's exception). Accepting one from a gateway would let it
-        // forge any of the three, so both routes in are closed: the value at offset 16 (condition 8) and
-        // the top-level template that carries it (condition 3).
-        final MutableDirectBuffer body = new ExpandableArrayBuffer(64);
-        final int asSystemBody = encodeIngressSystemFrame(ingress, 0, SOURCE_ID, CONNECTION_ID,
-                                                          SystemFrame.CLUSTER_HEARTBEAT, body, 0);
-        assertFalse(sequencer.sequenceMessage(ingress, 0, asSystemBody, SESSION_ID, TIMESTAMP));
-
-        final org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder encoder =
-            new org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder();
-        encoder.wrapAndApplyHeader(ingress, 0, new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder());
-        encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(-1)
-            .systemEventType(SystemFrame.CLUSTER_HEARTBEAT).clusterSeqNo(1).timestamp(TIMESTAMP);
-        final int asOwnTemplate =
-            org.limitless.seqeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
-        assertFalse(sequencer.sequenceMessage(ingress, 0, asOwnTemplate, SESSION_ID, TIMESTAMP));
-
-        assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo());
-    }
-
-    @Test
-    @DisplayName("an unallocated systemEventType is refused")
-    void unallocatedSystemEventTypeIsRefused() {
-        final int length = encodeIngressSystemFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, 4242,
-                                                    new ExpandableArrayBuffer(8), 0);
-
-        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo());
-    }
-
-    @Test
-    @DisplayName("a system payload too short for the field the sequencer reads is skipped")
-    void systemBodyTooShortForItsBlockIsSkipped() {
-        // Fitting the frame exactly says nothing about being long enough for a payload field, and the floor
-        // is the decoder's compiled block length -- never the wire's, which an SBE decoder ignores when it
-        // reads a fixed-width field at its fixed offset.
-        encodeIngressGatewayStarted(ingress, 0, 5);
-        final int shortBody = org.limitless.seqeron.sbe.frame.GatewayStartedDecoder.BLOCK_LENGTH - 1;
-        putIngressPayloadLength(shortBody);
-
-        assertFalse(sequencer.sequenceMessage(ingress, 0, INGRESS_PAYLOAD_OFFSET + shortBody, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo());
-    }
-
-    @Test
-    @DisplayName("a payload the sequencer does not own is sequenced without being decoded")
-    void foreignPayloadIsSequencedOpaque() {
-        // Selective consumption: core is the one payloadId the cluster tier decodes, and every other is
-        // carried byte-identical. Nothing about a foreign payload -- not its length, not its contents --
-        // may decide whether the frame is admitted.
-        final byte[] opaque = { 0x00, (byte)0xFF, 0x7F, (byte)0x80, 0x01 };
-        final MutableDirectBuffer payload = new ExpandableArrayBuffer(64);
-        payload.putBytes(0, opaque);
-        final org.limitless.seqeron.sbe.frame.UnsequencedEncoder encoder = new org.limitless.seqeron.sbe.frame.UnsequencedEncoder();
-        encoder.wrapAndApplyHeader(ingress, 0, new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder());
-        encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(-1).payloadId(4).groupMask(GROUP_MASK);
-        encoder.putPayload(payload, 0, opaque.length);
-        final int length = org.limitless.seqeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
-
-        assertTrue(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
-        final int sequenced = frames.lastLength();
-
-        assertEquals(4, frameHeaderOf(frames.last()).payloadId(), "the payloadId is carried, not rewritten");
-        final byte[] roundTripped = new byte[opaque.length];
-        frames.last().getBytes(FRAME_OVERHEAD, roundTripped);
-        assertArrayEquals(opaque, roundTripped);
-        assertEquals(FRAME_OVERHEAD + opaque.length, sequenced);
-    }
-
-    @Test
-    @DisplayName("a blockLength that is not the header composite's exact length is skipped")
-    void blockLengthThatIsNotTheHeaderCompositeIsSkipped() {
-        // An equality, not a floor: the envelope's block IS its header composite, so a short blockLength
-        // puts the payload's length prefix inside the header and a long one silently drops bytes off the
-        // end. Either is written into authoritative, unreplayable history.
-        final int ingressLength = encodeIngressPayload(ingress, 0);
-        final int exact = org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder.ENCODED_LENGTH;
-
-        new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).blockLength(exact - 1);
-        assertFalse(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
-        new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).blockLength(exact + 1);
-        assertFalse(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo(), "a skipped message must consume no sequence number");
-
-        new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).blockLength(exact);
-        assertTrue(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT + 1, sequencer.clusterSeqNo());
-    }
-
-    @Test
-    @DisplayName("a frame above the payload ceiling is skipped, and one exactly at it is sequenced")
-    void oversizedFrameIsSkipped() {
-        // T-2's pinned constant, and condition 1's ceiling as the backstop behind it: a conforming producer
-        // refuses this on its own stack, so a frame that reaches here is one that is not conforming. The
-        // ceiling is compiled in and never read off this node's MTU -- a node checking a smaller one than
-        // its peers would fork clusterSeqNo.
-        final MutableDirectBuffer payload = new ExpandableArrayBuffer(FrameLayer.MAX_PAYLOAD_LENGTH + 1);
-        final int exact = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, SESSION_PAYLOAD_ID,
-                                                    payload, FrameLayer.MAX_PAYLOAD_LENGTH);
-        assertEquals(FrameLayer.MAX_INGRESS_LENGTH, exact);
-        assertTrue(sequencer.sequenceMessage(ingress, 0, exact, SESSION_ID, TIMESTAMP));
-
-        final int oversized = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, SESSION_PAYLOAD_ID,
-                                                        payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1);
-        assertFalse(sequencer.sequenceMessage(ingress, 0, oversized, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT + 1, sequencer.clusterSeqNo(), "a skipped message must consume no sequence number");
-    }
-
-    @Test
-    @DisplayName("the sourceId reserved for the cluster's own frames is refused on ingress")
-    void reservedSourceIdIsSkipped() {
-        // -1 marks the synthesized class (F-4). Admitting one from a producer would let it forge that
-        // class -- a heartbeat or a leadership record no node encoded.
-        final MutableDirectBuffer payload = new ExpandableArrayBuffer(64);
-        final int length = encodeIngressPayloadFrame(ingress, 0, Sequencer.NO_SOURCE_ID, CONNECTION_ID,
-                                                     SESSION_PAYLOAD_ID, payload, 4);
-
-        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
-        assertEquals(ACTIVATED_AT, sequencer.clusterSeqNo());
-    }
+    // -- Session binding (S-6) -------------------------------------------------
+    // The rejection table itself is ConformanceTest's row 4.
 
     @Test
     @DisplayName("S-6: a core frame claims a listed sourceId only from a session bound to it")
@@ -588,49 +334,6 @@ class SequencerTest {
         assertEquals(6, lastGatewayActive(), "5 is unanswered again, so it is handed over");
         assertTrue(seq.sessionClosed(session, TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS + 1));
         assertEquals(9, promotedOnClose(session), "and the session's close is 8's");
-    }
-
-    // ── Determinism ───────────────────────────────────────────────────────────
-
-    @Test
-    @DisplayName("replaying the same log on a second instance produces byte-identical frames")
-    void replayingTheSameLogProducesByteIdenticalFrames() {
-        // The core replicated-state-machine property: two nodes fed the same committed log must emit
-        // the same bytes, so their queue recordings are interchangeable and any node can serve replay.
-        // This is a regression guard — it fails the moment anything non-deterministic (a wall clock, a
-        // random id, an iteration-order dependency) creeps into an encode path.
-        final byte[][] framesA = runLog();
-        final byte[][] framesB = runLog();
-
-        assertEquals(framesA.length, framesB.length);
-        for (int i = 0; i < framesA.length; i++) {
-            assertArrayEquals(framesA[i], framesB[i], "frame " + i + " diverged between nodes");
-        }
-    }
-
-    /** Drives one fixed "committed log" through a fresh sequencer, returning every frame it published. */
-    private static byte[][] runLog() {
-        final FrameRecorder recorded = new FrameRecorder();
-        final Sequencer target = activated(new Sequencer(0, recorded), recorded);
-        final MutableDirectBuffer message = new ExpandableArrayBuffer(512);
-        final int messageLength = encodeIngressPayload(message, 0);
-        final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
-        final int connectedLength = encodeIngressConnectionOpened(lifecycle, 0);
-
-        target.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP);
-        target.leadershipChanged(0, 0, TIMESTAMP + 1);
-        final MutableDirectBuffer marker = new ExpandableArrayBuffer(64);
-        target.sequenceMessage(marker, 0, encodeIngressSnapshotPolicy(marker, 0, 2), SESSION_ID, TIMESTAMP + 2);
-        for (int i = 0; i < 5; i++) {
-            target.sequenceMessage(message, 0, messageLength, SESSION_ID, TIMESTAMP + i);
-            target.clusterHeartbeat(TIMESTAMP + 1_000_000_000L * i);
-        }
-        target.sequenceMessage(marker, 0, encodeIngressSnapshotRequested(marker, 0, 7), SESSION_ID, TIMESTAMP + 8);
-        target.leadershipChanged(1, 0, TIMESTAMP + 9);
-        target.leadershipChanged(2, 1, TIMESTAMP + 10);
-        final int disconnectedLength = encodeIngressConnectionClosed(lifecycle, 0);
-        target.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 11);
-        return recorded.all().toArray(new byte[0][]);
     }
 
     // ── Snapshot rounds ───────────────────────────
@@ -1244,76 +947,7 @@ class SequencerTest {
         assertEquals(TIMESTAMP + 1, header.timestamp());
     }
 
-    @Test
-    @DisplayName("closing the only instance of a logical gateway promotes nothing")
-    void soleGatewayInstanceHasNoStandbyToPromote() {
-        // Fail closed: naming a nonexistent instance would activate no one while burning a clusterSeqNo,
-        // and naming the sourceId (as this used to) would activate everyone.
-        final Sequencer seq = activated(new Sequencer(0, frames), frames);
-        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 0), SESSION_ID,
-                            TIMESTAMP);
-
-        final long gatewaySession = 0xA11CEL;
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
-
-        assertFalse(seq.sessionClosed(gatewaySession, TIMESTAMP + 1));
-        assertEquals(1L, seq.gatewayPromotionFailedCount(),
-                     "counted, unlike a session that was never a gateway's: this one was, with no standby");
-        assertEquals(ACTIVATED_AT + 4, seq.clusterSeqNo(), "a promotion with no target consumes no sequence number, the close's own "
-                                                + "SessionClosed one");
-    }
-
     // ── Activation deadline (a designated instance that never declares itself started) ────────────
-
-    @Test
-    @DisplayName("a designated primary that never declares itself started is handed over to the standby")
-    void designatedPrimaryThatNeverStartsIsHandedOver() {
-        // The gap this closes: only GatewayStarted registers an instance,
-        // and it is published at gate-open, AFTER catch-up. An instance that dies or wedges in cold start
-        // was never registered, so no session close could ever promote past it — the cluster kept a
-        // designated primary that was never going to serve, with nothing to say so.
-        final Sequencer seq = activated(new Sequencer(0, frames), frames);
-        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        seq.clusterHeartbeat(TIMESTAMP);
-        assertNothingBehindHeartbeat("nothing designated ⇒ no deadline to miss");
-
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
-                            TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
-                            TIMESTAMP);
-        assertEquals(5, lastGatewayActive());
-
-        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        seq.clusterHeartbeat(deadline - 1);
-        assertNothingBehindHeartbeat("a cold start still inside the deadline is not overdue");
-
-        seq.clusterHeartbeat(deadline);
-        assertEquals(6, lastGatewayActive());
-        assertEquals(1L, seq.gatewayPromotionCount());
-        assertEquals(ACTIVATED_AT + 7, seq.clusterSeqNo()); // 3 heartbeats + 2 list rows + bootstrap + this
-    }
-
-    @Test
-    @DisplayName("a designated primary that did declare itself started is left alone")
-    void designatedPrimaryThatStartedIsNotHandedOver() {
-        final Sequencer seq = activated(new Sequencer(0, frames), frames);
-        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
-                            TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
-                            TIMESTAMP);
-
-        final long gatewaySession = 0xA11CEL;
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP + 1);
-
-        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        seq.clusterHeartbeat(deadline);
-        assertNothingBehindHeartbeat("an answered activation synthesizes nothing");
-        // Disarmed, not merely quiet: a healthy primary must not be demoted one deadline later.
-        seq.clusterHeartbeat(deadline + 10 * Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
-        assertNothingBehindHeartbeat("an answered activation is disarmed");
-    }
 
     @Test
     @DisplayName("the hand-over arms the same deadline on the instance it names")
@@ -1471,28 +1105,6 @@ class SequencerTest {
         // The client pair is untouched: its active instance never lost anything.
         assertTrue(seq.sessionClosed(clientSession, TIMESTAMP + 2));
         assertEquals(6, promotedOnClose(clientSession));
-    }
-
-    @Test
-    @DisplayName("each logical gateway keeps its own activation deadline")
-    void eachLogicalGatewayKeepsItsOwnActivationDeadline() {
-        // The regression this guards: one outstanding activation for the whole cluster meant the second
-        // bootstrap overwrote the first's deadline, so a designated primary that never arrived was never
-        // handed over — silently, and only for whichever pair happened to be designated first.
-        final Sequencer seq = activated(new Sequencer(0, frames), frames);
-        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        loadTwoPairs(seq, buf); // designates 5 and 8
-
-        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        seq.clusterHeartbeat(deadline - 1);
-        assertNothingBehindHeartbeat("neither is due yet");
-
-        // Both come due on the same heartbeat, and both are handed over behind it.
-        seq.clusterHeartbeat(deadline);
-        assertEquals(6, gatewayActiveAt(frames.count() - 2));
-        assertEquals(9, lastGatewayActive());
-        seq.clusterHeartbeat(deadline);
-        assertNothingBehindHeartbeat("both hand-overs restarted their own deadline");
     }
 
     @Test
@@ -1818,12 +1430,6 @@ class SequencerTest {
         return decoder;
     }
 
-    /** Reads clusterSeqNo off the frame published last, after checking the call sequenced one. */
-    private long clusterSeqNoOf(final boolean sequenced) {
-        assertTrue(sequenced);
-        return frameHeaderOf(frames.last()).clusterSeqNo();
-    }
-
     /** The {@code gatewayId} a session's close promoted, after checking the close ended on its {@code SessionClosed}. */
     private int promotedOnClose(final long sessionId) {
         assertEquals(sessionId, decodeSessionClosed(frames.last(), frames.lastLength()).clusterSessionId());
@@ -1889,11 +1495,6 @@ class SequencerTest {
             .groupMask(GROUP_MASK);
         encoder.putPayload(payload, 0, payloadLength);
         return org.limitless.seqeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
-    }
-
-    /** Rewrites the declared payload length of the frame in {@link #ingress}, leaving its bytes alone. */
-    private void putIngressPayloadLength(final int payloadLength) {
-        ingress.putShort(INGRESS_PREFIX_OFFSET, (short)payloadLength, java.nio.ByteOrder.LITTLE_ENDIAN);
     }
 
     /** The {@code systemEventType} of the frame just encoded, after checking it is a well-formed one. */

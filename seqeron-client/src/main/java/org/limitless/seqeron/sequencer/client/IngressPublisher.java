@@ -45,8 +45,15 @@ public final class IngressPublisher {
     public Publish publishPayload(final IngressSender sender, final int sourceId, final int connectionId,
                                   final int payloadId, final int groupMask, final DirectBuffer payload,
                                   final int payloadLength) {
-        final int length = envelope.wrapPayload(frame, sourceId, connectionId, sender.clusterSessionId(),
-                                                payloadId, groupMask, payload, payloadLength);
+        return publishPayload(sender, sourceId, connectionId, payloadId, groupMask, payload, 0, payloadLength);
+    }
+
+    /** The same for a payload at {@code payloadOffset} in its buffer. */
+    public Publish publishPayload(final IngressSender sender, final int sourceId, final int connectionId,
+                                  final int payloadId, final int groupMask, final DirectBuffer payload,
+                                  final int payloadOffset, final int payloadLength) {
+        final int length = envelope.wrapPayload(frame, sourceId, connectionId, sender.clusterSessionId(), payloadId,
+                                                groupMask, payload, payloadOffset, payloadLength);
         return offer(sender, length);
     }
 
@@ -66,17 +73,17 @@ public final class IngressPublisher {
 
     private Publish offer(final IngressSender sender, final int length) {
         if (length == SystemFrame.REFUSED) {
-            return Publish.Refused;
+            return Publish.REFUSED;
         }
         if (tracker != null && (tracker.isHolding() || tracker.isFull())) {
-            return Publish.Declined;
+            return Publish.DECLINED;
         }
         if (!sender.send(frame, length)) {
-            return Publish.Declined;
+            return Publish.DECLINED;
         }
         if (tracker != null) {
             tracker.track(frame, length, sender.clusterSessionId(), sender.leadershipTermId());
         }
-        return Publish.Published;
+        return Publish.PUBLISHED;
     }
 }

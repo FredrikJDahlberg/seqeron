@@ -30,7 +30,7 @@ class CommandLedgerTest {
         assertFalse(ledger.exceedsWindow(600, true));
         ledger.enqueued(600, true);
         assertEquals(600, ledger.queuedBytes());
-        assertTrue(ledger.settle(Publish.Published, 600, true, NO_SEQ));
+        assertTrue(ledger.settle(Publish.PUBLISHED, 600, true, NO_SEQ));
         assertEquals(0, ledger.queuedBytes());
         assertEquals(600, ledger.retired());
         assertEquals(1, ledger.placed());
@@ -49,7 +49,7 @@ class CommandLedgerTest {
         assertFalse(ledger.exceedsWindow(500, false));
         ledger.enqueued(500, false);
         assertEquals(900, ledger.queuedBytes());
-        assertTrue(ledger.settle(Publish.Published, 500, false, NO_SEQ));
+        assertTrue(ledger.settle(Publish.PUBLISHED, 500, false, NO_SEQ));
         assertEquals(900, ledger.queuedBytes());
         assertEquals(0, ledger.retired());
     }
@@ -58,8 +58,8 @@ class CommandLedgerTest {
     void thePeakIsTheHighestQueuedBytes() {
         ledger.enqueued(300, true);
         ledger.enqueued(500, true);
-        ledger.settle(Publish.Published, 300, true, NO_SEQ);
-        ledger.settle(Publish.Published, 500, true, NO_SEQ);
+        ledger.settle(Publish.PUBLISHED, 300, true, NO_SEQ);
+        ledger.settle(Publish.PUBLISHED, 500, true, NO_SEQ);
         assertEquals(800, ledger.peakQueuedBytes());
     }
 
@@ -98,11 +98,11 @@ class CommandLedgerTest {
     @Test
     void aDeclinedHeadStaysQueuedAndIsNotRetired() {
         ledger.enqueued(100, true);
-        assertFalse(ledger.settle(Publish.Declined, 100, true, NO_SEQ));
+        assertFalse(ledger.settle(Publish.DECLINED, 100, true, NO_SEQ));
         assertEquals(1, ledger.headDeclines());
         assertEquals(100, ledger.queuedBytes());
         assertEquals(0, ledger.retired());
-        assertTrue(ledger.settle(Publish.Published, 100, true, NO_SEQ));
+        assertTrue(ledger.settle(Publish.PUBLISHED, 100, true, NO_SEQ));
         assertEquals(0, ledger.queuedBytes());
         assertEquals(100, ledger.retired());
     }
@@ -110,7 +110,7 @@ class CommandLedgerTest {
     @Test
     void aRefusedHeadLeavesTheQueueAndIsCounted() {
         ledger.enqueued(100, true);
-        assertTrue(ledger.settle(Publish.Refused, 100, true, NO_SEQ));
+        assertTrue(ledger.settle(Publish.REFUSED, 100, true, NO_SEQ));
         assertEquals(1, ledger.refusedDrops());
         assertEquals(0, ledger.placed());
         assertEquals(100, ledger.retired());
@@ -120,7 +120,7 @@ class CommandLedgerTest {
     void discardingTheQueueClearsTheBytesButNotTheRetiredTotal() {
         ledger.enqueued(400, true);
         ledger.enqueued(100, true);
-        ledger.settle(Publish.Published, 400, true, NO_SEQ);
+        ledger.settle(Publish.PUBLISHED, 400, true, NO_SEQ);
         ledger.discarded();
         assertEquals(0, ledger.queuedBytes());
         assertEquals(400, ledger.retired());
@@ -129,7 +129,7 @@ class CommandLedgerTest {
     @Test
     void aNewAttachmentStartsFromNothing() {
         ledger.enqueued(400, true);
-        ledger.settle(Publish.Declined, 400, true, NO_SEQ);
+        ledger.settle(Publish.DECLINED, 400, true, NO_SEQ);
         ledger.dropStale(0, true, NO_SEQ);
         ledger.reset();
         assertEquals(0, ledger.epoch());
@@ -158,7 +158,7 @@ class CommandLedgerTest {
     void aPlacedPublishClosesTheRunAndResolvesPastIt() {
         ledger.dropStale(10, true, 1);
         ledger.dropStale(10, true, 2);
-        assertTrue(ledger.settle(Publish.Published, 10, true, 3));
+        assertTrue(ledger.settle(Publish.PUBLISHED, 10, true, 3));
         assertEquals(List.of("1-2 EPOCH"), reported);
         assertEquals(3, ledger.resolved());
     }
@@ -166,7 +166,7 @@ class CommandLedgerTest {
     @Test
     void aDifferentReasonStartsANewRun() {
         ledger.dropStale(10, true, 1);
-        assertTrue(ledger.settle(Publish.Refused, 10, true, 2));
+        assertTrue(ledger.settle(Publish.REFUSED, 10, true, 2));
         ledger.dropStale(10, true, 3);
         ledger.flush();
         assertEquals(List.of("1-1 EPOCH", "2-2 REFUSED", "3-3 EPOCH"), reported);
@@ -174,7 +174,7 @@ class CommandLedgerTest {
 
     @Test
     void resolvedNeverPassesAnUnreportedDrop() {
-        assertTrue(ledger.settle(Publish.Published, 10, true, 1));
+        assertTrue(ledger.settle(Publish.PUBLISHED, 10, true, 1));
         ledger.dropStale(10, true, 2);
         assertEquals(1, ledger.resolved());
         ledger.flush();
@@ -183,7 +183,7 @@ class CommandLedgerTest {
 
     @Test
     void aDeclinedPublishIsNotResolved() {
-        assertFalse(ledger.settle(Publish.Declined, 10, true, 1));
+        assertFalse(ledger.settle(Publish.DECLINED, 10, true, 1));
         ledger.flush();
         assertEquals(0, ledger.resolved());
         assertEquals(List.of(), reported);
@@ -193,7 +193,7 @@ class CommandLedgerTest {
     void aCommandWithoutASequenceNumberLeavesTheRunAlone() {
         ledger.dropStale(10, true, 1);
         ledger.dropStale(10, true, NO_SEQ);
-        assertTrue(ledger.settle(Publish.Published, 10, true, NO_SEQ));
+        assertTrue(ledger.settle(Publish.PUBLISHED, 10, true, NO_SEQ));
         ledger.dropStale(10, true, 2);
         ledger.flush();
         assertEquals(List.of("1-2 EPOCH"), reported);

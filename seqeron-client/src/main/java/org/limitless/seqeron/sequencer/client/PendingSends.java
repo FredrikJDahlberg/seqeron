@@ -29,8 +29,8 @@ import org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder;
  * <p><b>Resent in order, never twice.</b> A committed frame is never missing, so nothing is duplicated. From a
  * newer term's first sign — the sender's {@code NewLeader} or the queue's {@code LeadershipChanged}, whichever
  * comes first — until every older frame is seen or resent, {@link #isHolding()}: send nothing new, and give
- * this to the sender with {@code setIngressHold}, so a send already spinning through the election is given
- * up rather than landing ahead of the resend. It holds the same way while the oldest frame is lost with its
+ * this to the sender with {@code setIngressHold}, so that it holds from the {@code NewLeader} and nothing new
+ * lands ahead of the resend. It holds the same way while the oldest frame is lost with its
  * session, or unsettled. {@link #resendMissing} does the resend, never onto a session the queue has shown
  * closed. Given to an {@code IngressPublisher}, this is tracked and gated on without the producer handling a
  * frame.

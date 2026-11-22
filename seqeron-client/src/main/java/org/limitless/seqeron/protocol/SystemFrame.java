@@ -180,6 +180,13 @@ public final class SystemFrame {
     public int wrapPayload(final MutableDirectBuffer frame, final int sourceId, final int connectionId,
                            final long sessionId, final int payloadId, final int groupMask,
                            final DirectBuffer payload, final int payloadLength) {
+        return wrapPayload(frame, sourceId, connectionId, sessionId, payloadId, groupMask, payload, 0, payloadLength);
+    }
+
+    /** The same for a payload at {@code payloadOffset} in its buffer. */
+    public int wrapPayload(final MutableDirectBuffer frame, final int sourceId, final int connectionId,
+                           final long sessionId, final int payloadId, final int groupMask, final DirectBuffer payload,
+                           final int payloadOffset, final int payloadLength) {
         if (payloadLength > FrameLayer.MAX_PAYLOAD_LENGTH || sourceId == CLUSTER_SOURCE_ID || payloadId == 0 ||
             payloadId == RETIRED_CORE_PAYLOAD_ID) {
             return REFUSED;
@@ -187,7 +194,7 @@ public final class SystemFrame {
         payloadEncoder.wrapAndApplyHeader(frame, 0, headerEncoder);
         payloadEncoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(sessionId)
             .payloadId(payloadId).groupMask(groupMask);
-        payloadEncoder.putPayload(payload, 0, payloadLength);
+        payloadEncoder.putPayload(payload, payloadOffset, payloadLength);
         return MessageHeaderEncoder.ENCODED_LENGTH + payloadEncoder.encodedLength();
     }
 }

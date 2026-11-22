@@ -93,6 +93,25 @@ public class IngressPublisherTest
         return buffer;
     }
 
+    [Fact(DisplayName = "a payload at an offset is carried from there, and nothing before it")]
+    public void PayloadIsReadFromItsOffset()
+    {
+        UnsafeBuffer buffer = Payload(24);
+        Assert.Equal(Publish.Published,
+                     _publisher.PublishPayload(_sender, SourceId, ConnectionId, PayloadId, GroupMask, buffer, 8, 16));
+
+        var sent = new SbeBuffer(_sender.Sent);
+        _messageHeader.Wrap(sent, 0, Frame.MessageHeader.SbeSchemaVersion);
+        _unsequenced.WrapForDecode(sent, Frame.MessageHeader.Size, _messageHeader.BlockLength, _messageHeader.Version);
+        var carried = new byte[16];
+        Assert.Equal(16, _unsequenced.PayloadLength());
+        _unsequenced.GetPayload(carried, 0, carried.Length);
+        for (int i = 0; i < carried.Length; i++)
+        {
+            Assert.True(buffer.GetByte(8 + i) == carried[i], $"payload byte {i}");
+        }
+    }
+
     [Fact(DisplayName = "an application payload is wrapped with the caller's identity and the sender's session")]
     public void PayloadCarriesTheHeaderTheCallerAsked()
     {

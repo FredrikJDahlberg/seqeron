@@ -45,10 +45,10 @@ class GroupResolutionTest {
 
         assertEquals(GroupResolution.Outcome.RESOLVED, resolution.onCaughtUp(1));
         final GroupDirectory directory = resolution.directory();
-        assertEquals(1, directory.mask("orders"));
-        assertEquals(4, directory.mask("risk"));
-        assertEquals(0, directory.mask("audit"));
-        assertEquals(0, directory.mask(""), "no slot's name is empty");
+        assertEquals(1, directory.mask("orders").bits());
+        assertEquals(4, directory.mask("risk").bits());
+        assertEquals(0, directory.mask("audit").bits());
+        assertEquals(0, directory.mask("").bits(), "no slot's name is empty");
         assertThrows(NullPointerException.class, () -> directory.mask(null));
         assertEquals("risk", directory.name(3));
         assertNull(directory.name(2));
@@ -117,7 +117,7 @@ class GroupResolutionTest {
         groupsRegistered(resolution, new Group(1, "orders"), new Group(16, name));
 
         assertEquals(GroupResolution.Outcome.RESOLVED, resolution.onCaughtUp(16));
-        assertEquals(1 << 15, resolution.directory().mask(name));
+        assertEquals(1 << 15, resolution.directory().mask(name).bits());
         assertEquals(name, resolution.directory().name(16));
         assertEquals(1 << 15, resolution.frameMask(0));
         assertEquals(1 << 15 | 1, resolution.frameMask(1));

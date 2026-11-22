@@ -935,9 +935,9 @@ app.start(aeron);
 while (running) {
     final int work = app.doWork();
     if (pending && app.canPublish()) {
-        // Declined: retry next cycle; Refused is final
-        pending = app.publish(PAYLOAD_ID, msg, length)
-            == Publish.Declined;
+        // DECLINED: retry next cycle; REFUSED is final
+        pending = app.publish(PAYLOAD_ID, msg, 0, length)
+            == Publish.DECLINED;
     }
     idle.idle(work);
 }

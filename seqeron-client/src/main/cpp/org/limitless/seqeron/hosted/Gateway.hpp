@@ -66,6 +66,12 @@ class Gateway : public detail::ClientLink<Gateway<Listener>, Listener>
     /** Whether a connection may be taken right now: the host's last Gate, or this stub's own Activated(true). */
     [[nodiscard]] bool canAccept() const noexcept
     {
+        return canPublish();
+    }
+
+    /** Whether a publish may reach the host right now: serving, and the host's last Gate open. */
+    [[nodiscard]] bool canPublish() const noexcept
+    {
         return m_serving && this->m_canPublish;
     }
 

@@ -5,9 +5,9 @@ using Action = Org.Limitless.Seqeron.Sequencer.Client.IngressStallPolicy.Action;
 namespace Org.Limitless.Seqeron.Sequencer.Client;
 
 /// <summary>
-/// Unit tests for the verdict inside <c>ClusterStreamSender.Send</c>'s spin. No Aeron runtime: the offer result and
-/// the two session flags are exactly what the sender reads, and the clock is the caller's. Case for case with
-/// <c>IngressStallPolicyTest.java</c>.
+/// Unit tests for the verdict <c>ClusterStreamSender.Send</c> reaches on a failed offer. No Aeron runtime: the offer
+/// result and the two session flags are exactly what the sender reads, and the clock is the caller's. Case for case
+/// with <c>IngressStallPolicyTest.java</c>.
 /// </summary>
 public class IngressStallPolicyTest
 {
@@ -24,7 +24,16 @@ public class IngressStallPolicyTest
         return T0 + s * 1000;
     }
 
-    [Fact(DisplayName = "CLOSED is an election in progress, not a dead session: the spin keeps going")]
+    // A caller retrying back-pressured offers once an alert interval, from fromMs to before toMs.
+    private void FailEveryAlertInterval(long fromMs, long toMs)
+    {
+        for (long now = fromMs; now < toMs; now += AlertMs)
+        {
+            _policy.OnOfferFailed(now, Publication.BACK_PRESSURED, false, false);
+        }
+    }
+
+    [Fact(DisplayName = "CLOSED is an election in progress, not a dead session: it is retried")]
     public void ClosedIsRetriedForTheLengthOfAnElection()
     {
         // The regression this class exists for. A leader that dies has AeronCluster close the ingress publication
@@ -34,7 +43,7 @@ public class IngressStallPolicyTest
         for (long s = 1; s < 5; s++)
         {
             Action action = _policy.OnOfferFailed(Seconds(s), Publication.CLOSED, false, false);
-            Assert.True(action == Action.Alert, $"second {s} should alert and keep spinning");
+            Assert.True(action == Action.Alert, $"second {s} should alert and be retried");
         }
         // …and the frame lands once the new leader's publication is installed.
         _policy.OnOffered();
@@ -62,15 +71,15 @@ public class IngressStallPolicyTest
         Assert.Equal(Action.Fatal, _policy.OnOfferFailed(T0, Publication.MAX_POSITION_EXCEEDED, false, false));
     }
 
-    [Fact(DisplayName = "a session the cluster closed ends the spin — there is nothing left to retry on")]
-    public void SessionLostEndsTheSpin()
+    [Fact(DisplayName = "a session the cluster closed is gone — there is nothing left to retry on")]
+    public void SessionLostIsGone()
     {
         Assert.Equal(Action.Retry, _policy.OnOfferFailed(T0, Publication.CLOSED, false, false));
         Assert.Equal(Action.SessionGone, _policy.OnOfferFailed(Seconds(1), Publication.CLOSED, true, false));
     }
 
     [Fact(DisplayName = "a client that closed itself ends it too")]
-    public void ClosedClientEndsTheSpin()
+    public void ClosedClientIsGone()
     {
         Assert.Equal(Action.SessionGone, _policy.OnOfferFailed(T0, Publication.CLOSED, false, true));
     }
@@ -78,16 +87,28 @@ public class IngressStallPolicyTest
     [Fact(DisplayName = "nothing accepted for the fatal timeout: the session is called what it has become")]
     public void SustainedBlockStalls()
     {
-        Assert.Equal(Action.Retry, _policy.OnOfferFailed(T0, Publication.BACK_PRESSURED, false, false));
+        FailEveryAlertInterval(T0, T0 + StallMs);
         Assert.Equal(Action.Stalled, _policy.OnOfferFailed(T0 + StallMs, Publication.BACK_PRESSURED, false, false));
+    }
+
+    [Fact(DisplayName = "a failure after a quiet gap starts a new block: one refused offer then silence is no stall")]
+    public void AQuietGapStartsANewBlock()
+    {
+        Assert.Equal(Action.Retry, _policy.OnOfferFailed(T0, Publication.BACK_PRESSURED, false, false));
+        Assert.Equal(Action.Retry, _policy.OnOfferFailed(T0 + StallMs, Publication.BACK_PRESSURED, false, false));
+        Assert.Equal(0, _policy.BlockedMs(T0 + StallMs));
+        Assert.Equal(Action.Retry,
+                     _policy.OnOfferFailed(T0 + StallMs + AlertMs + 1, Publication.BACK_PRESSURED, false, false));
+        Assert.Equal(0, _policy.BlockedMs(T0 + StallMs + AlertMs + 1));
     }
 
     [Fact(DisplayName =
               "the fatal clock is per block: a landed offer resets it, so two short blocks are not one long one")]
     public void ALandedOfferResetsTheClock()
     {
-        Assert.Equal(Action.Retry, _policy.OnOfferFailed(T0, Publication.BACK_PRESSURED, false, false));
-        Assert.Equal(Action.Alert, _policy.OnOfferFailed(T0 + StallMs - 1, Publication.BACK_PRESSURED, false, false));
+        FailEveryAlertInterval(T0, T0 + StallMs - AlertMs);
+        Assert.Equal(Action.Alert,
+                     _policy.OnOfferFailed(T0 + StallMs - AlertMs, Publication.BACK_PRESSURED, false, false));
         _policy.OnOffered();
         // A new block starting just before the old clock would have fired must anchor its own.
         Assert.Equal(Action.Retry, _policy.OnOfferFailed(T0 + StallMs, Publication.BACK_PRESSURED, false, false));

@@ -771,13 +771,19 @@ public final class ClusterCtl {
         }
     }
 
-    /** Publishes one system event on this session, or fails the command: a {@code Declined} marker cannot be resumed. */
+    /**
+     * Publishes one system event on this session, retrying through back-pressure and an election until the sender
+     * gives the session up, or fails the command: a marker on a lost session cannot be resumed.
+     */
     private static void publish(final Session session, final int systemEventType,
                                 final ExpandableArrayBuffer body, final int bodyLength) {
-        final Publish outcome =
-            session.publisher.publishSystem(session.sender, RESERVED_SOURCE_ID, NO_ID, systemEventType, body,
-                                            bodyLength);
-        if (outcome != Publish.Published) {
+        Publish outcome;
+        while ((outcome = session.publisher.publishSystem(session.sender, RESERVED_SOURCE_ID, NO_ID, systemEventType,
+                                                          body, bodyLength)) == Publish.DECLINED &&
+               session.sender.isConnected() && !session.sender.isSessionLost()) {
+            IDLE.idle(session.sender.pollEgress());
+        }
+        if (outcome != Publish.PUBLISHED) {
             throw new IllegalStateException("cluster ingress " + outcome + " a " + systemEventType + " marker");
         }
     }

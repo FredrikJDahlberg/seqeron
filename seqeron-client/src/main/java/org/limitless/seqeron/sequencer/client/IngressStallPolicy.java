@@ -3,8 +3,12 @@ package org.limitless.seqeron.sequencer.client;
 import io.aeron.Publication;
 
 /**
- * Decides what {@link ClusterStreamSender#send}'s spin does about a failed offer: keep spinning, alert, give
- * the session up, or fail. Split off so it is unit-testable; the sender cannot run without Aeron.
+ * Decides what {@link ClusterStreamSender#send} does about a failed offer: decline it, alert, give the session up,
+ * or fail. Split off so it is unit-testable; the sender cannot run without Aeron.
+ *
+ * <p>A send makes one offer, so a block spans calls: it lasts while the caller's retries keep failing, and a failure
+ * further than the alert interval from the last one starts a new block, since how long ingress refused frames
+ * nobody offered is unknown.
  *
  * <p><b>{@code CLOSED} is a retry.</b> During an election {@code AeronCluster} closes the ingress publication
  * and waits for a {@code NewLeader}, on a session the cluster still holds; reading it as terminal fails
@@ -13,9 +17,9 @@ import io.aeron.Publication;
 final class IngressStallPolicy {
     /** What the sender should do about the offer that just failed. */
     public enum Action {
-        /** Keep spinning: transient back-pressure, a publication not yet connected, or an election. */
+        /** Decline, to be retried: transient back-pressure, a publication not yet connected, or an election. */
         RETRY,
-        /** Still blocked, and the alert interval has elapsed: say so, then keep spinning. */
+        /** Still blocked, and the alert interval has elapsed: say so, then decline. */
         ALERT,
         /** The cluster closed this session, or the client closed itself. Nothing left to retry on. */
         SESSION_GONE,
@@ -30,11 +34,13 @@ final class IngressStallPolicy {
 
     /** Monotonic ms reading when the current block started; 0 when no offer is failing. */
     private long blockedSinceMs;
+    private long lastFailedMs;
     private long nextAlertMs;
 
     /**
      * @param stallTimeoutMs  how long offers may keep failing before the session is called lost
-     * @param alertIntervalMs how often a still-blocked spin says so
+     * @param alertIntervalMs how often a block still in place says so, and the longest gap between two failures of
+     *     one block
      */
     public IngressStallPolicy(final long stallTimeoutMs, final long alertIntervalMs) {
         this.stallTimeoutMs = stallTimeoutMs;
@@ -59,7 +65,9 @@ final class IngressStallPolicy {
         if (sessionLost || clientClosed) {
             return Action.SESSION_GONE;
         }
-        if (blockedSinceMs == 0) {
+        final boolean quiet = nowMs - lastFailedMs > alertIntervalMs;
+        lastFailedMs = nowMs;
+        if (blockedSinceMs == 0 || quiet) {
             blockedSinceMs = nowMs;
             nextAlertMs = nowMs + alertIntervalMs;
             return Action.RETRY;

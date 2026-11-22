@@ -24,14 +24,14 @@ none. The direct C++ client is retired, on the `cpp-direct-client` branch (tag `
 | --- | --- | --- |
 | **Gateway** | Edge producer deployed as an active/hot-standby pair, the active instance designated by the cluster: exchange session, client gateway, feed handler | [`Gateway`](#gateway) |
 | **Replicated service** | One replica per cluster member, deterministic over the stream, publishing from the leader's replica | [`Application`](#application) |
-| **Consumer** | Reads the stream and publishes nothing: audit, risk, downstream feed | [`Consumer`](#consumer) |
+| **Consumer** | The simplest reader: reads the stream and publishes nothing, on a queue with no `<snapshots>` policy. Anything more is an `Application` | [`Consumer`](#consumer) |
 | **Offline reader** | Decodes messages from a recording, outside a live client | `SequencedFrameDecoder` (Java, C#), `unwrapFrame` (C++) |
 
 ## Guarantees
 
 | API | guarantees | out of scope |
 | --- | --- | --- |
-| [`Consumer`](#consumer), on [`ReplayerStreamReceiver`](#replayerstreamreceiver) | Every message on its group's queue exactly once, in `clusterSeqNo` order: archive replay from the local recording, then the live queue, with gap detection and resumption internal. Optional snapshot restore first. | Filtering within a group: every consumer receives every message addressed to its group, and every system message. |
+| [`Consumer`](#consumer), on [`ReplayerStreamReceiver`](#replayerstreamreceiver) | Every message on its group's queue exactly once, in `clusterSeqNo` order: archive replay from the local recording, then the live queue, with gap detection and resumption internal. Optional snapshot restore first, on the receiver alone: a `Consumer` fences on a queue under a `<snapshots>` policy. | Filtering within a group: every consumer receives every message addressed to its group, and every system message. |
 | [`Gateway`](#gateway) | One instance of an active/hot-standby pair; the cluster designates the active instance. A connection id space never reused across handovers, and every connection's open and close on the log, so a successor knows its predecessor's connection state. Nothing an instance sends after a sibling is designated reaches the log (spec **S-6**). Confirmed ingress; fencing. | Edge connection continuity across a handover: the successor reopens the edge and counterparties reconnect. |
 | [`Application`](#application) | One replica per cluster member, all holding identical state; only the leader's replica publishes. Work outstanding at a failover is redispatched by the next leader's replica (`OutstandingWork`). Confirmed ingress; fencing. | Exactly-once replies: across a failover, delivery is at-least-once. |
 | Confirmed ingress (both façades) | Every placed message is sequenced exactly once, in order, across any number of leader failovers and replaced cluster sessions. | Producer process failure: a restarted producer, or a promoted standby, starts with nothing pending. A gateway instance a sibling superseded: what was pending is dropped. |
@@ -55,17 +55,18 @@ is not a fence; it raises from `doWork()`.
 - **Bounded callbacks.** The duty cycle carries the cluster session keep-alive. A session idle for
   `sequencer.sessionTimeoutMs` (default 5 s) is closed by the cluster; for a gateway, that hands over to the
   standby. A callback that must spin calls `keepAlive()`.
-- **Back pressure blocks, bounded.** `publish`/`reply` spin through ingress back pressure and leader
-  elections until the offer lands, for at most 10 s; beyond that the session is treated as lost. A
+- **Back pressure declines.** `publish`/`reply` never block: ingress back pressure and a leader election return
+  `Declined`, to retry from the duty cycle. Offers that keep failing for 10 s, retried at least once a second,
+  lose the session. A
   `Gateway` instance that announced its activation on that session is fenced; an `Application`, or any other
   `Gateway` instance, opens a new session, starting an attempt at most once a second without blocking its duty
-  cycle, and is fenced only if none opens within the queue-stall timeout and the attempt then under way fails. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
+  cycle, and is fenced only if none opens within the queue-stall timeout and the attempt then under way fails. The result is `protocol.Publish` (Java's constants are `PUBLISHED`, `DECLINED` and `REFUSED`, as `ClusterError`'s are upper case): `Published` (offered — not yet sequenced; confirmed
   ingress tracks it to the producer's own queue), `Declined` (not placed; retryable), or `Refused` (never
   placeable).
 - **Flyweights.** `Payload` and `SequencedEvent` are views over the receive buffer, valid only for the
   callback. Copy out what outlives it.
-- **Zero allocation on the hot path.** Dispatch and confirmed publish allocate nothing once warm; the C#
-  suite asserts zero bytes per message.
+- **Zero allocation on the hot path.** Dispatch, confirmed publish and request/reply tracking in `OutstandingWork`
+  allocate nothing once warm; the C# suite asserts zero bytes per message, and the Java one per request.
 - **Untethered subscription.** A consumer that falls a window behind the queue publication is dropped by the
   media driver and resumes from its Replayer automatically. Ordering holds; the cluster never sees back
   pressure from a consumer.
@@ -129,7 +130,8 @@ The guarantees are conditional on these; spec §16 states them normatively (**A-
 
 1. The gateway allocates a connection id (`openConnection`) and publishes requests on it.
 2. Every replica applies the request at the same log position and records it in `OutstandingWork`, keyed
-   by its `clusterSeqNo`.
+   by its `clusterSeqNo`, filling the slot that call returns with the request's `ReplyAddress` and whatever else
+   the reply needs.
 3. The leader's replica replies under the requester's `sourceId`, `connectionId` and `groupMask`, so the
    reply reaches every group the request did. Replicas discharge the request when the reply is sequenced,
    not when it is sent.
@@ -142,8 +144,9 @@ The guarantees are conditional on these; spec §16 states them normatively (**A-
 
 ### Read-only consumers
 
-Audit, risk or downstream feeds take a [`Consumer`](#consumer) (or an `Application` if they may later
-publish): replay from the start of the queue or the newest confirmed snapshot, then follow the queue. Consumers are
+The simplest reader is a [`Consumer`](#consumer): it replays from the start of the queue, then follows it. It
+takes no snapshots, so a queue under a `<snapshots>` policy fences it. Audit, risk, a downstream feed, or a reader
+that may later publish takes an `Application`, which restores from its newest confirmed snapshot. Consumers are
 invisible to the cluster and unbounded in number per node. `FollowStream` in `seqeron-examples` is the
 minimal case.
 
@@ -161,7 +164,7 @@ language differences are:
 | construction | `Gateway.builder()…build()` | `hosted::Gateway<Listener>{ config, listener }`; `Config` holds the stub's own settings only: `sourceId`, `snapshots`, `hostName`, `hostTimeoutMs`, `attachTimeoutMs` | `new Gateway(new GatewayOptions { … })`, one `init` property per setter; `build()`'s mandatory options are `required` |
 | listener | implements `Gateway.Listener` | type satisfying the `GatewayListener` / `ApplicationListener` concept | implements `IGatewayListener` / `IApplicationListener` |
 | ingress endpoints | `ingressEndpoints(…)`, default `PortLayout.ingressEndpoints()` | the host's `proxy.ingressEndpoints` | `IngressEndpoints`, default `PortLayout.IngressEndpoints()` |
-| `publish` / `reply` | encoded bytes including the payload's `MessageHeader` | encoded bytes, `const std::uint8_t*` and a length | bytes or `ReadOnlySpan<byte>`, copied once into a façade-owned buffer |
+| `publish` / `reply` | encoded bytes including the payload's `MessageHeader`: a `DirectBuffer`, offset and length | encoded bytes, `const std::uint8_t*` and a length | an `IDirectBuffer`, offset and length, or a `ReadOnlySpan<byte>` copied once into a façade-owned buffer |
 | payload body | `buffer()` at `bodyOffset()`/`bodyLength()` | `body()`/`bodyLength()`, or `decode<Decoder>()` | `Buffer` at `BodyOffset`/`BodyLength` |
 | headerless payload (spec §13.2) | `buffer()` at `payloadOffset()`/`payloadLength()` | `payload()`/`payloadLength()` | `Buffer` at `PayloadOffset`/`PayloadLength` |
 | release | `close()` / try-with-resources | `close()`; `start` takes the caller's `std::shared_ptr<aeron::Aeron>` | `Dispose()` / `using` |
@@ -178,14 +181,14 @@ top-level rather than nested, per .NET design guidelines.
 | `sourceId` | with `snapshots` | required | | `sourceId` declared in the topology row |
 | `addressedGroups` | ✓ | ✓ | none | names of the other groups the instance publishes to |
 | `clientId` | required | required | | the client's counter label, unique per node |
-| `memberId` | ✓ | ✓ | 0 | member (or gateway host node id) whose queue is followed |
+| `memberId` | required | required | | member (or gateway host node id) whose queue is followed |
 | `egressChannel` | ✓ | ✓ | `aeron:udp?endpoint=localhost:0` | cluster session egress channel; the default is an ephemeral port |
 | `ingressEndpoints` | ✓ | ✓ | `PortLayout.ingressEndpoints()` | member ingress endpoints |
 | `offCluster` | | ✓ | false | single instance on a gateway host ([Application](#application)); not with `ipcConnectTimeoutMs`, which `build()` rejects |
 | `snapshots` (listener, directory) | ✓ | ✓ | none | participate in snapshot rounds; the listener and this instance's snapshot directory are one setting (Java `snapshots(listener, dir)`, C# `Snapshots`; C++ `Config::snapshots` is the listener alone, the directory being the host's `proxy.snapshotDir`) |
 | `tuning` | ✓ | ✓ | `Tuning.DEFAULT` | the policy knobs below, in one value (Java `Tuning` record with `withX` methods, C# `Tuning` options class) |
 | `ipcConnectTimeoutMs` | | ✓ | 500 | wait for IPC ingress to the local member while it leads; empty by default so that `offCluster` can tell it was not set |
-| `idleStrategy` (C# `IdleStrategy`) | ✓ | ✓ | a yielding spin; Aeron's own connect wait | what a call that blocks waits on: a `publish` spinning through an election (up to 10 s) and the cluster connect in `start`. One that also does the caller's periodic work keeps it going meanwhile. Java and C# only |
+| `idleStrategy` (C# `IdleStrategy`) | ✓ | ✓ | Aeron's own connect wait | what the cluster connect in `start` waits on. One that also does the caller's periodic work keeps it going meanwhile. Java and C# only |
 
 | `tuning` field | default | meaning |
 |---|---|---|
@@ -193,8 +196,7 @@ top-level rather than nested, per .NET design guidelines.
 | `queueStallTimeoutMs` | 20,000 | no `ClusterHeartbeat` for this long fences with `QUEUE_STALLED` a designated instance, the leader's replica or a `Consumer`; any other logs it |
 | `recoveryStallTimeoutMs` | 60,000 | recovery dispatching nothing for this long fences with `RECOVERY_STALLED`, as above |
 
-The stall defaults are `DEFAULT_QUEUE_STALL_TIMEOUT_MS` (20 heartbeat intervals) and
-`DEFAULT_RECOVERY_STALL_TIMEOUT_MS` (3× that).
+`Tuning.DEFAULT`'s stall timeouts are 20 heartbeat intervals and 3× that.
 
 A C++ stub takes `sourceId` and `snapshots` of these; its host takes the rest as `proxy.*` properties
 ([`running-a-cluster.md`](../operations/running-a-cluster.md#client-proxy)).
@@ -230,8 +232,8 @@ lacks fences with `GROUP_UNKNOWN` (spec A-9).
 
 Once the table is resolved, from the log or a restored snapshot, the façade calls
 `onGroupsResolved(GroupDirectory)` once, before the publish gate first opens. The directory is immutable:
-`mask(name)` is a group's bit, combined with `|`, and `name(groupId)` labels a group. A mask is an `int`
-(Java), `std::uint16_t` (C++) or `ushort` (C#).
+`mask(name)` is a group's mask and `name(groupId)` labels a group. A mask is a `GroupMask` (Java), combined with
+`or`, or a `std::uint16_t` (C++) or `ushort` (C#), combined with `|`.
 
 - `publish` without a mask reaches the instance's own group. With one, the façade adds the own group's
   bit, since confirmed ingress watches the own queue; a mask naming a group the table lacks is `Refused`.
@@ -268,12 +270,13 @@ gateway.close();
 | operation | semantics |
 |---|---|
 | `doWork()` | one duty-cycle iteration: session, queue, confirmed ingress, fences, connection lifecycle, election |
-| `gateClosed()` | the edge closed on its own (failed dial, counterparty hang-up). The designation stands; `doWork()` reopens it via `onActivated` without a new `GatewayStarted`. For initiators; acceptors never call it |
+| `gateClosed()` | the edge closed on its own (failed dial, counterparty hang-up). The designation stands; `doWork()` reopens it via `onActivated` without a new `GatewayStarted`. Places `ConnectionClosed` for every connection the log has seen opened and drops any it has not. For initiators; acceptors never call it |
 | `keepAlive()` | session keep-alive for a callback that spins; `doWork()` already sends one per cycle |
 | `canAccept()` | serving, and ingress not held for a post-failover resend |
-| `openConnection()` / `openConnection(data, length)` | allocate a connection id and place `ConnectionOpened`, retried by `doWork()` |
+| `canPublish()` | the same condition, for a publish: serving, and ingress not held |
+| `openConnection()` / `openConnection(data, offset, length)` | allocate a connection id and place `ConnectionOpened`, retried by `doWork()` |
 | `closeConnection(id)` | place `ConnectionClosed`; dropped for a connection the cluster never saw |
-| `publish(connectionId, payloadId, payload, length)`, `publish(connectionId, groupMask, payloadId, payload, length)` | submit a payload under this gateway's `sourceId`, to its own group or to those `groupMask` names ([Groups](#groups)) |
+| `publish(connectionId, payloadId, payload, offset, length)`, `publish(connectionId, groupMask, payloadId, payload, offset, length)` | submit a payload under this gateway's `sourceId`, to its own group or to those `groupMask` names ([Groups](#groups)); `Declined` while not serving |
 | `isActivated()`, `isServing()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastClusterSeqNo()` | instance state; `sourceId()` and `gatewayId()` are `UNRESOLVED` until a `GatewayRegistered` row names the instance |
 
 The C++ stub has every operation but `isActivated()` and `gatewayId()`, and its state lags the host by a hop (spec
@@ -318,8 +321,8 @@ otherwise.
 | `doWork()` | one duty-cycle iteration: session, queue, confirmed ingress, fences, leader gate |
 | `canPublish()` | gate open and ingress not held |
 | `isLeading()` | gate open |
-| `publish(payloadId, payload, length)`, `publish(groupMask, payloadId, payload, length)` | submit under the application's `sourceId`, no connection, to its own group or to those `groupMask` names |
-| `reply(request, payloadId, payload, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `ReplyAddress`, from `Payload.replyAddress()`, which unlike the `Payload` outlives the callback |
+| `publish(payloadId, payload, offset, length)`, `publish(groupMask, payloadId, payload, offset, length)` | submit under the application's `sourceId`, no connection, to its own group or to those `groupMask` names |
+| `reply(request, payloadId, payload, offset, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `ReplyAddress`, which unlike the `Payload` outlives the callback: Java's is mutable, set with `set(payload)` in the request's `OutstandingWork` slot; C# and C++ take a value, `Payload.ReplyAddress` and `payload.replyAddress()` |
 | `sourceId()`, `isCaughtUp()`, `lastClusterSeqNo()` | replica state; the C++ stub has no `sourceId()` |
 | `keepAlive()` | session keep-alive for a callback that spins, or waits on a snapshot record; `doWork()` already sends one per cycle |
 
@@ -380,14 +383,18 @@ outlive the process ([`snapshot.md`](../architecture/snapshot.md) §4.1).
 
 The façades are composed of I/O-free state machines with twins in every language. `OutstandingWork` —
 leader-only request/reply tracking, redispatched after failover — is the only one exposed, since it models
-the application's work rather than seqeron's. The election, leader gate and stall fences are
+the application's work rather than seqeron's. Its key is the request's `clusterSeqNo`, so keys only increase, and
+`onRequest(key)` returns the request's slot, whose work object the caller fills in place: a factory makes each
+slot's once (Java, C#; C++ default-constructs `Work`), and an answered request's slot is reused, so a warm tracker
+allocates nothing per request. The slots double when more requests are outstanding than they hold. The election,
+leader gate and stall fences are
 package-private (Java) or `internal` (C#); a C++ stub's run in its host. Confirmed ingress is
 [`PendingSends`](#producer-components), an internal type.
 
 ### `Consumer`
 
-A read-only client: it reads one group's queue and publishes nothing, so it opens no cluster session, takes no
-part in an election and needs no topology row. It is the façade shape for the read path: `doWork()`, a
+The simplest read-only client: it reads one group's queue and publishes nothing, so it opens no cluster session,
+takes no part in an election and needs no topology row. It is the façade shape for the read path: `doWork()`, a
 `Listener`, fences, and `Payload`, over a [`ReplayerStreamReceiver`](#replayerstreamreceiver) it owns.
 
 | option | default | meaning |
@@ -395,7 +402,7 @@ part in an election and needs no topology row. It is the façade shape for the r
 | `listener` | required | `onSequenced(Payload)` and `onFenced` are required; `onCaughtUp` and `onClusterHeartbeat` are optional |
 | `clientId` | required | the client's counter label, unique per node |
 | `groupId` | required | the group whose queue is read; the first topology's is 1 |
-| `memberId` | 0 | member (or gateway host node id) whose queue is followed |
+| `memberId` | required | member (or gateway host node id) whose queue is followed |
 | `tuning` | `Tuning.DEFAULT` | the stall timeouts apply; `pendingCapacity` is unused |
 
 The C++ stub, `hosted::Consumer`, takes only the host's name and its timeouts; its host takes these options, the group
@@ -408,9 +415,9 @@ as `proxy.consumerGroup`.
 | `isCaughtUp()`, `lastClusterSeqNo()` | consumer state |
 
 System messages never reach `onSequenced`; `ClusterHeartbeat` is `onClusterHeartbeat`. It fences with
-`RECOVERY_STALLED` and `QUEUE_STALLED`, releasing its subscriptions before `onFenced`. It takes no snapshots, so
-with a `<snapshots>` policy loaded it cannot restart (see below): use an `Application` or `Gateway` with a
-`SnapshotListener` that writes no records. `FollowStream` in `seqeron-examples` uses the receiver directly.
+`RECOVERY_STALLED` and `QUEUE_STALLED`, releasing its subscriptions before `onFenced`. It takes no snapshots, so it
+fences with `SNAPSHOTTED_QUEUE` at the first sign of a `<snapshots>` policy: the policy's row, a round's
+`SnapshotStarted`, or a queue that starts at a cut (see below). Such a queue is an `Application`'s to follow. `FollowStream` in `seqeron-examples` uses the receiver directly.
 
 ## `ReplayerStreamReceiver`
 
@@ -438,8 +445,8 @@ Single-threaded, like the façades.
 
 **With a `<snapshots>` policy loaded, a consumer must be able to restart from a snapshot file.** A member restarted from
 a cluster snapshot records its queue from the cut, so a receiver that can only walk the queue from `groupSeqNo` 1 stops
-with `FirstFrameNotOne` (`ops.md`, "Cluster snapshots"). The receiver restores a file but does not write one: a consumer
-needs an `Application` or `Gateway` with a `SnapshotListener`, which may write no records.
+with `FirstFrameNotOne` (`ops.md`, "Cluster snapshots"). The receiver restores a file but does not write one: a reader
+needs an `Application` with a `SnapshotListener`.
 
 **Snapshot restore.** `restoreFrom` makes the cold start take the newest confirmed file in the store whose
 cut a replay finds in the recording, handing header and records to the handler, a bounded number per
@@ -558,7 +565,7 @@ producer takes a façade.
 
 | type | role |
 |---|---|
-| `ClusterStreamSender` | The cluster session (Java and C# wrap `AeronCluster`). `connectColocated(aeron, memberId, …)` uses IPC ingress to the local member, falling back to UDP when it is not leader; `connect(…)` is UDP only. Both take the UDP ingress endpoint list `"0=host:port,1=host:port,…"`, needed for fallback and reconnect. The default (`PortLayout.ingressEndpoints()`, offset by `SEQERON_PORT_BASE`) covers the hosts in `SEQERON_HOSTS`, else every member on `localhost`; `PortLayout.parseHosts` and `ingressEndpoints(List)` build any other. `send` spins through back pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
+| `ClusterStreamSender` | The cluster session (Java and C# wrap `AeronCluster`). `connectColocated(aeron, memberId, …)` uses IPC ingress to the local member, falling back to UDP when it is not leader; `connect(…)` is UDP only. Both take the UDP ingress endpoint list `"0=host:port,1=host:port,…"`, needed for fallback and reconnect. The default (`PortLayout.ingressEndpoints()`, offset by `SEQERON_PORT_BASE`) covers the hosts in `SEQERON_HOSTS`, else every member on `localhost`; `PortLayout.parseHosts` and `ingressEndpoints(List)` build any other. `send` offers once and never blocks; it returns false through back pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
 | `IngressPublisher` | Encode and offer; returns `protocol.Publish`: `Published`, `Refused` (above `MAX_PAYLOAD_LENGTH`; nothing offered; final), or `Declined` (transport result; retryable). `publishPayload` takes the frame's `groupMask`, own group's bit included. `publishPayload`/`publishSystem` take pre-encoded bytes. |
 | `SystemFrame` (Java, C#) | Wraps an encoded payload in its envelope and returns the length; the offer is the caller's. |
 | `PendingSends` | Confirmed ingress. A successful offer is not a sequenced message, and a failover or a closed session silently drops what the leader had not committed. Install it as `IngressPublisher`'s tracker and on the sender via `setIngressHold`, feed it every frame off your own queue and each leadership term, and call `resendMissing` every duty cycle (spec §16 A-4, A-5). `isClosed(clusterSessionId)` says the queue has shown that session closed: replace it. |

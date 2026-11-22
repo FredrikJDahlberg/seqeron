@@ -22,9 +22,9 @@ import org.limitless.seqeron.helpers.SplitMix64;
 /**
  * {@link PendingSends} driving a producer against a model cluster: a leader that appends ingress stamped with
  * its own term and drops the rest, commits a prefix, and loses everything uncommitted at an election. After
- * one, the old leader either still takes ingress and drops it, or is gone and a send spins until egress brings
- * the {@code NewLeader} — giving the send up if the hold is on, as {@code ClusterStreamSender} does. The
- * sender may reconnect on a new session then. The cluster also closes the producer's session at random, and
+ * one, the old leader either still takes ingress and drops it, or is gone and a send places nothing until egress
+ * brings the {@code NewLeader}, as {@code ClusterStreamSender}'s does. The sender may reconnect on a new session
+ * then. The cluster also closes the producer's session at random, and
  * drops what it sends on it until the producer replaces it; a close an election loses, the next leader makes
  * again. The queue lags, a sibling shares the producer's {@code sourceId}, and term ids skip, as after a failed
  * ballot.
@@ -71,10 +71,7 @@ class PendingSendsPropertyTest {
         @Override
         public boolean send(final DirectBuffer frame, final int length) {
             if (senderTerm != clusterTerm && !oldLeaderTakesIngress) {
-                newLeader(); // from inside the spin, as pollEgress would
-                if (pending.isHolding()) {
-                    return false;
-                }
+                return false; // the publication is closed until the NewLeader
             }
             if (senderTerm == clusterTerm && !closedAtCluster) {
                 uncommitted.add(new Entry(session, frame.getLong(FrameLayer.MIN_INGRESS_LENGTH)));

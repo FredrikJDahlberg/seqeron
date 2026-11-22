@@ -536,6 +536,7 @@ and 70 is this repository's convention for "fenced, restart me". A gateway is no
 | `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced: its state is not the log's (spec §16 A-7). A restart rebuilds the state; an instance that diverges again has broken determinism (A-6) |
 | `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot: a `formatVersion` or header version its build does not read, or records that stopped matching the file's trailer after they were checked ([`snapshot.md`](../architecture/snapshot.md) §7). A file damaged before the restore gives way to the older one the instance keeps, with a `SnapshotStoreFailed` warning, and fences nothing. The log line `SnapshotRestoreFailed` names the round. A restart repeats it until the build is fixed or the file, `<round>.snapshot` in the instance's snapshot directory, is removed; the instance then restores the older file, or replays from `clusterSeqNo` 1 |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the queue did not match the oldest pending one, most often because the sequencer rejected one (`seqeron_sequencer_rejected_ingress_total`) |
+| `SNAPSHOTTED_QUEUE` | a `Consumer` on a cluster with a `<snapshots>` policy. A restart fences again: move the reader to an `Application` with a `SnapshotListener` |
 
 - **The standby takes over by itself**, if one is running. A fenced instance looks to the cluster like a
   process that died, and the sequencer promotes the standby when its session closes

@@ -39,7 +39,7 @@ final class SnapshotFrames implements SnapshotTaker.Actions {
 
     /** A refused end is this class's own bug, never a condition to wait out. */
     private static Publish placed(final Publish outcome) {
-        if (outcome == Publish.Refused) {
+        if (outcome == Publish.REFUSED) {
             throw new IllegalStateException("a SnapshotEnd the sequencer would reject");
         }
         return outcome;

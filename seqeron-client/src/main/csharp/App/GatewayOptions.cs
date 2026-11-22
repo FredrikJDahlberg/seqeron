@@ -28,8 +28,9 @@ public sealed class GatewayOptions
     /// node: two sharing one share their counters' series.</summary>
     public required int ClientId { get; init; }
 
-    /// <summary>The node whose queue this instance follows.</summary>
-    public int MemberId { get; init; }
+    /// <summary>The node whose queue this instance follows — required: a cluster member's id, or a gateway host's node
+    /// id.</summary>
+    public required int MemberId { get; init; }
 
     /// <summary>This client's own egress endpoint; two media drivers on one host cannot both bind a port. An
     /// ephemeral port on localhost, <see cref="ApplicationOptions.DefaultEgressChannel"/>, by default.</summary>
@@ -43,9 +44,8 @@ public sealed class GatewayOptions
     /// <summary>The stall and capacity policy.</summary>
     public Tuning Tuning { get; init; } = new Tuning();
 
-    /// <summary>What a call that blocks waits on between attempts: a publish that spins through an election, up to
-    /// 10 s, and the cluster connect in <c>Start</c>. A yielding spin and Aeron's own connect wait by default. One
-    /// that also does the caller's periodic work, such as writing a heartbeat, keeps it going while the call
-    /// blocks.</summary>
+    /// <summary>What the cluster connect in <c>Start</c> waits on between attempts; Aeron's own connect wait by
+    /// default. One that also does the caller's periodic work, such as writing a heartbeat, keeps it going while
+    /// <c>Start</c> blocks.</summary>
     public IIdleStrategy IdleStrategy { get; init; }
 }

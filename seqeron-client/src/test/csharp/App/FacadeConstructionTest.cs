@@ -1,5 +1,7 @@
 using System;
+using System.Runtime.CompilerServices;
 using Adaptive.Agrona;
+using Adaptive.Agrona.Concurrent;
 using Org.Limitless.Seqeron.Protocol;
 using Xunit;
 
@@ -67,11 +69,12 @@ public class FacadeConstructionTest
             Tuning = new Tuning { PendingCapacity = 16 },
         });
         Assert.False(offCluster.IsLeading);
-        var error = Assert.Throws<ArgumentException>(() => new Application(new ApplicationOptions
-        {
-            SourceId = 7, ClientId = 3, Listener = new MinimalApplicationListener(), OffCluster = true,
-            IpcConnectTimeoutMs = 4000,
-        }));
+        var timed = new ApplicationOptions {
+            SourceId = 7,      ClientId = 3,
+            MemberId = 9,      Listener = new MinimalApplicationListener(),
+            OffCluster = true, IpcConnectTimeoutMs = 4000,
+        };
+        var error = Assert.Throws<ArgumentException>(() => new Application(timed));
         Assert.Contains("IpcConnectTimeoutMs has no meaning with OffCluster", error.Message);
     }
 
@@ -84,7 +87,8 @@ public class FacadeConstructionTest
         });
         Assert.False(consumer.IsCaughtUp);
         Assert.Equal(0, consumer.LastClusterSeqNo);
-        Assert.Throws<ArgumentException>(() => new Consumer(new ConsumerOptions { ClientId = 4, GroupId = 1, Listener = null }));
+        Assert.Throws<ArgumentException>(
+            () => new Consumer(new ConsumerOptions { ClientId = 4, MemberId = 2, GroupId = 1, Listener = null }));
     }
 
     private sealed class MinimalConsumerListener : IConsumerListener
@@ -134,10 +138,15 @@ public class FacadeConstructionTest
                                               int sourceId = Gateway.Unresolved, string directory = null,
                                               ISnapshotListener snapshots = null)
     {
-        return new GatewayOptions
-        {
-            GatewayName = name, ClientId = 1, EgressChannel = Egress, IngressEndpoints = ingress, Listener = new StubGatewayListener(),
-            Snapshots = SnapshotsWith(snapshots, directory), SourceId = sourceId,
+        return new GatewayOptions {
+            GatewayName = name,
+            ClientId = 1,
+            MemberId = 0,
+            EgressChannel = Egress,
+            IngressEndpoints = ingress,
+            Listener = new StubGatewayListener(),
+            Snapshots = SnapshotsWith(snapshots, directory),
+            SourceId = sourceId,
         };
     }
 
@@ -145,9 +154,32 @@ public class FacadeConstructionTest
     public void ApplicationRequiresIngressAndListener()
     {
         Assert.Equal("IngressEndpoints", Assert.Throws<ArgumentException>(() => new Application(ApplicationWith(null))).ParamName);
-        var noListener = new ApplicationOptions { ClientId = 1, EgressChannel = Egress, Listener = null };
+        var noListener = new ApplicationOptions { SourceId = 7, ClientId = 1, MemberId = 0, EgressChannel = Egress,
+                                                  Listener = null };
         Assert.Equal("Listener", Assert.Throws<ArgumentException>(() => new Application(noListener)).ParamName);
         Assert.Throws<ArgumentNullException>(() => new Application(null));
+    }
+
+    [Fact(DisplayName = "an application's source id is required, and the cluster's, -1, is no application's")]
+    public void ApplicationRequiresItsSourceId()
+    {
+        var sourceId = typeof(ApplicationOptions).GetProperty(nameof(ApplicationOptions.SourceId))!;
+        Assert.True(sourceId.IsDefined(typeof(RequiredMemberAttribute), false));
+        var clusters = new ApplicationOptions {
+            SourceId = -1,
+            ClientId = 1,
+            MemberId = 0,
+            Listener = new MinimalApplicationListener(),
+        };
+        var error = Assert.Throws<ArgumentException>(() => new Application(clusters));
+        Assert.Contains("SourceId -1 is the cluster's", error.Message);
+        var zero = new ApplicationOptions {
+            SourceId = 0,
+            ClientId = 1,
+            MemberId = 0,
+            Listener = new MinimalApplicationListener(),
+        };
+        Assert.Equal(0, new Application(zero).SourceId);
     }
 
     [Fact(DisplayName = "an application's snapshot listener needs a directory to keep its files in")]
@@ -168,6 +200,20 @@ public class FacadeConstructionTest
         Assert.False(application.IsCaughtUp);
         Assert.Equal(Publish.Declined, application.Publish(5, payload));
         Assert.Equal(Publish.Declined, application.Reply(new ReplyAddress(2, 9, 1), 5, payload));
+        var buffer = new UnsafeBuffer(new byte[32]);
+        Assert.Equal(Publish.Declined, application.Publish(5, buffer, 8, 16));
+        Assert.Equal(Publish.Declined, application.Publish(1, 5, buffer, 8, 16));
+        Assert.Equal(Publish.Declined, application.Reply(new ReplyAddress(2, 9, 1), 5, buffer, 8, 16));
+    }
+
+    [Fact(DisplayName = "every façade's member id is required")]
+    public void MemberIdIsRequired()
+    {
+        foreach (var options in new[] { typeof(ApplicationOptions), typeof(GatewayOptions), typeof(ConsumerOptions) })
+        {
+            var memberId = options.GetProperty(nameof(ApplicationOptions.MemberId))!;
+            Assert.True(memberId.IsDefined(typeof(RequiredMemberAttribute), false), options.Name);
+        }
     }
 
     [Fact(DisplayName = "a gateway needs a name, its ingress endpoints and a listener")]
@@ -175,7 +221,9 @@ public class FacadeConstructionTest
     {
         Assert.Equal("GatewayName", Assert.Throws<ArgumentException>(() => new Gateway(GatewayWith(name: null))).ParamName);
         Assert.Equal("IngressEndpoints", Assert.Throws<ArgumentException>(() => new Gateway(GatewayWith(ingress: null))).ParamName);
-        var noListener = new GatewayOptions { GatewayName = "GW-A", ClientId = 1, EgressChannel = Egress, Listener = null };
+        var noListener = new GatewayOptions {
+            GatewayName = "GW-A", ClientId = 1, MemberId = 0, EgressChannel = Egress, Listener = null,
+        };
         Assert.Equal("Listener", Assert.Throws<ArgumentException>(() => new Gateway(noListener)).ParamName);
     }
 
@@ -197,6 +245,7 @@ public class FacadeConstructionTest
         Assert.Equal(Gateway.Unresolved, gateway.SourceId);
         Assert.Equal(Gateway.Unresolved, gateway.GatewayId);
         Assert.False(gateway.CanAccept);
+        Assert.False(gateway.CanPublish);
         Assert.False(gateway.IsActivated);
         Assert.False(gateway.IsServing);
         Assert.False(gateway.IsCaughtUp);

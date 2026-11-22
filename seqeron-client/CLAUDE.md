@@ -2,9 +2,9 @@
 
 **The producer side is a Java/C# port pair.** Java's `ClusterStreamSender`/`IngressPublisher` carry
 the names and semantics of the retired C++ files (branch `cpp-direct-client`) — `connectColocated` (IPC ingress on the co-located member, UDP
-endpoints when it is not leading), a `send` that spins through back-pressure and an election rather than
-dropping the frame — unless a new leader arrives mid-spin while its `IngressTracker` holds, when it places
-nothing and returns false — a self-throttling `keepAlive`, and the three-valued `Publish`. They are far smaller
+endpoints when it is not leading), a `send` that offers once and never blocks — back-pressure and an election
+return false, for the caller to retry from its duty cycle — a self-throttling `keepAlive`, and the three-valued
+`Publish`. They are far smaller
 than their twins because `AeronCluster` already is the cluster protocol that the retired
 `ClusterStreamSender.hpp` implemented by hand; what the Java side adds is only what that client does not do. Two divergences are
 deliberate and documented in the class: the payload arrives pre-encoded rather than through a `Fill` over an
@@ -13,7 +13,8 @@ session rather than a publication swap (`AeronCluster` owns its publication). `I
 `IngressPublisher` has a seam the Java suite can drive without an Aeron runtime; the transport's own state machine
 is Aeron's, not ours.
 What is left of ours that is easy to get wrong is split off and unit-tested: **`IngressStallPolicy`**
-(which offer results are terminal — `CLOSED` is not, it is an election in progress). `ClusterStreamSender`
+(which offer results are terminal — `CLOSED` is not, it is an election in progress — and when failed offers,
+spanning calls, add up to a stalled session). `ClusterStreamSender`
 itself is then the Aeron adapter, whose one other decision — replacing an IPC session whose leader moved
 away — is a single comparison, so its low line coverage is the same statement `SequencerService`'s is.
 C#'s are Java's on Aeron.NET's `AeronCluster`, divergences included, and set every timeout Java sets

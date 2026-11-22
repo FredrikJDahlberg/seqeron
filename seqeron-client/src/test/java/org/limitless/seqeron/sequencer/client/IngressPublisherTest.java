@@ -105,10 +105,28 @@ class IngressPublisherTest {
     }
 
     @Test
+    @DisplayName("a payload at an offset is carried from there, and nothing before it")
+    void payloadIsReadFromItsOffset() {
+        final MutableDirectBuffer buffer = payload(24);
+        assertEquals(Publish.PUBLISHED,
+                     publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, buffer, 8, 16));
+
+        messageHeader.wrap(sender.sent, 0);
+        unsequenced.wrap(sender.sent, MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
+                         messageHeader.version());
+        final byte[] carried = new byte[16];
+        assertEquals(16, unsequenced.payloadLength());
+        unsequenced.getPayload(carried, 0, carried.length);
+        for (int i = 0; i < carried.length; i++) {
+            assertEquals(buffer.getByte(8 + i), carried[i], "payload byte " + i);
+        }
+    }
+
+    @Test
     @DisplayName("an application payload is wrapped with the caller's identity and the sender's session")
     void payloadCarriesTheHeaderTheCallerAsked() {
         final MutableDirectBuffer body = payload(16);
-        assertEquals(Publish.Published,
+        assertEquals(Publish.PUBLISHED,
                      publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, body, 16));
         assertEquals(1, sender.calls);
 
@@ -134,9 +152,9 @@ class IngressPublisherTest {
     @DisplayName("a payload above MAX_PAYLOAD_LENGTH is refused locally — nothing is encoded, nothing offered")
     void oversizeBodyIsRefusedWithoutTouchingTheSender() {
         final int tooLong = FrameLayer.MAX_PAYLOAD_LENGTH + 1;
-        assertEquals(Publish.Refused,
-                     publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(tooLong),
-                                              tooLong));
+        assertEquals(Publish.REFUSED,
+                     publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK,
+                                              payload(tooLong), tooLong));
         assertEquals(0, sender.calls, "a Refused publish must not reach the transport");
     }
 
@@ -144,16 +162,16 @@ class IngressPublisherTest {
     @DisplayName("a payload at exactly MAX_PAYLOAD_LENGTH is admitted")
     void maximumBodyIsAdmitted() {
         final int atLimit = FrameLayer.MAX_PAYLOAD_LENGTH;
-        assertEquals(Publish.Published,
-                     publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(atLimit),
-                                              atLimit));
+        assertEquals(Publish.PUBLISHED,
+                     publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK,
+                                              payload(atLimit), atLimit));
     }
 
     @Test
     @DisplayName("a transport that will not take the frame is Declined, which a caller may retry")
     void declinedIsTheTransportsAnswer() {
         sender.accept = false;
-        assertEquals(Publish.Declined,
+        assertEquals(Publish.DECLINED,
                      publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(8), 8));
         assertEquals(1, sender.calls);
     }
@@ -162,9 +180,8 @@ class IngressPublisherTest {
     @DisplayName("a system event is wrapped in the system family, named by systemEventType")
     void systemEventUsesTheSystemFamily() {
         final MutableDirectBuffer body = payload(12);
-        assertEquals(Publish.Published,
-                     publisher.publishSystem(sender, SOURCE_ID, CONNECTION_ID, SystemFrame.GATEWAY_STARTED,
-                                             body, 12));
+        assertEquals(Publish.PUBLISHED,
+                     publisher.publishSystem(sender, SOURCE_ID, CONNECTION_ID, SystemFrame.GATEWAY_STARTED, body, 12));
 
         messageHeader.wrap(sender.sent, 0);
         assertEquals(UnsequencedSystemDecoder.TEMPLATE_ID, messageHeader.templateId());
@@ -180,10 +197,11 @@ class IngressPublisherTest {
     @Test
     @DisplayName("one publisher, many frames: the buffer it owns is reused and never grows a frame's tail")
     void bufferIsReusedAcrossPublishes() {
-        assertEquals(Publish.Published,
-                     publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(64), 64));
+        assertEquals(
+            Publish.PUBLISHED,
+            publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(64), 64));
         final int longFrame = sender.length;
-        assertEquals(Publish.Published,
+        assertEquals(Publish.PUBLISHED,
                      publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(8), 8));
         assertTrue(sender.length < longFrame, "the second frame is shorter than the first");
     }
@@ -191,7 +209,7 @@ class IngressPublisherTest {
     @Test
     @DisplayName("a tracked publish records the frame it placed under the sender's session and term")
     void trackedPublishRecordsThePlacedFrame() {
-        assertEquals(Publish.Published,
+        assertEquals(Publish.PUBLISHED,
                      tracked.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(8), 8));
         assertEquals(1, tracker.tracked.size());
         assertEquals(sender.length, tracker.tracked.get(0)[0]);
@@ -203,12 +221,13 @@ class IngressPublisherTest {
     @DisplayName("while the tracker holds or is full, nothing is sent and the publish is Declined")
     void holdingOrFullTrackerDeclinesWithoutSending() {
         tracker.holding = true;
-        assertEquals(Publish.Declined,
+        assertEquals(Publish.DECLINED,
                      tracked.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(8), 8));
         tracker.holding = false;
         tracker.full = true;
-        assertEquals(Publish.Declined, tracked.publishSystem(sender, SOURCE_ID, CONNECTION_ID,
-                                                             SystemFrame.GATEWAY_STARTED, payload(8), 8));
+        assertEquals(
+            Publish.DECLINED,
+            tracked.publishSystem(sender, SOURCE_ID, CONNECTION_ID, SystemFrame.GATEWAY_STARTED, payload(8), 8));
         assertEquals(0, sender.calls);
         assertEquals(0, tracker.tracked.size());
     }
@@ -217,7 +236,7 @@ class IngressPublisherTest {
     @DisplayName("a frame the transport declines is not tracked")
     void transportDeclineIsNotTracked() {
         sender.accept = false;
-        assertEquals(Publish.Declined,
+        assertEquals(Publish.DECLINED,
                      tracked.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(8), 8));
         assertEquals(0, tracker.tracked.size());
     }
@@ -227,20 +246,26 @@ class IngressPublisherTest {
     void refusalComesBeforeTheHold() {
         tracker.holding = true;
         final int tooLong = FrameLayer.MAX_PAYLOAD_LENGTH + 1;
-        assertEquals(Publish.Refused, tracked.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK,
-                                                             payload(tooLong), tooLong));
+        assertEquals(Publish.REFUSED,
+                     tracked.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(tooLong),
+                                            tooLong));
     }
 
     @Test
     @DisplayName("a frame the sequencer would reject (§9.2 conditions 6-9) is Refused locally, nothing offered")
     void framesTheSequencerWouldRejectAreRefused() {
-        assertEquals(Publish.Refused, publisher.publishPayload(sender, -1, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(8), 8));
-        assertEquals(Publish.Refused, publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, 0, GROUP_MASK, payload(8), 8));
-        assertEquals(Publish.Refused, publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, 1, GROUP_MASK, payload(8), 8));
-        assertEquals(Publish.Refused, publisher.publishSystem(sender, SOURCE_ID, CONNECTION_ID,
-                                                              SystemFrame.LEADERSHIP_CHANGED, payload(8), 8));
-        assertEquals(Publish.Refused, publisher.publishSystem(sender, SOURCE_ID, CONNECTION_ID,
-                                                              SystemFrame.GATEWAY_STARTED, payload(4), 4));
+        assertEquals(Publish.REFUSED,
+                     publisher.publishPayload(sender, -1, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, payload(8), 8));
+        assertEquals(Publish.REFUSED,
+                     publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, 0, GROUP_MASK, payload(8), 8));
+        assertEquals(Publish.REFUSED,
+                     publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, 1, GROUP_MASK, payload(8), 8));
+        assertEquals(
+            Publish.REFUSED,
+            publisher.publishSystem(sender, SOURCE_ID, CONNECTION_ID, SystemFrame.LEADERSHIP_CHANGED, payload(8), 8));
+        assertEquals(
+            Publish.REFUSED,
+            publisher.publishSystem(sender, SOURCE_ID, CONNECTION_ID, SystemFrame.GATEWAY_STARTED, payload(4), 4));
         assertEquals(0, sender.calls);
     }
 }

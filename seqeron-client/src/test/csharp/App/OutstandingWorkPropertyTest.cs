@@ -6,7 +6,7 @@ using Xunit;
 namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
-/// <see cref="LeaderGate"/> and <see cref="OutstandingWork{TKey,TWork}"/> on three simulated replicas sharing one
+/// <see cref="LeaderGate"/> and <see cref="OutstandingWork{TWork}"/> on three simulated replicas sharing one
 /// log, with a seeded generator interleaving requests, replica lag and batched polls, recovery, elections, failed
 /// reply offers and replies lost in an election.
 /// <para><b>Safety</b>, checked on every step: a replica's outstanding set matches the log prefix it has applied;
@@ -59,7 +59,7 @@ public class OutstandingWorkPropertyTest
         private readonly OutstandingWorkPropertyTest _test;
         private readonly int _memberId;
         private readonly LeaderGate _gate;
-        private readonly OutstandingWork<long, long> _work = new OutstandingWork<long, long>();
+        private readonly OutstandingWork<long> _work = new OutstandingWork<long>(() => 0);
 
         // Dispatched, reply not yet offered.
         public readonly Queue<long> PendingReplies = new Queue<long>();
@@ -92,7 +92,7 @@ public class OutstandingWorkPropertyTest
             switch (entry.Kind)
             {
                 case Kind.Request:
-                    _work.OnRequest(entry.Value, entry.Value);
+                    _work.OnRequest(entry.Value) = entry.Value;
                     break;
                 case Kind.Reply:
                     _work.OnReply(entry.Value);

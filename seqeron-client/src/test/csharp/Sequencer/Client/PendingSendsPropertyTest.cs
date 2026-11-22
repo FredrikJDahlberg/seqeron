@@ -12,11 +12,11 @@ namespace Org.Limitless.Seqeron.Sequencer.Client;
 /// <summary>
 /// <see cref="PendingSends"/> driving a producer against a model cluster: a leader that appends ingress stamped with
 /// its own term and drops the rest, commits a prefix, and loses everything uncommitted at an election. After one,
-/// the old leader either still takes ingress and drops it, or is gone and a send spins until egress brings the
-/// <c>NewLeader</c> — giving the send up if the hold is on, as <c>ClusterStreamSender</c> does. The sender may
-/// reconnect on a new session then. The cluster also closes the producer's session at random, and drops what it
-/// sends on it until the producer replaces it; a close an election loses, the next leader makes again. The queue
-/// lags, a sibling shares the producer's <c>sourceId</c>, and term ids skip, as after a failed ballot.
+/// the old leader either still takes ingress and drops it, or is gone and a send places nothing until egress brings
+/// the <c>NewLeader</c>, as <c>ClusterStreamSender</c>'s does. The sender may reconnect on a new session then. The
+/// cluster also closes the producer's session at random, and drops what it sends on it until the producer replaces it;
+/// a close an election loses, the next leader makes again. The queue lags, a sibling shares the producer's
+/// <c>sourceId</c>, and term ids skip, as after a failed ballot.
 /// <para>Checked once the faults stop and everything has drained: the log holds every frame the producer sent
 /// exactly once, in send order, and nothing faulted. Seeds are fixed; the failing one is in the test name. Draws are
 /// made in the same order as <c>PendingSendsPropertyTest.java</c> and <c>PendingSendsPropertyTest.cpp</c>, so a
@@ -81,11 +81,7 @@ public class PendingSendsPropertyTest
         {
             if (_test._senderTerm != _test._clusterTerm && !_test._oldLeaderTakesIngress)
             {
-                _test.NewLeader(); // from inside the spin, as PollEgress would
-                if (_test._pending.IsHolding)
-                {
-                    return false;
-                }
+                return false; // the publication is closed until the NewLeader
             }
             if (_test._senderTerm == _test._clusterTerm && !_test._closedAtCluster)
             {

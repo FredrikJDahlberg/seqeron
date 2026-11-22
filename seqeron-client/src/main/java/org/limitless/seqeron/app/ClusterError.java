@@ -38,5 +38,10 @@ public enum ClusterError {
      * A hosted client broke the host protocol, for instance by opening a connection under an id the façade did not
      * allocate.
      */
-    CLIENT_PROTOCOL
+    CLIENT_PROTOCOL,
+    /**
+     * A {@link Consumer}'s queue is under a {@code <snapshots>} policy, which only a client that writes and restores
+     * snapshots can follow: an {@link Application} with a {@link SnapshotListener}.
+     */
+    SNAPSHOTTED_QUEUE
 }

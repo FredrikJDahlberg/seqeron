@@ -1,8 +1,10 @@
 // Unit tests for the outstanding-work state machine, one situation per case. No Aeron runtime. Case for
-// case with OutstandingWorkTest.java; OutstandingWorkPropertyTest drives the interleavings.
+// case with OutstandingWorkTest.java but its last, the allocation case: a JVM's hazard, boxing, that C++ does not
+// have. OutstandingWorkPropertyTest drives the interleavings.
 
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -35,9 +37,10 @@ struct Recorder
 TEST(OutstandingWork, RequestIsTrackedAndIdempotent)
 {
     OutstandingWork<int> work;
-    work.onRequest(1, 10);
-    work.onRequest(1, 11);
+    int& request = work.onRequest(1);
+    request = 10;
 
+    EXPECT_EQ(&request, &work.onRequest(1));
     EXPECT_EQ(1u, work.size());
     EXPECT_FALSE(work.isDispatched(1));
 }
@@ -45,8 +48,8 @@ TEST(OutstandingWork, RequestIsTrackedAndIdempotent)
 TEST(OutstandingWork, LeaderDispatchesEachRequestOnce)
 {
     OutstandingWork<int> work;
-    work.onRequest(1, 0);
-    work.onRequest(2, 0);
+    work.onRequest(1);
+    work.onRequest(2);
 
     Recorder first;
     EXPECT_EQ(2, work.dispatchUndispatched(std::ref(first)));
@@ -62,9 +65,9 @@ TEST(OutstandingWork, LeaderDispatchesEachRequestOnce)
 TEST(OutstandingWork, PromotedFollowerDispatchesTrackedRequests)
 {
     OutstandingWork<int> work;
-    work.onRequest(1, 0);
-    work.onRequest(2, 0);
-    work.onRequest(3, 0);
+    work.onRequest(1);
+    work.onRequest(2);
+    work.onRequest(3);
     EXPECT_FALSE(work.isDispatched(1)) << "never dispatched while a follower";
 
     Recorder promoted;
@@ -74,7 +77,7 @@ TEST(OutstandingWork, PromotedFollowerDispatchesTrackedRequests)
 TEST(OutstandingWork, ReplyRemovesRequest)
 {
     OutstandingWork<int> work;
-    work.onRequest(1, 0);
+    work.onRequest(1);
     Recorder first;
     work.dispatchUndispatched(std::ref(first));
 
@@ -89,7 +92,7 @@ TEST(OutstandingWork, ReplyRemovesRequest)
 TEST(OutstandingWork, LeadershipLossReDispatches)
 {
     OutstandingWork<int> work;
-    work.onRequest(1, 0);
+    work.onRequest(1);
     Recorder first;
     work.dispatchUndispatched(std::ref(first)); // its reply is lost in flight
 
@@ -104,7 +107,7 @@ TEST(OutstandingWork, LeadershipLossReDispatches)
 TEST(OutstandingWork, ReplyNotEmittedReDispatches)
 {
     OutstandingWork<int> work;
-    work.onRequest(1, 0);
+    work.onRequest(1);
     Recorder first;
     work.dispatchUndispatched(std::ref(first));
 
@@ -124,9 +127,9 @@ TEST(OutstandingWork, ReplyNotEmittedReDispatches)
 TEST(OutstandingWork, CapacityStopsTheSweep)
 {
     OutstandingWork<int> work;
-    work.onRequest(1, 0);
-    work.onRequest(2, 0);
-    work.onRequest(3, 0);
+    work.onRequest(1);
+    work.onRequest(2);
+    work.onRequest(3);
 
     Recorder first;
     first.slots = 2;
@@ -147,32 +150,66 @@ TEST(OutstandingWork, ReplyForUnknownKeyIsHarmless)
     EXPECT_EQ(0u, work.size());
 }
 
-TEST(OutstandingWork, DispatchFollowsRequestOrder)
+TEST(OutstandingWork, ReassertedRequestKeepsItsPlace)
 {
     OutstandingWork<int> work;
-    work.onRequest(5, 0);
-    work.onRequest(3, 0);
-    work.onRequest(9, 0);
-    work.onRequest(5, 1);
+    work.onRequest(3);
+    work.onRequest(5);
+    work.onRequest(9);
+    work.onRequest(3);
 
     Recorder recorder;
     work.dispatchUndispatched(std::ref(recorder));
 
-    EXPECT_EQ((Keys{ 5, 3, 9 }), recorder.dispatched) << "the order requests were sequenced, not key order";
+    EXPECT_EQ((Keys{ 3, 5, 9 }), recorder.dispatched);
 }
 
-TEST(OutstandingWork, AnsweredRequestAskedAgainGoesToTheBack)
+TEST(OutstandingWork, AnsweredRequestAskedAgainIsRefused)
 {
     OutstandingWork<int> work;
-    work.onRequest(1, 0);
-    work.onRequest(2, 0);
+    work.onRequest(1);
+    work.onRequest(2);
     work.onReply(1);
-    work.onRequest(1, 0);
 
-    Recorder recorder;
-    work.dispatchUndispatched(std::ref(recorder));
+    EXPECT_THROW(work.onRequest(1), std::invalid_argument) << "a clusterSeqNo never comes back";
+    EXPECT_EQ(1u, work.size());
+}
 
-    EXPECT_EQ((Keys{ 2, 1 }), recorder.dispatched);
+TEST(OutstandingWork, AnsweredWorkIsReused)
+{
+    OutstandingWork<int> work;
+    const int* first = &work.onRequest(1);
+    work.onReply(1);
+
+    EXPECT_EQ(first, &work.onRequest(2));
+}
+
+TEST(OutstandingWork, OrderSurvivesGrowthAndCompaction)
+{
+    OutstandingWork<int> work;
+    Keys expected;
+    for (std::int64_t key = 1; key <= 100; ++key)
+    {
+        work.onRequest(key) = static_cast<int>(key);
+        if (key <= 40 && key % 2 == 1)
+        {
+            work.onReply(key);
+        }
+        else
+        {
+            expected.push_back(key);
+        }
+    }
+
+    Keys dispatched;
+    work.dispatchUndispatched([&](const std::int64_t key, const int& request) {
+        EXPECT_EQ(key, request);
+        dispatched.push_back(key);
+        return true;
+    });
+
+    EXPECT_EQ(expected, dispatched);
+    EXPECT_EQ(expected.size(), work.size());
 }
 
 } // namespace

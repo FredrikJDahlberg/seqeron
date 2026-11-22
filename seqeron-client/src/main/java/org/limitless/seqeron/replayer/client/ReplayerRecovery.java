@@ -105,6 +105,7 @@ final class ReplayerRecovery {
 
     /** Why recovery cannot go on, or null. Latched: the receiver raises it from its duty cycle. */
     private String fault;
+    private boolean queueStartMissing;
 
     private long lastClusterSeqNo;
 
@@ -283,6 +284,7 @@ final class ReplayerRecovery {
                          "FATAL: first frame observed has groupSeqNo=%d, expected 1 — this node's recording "
                              + "does not reach the start of the queue",
                          groupSeqNo);
+            queueStartMissing = true;
             latchFault("first frame observed has groupSeqNo=" + groupSeqNo +
                        ", expected 1 — this node's recording does not reach the start of the queue");
             return;
@@ -326,6 +328,11 @@ final class ReplayerRecovery {
      */
     public String fault() {
         return fault;
+    }
+
+    /** Whether {@link #fault()} is that this node's queue does not start at {@code groupSeqNo} 1: a cut, or a purge. */
+    public boolean isQueueStartMissing() {
+        return queueStartMissing;
     }
 
     /**

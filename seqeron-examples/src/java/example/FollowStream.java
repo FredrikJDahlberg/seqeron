@@ -138,13 +138,12 @@ public final class FollowStream {
      * This example's one connection, as a {@code ConnectionOpened} system event: a system payload goes through
      * {@code publishSystem}, and carries no {@code MessageHeader} because {@code systemEventType} names it.
      *
-     * @return whether it was placed; a {@code Declined} is retried on the next duty cycle
+     * @return whether it was placed; a {@code DECLINED} is retried on the next duty cycle
      */
     private static boolean announceConnection(final ClusterStreamSender sender) {
         CONNECTION_OPENED.wrap(SYSTEM_BODY, 0).putConnectionData(CONNECTION_LABEL, 0, CONNECTION_LABEL.length);
         return PUBLISHER.publishSystem(sender, PING_SOURCE_ID, CONNECTION_ID, SystemFrame.CONNECTION_OPENED,
-                                       SYSTEM_BODY, CONNECTION_OPENED.encodedLength())
-            == Publish.Published;
+                                       SYSTEM_BODY, CONNECTION_OPENED.encodedLength()) == Publish.PUBLISHED;
     }
 
     /**
@@ -169,10 +168,9 @@ public final class FollowStream {
     private static void ping(final ClusterStreamSender sender) {
         pingSentNs = System.nanoTime();
         PING_BODY.putLong(0, pingSentNs, ByteOrder.LITTLE_ENDIAN);
-        if (PUBLISHER.publishPayload(sender, PING_SOURCE_ID, CONNECTION_ID, PING_PAYLOAD_ID, PING_GROUP_MASK,
-                                     PING_BODY, Long.BYTES) != Publish.Published) {
-            // Declined: the sender spun through back-pressure and an election and found no session at the
-            // end of it. Next second's ping is the retry.
+        if (PUBLISHER.publishPayload(sender, PING_SOURCE_ID, CONNECTION_ID, PING_PAYLOAD_ID, PING_GROUP_MASK, PING_BODY,
+                                     Long.BYTES) != Publish.PUBLISHED) {
+            // DECLINED: back-pressure, an election, or no session. Next second's ping is the retry.
             pingSentNs = 0;
         }
     }

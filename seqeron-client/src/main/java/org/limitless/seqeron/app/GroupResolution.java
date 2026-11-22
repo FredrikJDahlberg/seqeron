@@ -87,7 +87,7 @@ final class GroupResolution {
         }
         final GroupDirectory resolved = new GroupDirectory(table);
         for (final String name : addressedGroups) {
-            if (resolved.mask(name) == 0) {
+            if (resolved.mask(name).bits() == 0) {
                 unknownGroup = name;
                 return Outcome.GROUP_UNKNOWN;
             }

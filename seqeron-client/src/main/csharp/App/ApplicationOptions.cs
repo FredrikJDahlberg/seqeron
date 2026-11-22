@@ -14,7 +14,7 @@ public sealed class ApplicationOptions
 
     /// <summary>This application's <c>sourceId</c>, the one its <c>&lt;applications&gt;</c> row declares —
     /// required, because spec §5 is one id space, and never −1, which ingress refuses.</summary>
-    public int SourceId { get; init; }
+    public required int SourceId { get; init; }
 
     /// <summary>The names of the groups this application publishes to besides its own; one the log's group table
     /// lacks fences it with <see cref="ClusterError.GroupUnknown"/>.</summary>
@@ -24,8 +24,9 @@ public sealed class ApplicationOptions
     /// node: two sharing one share their counters' series.</summary>
     public required int ClientId { get; init; }
 
-    /// <summary>The node this replica runs on: whose queue it follows, and whose leadership opens its gate.</summary>
-    public int MemberId { get; init; }
+    /// <summary>The node this replica runs on — required: whose queue it follows, and whose leadership opens its gate;
+    /// with <see cref="OffCluster"/>, the gateway host's node id.</summary>
+    public required int MemberId { get; init; }
 
     /// <summary>Whether this node is a gateway host, running no member, rather than a member: the gate then opens
     /// whoever leads, and ingress is UDP alone. Run one instance, as nothing elects between two. Not with an
@@ -49,10 +50,9 @@ public sealed class ApplicationOptions
     /// <summary>The stall and capacity policy.</summary>
     public Tuning Tuning { get; init; } = new Tuning();
 
-    /// <summary>What a call that blocks waits on between attempts: a publish that spins through an election, up to
-    /// 10 s, and the cluster connect in <c>Start</c>. A yielding spin and Aeron's own connect wait by default. One
-    /// that also does the caller's periodic work, such as writing a heartbeat, keeps it going while the call
-    /// blocks.</summary>
+    /// <summary>What the cluster connect in <c>Start</c> waits on between attempts; Aeron's own connect wait by
+    /// default. One that also does the caller's periodic work, such as writing a heartbeat, keeps it going while
+    /// <c>Start</c> blocks.</summary>
     public IIdleStrategy IdleStrategy { get; init; }
 
     /// <summary>How long to wait for IPC ingress to the local member while it leads before using UDP,

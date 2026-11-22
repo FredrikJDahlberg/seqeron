@@ -101,7 +101,7 @@ public final class TestApplication implements Application.Listener, SnapshotList
                 final long now = System.nanoTime();
                 if (app.canPublish() && now >= nextMarkerNs) {
                     final int length = marker.encodePayload(++markerSeqNo, ClusterProbe.NO_FILLER);
-                    app.publish(ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(), length);
+                    app.publish(ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(), 0, length);
                     nextMarkerNs = now + intervalNs;
                     work++;
                 }

@@ -299,7 +299,7 @@ class ConformanceTest {
     @Test
     @DisplayName("row 4 condition 1: a frame under 30 bytes or over MAX_INGRESS_LENGTH is refused")
     void conditionOneLength() {
-        final int wellFormed = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4));
+        payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, FrameLayer.MIN_INGRESS_LENGTH - 1, SESSION_ID,
                                                        TIMESTAMP));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, 0, SESSION_ID, TIMESTAMP));
@@ -307,7 +307,6 @@ class ConformanceTest {
         payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(FrameLayer.MAX_PAYLOAD_LENGTH + 1));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, FrameLayer.MAX_INGRESS_LENGTH + 1, SESSION_ID,
                                                        TIMESTAMP));
-        assertEquals(0, wellFormed & 0, "the well-formed length above is only the fixture");
     }
 
     @Test
@@ -809,6 +808,7 @@ class ConformanceTest {
         assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, lastTemplateId(), "not one heartbeat before the deadline");
         sequencer.clusterHeartbeat(armed + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
         assertEquals(12, lastGatewayActive());
+        assertEquals(1L, sequencer.gatewayPromotionCount());
     }
 
     @Test
@@ -848,6 +848,9 @@ class ConformanceTest {
         sequencer.clusterHeartbeat(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
         assertEquals(12, gatewayActiveAt(frames, frames.count() - 2));
         assertEquals(22, lastGatewayActive());
+        sequencer.clusterHeartbeat(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, lastTemplateId(),
+                     "each hand-over restarted its own deadline");
     }
 
     // ── Row 10. Group selection (F-5, F-6, §7.4) ─────────────────────────────────────────────────

@@ -289,6 +289,11 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         return recovery.isCaughtUp();
     }
 
+    /** Whether this node's queue does not start at {@code groupSeqNo} 1, which the next {@link #poll} raises. */
+    public boolean isQueueStartMissing() {
+        return recovery.isQueueStartMissing();
+    }
+
     /**
      * Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its own
      * recovery progress by.

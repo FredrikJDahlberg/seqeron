@@ -20,14 +20,24 @@ class ConsumerBuilderTest {
     };
 
     @Test
-    @DisplayName("a client id, a group and a listener are required")
-    void requiresClientIdGroupAndListener() {
-        assertEquals("clientId", assertThrows(NullPointerException.class,
-            () -> Consumer.builder().groupId(1).listener(LISTENER).build()).getMessage());
-        assertEquals("groupId", assertThrows(NullPointerException.class,
-            () -> Consumer.builder().clientId(1).listener(LISTENER).build()).getMessage());
-        assertEquals("listener", assertThrows(NullPointerException.class,
-            () -> Consumer.builder().clientId(1).groupId(1).build()).getMessage());
+    @DisplayName("a client id, a member id, a group and a listener are required")
+    void requiresClientIdMemberIdGroupAndListener() {
+        assertEquals("clientId",
+                     assertThrows(NullPointerException.class,
+                                  () -> Consumer.builder().memberId(0).groupId(1).listener(LISTENER).build())
+                         .getMessage());
+        assertEquals("memberId",
+                     assertThrows(NullPointerException.class,
+                                  () -> Consumer.builder().clientId(1).groupId(1).listener(LISTENER).build())
+                         .getMessage());
+        assertEquals("groupId",
+                     assertThrows(NullPointerException.class,
+                                  () -> Consumer.builder().clientId(1).memberId(0).listener(LISTENER).build())
+                         .getMessage());
+        assertEquals("listener",
+                     assertThrows(NullPointerException.class,
+                                  () -> Consumer.builder().clientId(1).memberId(0).groupId(1).build())
+                         .getMessage());
     }
 
     @Test

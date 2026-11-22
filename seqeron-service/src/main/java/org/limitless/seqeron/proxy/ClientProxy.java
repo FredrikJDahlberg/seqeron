@@ -35,7 +35,9 @@ import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Consumer;
 import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.GroupDirectory;
+import org.limitless.seqeron.app.GroupMask;
 import org.limitless.seqeron.app.Payload;
+import org.limitless.seqeron.app.ReplyAddress;
 import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.app.Tuning;
 import org.limitless.seqeron.protocol.FrameLayer;
@@ -146,7 +148,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private final ResolvedEncoder resolvedOut = new ResolvedEncoder();
     private final FencedEncoder fencedOut = new FencedEncoder();
     private final long commandWindow;
-    private final ReplyAddresses replyAddresses = new ReplyAddresses();
+    private final ReplyAddress replyAddress = new ReplyAddress();
     private final CommandLedger ledger;
     private final int placePerCycle;
     private final int pendingCapacity;
@@ -157,7 +159,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private final long allocWarmupFrames;
     private final long allocWindowFrames;
     private final ThreadMXBean threads = (ThreadMXBean)ManagementFactory.getThreadMXBean();
-    /** What the façade's blocking calls wait on: a yielding spin that writes the host heartbeat (H-10). */
+    /** What the façade's cluster connect waits on: a yielding spin that writes the host heartbeat (H-10). */
     private final IdleStrategy facadeIdle = new IdleStrategy() {
         @Override
         public void idle(final int workCount) {
@@ -431,7 +433,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private void afterDoWork() {
         final long now = System.nanoTime();
         exportLag();
-        final boolean canPublish = app != null ? app.canPublish() : gateway != null && gateway.canAccept();
+        final boolean canPublish = app != null ? app.canPublish() : gateway != null && gateway.canPublish();
         if (canPublish != lastCanPublish) {
             lastCanPublish = canPublish;
             sendGate();
@@ -833,27 +835,28 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         case ReplyDecoder.TEMPLATE_ID -> {
             final int payloadLength = replyIn.bodyLength();
             replyIn.getBody(scratch, 0, payloadLength);
-            result = app.reply(replyAddresses.of(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
-                replyIn.payloadId(), scratch, payloadLength);
+            result =
+                app.reply(replyAddress.set(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
+                          replyIn.payloadId(), scratch, 0, payloadLength);
         }
         case OpenConnectionDecoder.TEMPLATE_ID -> {
             final int dataLength = openIn.dataLength();
             openIn.getData(scratch, 0, dataLength);
-            final int id = gateway.openConnection(scratch, dataLength);
+            final int id = gateway.openConnection(scratch, 0, dataLength);
             if (id == Gateway.NO_CONNECTION) {
-                result = Publish.Refused;
+                result = Publish.REFUSED;
             } else if (id != openIn.connectionId()) {
                 breach = "connection id " + openIn.connectionId() + " but the façade allocated " + id;
-                result = Publish.Refused;
+                result = Publish.REFUSED;
             } else {
                 connectionsOpened++;
                 log("opened connection %d", id);
-                result = Publish.Published;
+                result = Publish.PUBLISHED;
             }
         }
         case CloseConnectionDecoder.TEMPLATE_ID -> {
             gateway.closeConnection((int)closeIn.connectionId());
-            result = Publish.Published;
+            result = Publish.PUBLISHED;
         }
         case GateClosedDecoder.TEMPLATE_ID -> {
             gateway.gateClosed();
@@ -861,15 +864,15 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             lastCanPublish = false;
             log("gate closed by the client — gate epoch %d", ledger.epoch());
             sendGate();
-            result = Publish.Published;
+            result = Publish.PUBLISHED;
         }
         default -> {
             final int payloadLength = publishIn.bodyLength();
             publishIn.getBody(scratch, 0, payloadLength);
-            result = gateway != null ? gateway.publish((int)publishIn.connectionId(), (int)publishIn.groupMask(),
-                                                       publishIn.payloadId(), scratch, payloadLength)
-                                     : app.publish((int)publishIn.groupMask(), publishIn.payloadId(), scratch,
-                                                   payloadLength);
+            final GroupMask groups = GroupMask.of((int)publishIn.groupMask());
+            result = gateway != null ? gateway.publish((int)publishIn.connectionId(), groups, publishIn.payloadId(),
+                                                       scratch, 0, payloadLength)
+                                     : app.publish(groups, publishIn.payloadId(), scratch, 0, payloadLength);
         }
         }
         if (!ledger.settle(result, length, windowed, commandSeq)) {
@@ -917,8 +920,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
             final String name = directory.name(groupId);
             if (name != null) {
-                groups.next().groupId(groupId).mask(directory.mask(name)).putName(name.getBytes(StandardCharsets.UTF_8), 0,
-                    name.length());
+                groups.next()
+                    .groupId(groupId)
+                    .mask(directory.mask(name).bits())
+                    .putName(name.getBytes(StandardCharsets.UTF_8), 0, name.length());
             }
         }
         send(ProxyProtocol.HEADER + groupsOut.encodedLength());
@@ -1107,7 +1112,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     // ── Sends ────────────────────────────────────────────────────────────────────────────────────────────────
 
     private boolean canPublishNow() {
-        return app != null ? app.canPublish() : gateway != null && (gateway.canAccept() || activating);
+        return app != null ? app.canPublish() : gateway != null && (gateway.canPublish() || activating);
     }
 
     private void sendGate() {

@@ -308,8 +308,8 @@ public final class TestGateway {
                 continue;
             }
             final int length = marker.encodePayload(markerSeqNo + 1, ClusterProbe.NO_FILLER);
-            if (!published(gateway.publish(connection.id, ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(),
-                                           length))) {
+            if (!published(
+                    gateway.publish(connection.id, ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(), 0, length))) {
                 break;
             }
             markerSeqNo++;
@@ -338,10 +338,10 @@ public final class TestGateway {
 
     /** A refusal is this harness's own bug, never a condition to wait out. */
     private static boolean published(final Publish result) {
-        if (result == Publish.Refused) {
+        if (result == Publish.REFUSED) {
             throw new IllegalStateException("a frame the sequencer would reject");
         }
-        return result == Publish.Published;
+        return result == Publish.PUBLISHED;
     }
 
     // ── the gateway ───────────────────────────────────────────────────────────────

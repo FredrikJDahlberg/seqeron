@@ -9,6 +9,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
@@ -48,15 +49,6 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * step.
  */
 public final class Application implements AutoCloseable {
-    /** How long the queue may be silent before this replica is fenced — 20 heartbeat periods. */
-    public static final long DEFAULT_QUEUE_STALL_TIMEOUT_MS = Session.DEFAULT_QUEUE_STALL_TIMEOUT_MS;
-
-    /** How long recovery may dispatch nothing, once caught up before; longer, as a re-walk is slower. */
-    public static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = Session.DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-
-    /** Frames in flight between a publish and the queue; far above what one round trip holds. */
-    public static final int DEFAULT_PENDING_CAPACITY = Session.DEFAULT_PENDING_CAPACITY;
-
     /** How long ingress is tried on this member's own {@code aeron:ipc}: short, as a follower never answers. */
     public static final long DEFAULT_IPC_CONNECT_TIMEOUT_MS = 500;
 
@@ -66,8 +58,8 @@ public final class Application implements AutoCloseable {
     /** What an application does that this class cannot do for it. */
     public interface Listener {
         /**
-         * The log's group table, once, before the gate first opens: what {@link #publish(int, int, DirectBuffer,
-         * int)} takes its masks from.
+         * The log's group table, once, before the gate first opens: what {@link #publish(GroupMask, int, DirectBuffer,
+         * int, int)} takes its masks from.
          */
         default void onGroupsResolved(final GroupDirectory directory) {
         }
@@ -206,32 +198,40 @@ public final class Application implements AutoCloseable {
      * Submits one payload of this application's own to its own group, stamped with its {@code sourceId} and
      * belonging to no connection.
      *
-     * @param payload the payload's bytes, its own {@code MessageHeader} included
-     * @return {@code Declined} while the gate is shut, ingress is held or the transport is back-pressured —
-     *     retry it; {@code Refused} is permanent
+     * @param payloadId which protocol the payload speaks
+     * @param payload   the buffer holding the payload's bytes, its own {@code MessageHeader} included
+     * @param offset    where they start in {@code payload}
+     * @param length    how many there are
+     * @return {@code PUBLISHED}; {@code DECLINED}, nothing placed, to retry from the duty cycle, while the gate is
+     *     shut, ingress is held behind a failover's resend, confirmed ingress is full, or the session is lost or being
+     *     replaced, or cluster ingress is back-pressured or electing a leader; {@code REFUSED}, permanently. Never
+     *     blocks.
      */
-    public Publish publish(final int payloadId, final DirectBuffer payload, final int length) {
-        return submit(sourceId, NO_CONNECTION, 0, payloadId, payload, length);
+    public Publish publish(final int payloadId, final DirectBuffer payload, final int offset, final int length) {
+        return submit(sourceId, NO_CONNECTION, 0, payloadId, payload, offset, length);
     }
 
     /**
-     * The same to the groups {@code groupMask} names as well as its own.
+     * The same to the groups {@code groups} names as well as its own.
      *
-     * @param groupMask bits from the {@link GroupDirectory}; one the table lacks is {@code Refused}
+     * @param groups from the {@link GroupDirectory}; one naming a group the table lacks is {@code REFUSED}
      */
-    public Publish publish(final int groupMask, final int payloadId, final DirectBuffer payload, final int length) {
-        return submit(sourceId, NO_CONNECTION, groupMask, payloadId, payload, length);
+    public Publish publish(final GroupMask groups, final int payloadId, final DirectBuffer payload, final int offset,
+                           final int length) {
+        return submit(sourceId, NO_CONNECTION, groups.bits(), payloadId, payload, offset, length);
     }
 
     /**
      * The same on behalf of the producer that asked for it: a reply carries the <b>requester's</b>
      * {@code sourceId}, {@code connectionId} and {@code groupMask}, which is how the gateway that took the request
-     * routes the answer back out of it, and how every group that saw the request sees the answer. Keep the {@link
-     * ReplyAddress} ({@link Payload#replyAddress()}) rather than the request itself — a {@link Payload} is valid only
-     * during its callback, and a reply is usually dispatched later.
+     * routes the answer back out of it, and how every group that saw the request sees the answer. Keep a {@link
+     * ReplyAddress} ({@link ReplyAddress#set(Payload)}) rather than the request itself — a {@link Payload} is valid
+     * only during its callback, and a reply is usually dispatched later.
      */
-    public Publish reply(final ReplyAddress request, final int payloadId, final DirectBuffer payload, final int length) {
-        return submit(request.sourceId(), request.connectionId(), request.groupMask(), payloadId, payload, length);
+    public Publish reply(final ReplyAddress request, final int payloadId, final DirectBuffer payload, final int offset,
+                         final int length) {
+        return submit(request.sourceId(), request.connectionId(), request.groupMask(), payloadId, payload, offset,
+                      length);
     }
 
     /** This replica's own {@code sourceId}, the one its topology row gives it. */
@@ -269,11 +269,11 @@ public final class Application implements AutoCloseable {
 
     /** A shut gate declines rather than submits: only the leading replica's copy of the work is the one sent. */
     private Publish submit(final int frameSourceId, final int connectionId, final int groupMask, final int payloadId,
-                           final DirectBuffer payload, final int length) {
+                           final DirectBuffer payload, final int offset, final int length) {
         if (!gate.isOpen()) {
-            return Publish.Declined;
+            return Publish.DECLINED;
         }
-        return session.publishPayload(frameSourceId, connectionId, groupMask, payloadId, payload, length);
+        return session.publishPayload(frameSourceId, connectionId, groupMask, payloadId, payload, offset, length);
     }
 
     /** What comes off the queue, and the one frame the gate is driven by. */
@@ -385,10 +385,10 @@ public final class Application implements AutoCloseable {
 
     /** Everything one replica needs to join its deployment. */
     public static final class Builder {
-        private int sourceId;
+        private Integer sourceId;
         private List<String> addressedGroups = List.of();
         private Integer clientId;
-        private int memberId;
+        private Integer memberId;
         private boolean offCluster;
         private Long ipcConnectTimeoutMs;
         private String egressChannel = Session.DEFAULT_EGRESS_CHANNEL;
@@ -399,89 +399,92 @@ public final class Application implements AutoCloseable {
         private Tuning tuning = Tuning.DEFAULT;
         private IdleStrategy idleStrategy;
 
-    /**
-     * This application's {@code sourceId}, the one its {@code <applications>} row declares — required,
-     * because spec §5 is one id space, and never −1, which ingress refuses.
-     */
-    public Builder sourceId(final int sourceId) {
-        this.sourceId = sourceId;
-        return this;
-    }
+        /**
+         * This application's {@code sourceId}, the one its {@code <applications>} row declares — required,
+         * because spec §5 is one id space, and never −1, which ingress refuses.
+         */
+        public Builder sourceId(final int sourceId) {
+            this.sourceId = sourceId;
+            return this;
+        }
 
-    /**
-     * The names of the groups this application publishes to besides its own; one the log's group table lacks
-     * fences it with {@link ClusterError#GROUP_UNKNOWN}.
-     */
-    public Builder addressedGroups(final String... addressedGroups) {
-        this.addressedGroups = List.of(addressedGroups);
-        return this;
-    }
+        /**
+         * The names of the groups this application publishes to besides its own; one the log's group table lacks
+         * fences it with {@link ClusterError#GROUP_UNKNOWN}.
+         */
+        public Builder addressedGroups(final String... addressedGroups) {
+            this.addressedGroups = List.of(addressedGroups);
+            return this;
+        }
 
-    /**
-     * This replica's client id, its counters' label — required, and unique among the clients on its node: two
-     * sharing one share their counters' series.
-     */
-    public Builder clientId(final int clientId) {
-        this.clientId = clientId;
-        return this;
-    }
+        /**
+         * This replica's client id, its counters' label — required, and unique among the clients on its node: two
+         * sharing one share their counters' series.
+         */
+        public Builder clientId(final int clientId) {
+            this.clientId = clientId;
+            return this;
+        }
 
-    /** The node this replica runs on: whose queue it follows, and whose leadership opens its gate. */
-    public Builder memberId(final int memberId) {
-        this.memberId = memberId;
-        return this;
-    }
+        /**
+         * The node this replica runs on — required: whose queue it follows, and whose leadership opens its gate; with
+         * {@link #offCluster}, the gateway host's node id.
+         */
+        public Builder memberId(final int memberId) {
+            this.memberId = memberId;
+            return this;
+        }
 
-    /**
-     * This client's own egress endpoint; two media drivers on one host cannot both bind a port. An ephemeral port
-     * on localhost, {@code aeron:udp?endpoint=localhost:0}, by default.
-     */
-    public Builder egressChannel(final String egressChannel) {
-        this.egressChannel = egressChannel;
-        return this;
-    }
+        /**
+         * This client's own egress endpoint; two media drivers on one host cannot both bind a port. An ephemeral port
+         * on localhost, {@code aeron:udp?endpoint=localhost:0}, by default.
+         */
+        public Builder egressChannel(final String egressChannel) {
+            this.egressChannel = egressChannel;
+            return this;
+        }
 
-    /** The members to reach when this node is not leading, {@code PortLayout.ingressEndpoints()} by default. */
-    public Builder ingressEndpoints(final String ingressEndpoints) {
-        this.ingressEndpoints = ingressEndpoints;
-        return this;
-    }
+        /** The members to reach when this node is not leading, {@code PortLayout.ingressEndpoints()} by default. */
+        public Builder ingressEndpoints(final String ingressEndpoints) {
+            this.ingressEndpoints = ingressEndpoints;
+            return this;
+        }
 
-    public Builder listener(final Listener listener) {
-        this.listener = listener;
-        return this;
-    }
+        public Builder listener(final Listener listener) {
+            this.listener = listener;
+            return this;
+        }
 
-    /**
-     * Takes this replica into snapshot rounds; without it it takes part in none, whatever its topology row
-     * says, and recovers from {@code clusterSeqNo} 1.
-     *
-     * @param snapshotListener  serializes this application's state for a round and restores it on start
-     * @param snapshotDirectory where this replica keeps its snapshots, one file per round. Its own: no other
-     *                          instance may write it. A restart restores from what it holds, so it must outlive
-     *                          the process.
-     */
-    public Builder snapshots(final SnapshotListener snapshotListener, final Path snapshotDirectory) {
-        this.snapshotListener = Objects.requireNonNull(snapshotListener, "snapshotListener");
-        this.snapshotDirectory = Objects.requireNonNull(snapshotDirectory, "snapshotDirectory");
-        return this;
-    }
+        /**
+         * Takes this replica into snapshot rounds; without it it takes part in none, whatever its topology row
+         * says, and recovers from {@code clusterSeqNo} 1.
+         *
+         * @param snapshotListener  serializes this application's state for a round and restores it on start
+         * @param snapshotDirectory where this replica keeps its snapshots, one file per round. Its own: no other
+         *                          instance may write it. A restart restores from what it holds, so it must outlive
+         *                          the process.
+         */
+        public Builder snapshots(final SnapshotListener snapshotListener, final Path snapshotDirectory) {
+            this.snapshotListener = Objects.requireNonNull(snapshotListener, "snapshotListener");
+            this.snapshotDirectory = Objects.requireNonNull(snapshotDirectory, "snapshotDirectory");
+            return this;
+        }
 
-    /** The stall and capacity policy, {@link Tuning#DEFAULT} by default. */
-    public Builder tuning(final Tuning tuning) {
-        this.tuning = Objects.requireNonNull(tuning, "tuning");
-        return this;
-    }
+        /** The stall and capacity policy, {@link Tuning#DEFAULT} by default. */
+        public Builder tuning(final Tuning tuning) {
+            this.tuning = Objects.requireNonNull(tuning, "tuning");
+            return this;
+        }
 
-    /**
-     * What a call that blocks waits on between attempts: a {@code publish} that spins through an election, up to
-     * 10 s, and the cluster connect in {@code start}. A yielding spin and Aeron's own connect wait by default. One
-     * that also does the caller's periodic work, such as writing a heartbeat, keeps it going while the call blocks.
-     */
-    public Builder idleStrategy(final IdleStrategy idleStrategy) {
-        this.idleStrategy = Objects.requireNonNull(idleStrategy, "idleStrategy");
-        return this;
-    }
+        /**
+         * What the cluster connect in {@code start} waits on between attempts; Aeron's own connect wait by default. One
+         * that also does the caller's periodic work, such as writing a heartbeat, keeps it going while {@code start}
+         * blocks.
+         */
+        public Builder idleStrategy(final IdleStrategy idleStrategy) {
+            this.idleStrategy = Objects.requireNonNull(idleStrategy, "idleStrategy");
+            return this;
+        }
 
         /**
          * Whether this node is a gateway host, running no member, rather than a member: the gate then opens
@@ -503,7 +506,12 @@ public final class Application implements AutoCloseable {
         }
 
         public Application build() {
+            Objects.requireNonNull(sourceId, "sourceId");
+            if (sourceId == ReplayProtocol.NO_SOURCE_ID) {
+                throw new IllegalStateException("sourceId -1 is the cluster's");
+            }
             Objects.requireNonNull(clientId, "clientId");
+            Objects.requireNonNull(memberId, "memberId");
             Objects.requireNonNull(egressChannel, "egressChannel");
             Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
             Objects.requireNonNull(listener, "listener");

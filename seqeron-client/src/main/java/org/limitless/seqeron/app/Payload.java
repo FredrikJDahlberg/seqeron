@@ -54,11 +54,6 @@ public final class Payload {
         return event.groupMask();
     }
 
-    /** The address a later {@link Application#reply} takes; unlike this payload, it outlives the callback. */
-    public ReplyAddress replyAddress() {
-        return new ReplyAddress(sourceId(), connectionId(), groupMask());
-    }
-
     /** The cluster session it was submitted on; a gateway pair shares its {@code sourceId} but not this. */
     public long sourceSessionId() {
         return event.sourceSessionId();

@@ -3,11 +3,8 @@ package org.limitless.seqeron.app;
 import io.aeron.Aeron;
 import io.aeron.Counter;
 import java.nio.file.Path;
-import java.util.ArrayDeque;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
@@ -53,20 +50,6 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  */
 public final class Gateway implements AutoCloseable {
     /**
-     * How long the queue may be silent before this instance is fenced — 20 heartbeat periods. The deployment
-     * policy every gateway had been copying.
-     */
-    public static final long DEFAULT_QUEUE_STALL_TIMEOUT_MS = Session.DEFAULT_QUEUE_STALL_TIMEOUT_MS;
-
-    /**
-     * How long recovery may dispatch nothing, once caught up before; longer than the queue's, as a re-walk is slower.
-     */
-    public static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = Session.DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-
-    /** Frames in flight between a publish and the queue; far above what one round trip holds. */
-    public static final int DEFAULT_PENDING_CAPACITY = Session.DEFAULT_PENDING_CAPACITY;
-
-    /**
      * A frame that belongs to the gateway rather than to one of its connections, and what
      * {@link #openConnection} answers when there is none to give.
      */
@@ -84,8 +67,8 @@ public final class Gateway implements AutoCloseable {
     /** What a gateway does that this class cannot do for it. */
     public interface Listener {
         /**
-         * The log's group table, once, before the first {@link #onActivated}: what {@link #publish(int, int, int,
-         * DirectBuffer, int)} takes its masks from.
+         * The log's group table, once, before the first {@link #onActivated}: what {@link #publish(int, GroupMask,
+         * int, DirectBuffer, int, int)} takes its masks from.
          */
         default void onGroupsResolved(final GroupDirectory directory) {
         }
@@ -142,6 +125,8 @@ public final class Gateway implements AutoCloseable {
 
     private final Session session;
     private final GatewayLifecycle lifecycle;
+    private final GatewayConnections connections;
+    private final GatewayConnections.Placer lifecyclePlacer = this::placeLifecycle;
     private final Listener listener;
     private final SnapshotTaker snapshots;
     private final SnapshotFrames snapshotFrames;
@@ -172,20 +157,11 @@ public final class Gateway implements AutoCloseable {
     private final SnapshotStartedDecoder snapshotStarted = new SnapshotStartedDecoder();
     private final SnapshotEndDecoder snapshotEnd = new SnapshotEndDecoder();
 
-    /** Connection lifecycle frames still to be placed, in the order they were asked for. */
-    private final ArrayDeque<Lifecycle> lifecycleBacklog = new ArrayDeque<>();
-
-    /** Connections whose {@code ConnectionOpened} has not landed: nothing may be published on one yet. */
-    private final Set<Integer> unopened = new HashSet<>();
-
-    /** Connections this instance holds open, taken and not yet closed while serving; the connections gauge. */
-    private final Set<Integer> connections = new HashSet<>();
     private Counter connectionsCounter;
     private Counter snapshotRoundCounter;
 
     /** The highest {@code connectionId} this logical gateway's history holds; the resume point for §7's row. */
     private int highestConnectionId = NO_CONNECTION;
-    private int nextConnectionId;
 
     private Gateway(final Builder builder) {
         this.listener = builder.listener;
@@ -195,6 +171,7 @@ public final class Gateway implements AutoCloseable {
         this.egressChannel = builder.egressChannel;
         this.ingressEndpoints = builder.ingressEndpoints;
         this.lifecycle = new GatewayLifecycle(builder.gatewayName, new LifecycleActions());
+        this.connections = new GatewayConnections(lifecycle);
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
         this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
@@ -235,7 +212,7 @@ public final class Gateway implements AutoCloseable {
     public int doWork() {
         int work = session.doWork();
         if (connectionsCounter != null) {
-            connectionsCounter.set(connections.size());
+            connectionsCounter.set(connections.count());
         }
         if (snapshotRoundCounter != null) {
             snapshotRoundCounter.set(snapshots.confirmedRound());
@@ -243,7 +220,7 @@ public final class Gateway implements AutoCloseable {
         if (session.isFenced()) {
             return work;
         }
-        work += drainLifecycle();
+        work += connections.drain(lifecyclePlacer);
         work += session.isCaughtUp() ? lifecycle.advance() : 0;
         work += snapshots.signal(snapshotSignals);
         work += snapshots.submit(snapshotFrames);
@@ -257,10 +234,13 @@ public final class Gateway implements AutoCloseable {
      *
      * <p>An acceptor whose listen socket stays bound never calls this. An initiator does: its edge is one
      * dial, and a dial that fails or a session that drops is the gate closing under it.
+     *
+     * <p>Every connection the log has seen opened is closed on it, and one it has not is never announced, so there is
+     * no {@link #closeConnection} left to call for them.
      */
     public void gateClosed() {
         lifecycle.onGateClosed();
-        connections.clear();
+        connections.onEdgeClosed();
     }
 
     /**
@@ -280,6 +260,11 @@ public final class Gateway implements AutoCloseable {
      * could not have its {@code ConnectionOpened} placed.
      */
     public boolean canAccept() {
+        return canPublish();
+    }
+
+    /** Whether a publish may reach ingress right now: this instance is serving, and ingress is not held. */
+    public boolean canPublish() {
         return lifecycle.isServing() && !session.isHolding();
     }
 
@@ -287,68 +272,59 @@ public final class Gateway implements AutoCloseable {
      * Takes one connection into the cluster's view of this gateway: allocates its id from the resume point
      * and adds its {@code ConnectionOpened} to the backlog that {@link #doWork()} places and retries.
      *
+     * @param connectionData opaque bytes the frame carries, which {@link Listener#onConnectionOpened} hands back
+     * @param offset         where they start in {@code connectionData}
+     * @param length         how many there are
      * @return the connection's id, or {@link #NO_CONNECTION} if this instance is not serving
      */
-    public int openConnection(final DirectBuffer connectionData, final int length) {
+    public int openConnection(final DirectBuffer connectionData, final int offset, final int length) {
         final byte[] data = new byte[length];
-        connectionData.getBytes(0, data, 0, length);
-        return open(data);
+        connectionData.getBytes(offset, data, 0, length);
+        return connections.open(data);
     }
 
     /** The same for a connection whose only identity is its id. */
     public int openConnection() {
-        return open(NO_CONNECTION_DATA);
-    }
-
-    private int open(final byte[] connectionData) {
-        if (!lifecycle.onSessionAcquired()) {
-            return NO_CONNECTION;
-        }
-        final int connectionId = nextConnectionId++;
-        lifecycleBacklog.add(new Lifecycle(connectionId, SystemFrame.CONNECTION_OPENED, connectionData));
-        unopened.add(connectionId);
-        connections.add(connectionId);
-        return connectionId;
+        return connections.open(NO_CONNECTION_DATA);
     }
 
     /** The same for a connection that has gone. One the cluster never heard of is dropped rather than announced. */
     public void closeConnection(final int connectionId) {
-        if (!lifecycle.isServing()) {
-            // Stood down: the connections went with the edge, and a successor's GatewayStarted releases them.
-            return;
-        }
-        connections.remove(connectionId);
-        if (unopened.remove(connectionId)) {
-            lifecycleBacklog.removeIf(entry -> entry.connectionId() == connectionId);
-            return;
-        }
-        lifecycleBacklog.add(new Lifecycle(connectionId, SystemFrame.CONNECTION_CLOSED, NO_CONNECTION_DATA));
+        connections.close(connectionId);
     }
 
     /**
      * Submits one application payload on a connection to this gateway's own group, stamped with its {@code
      * sourceId}.
      *
-     * @param payload the payload's bytes, its own {@code MessageHeader} included
-     * @return {@code Declined} while ingress is held, back-pressured, or the connection's
-     *     {@code ConnectionOpened} has not landed yet — retry it; {@code Refused} is permanent
+     * @param connectionId the connection it belongs to, or {@link #NO_CONNECTION} for the gateway itself
+     * @param payloadId    which protocol the payload speaks
+     * @param payload      the buffer holding the payload's bytes, its own {@code MessageHeader} included
+     * @param offset       where they start in {@code payload}
+     * @param length       how many there are
+     * @return {@code PUBLISHED}; {@code DECLINED}, nothing placed, to retry from the duty cycle, while this instance
+     *     is not serving, the connection's {@code ConnectionOpened} has not landed, ingress is held behind a
+     *     failover's resend, confirmed ingress is full, the session is lost or being replaced, or cluster ingress is
+     *     back-pressured or electing a leader; {@code REFUSED}, permanently. Never blocks.
      */
-    public Publish publish(final int connectionId, final int payloadId, final DirectBuffer payload,
+    public Publish publish(final int connectionId, final int payloadId, final DirectBuffer payload, final int offset,
                            final int length) {
-        return publish(connectionId, 0, payloadId, payload, length);
+        return publish(connectionId, GroupMask.NONE, payloadId, payload, offset, length);
     }
 
     /**
-     * The same to the groups {@code groupMask} names as well as its own.
+     * The same to the groups {@code groups} names as well as its own.
      *
-     * @param groupMask bits from the {@link GroupDirectory}; one the table lacks is {@code Refused}
+     * @param groups from the {@link GroupDirectory}; one naming a group the table lacks is {@code REFUSED}
      */
-    public Publish publish(final int connectionId, final int groupMask, final int payloadId, final DirectBuffer payload,
-                           final int length) {
-        if (unopened.contains(connectionId)) {
-            return Publish.Declined;
+    public Publish publish(final int connectionId, final GroupMask groups, final int payloadId,
+                           final DirectBuffer payload, final int offset, final int length) {
+        // Not serving declines: S-6 would sequence a standby's payload, as its session is bound to nothing.
+        if (!connections.mayPublish(connectionId)) {
+            return Publish.DECLINED;
         }
-        return session.publishPayload(lifecycle.gatewaySourceId(), connectionId, groupMask, payloadId, payload, length);
+        return session.publishPayload(lifecycle.gatewaySourceId(), connectionId, groups.bits(), payloadId, payload,
+                                      offset, length);
     }
 
     /** Whether the last {@code GatewayActive} for this pair named this instance. */
@@ -394,26 +370,15 @@ public final class Gateway implements AutoCloseable {
         }
     }
 
-    /** Places what the connection lifecycle owes, oldest first, stopping at the first frame that is declined. */
-    private int drainLifecycle() {
-        int work = 0;
-        while (!lifecycleBacklog.isEmpty()) {
-            final Lifecycle next = lifecycleBacklog.peek();
-            if (!published(session.publishSystem(lifecycle.gatewaySourceId(), next.connectionId(),
-                                                 next.systemEventType(), body, encode(next)))) {
-                break;
-            }
-            lifecycleBacklog.poll();
-            unopened.remove(next.connectionId());
-            work++;
-        }
-        return work;
+    private boolean placeLifecycle(final int connectionId, final int systemEventType, final byte[] connectionData) {
+        return published(session.publishSystem(lifecycle.gatewaySourceId(), connectionId, systemEventType, body,
+                                               encode(systemEventType, connectionData)));
     }
 
-    private int encode(final Lifecycle entry) {
-        if (entry.systemEventType() == SystemFrame.CONNECTION_OPENED) {
+    private int encode(final int systemEventType, final byte[] connectionData) {
+        if (systemEventType == SystemFrame.CONNECTION_OPENED) {
             connectionOpened.wrap(body, 0);
-            connectionOpened.putConnectionData(entry.connectionData(), 0, entry.connectionData().length);
+            connectionOpened.putConnectionData(connectionData, 0, connectionData.length);
             return connectionOpened.encodedLength();
         }
         connectionClosed.wrap(body, 0);
@@ -448,10 +413,10 @@ public final class Gateway implements AutoCloseable {
 
     /** A refused frame is this class's own bug, never a condition to wait out. */
     private static boolean published(final Publish result) {
-        if (result == Publish.Refused) {
+        if (result == Publish.REFUSED) {
             throw new IllegalStateException("a frame the sequencer would reject");
         }
-        return result == Publish.Published;
+        return result == Publish.PUBLISHED;
     }
 
     /** What this instance derives from the frames before a cut, for the round it starts (§6). */
@@ -462,16 +427,13 @@ public final class Gateway implements AutoCloseable {
                                                                   lifecycle.pairRows()));
     }
 
-    /** One connection lifecycle frame waiting to be placed. */
-    private record Lifecycle(int connectionId, int systemEventType, byte[] connectionData) { }
-
     /** The election's side effects. */
     private final class LifecycleActions implements GatewayLifecycle.Actions {
         @Override
         public boolean publishGatewayStarted(final int gatewayId) {
-            nextConnectionId = highestConnectionId + 1;
+            connections.resumeAt(highestConnectionId + 1);
             gatewayStarted.wrap(body, 0);
-            gatewayStarted.gatewayId(gatewayId).firstConnectionId(nextConnectionId);
+            gatewayStarted.gatewayId(gatewayId).firstConnectionId(connections.nextConnectionId());
             return published(session.publishSystem(lifecycle.gatewaySourceId(), NO_CONNECTION,
                                                    SystemFrame.GATEWAY_STARTED, body,
                                                    gatewayStarted.encodedLength()));
@@ -479,15 +441,12 @@ public final class Gateway implements AutoCloseable {
 
         @Override
         public boolean openGate() {
-            return listener.onActivated(nextConnectionId);
+            return listener.onActivated(connections.nextConnectionId());
         }
 
         @Override
         public void closeGate() {
-            // The connections go with the edge, and a successor's GatewayStarted is what releases them.
-            lifecycleBacklog.clear();
-            unopened.clear();
-            connections.clear();
+            connections.onStandby();
             listener.onStandby();
         }
     }
@@ -644,7 +603,7 @@ public final class Gateway implements AutoCloseable {
         private SnapshotListener snapshotListener;
         private Path snapshotDirectory;
         private Integer clientId;
-        private int memberId;
+        private Integer memberId;
         private String egressChannel = Session.DEFAULT_EGRESS_CHANNEL;
         private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
@@ -699,7 +658,9 @@ public final class Gateway implements AutoCloseable {
             return this;
         }
 
-        /** The node whose queue this instance follows. */
+        /**
+         * The node whose queue this instance follows — required: a cluster member's id, or a gateway host's node id.
+         */
         public Builder memberId(final int memberId) {
             this.memberId = memberId;
             return this;
@@ -732,10 +693,9 @@ public final class Gateway implements AutoCloseable {
         }
 
         /**
-         * What a call that blocks waits on between attempts: a {@code publish} or a lifecycle frame that spins through
-         * an election, up to 10 s, and the cluster connect in {@code start}. A yielding spin and Aeron's own connect
-         * wait by default. One that also does the caller's periodic work, such as writing a heartbeat, keeps it going
-         * while the call blocks.
+         * What the cluster connect in {@code start} waits on between attempts; Aeron's own connect wait by default.
+         * One that also does the caller's periodic work, such as writing a heartbeat, keeps it going while
+         * {@code start} blocks.
          */
         public Builder idleStrategy(final IdleStrategy idleStrategy) {
             this.idleStrategy = Objects.requireNonNull(idleStrategy, "idleStrategy");
@@ -745,6 +705,7 @@ public final class Gateway implements AutoCloseable {
         public Gateway build() {
             Objects.requireNonNull(gatewayName, "gatewayName");
             Objects.requireNonNull(clientId, "clientId");
+            Objects.requireNonNull(memberId, "memberId");
             Objects.requireNonNull(egressChannel, "egressChannel");
             Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
             Objects.requireNonNull(listener, "listener");

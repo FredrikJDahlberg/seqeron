@@ -9,7 +9,6 @@ import io.aeron.cluster.client.ClusterEvent;
 import java.util.List;
 import org.agrona.concurrent.AgentTerminationException;
 import org.junit.jupiter.api.Test;
-import org.limitless.seqeron.protocol.PortLayout;
 
 class SequencerServerTest {
     /** Aeron 1.53.2's truncation event, its positions filled in. */
@@ -56,26 +55,6 @@ class SequencerServerTest {
     void singleNodeMembersMatchDocumentedLayout() {
         assertEquals("0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,localhost:9301|",
                      SequencerServer.buildClusterMembers(List.of("localhost")));
-    }
-
-    @Test
-    void ingressEndpointMatchesDocumentedLayout() {
-        assertEquals("localhost:9302", PortLayout.ingressEndpoint(0));
-        assertEquals("localhost:9312", PortLayout.ingressEndpoint(1));
-    }
-
-    // The reservation is wider than what seven members bind, and applications check themselves against it
-    //. Pinned here, and in PortLayoutTest, so it cannot quietly narrow to 9365.
-    @Test
-    void reservedBlockCoversSevenMemberStrides() {
-        assertEquals(9300, PortLayout.CLUSTER_PORT_BLOCK_FIRST);
-        assertEquals(9369, PortLayout.CLUSTER_PORT_BLOCK_LAST);
-
-        assertTrue(PortLayout.isClusterPort(9300));
-        assertTrue(PortLayout.isClusterPort(9360)); // member 6's base — reserved though unbound
-        assertTrue(PortLayout.isClusterPort(9369));
-        assertFalse(PortLayout.isClusterPort(9299));
-        assertFalse(PortLayout.isClusterPort(9370));
     }
 
     @Test
