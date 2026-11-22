@@ -28,8 +28,9 @@ public sealed class GatewayOptions
     /// node: two sharing one share their counters' series.</summary>
     public required int ClientId { get; init; }
 
-    /// <summary>The node whose queue this instance follows.</summary>
-    public int MemberId { get; init; }
+    /// <summary>The node whose queue this instance follows — required: a cluster member's id, or a gateway host's node
+    /// id.</summary>
+    public required int MemberId { get; init; }
 
     /// <summary>This client's own egress endpoint; two media drivers on one host cannot both bind a port. An
     /// ephemeral port on localhost, <see cref="ApplicationOptions.DefaultEgressChannel"/>, by default.</summary>

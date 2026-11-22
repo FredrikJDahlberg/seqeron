@@ -14,7 +14,7 @@ public sealed class ApplicationOptions
 
     /// <summary>This application's <c>sourceId</c>, the one its <c>&lt;applications&gt;</c> row declares —
     /// required, because spec §5 is one id space, and never −1, which ingress refuses.</summary>
-    public int SourceId { get; init; }
+    public required int SourceId { get; init; }
 
     /// <summary>The names of the groups this application publishes to besides its own; one the log's group table
     /// lacks fences it with <see cref="ClusterError.GroupUnknown"/>.</summary>
@@ -24,8 +24,9 @@ public sealed class ApplicationOptions
     /// node: two sharing one share their counters' series.</summary>
     public required int ClientId { get; init; }
 
-    /// <summary>The node this replica runs on: whose queue it follows, and whose leadership opens its gate.</summary>
-    public int MemberId { get; init; }
+    /// <summary>The node this replica runs on — required: whose queue it follows, and whose leadership opens its gate;
+    /// with <see cref="OffCluster"/>, the gateway host's node id.</summary>
+    public required int MemberId { get; init; }
 
     /// <summary>Whether this node is a gateway host, running no member, rather than a member: the gate then opens
     /// whoever leads, and ingress is UDP alone. Run one instance, as nothing elects between two. Not with an

@@ -5,9 +5,9 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 
 /**
- * The log's group table, as a producer addresses it (spec A-9): a group's name to its bit of {@code groupMask},
- * and a {@code groupId} to its name. Immutable: the groups are fixed by the first topology load (S-8), so one
- * directory holds for the life of the archive. Combine masks with {@code |}.
+ * The log's group table, as a producer addresses it (spec A-9): a group's name to its {@link GroupMask}, and a
+ * {@code groupId} to its name. Immutable: the groups are fixed by the first topology load (S-8), so one directory
+ * holds for the life of the archive. Combine masks with {@link GroupMask#or}.
  *
  * <p>The C++ twin is {@code app/GroupDirectory.hpp}; keep the two in step.
  */
@@ -26,17 +26,17 @@ public final class GroupDirectory {
     }
 
     /**
-     * A group's bit.
+     * A group's mask.
      * @param name the group's name in the topology
-     * @return its bit of {@code groupMask}, or 0 if the table names no such group
+     * @return its mask, or {@link GroupMask#NONE} if the table names no such group
      */
-    public int mask(final String name) {
+    public GroupMask mask(final String name) {
         for (int slot = 0; slot < names.length; slot++) {
             if (name.equals(names[slot])) {
-                return 1 << slot;
+                return GroupMask.of(1 << slot);
             }
         }
-        return 0;
+        return GroupMask.NONE;
     }
 
     /**

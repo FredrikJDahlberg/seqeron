@@ -45,8 +45,15 @@ public sealed class IngressPublisher
     public Publish PublishPayload(IIngressSender sender, int sourceId, int connectionId, int payloadId, int groupMask,
                                   IDirectBuffer payload, int payloadLength)
     {
+        return PublishPayload(sender, sourceId, connectionId, payloadId, groupMask, payload, 0, payloadLength);
+    }
+
+    /// <summary>The same for a payload at <paramref name="payloadOffset"/> in its buffer.</summary>
+    public Publish PublishPayload(IIngressSender sender, int sourceId, int connectionId, int payloadId, int groupMask,
+                                  IDirectBuffer payload, int payloadOffset, int payloadLength)
+    {
         int length = _envelope.WrapPayload(_frame, sourceId, connectionId, sender.ClusterSessionId, payloadId,
-                                           groupMask, payload, payloadLength);
+                                           groupMask, payload, payloadOffset, payloadLength);
         return Offer(sender, length);
     }
 

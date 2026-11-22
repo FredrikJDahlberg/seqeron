@@ -23,20 +23,42 @@ class ApplicationBuilderTest {
     }
 
     private static Application.Builder complete() {
-        return Application.builder().sourceId(SOURCE_ID).clientId(1).listener(listener());
+        return Application.builder().sourceId(SOURCE_ID).clientId(1).memberId(0).listener(listener());
     }
 
     @Test
-    @DisplayName("a client id and a listener are required; the egress channel is not")
-    void requiresClientIdAndListener() {
-        assertEquals("clientId", assertThrows(NullPointerException.class,
-            () -> Application.builder().listener(listener()).build()).getMessage());
-        assertEquals("listener", assertThrows(NullPointerException.class,
-            () -> Application.builder().clientId(1).build()).getMessage());
+    @DisplayName("a source id, a client id, a member id and a listener are required; the egress channel is not")
+    void requiresSourceIdClientIdMemberIdAndListener() {
+        assertEquals("sourceId",
+                     assertThrows(NullPointerException.class,
+                                  () -> Application.builder().clientId(1).memberId(0).listener(listener()).build())
+                         .getMessage());
+        assertEquals(
+            "clientId",
+            assertThrows(NullPointerException.class,
+                         () -> Application.builder().sourceId(SOURCE_ID).memberId(0).listener(listener()).build())
+                .getMessage());
+        assertEquals(
+            "memberId",
+            assertThrows(NullPointerException.class,
+                         () -> Application.builder().sourceId(SOURCE_ID).clientId(1).listener(listener()).build())
+                .getMessage());
+        assertEquals("listener",
+                     assertThrows(NullPointerException.class,
+                                  () -> Application.builder().sourceId(SOURCE_ID).clientId(1).memberId(0).build())
+                         .getMessage());
         assertEquals("egressChannel", assertThrows(NullPointerException.class,
             () -> complete().egressChannel(null).build()).getMessage());
         assertEquals("ingressEndpoints", assertThrows(NullPointerException.class,
             () -> complete().ingressEndpoints(null).build()).getMessage());
+    }
+
+    @Test
+    @DisplayName("the cluster's source id, -1, is no application's")
+    void rejectsTheClustersSourceId() {
+        assertEquals("sourceId -1 is the cluster's",
+                     assertThrows(IllegalStateException.class, () -> complete().sourceId(-1).build()).getMessage());
+        assertEquals(0, complete().sourceId(0).build().sourceId());
     }
 
     @Test
@@ -78,7 +100,8 @@ class ApplicationBuilderTest {
         final UnsafeBuffer payload = new UnsafeBuffer(new byte[32]);
         assertFalse(application.isLeading());
         assertFalse(application.isCaughtUp());
-        assertEquals(Publish.Declined, application.publish(1, 5, payload, 16));
-        assertEquals(Publish.Declined, application.reply(new ReplyAddress(2, 9, 1), 5, payload, 16));
+        assertEquals(Publish.Declined, application.publish(5, payload, 8, 16));
+        assertEquals(Publish.Declined, application.publish(GroupMask.of(1), 5, payload, 8, 16));
+        assertEquals(Publish.Declined, application.reply(new ReplyAddress(2, 9, 1), 5, payload, 8, 16));
     }
 }

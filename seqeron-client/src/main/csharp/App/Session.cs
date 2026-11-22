@@ -271,11 +271,12 @@ internal sealed class Session : IDisposable
     /// <param name="connectionId">the frame's <c>connectionId</c></param>
     /// <param name="groupMask">the groups addressed besides the own one, 0 for none</param>
     /// <param name="payloadId">which protocol the payload speaks</param>
-    /// <param name="body">the payload's bytes from offset 0</param>
-    /// <param name="bodyLength">bytes of <paramref name="body"/></param>
+    /// <param name="body">the buffer holding the payload's bytes</param>
+    /// <param name="bodyOffset">where they start in <paramref name="body"/></param>
+    /// <param name="bodyLength">how many there are</param>
     /// <returns><c>Refused</c> for a mask naming a group the table lacks</returns>
     internal Publish PublishPayload(int sourceId, int connectionId, ushort groupMask, int payloadId, IDirectBuffer body,
-                                    int bodyLength)
+                                    int bodyOffset, int bodyLength)
     {
         int frameMask = _fenced ? GroupResolution.Unresolved : _groups.FrameMask(groupMask);
         if (frameMask == GroupResolution.Unresolved)
@@ -284,7 +285,8 @@ internal sealed class Session : IDisposable
         }
         return frameMask == GroupResolution.NotAddressable
                    ? Publish.Refused
-                   : _publisher.PublishPayload(_sender, sourceId, connectionId, payloadId, frameMask, body, bodyLength);
+                   : _publisher.PublishPayload(_sender, sourceId, connectionId, payloadId, frameMask, body, bodyOffset,
+                                               bodyLength);
     }
 
     internal Publish PublishSystem(int sourceId, int connectionId, int systemEventType, IDirectBuffer body,

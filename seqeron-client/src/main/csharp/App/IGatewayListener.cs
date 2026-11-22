@@ -8,7 +8,7 @@ namespace Org.Limitless.Seqeron.App;
 public interface IGatewayListener
 {
     /// <summary>The log's group table, once, before the first <see cref="OnActivated"/>: what
-    /// <see cref="Gateway.Publish(int, ushort, int, IDirectBuffer, int)"/> takes its masks from.</summary>
+    /// <see cref="Gateway.Publish(int, ushort, int, IDirectBuffer, int, int)"/> takes its masks from.</summary>
     void OnGroupsResolved(GroupDirectory directory)
     {
     }

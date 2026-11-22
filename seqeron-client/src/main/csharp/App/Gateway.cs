@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using Adaptive.Aeron;
 using Adaptive.Agrona;
 using Adaptive.Agrona.Concurrent;
@@ -32,17 +31,6 @@ namespace Org.Limitless.Seqeron.App;
 /// </summary>
 public sealed class Gateway : IDisposable
 {
-    /// <summary>How long the queue may be silent before this instance is fenced — 20 heartbeat periods. The deployment
-    /// policy every gateway had been copying.</summary>
-    public const long DefaultQueueStallTimeoutMs = Session.DefaultQueueStallTimeoutMs;
-
-    /// <summary>How long recovery may dispatch nothing, once caught up before; longer than the queue's, as a re-walk is
-    /// slower.</summary>
-    public const long DefaultRecoveryStallTimeoutMs = Session.DefaultRecoveryStallTimeoutMs;
-
-    /// <summary>Frames in flight between a publish and the queue; far above what one round trip holds.</summary>
-    public const int DefaultPendingCapacity = Session.DefaultPendingCapacity;
-
     /// <summary>A frame that belongs to the gateway rather than to one of its connections, and what
     /// <see cref="OpenConnection()"/> answers when there is none to give.</summary>
     public const int NoConnection = -1;
@@ -56,6 +44,8 @@ public sealed class Gateway : IDisposable
 
     private readonly Session _session;
     private readonly GatewayLifecycle _lifecycle;
+    private readonly GatewayConnections _connections;
+    private readonly ConnectionPlacer _connectionPlacer;
     private readonly IGatewayListener _listener;
     private readonly SnapshotTaker _snapshots;
     private readonly SnapshotFrames _snapshotFrames;
@@ -75,14 +65,6 @@ public sealed class Gateway : IDisposable
     private readonly byte[] _staging = GC.AllocateArray<byte>(FrameLayer.MaxPayloadLength, true);
     private readonly UnsafeBuffer _stagingBuffer;
 
-    // Connection lifecycle frames still to be placed, in the order they were asked for.
-    private readonly List<Lifecycle> _lifecycleBacklog = new List<Lifecycle>();
-
-    // Connections whose ConnectionOpened has not landed: nothing may be published on one yet.
-    private readonly HashSet<int> _unopened = new HashSet<int>();
-
-    // Connections this instance holds open, taken and not yet closed while serving; the connections gauge.
-    private readonly HashSet<int> _connections = new HashSet<int>();
     private Counter _connectionsCounter;
     private Counter _snapshotRoundCounter;
     private readonly int _sourceId;
@@ -90,7 +72,6 @@ public sealed class Gateway : IDisposable
 
     // The highest connectionId this logical gateway's history holds; the resume point for §7's row.
     private int _highestConnectionId = NoConnection;
-    private int _nextConnectionId;
 
     /// <summary>An instance configured by <paramref name="options"/>; nothing is connected until
     /// <see cref="Start"/>.</summary>
@@ -119,6 +100,8 @@ public sealed class Gateway : IDisposable
         _stagingBuffer = new UnsafeBuffer(_staging);
         SbeBuffers.Wrap(_bodyView, _body, 0, _body.Capacity);
         _lifecycle = new GatewayLifecycle(options.GatewayName, new LifecycleActions(this));
+        _connections = new GatewayConnections(_lifecycle);
+        _connectionPlacer = new ConnectionPlacer(this);
         SnapshotStore store = options.Snapshots == null ? null : new SnapshotStore(options.Snapshots.Directory);
         _snapshots = new SnapshotTaker(options.Snapshots?.Listener, store, KeepAlive);
         _session = new Session(options.ClientId, options.Tuning.PendingCapacity, options.Tuning.QueueStallTimeoutMs,
@@ -162,7 +145,7 @@ public sealed class Gateway : IDisposable
         {
             return work;
         }
-        work += DrainLifecycle();
+        work += _connections.Drain(_connectionPlacer);
         work += _session.IsCaughtUp ? _lifecycle.Advance() : 0;
         work += _snapshots.Signal(_snapshotSignals);
         work += _snapshots.Submit(_snapshotFrames);
@@ -175,11 +158,13 @@ public sealed class Gateway : IDisposable
     /// a second <c>GatewayStarted</c>: this instance is still the one the cluster designated.
     /// <para>An acceptor whose listen socket stays bound never calls this. An initiator does: its edge is one dial,
     /// and a dial that fails or a session that drops is the gate closing under it.</para>
+    /// <para>Every connection the log has seen opened is closed on it, and one it has not is never announced, so there
+    /// is no <see cref="CloseConnection"/> left to call for them.</para>
     /// </summary>
     public void GateClosed()
     {
         _lifecycle.OnGateClosed();
-        _connections.Clear();
+        _connections.OnEdgeClosed();
     }
 
     /// <summary>
@@ -200,57 +185,50 @@ public sealed class Gateway : IDisposable
 
     /// <summary>Takes one connection into the cluster's view of this gateway: allocates its id from the resume point
     /// and adds its <c>ConnectionOpened</c> to the backlog that <see cref="DoWork"/> places and retries.</summary>
-    /// <param name="connectionData">opaque bytes the frame carries, from offset 0</param>
-    /// <param name="length">bytes of <paramref name="connectionData"/></param>
+    /// <param name="connectionData">opaque bytes the frame carries</param>
+    /// <param name="offset">where they start in <paramref name="connectionData"/></param>
+    /// <param name="length">how many there are</param>
     /// <returns>the connection's id, or <see cref="NoConnection"/> if this instance is not serving</returns>
-    public int OpenConnection(IDirectBuffer connectionData, int length)
+    public int OpenConnection(IDirectBuffer connectionData, int offset, int length)
     {
         var data = new byte[length];
-        connectionData.GetBytes(0, data, 0, length);
-        return Open(data);
+        connectionData.GetBytes(offset, data, 0, length);
+        return _connections.Open(data);
     }
 
     /// <summary>The same from a span.</summary>
     public int OpenConnection(ReadOnlySpan<byte> connectionData)
     {
-        return Open(connectionData.ToArray());
+        return _connections.Open(connectionData.ToArray());
     }
 
     /// <summary>The same for a connection whose only identity is its id.</summary>
     public int OpenConnection()
     {
-        return Open(NoConnectionData);
+        return _connections.Open(NoConnectionData);
     }
 
     /// <summary>The same for a connection that has gone. One the cluster never heard of is dropped rather than
     /// announced.</summary>
     public void CloseConnection(int connectionId)
     {
-        if (!_lifecycle.IsServing)
-        {
-            // Stood down: the connections went with the edge, and a successor's GatewayStarted releases them.
-            return;
-        }
-        _connections.Remove(connectionId);
-        if (_unopened.Remove(connectionId))
-        {
-            _lifecycleBacklog.RemoveAll(entry => entry.ConnectionId == connectionId);
-            return;
-        }
-        _lifecycleBacklog.Add(new Lifecycle(connectionId, SystemFrame.ConnectionClosed, NoConnectionData));
+        _connections.Close(connectionId);
     }
 
     /// <summary>Submits one application payload on a connection to this gateway's own group, stamped with its
     /// <c>sourceId</c>.</summary>
     /// <param name="connectionId">the connection it belongs to</param>
     /// <param name="payloadId">which protocol the payload speaks</param>
-    /// <param name="payload">the payload's bytes from offset 0, its own <c>MessageHeader</c> included</param>
-    /// <param name="length">bytes of <paramref name="payload"/></param>
-    /// <returns><c>Declined</c> while ingress is held, back-pressured, or the connection's <c>ConnectionOpened</c>
-    /// has not landed yet — retry it; <c>Refused</c> is permanent</returns>
-    public Publish Publish(int connectionId, int payloadId, IDirectBuffer payload, int length)
+    /// <param name="payload">the buffer holding the payload's bytes, its own <c>MessageHeader</c> included</param>
+    /// <param name="offset">where they start in <paramref name="payload"/></param>
+    /// <param name="length">how many there are</param>
+    /// <returns><c>Published</c>; <c>Declined</c>, nothing placed, to retry from the duty cycle, while this instance
+    /// is not serving, the connection's <c>ConnectionOpened</c> has not landed, ingress is held behind a failover's
+    /// resend, confirmed ingress is full, or the session is lost or being replaced; <c>Refused</c>, permanently.
+    /// Back-pressure is not a decline: the call spins through it, and through an election, for up to 10 s.</returns>
+    public Publish Publish(int connectionId, int payloadId, IDirectBuffer payload, int offset, int length)
     {
-        return Publish(connectionId, 0, payloadId, payload, length);
+        return Publish(connectionId, 0, payloadId, payload, offset, length);
     }
 
     /// <summary>The same from a span, copied once into a buffer this instance owns.</summary>
@@ -264,15 +242,19 @@ public sealed class Gateway : IDisposable
     /// <param name="groupMask">bits from the <see cref="GroupDirectory"/>; one the table lacks is
     /// <c>Refused</c></param>
     /// <param name="payloadId">which protocol the payload speaks</param>
-    /// <param name="payload">the payload's bytes from offset 0, its own <c>MessageHeader</c> included</param>
-    /// <param name="length">bytes of <paramref name="payload"/></param>
-    public Publish Publish(int connectionId, ushort groupMask, int payloadId, IDirectBuffer payload, int length)
+    /// <param name="payload">the buffer holding the payload's bytes, its own <c>MessageHeader</c> included</param>
+    /// <param name="offset">where they start in <paramref name="payload"/></param>
+    /// <param name="length">how many there are</param>
+    public Publish Publish(int connectionId, ushort groupMask, int payloadId, IDirectBuffer payload, int offset,
+                           int length)
     {
-        if (_unopened.Contains(connectionId))
+        // Not serving declines: S-6 would sequence a standby's payload, as its session is bound to nothing.
+        if (!_connections.MayPublish(connectionId))
         {
             return Protocol.Publish.Declined;
         }
-        return _session.PublishPayload(_lifecycle.GatewaySourceId, connectionId, groupMask, payloadId, payload, length);
+        return _session.PublishPayload(_lifecycle.GatewaySourceId, connectionId, groupMask, payloadId, payload, offset,
+                                       length);
     }
 
     /// <summary>The same from a span, copied once into a buffer this instance owns.</summary>
@@ -283,7 +265,7 @@ public sealed class Gateway : IDisposable
         {
             payload.CopyTo(_staging);
         }
-        return Publish(connectionId, groupMask, payloadId, _stagingBuffer, payload.Length);
+        return Publish(connectionId, groupMask, payloadId, _stagingBuffer, 0, payload.Length);
     }
 
     /// <summary>Whether the last <c>GatewayActive</c> for this pair named this instance.</summary>
@@ -314,44 +296,12 @@ public sealed class Gateway : IDisposable
         _snapshotRoundCounter = null;
     }
 
-    private int Open(byte[] connectionData)
+    private int Encode(int systemEventType, byte[] connectionData)
     {
-        if (!_lifecycle.OnSessionAcquired())
-        {
-            return NoConnection;
-        }
-        int connectionId = _nextConnectionId++;
-        _lifecycleBacklog.Add(new Lifecycle(connectionId, SystemFrame.ConnectionOpened, connectionData));
-        _unopened.Add(connectionId);
-        _connections.Add(connectionId);
-        return connectionId;
-    }
-
-    // Places what the connection lifecycle owes, oldest first, stopping at the first frame that is declined.
-    private int DrainLifecycle()
-    {
-        int work = 0;
-        while (_lifecycleBacklog.Count > 0)
-        {
-            Lifecycle next = _lifecycleBacklog[0];
-            if (!Published(_session.PublishSystem(_lifecycle.GatewaySourceId, next.ConnectionId, next.SystemEventType,
-                                                  _body, Encode(next))))
-            {
-                break;
-            }
-            _lifecycleBacklog.RemoveAt(0);
-            _unopened.Remove(next.ConnectionId);
-            work++;
-        }
-        return work;
-    }
-
-    private int Encode(Lifecycle entry)
-    {
-        if (entry.SystemEventType == SystemFrame.ConnectionOpened)
+        if (systemEventType == SystemFrame.ConnectionOpened)
         {
             _connectionOpened.WrapForEncode(_bodyView, 0);
-            _connectionOpened.SetConnectionData(entry.ConnectionData);
+            _connectionOpened.SetConnectionData(connectionData);
             return _connectionOpened.Size;
         }
         _connectionClosed.WrapForEncode(_bodyView, 0);
@@ -388,8 +338,23 @@ public sealed class Gateway : IDisposable
                                                                   _lifecycle.PairRows()));
     }
 
-    // One connection lifecycle frame waiting to be placed.
-    private sealed record Lifecycle(int ConnectionId, int SystemEventType, byte[] ConnectionData);
+    // Places a connection lifecycle frame on the session.
+    private sealed class ConnectionPlacer : GatewayConnections.IPlacer
+    {
+        private readonly Gateway _gateway;
+
+        public ConnectionPlacer(Gateway gateway)
+        {
+            _gateway = gateway;
+        }
+
+        public bool Place(int connectionId, int systemEventType, byte[] connectionData)
+        {
+            Gateway g = _gateway;
+            return Published(g._session.PublishSystem(g._lifecycle.GatewaySourceId, connectionId, systemEventType,
+                                                      g._body, g.Encode(systemEventType, connectionData)));
+        }
+    }
 
     // The election's side effects.
     private sealed class LifecycleActions : GatewayLifecycle.IActions
@@ -404,25 +369,22 @@ public sealed class Gateway : IDisposable
         public bool PublishGatewayStarted(int gatewayId)
         {
             Gateway g = _gateway;
-            g._nextConnectionId = g._highestConnectionId + 1;
+            g._connections.ResumeAt(g._highestConnectionId + 1);
             g._gatewayStarted.WrapForEncode(g._bodyView, 0);
             g._gatewayStarted.GatewayId = gatewayId;
-            g._gatewayStarted.FirstConnectionId = g._nextConnectionId;
+            g._gatewayStarted.FirstConnectionId = g._connections.NextConnectionId;
             return Published(g._session.PublishSystem(g._lifecycle.GatewaySourceId, NoConnection,
                                                       SystemFrame.GatewayStarted, g._body, g._gatewayStarted.Size));
         }
 
         public bool OpenGate()
         {
-            return _gateway._listener.OnActivated(_gateway._nextConnectionId);
+            return _gateway._listener.OnActivated(_gateway._connections.NextConnectionId);
         }
 
         public void CloseGate()
         {
-            // The connections go with the edge, and a successor's GatewayStarted is what releases them.
-            _gateway._lifecycleBacklog.Clear();
-            _gateway._unopened.Clear();
-            _gateway._connections.Clear();
+            _gateway._connections.OnStandby();
             _gateway._listener.OnStandby();
         }
     }

@@ -183,6 +183,13 @@ public sealed class SystemFrame
     public int WrapPayload(IMutableDirectBuffer frame, int sourceId, int connectionId, long sessionId, int payloadId,
                            int groupMask, IDirectBuffer payload, int payloadLength)
     {
+        return WrapPayload(frame, sourceId, connectionId, sessionId, payloadId, groupMask, payload, 0, payloadLength);
+    }
+
+    /// <summary>The same for a payload at <paramref name="payloadOffset"/> in its buffer.</summary>
+    public int WrapPayload(IMutableDirectBuffer frame, int sourceId, int connectionId, long sessionId, int payloadId,
+                           int groupMask, IDirectBuffer payload, int payloadOffset, int payloadLength)
+    {
         if (payloadLength > FrameLayer.MaxPayloadLength || sourceId == ClusterSourceId || payloadId == 0 ||
             payloadId == RetiredCorePayloadId)
         {
@@ -196,7 +203,7 @@ public sealed class SystemFrame
         header.SessionId = sessionId;
         header.PayloadId = (ushort)payloadId;
         header.GroupMask = (ushort)groupMask;
-        _payloadEncoder.SetPayload(SbeBuffers.Bytes(payload, 0, payloadLength));
+        _payloadEncoder.SetPayload(SbeBuffers.Bytes(payload, payloadOffset, payloadLength));
         return Frame.MessageHeader.Size + _payloadEncoder.Size;
     }
 

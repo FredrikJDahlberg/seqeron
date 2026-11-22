@@ -161,7 +161,7 @@ language differences are:
 | construction | `Gateway.builder()…build()` | `hosted::Gateway<Listener>{ config, listener }`; `Config` holds the stub's own settings only: `sourceId`, `snapshots`, `hostName`, `hostTimeoutMs`, `attachTimeoutMs` | `new Gateway(new GatewayOptions { … })`, one `init` property per setter; `build()`'s mandatory options are `required` |
 | listener | implements `Gateway.Listener` | type satisfying the `GatewayListener` / `ApplicationListener` concept | implements `IGatewayListener` / `IApplicationListener` |
 | ingress endpoints | `ingressEndpoints(…)`, default `PortLayout.ingressEndpoints()` | the host's `proxy.ingressEndpoints` | `IngressEndpoints`, default `PortLayout.IngressEndpoints()` |
-| `publish` / `reply` | encoded bytes including the payload's `MessageHeader` | encoded bytes, `const std::uint8_t*` and a length | bytes or `ReadOnlySpan<byte>`, copied once into a façade-owned buffer |
+| `publish` / `reply` | encoded bytes including the payload's `MessageHeader`: a `DirectBuffer`, offset and length | encoded bytes, `const std::uint8_t*` and a length | an `IDirectBuffer`, offset and length, or a `ReadOnlySpan<byte>` copied once into a façade-owned buffer |
 | payload body | `buffer()` at `bodyOffset()`/`bodyLength()` | `body()`/`bodyLength()`, or `decode<Decoder>()` | `Buffer` at `BodyOffset`/`BodyLength` |
 | headerless payload (spec §13.2) | `buffer()` at `payloadOffset()`/`payloadLength()` | `payload()`/`payloadLength()` | `Buffer` at `PayloadOffset`/`PayloadLength` |
 | release | `close()` / try-with-resources | `close()`; `start` takes the caller's `std::shared_ptr<aeron::Aeron>` | `Dispose()` / `using` |
@@ -178,7 +178,7 @@ top-level rather than nested, per .NET design guidelines.
 | `sourceId` | with `snapshots` | required | | `sourceId` declared in the topology row |
 | `addressedGroups` | ✓ | ✓ | none | names of the other groups the instance publishes to |
 | `clientId` | required | required | | the client's counter label, unique per node |
-| `memberId` | ✓ | ✓ | 0 | member (or gateway host node id) whose queue is followed |
+| `memberId` | required | required | | member (or gateway host node id) whose queue is followed |
 | `egressChannel` | ✓ | ✓ | `aeron:udp?endpoint=localhost:0` | cluster session egress channel; the default is an ephemeral port |
 | `ingressEndpoints` | ✓ | ✓ | `PortLayout.ingressEndpoints()` | member ingress endpoints |
 | `offCluster` | | ✓ | false | single instance on a gateway host ([Application](#application)); not with `ipcConnectTimeoutMs`, which `build()` rejects |
@@ -193,8 +193,7 @@ top-level rather than nested, per .NET design guidelines.
 | `queueStallTimeoutMs` | 20,000 | no `ClusterHeartbeat` for this long fences with `QUEUE_STALLED` a designated instance, the leader's replica or a `Consumer`; any other logs it |
 | `recoveryStallTimeoutMs` | 60,000 | recovery dispatching nothing for this long fences with `RECOVERY_STALLED`, as above |
 
-The stall defaults are `DEFAULT_QUEUE_STALL_TIMEOUT_MS` (20 heartbeat intervals) and
-`DEFAULT_RECOVERY_STALL_TIMEOUT_MS` (3× that).
+`Tuning.DEFAULT`'s stall timeouts are 20 heartbeat intervals and 3× that.
 
 A C++ stub takes `sourceId` and `snapshots` of these; its host takes the rest as `proxy.*` properties
 ([`running-a-cluster.md`](../operations/running-a-cluster.md#client-proxy)).
@@ -230,8 +229,8 @@ lacks fences with `GROUP_UNKNOWN` (spec A-9).
 
 Once the table is resolved, from the log or a restored snapshot, the façade calls
 `onGroupsResolved(GroupDirectory)` once, before the publish gate first opens. The directory is immutable:
-`mask(name)` is a group's bit, combined with `|`, and `name(groupId)` labels a group. A mask is an `int`
-(Java), `std::uint16_t` (C++) or `ushort` (C#).
+`mask(name)` is a group's mask and `name(groupId)` labels a group. A mask is a `GroupMask` (Java), combined with
+`or`, or a `std::uint16_t` (C++) or `ushort` (C#), combined with `|`.
 
 - `publish` without a mask reaches the instance's own group. With one, the façade adds the own group's
   bit, since confirmed ingress watches the own queue; a mask naming a group the table lacks is `Refused`.
@@ -268,12 +267,12 @@ gateway.close();
 | operation | semantics |
 |---|---|
 | `doWork()` | one duty-cycle iteration: session, queue, confirmed ingress, fences, connection lifecycle, election |
-| `gateClosed()` | the edge closed on its own (failed dial, counterparty hang-up). The designation stands; `doWork()` reopens it via `onActivated` without a new `GatewayStarted`. For initiators; acceptors never call it |
+| `gateClosed()` | the edge closed on its own (failed dial, counterparty hang-up). The designation stands; `doWork()` reopens it via `onActivated` without a new `GatewayStarted`. Places `ConnectionClosed` for every connection the log has seen opened and drops any it has not. For initiators; acceptors never call it |
 | `keepAlive()` | session keep-alive for a callback that spins; `doWork()` already sends one per cycle |
 | `canAccept()` | serving, and ingress not held for a post-failover resend |
-| `openConnection()` / `openConnection(data, length)` | allocate a connection id and place `ConnectionOpened`, retried by `doWork()` |
+| `openConnection()` / `openConnection(data, offset, length)` | allocate a connection id and place `ConnectionOpened`, retried by `doWork()` |
 | `closeConnection(id)` | place `ConnectionClosed`; dropped for a connection the cluster never saw |
-| `publish(connectionId, payloadId, payload, length)`, `publish(connectionId, groupMask, payloadId, payload, length)` | submit a payload under this gateway's `sourceId`, to its own group or to those `groupMask` names ([Groups](#groups)) |
+| `publish(connectionId, payloadId, payload, offset, length)`, `publish(connectionId, groupMask, payloadId, payload, offset, length)` | submit a payload under this gateway's `sourceId`, to its own group or to those `groupMask` names ([Groups](#groups)); `Declined` while not serving |
 | `isActivated()`, `isServing()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastClusterSeqNo()` | instance state; `sourceId()` and `gatewayId()` are `UNRESOLVED` until a `GatewayRegistered` row names the instance |
 
 The C++ stub has every operation but `isActivated()` and `gatewayId()`, and its state lags the host by a hop (spec
@@ -318,8 +317,8 @@ otherwise.
 | `doWork()` | one duty-cycle iteration: session, queue, confirmed ingress, fences, leader gate |
 | `canPublish()` | gate open and ingress not held |
 | `isLeading()` | gate open |
-| `publish(payloadId, payload, length)`, `publish(groupMask, payloadId, payload, length)` | submit under the application's `sourceId`, no connection, to its own group or to those `groupMask` names |
-| `reply(request, payloadId, payload, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `ReplyAddress`, from `Payload.replyAddress()`, which unlike the `Payload` outlives the callback |
+| `publish(payloadId, payload, offset, length)`, `publish(groupMask, payloadId, payload, offset, length)` | submit under the application's `sourceId`, no connection, to its own group or to those `groupMask` names |
+| `reply(request, payloadId, payload, offset, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `ReplyAddress`, from `Payload.replyAddress()`, which unlike the `Payload` outlives the callback |
 | `sourceId()`, `isCaughtUp()`, `lastClusterSeqNo()` | replica state; the C++ stub has no `sourceId()` |
 | `keepAlive()` | session keep-alive for a callback that spins, or waits on a snapshot record; `doWork()` already sends one per cycle |
 
@@ -395,7 +394,7 @@ part in an election and needs no topology row. It is the façade shape for the r
 | `listener` | required | `onSequenced(Payload)` and `onFenced` are required; `onCaughtUp` and `onClusterHeartbeat` are optional |
 | `clientId` | required | the client's counter label, unique per node |
 | `groupId` | required | the group whose queue is read; the first topology's is 1 |
-| `memberId` | 0 | member (or gateway host node id) whose queue is followed |
+| `memberId` | required | member (or gateway host node id) whose queue is followed |
 | `tuning` | `Tuning.DEFAULT` | the stall timeouts apply; `pendingCapacity` is unused |
 
 The C++ stub, `hosted::Consumer`, takes only the host's name and its timeouts; its host takes these options, the group

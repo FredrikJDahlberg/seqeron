@@ -9,6 +9,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
@@ -48,15 +49,6 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * step.
  */
 public final class Application implements AutoCloseable {
-    /** How long the queue may be silent before this replica is fenced — 20 heartbeat periods. */
-    public static final long DEFAULT_QUEUE_STALL_TIMEOUT_MS = Session.DEFAULT_QUEUE_STALL_TIMEOUT_MS;
-
-    /** How long recovery may dispatch nothing, once caught up before; longer, as a re-walk is slower. */
-    public static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = Session.DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-
-    /** Frames in flight between a publish and the queue; far above what one round trip holds. */
-    public static final int DEFAULT_PENDING_CAPACITY = Session.DEFAULT_PENDING_CAPACITY;
-
     /** How long ingress is tried on this member's own {@code aeron:ipc}: short, as a follower never answers. */
     public static final long DEFAULT_IPC_CONNECT_TIMEOUT_MS = 500;
 
@@ -66,8 +58,8 @@ public final class Application implements AutoCloseable {
     /** What an application does that this class cannot do for it. */
     public interface Listener {
         /**
-         * The log's group table, once, before the gate first opens: what {@link #publish(int, int, DirectBuffer,
-         * int)} takes its masks from.
+         * The log's group table, once, before the gate first opens: what {@link #publish(GroupMask, int, DirectBuffer,
+         * int, int)} takes its masks from.
          */
         default void onGroupsResolved(final GroupDirectory directory) {
         }
@@ -206,21 +198,27 @@ public final class Application implements AutoCloseable {
      * Submits one payload of this application's own to its own group, stamped with its {@code sourceId} and
      * belonging to no connection.
      *
-     * @param payload the payload's bytes, its own {@code MessageHeader} included
-     * @return {@code Declined} while the gate is shut, ingress is held or the transport is back-pressured —
-     *     retry it; {@code Refused} is permanent
+     * @param payloadId which protocol the payload speaks
+     * @param payload   the buffer holding the payload's bytes, its own {@code MessageHeader} included
+     * @param offset    where they start in {@code payload}
+     * @param length    how many there are
+     * @return {@code Published}; {@code Declined}, nothing placed, to retry from the duty cycle, while the gate is
+     *     shut, ingress is held behind a failover's resend, confirmed ingress is full, or the session is lost or being
+     *     replaced; {@code Refused}, permanently. Back-pressure is not a decline: the call spins through it, and
+     * through an election, for up to 10 s.
      */
-    public Publish publish(final int payloadId, final DirectBuffer payload, final int length) {
-        return submit(sourceId, NO_CONNECTION, 0, payloadId, payload, length);
+    public Publish publish(final int payloadId, final DirectBuffer payload, final int offset, final int length) {
+        return submit(sourceId, NO_CONNECTION, 0, payloadId, payload, offset, length);
     }
 
     /**
-     * The same to the groups {@code groupMask} names as well as its own.
+     * The same to the groups {@code groups} names as well as its own.
      *
-     * @param groupMask bits from the {@link GroupDirectory}; one the table lacks is {@code Refused}
+     * @param groups from the {@link GroupDirectory}; one naming a group the table lacks is {@code Refused}
      */
-    public Publish publish(final int groupMask, final int payloadId, final DirectBuffer payload, final int length) {
-        return submit(sourceId, NO_CONNECTION, groupMask, payloadId, payload, length);
+    public Publish publish(final GroupMask groups, final int payloadId, final DirectBuffer payload, final int offset,
+                           final int length) {
+        return submit(sourceId, NO_CONNECTION, groups.bits(), payloadId, payload, offset, length);
     }
 
     /**
@@ -230,8 +228,10 @@ public final class Application implements AutoCloseable {
      * ReplyAddress} ({@link Payload#replyAddress()}) rather than the request itself — a {@link Payload} is valid only
      * during its callback, and a reply is usually dispatched later.
      */
-    public Publish reply(final ReplyAddress request, final int payloadId, final DirectBuffer payload, final int length) {
-        return submit(request.sourceId(), request.connectionId(), request.groupMask(), payloadId, payload, length);
+    public Publish reply(final ReplyAddress request, final int payloadId, final DirectBuffer payload, final int offset,
+                         final int length) {
+        return submit(request.sourceId(), request.connectionId(), request.groupMask(), payloadId, payload, offset,
+                      length);
     }
 
     /** This replica's own {@code sourceId}, the one its topology row gives it. */
@@ -269,11 +269,11 @@ public final class Application implements AutoCloseable {
 
     /** A shut gate declines rather than submits: only the leading replica's copy of the work is the one sent. */
     private Publish submit(final int frameSourceId, final int connectionId, final int groupMask, final int payloadId,
-                           final DirectBuffer payload, final int length) {
+                           final DirectBuffer payload, final int offset, final int length) {
         if (!gate.isOpen()) {
             return Publish.Declined;
         }
-        return session.publishPayload(frameSourceId, connectionId, groupMask, payloadId, payload, length);
+        return session.publishPayload(frameSourceId, connectionId, groupMask, payloadId, payload, offset, length);
     }
 
     /** What comes off the queue, and the one frame the gate is driven by. */
@@ -385,10 +385,10 @@ public final class Application implements AutoCloseable {
 
     /** Everything one replica needs to join its deployment. */
     public static final class Builder {
-        private int sourceId;
+        private Integer sourceId;
         private List<String> addressedGroups = List.of();
         private Integer clientId;
-        private int memberId;
+        private Integer memberId;
         private boolean offCluster;
         private Long ipcConnectTimeoutMs;
         private String egressChannel = Session.DEFAULT_EGRESS_CHANNEL;
@@ -426,7 +426,10 @@ public final class Application implements AutoCloseable {
         return this;
     }
 
-    /** The node this replica runs on: whose queue it follows, and whose leadership opens its gate. */
+    /**
+     * The node this replica runs on — required: whose queue it follows, and whose leadership opens its gate; with
+     * {@link #offCluster}, the gateway host's node id.
+     */
     public Builder memberId(final int memberId) {
         this.memberId = memberId;
         return this;
@@ -503,7 +506,12 @@ public final class Application implements AutoCloseable {
         }
 
         public Application build() {
+            Objects.requireNonNull(sourceId, "sourceId");
+            if (sourceId == ReplayProtocol.NO_SOURCE_ID) {
+                throw new IllegalStateException("sourceId -1 is the cluster's");
+            }
             Objects.requireNonNull(clientId, "clientId");
+            Objects.requireNonNull(memberId, "memberId");
             Objects.requireNonNull(egressChannel, "egressChannel");
             Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
             Objects.requireNonNull(listener, "listener");

@@ -308,8 +308,8 @@ public final class TestGateway {
                 continue;
             }
             final int length = marker.encodePayload(markerSeqNo + 1, ClusterProbe.NO_FILLER);
-            if (!published(gateway.publish(connection.id, ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(),
-                                           length))) {
+            if (!published(
+                    gateway.publish(connection.id, ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(), 0, length))) {
                 break;
             }
             markerSeqNo++;

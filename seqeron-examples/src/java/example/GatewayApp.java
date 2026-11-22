@@ -101,7 +101,7 @@ public final class GatewayApp implements Gateway.Listener {
             final int work = gateway.doWork();
             // canAccept() is serving and not held behind a failover's resend: the moment a real gateway accepts.
             if (open && connectionId == Gateway.NO_CONNECTION && gateway.canAccept()) {
-                connectionId = gateway.openConnection(CLIENT_LABEL, CLIENT_LABEL.capacity());
+                connectionId = gateway.openConnection(CLIENT_LABEL, 0, CLIENT_LABEL.capacity());
             }
             final long now = System.nanoTime();
             if (connectionId != Gateway.NO_CONNECTION && now >= nextPingNs) {
@@ -109,7 +109,7 @@ public final class GatewayApp implements Gateway.Listener {
                 // back-pressured. Next second's ping is the retry.
                 pingSentNs = now;
                 pingBody.putLong(0, now, ByteOrder.LITTLE_ENDIAN);
-                if (gateway.publish(connectionId, PING_PAYLOAD_ID, pingBody, Long.BYTES) != Publish.Published) {
+                if (gateway.publish(connectionId, PING_PAYLOAD_ID, pingBody, 0, Long.BYTES) != Publish.Published) {
                     pingSentNs = 0;
                 }
                 nextPingNs = now + PING_INTERVAL_NS;

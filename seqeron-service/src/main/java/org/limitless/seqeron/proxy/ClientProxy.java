@@ -35,6 +35,7 @@ import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Consumer;
 import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.GroupDirectory;
+import org.limitless.seqeron.app.GroupMask;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.app.Tuning;
@@ -833,13 +834,14 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         case ReplyDecoder.TEMPLATE_ID -> {
             final int payloadLength = replyIn.bodyLength();
             replyIn.getBody(scratch, 0, payloadLength);
-            result = app.reply(replyAddresses.of(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
-                replyIn.payloadId(), scratch, payloadLength);
+            result =
+                app.reply(replyAddresses.of(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
+                          replyIn.payloadId(), scratch, 0, payloadLength);
         }
         case OpenConnectionDecoder.TEMPLATE_ID -> {
             final int dataLength = openIn.dataLength();
             openIn.getData(scratch, 0, dataLength);
-            final int id = gateway.openConnection(scratch, dataLength);
+            final int id = gateway.openConnection(scratch, 0, dataLength);
             if (id == Gateway.NO_CONNECTION) {
                 result = Publish.Refused;
             } else if (id != openIn.connectionId()) {
@@ -866,10 +868,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         default -> {
             final int payloadLength = publishIn.bodyLength();
             publishIn.getBody(scratch, 0, payloadLength);
-            result = gateway != null ? gateway.publish((int)publishIn.connectionId(), (int)publishIn.groupMask(),
-                                                       publishIn.payloadId(), scratch, payloadLength)
-                                     : app.publish((int)publishIn.groupMask(), publishIn.payloadId(), scratch,
-                                                   payloadLength);
+            final GroupMask groups = GroupMask.of((int)publishIn.groupMask());
+            result = gateway != null ? gateway.publish((int)publishIn.connectionId(), groups, publishIn.payloadId(),
+                                                       scratch, 0, payloadLength)
+                                     : app.publish(groups, publishIn.payloadId(), scratch, 0, payloadLength);
         }
         }
         if (!ledger.settle(result, length, windowed, commandSeq)) {
@@ -917,8 +919,10 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
         for (int groupId = 1; groupId <= FrameLayer.MAX_GROUPS; groupId++) {
             final String name = directory.name(groupId);
             if (name != null) {
-                groups.next().groupId(groupId).mask(directory.mask(name)).putName(name.getBytes(StandardCharsets.UTF_8), 0,
-                    name.length());
+                groups.next()
+                    .groupId(groupId)
+                    .mask(directory.mask(name).bits())
+                    .putName(name.getBytes(StandardCharsets.UTF_8), 0, name.length());
             }
         }
         send(ProxyProtocol.HEADER + groupsOut.encodedLength());

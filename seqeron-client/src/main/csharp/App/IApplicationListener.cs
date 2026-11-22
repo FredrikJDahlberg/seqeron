@@ -6,7 +6,7 @@ namespace Org.Limitless.Seqeron.App;
 public interface IApplicationListener
 {
     /// <summary>The log's group table, once, before the gate first opens: what
-    /// <see cref="Application.Publish(ushort, int, Adaptive.Agrona.IDirectBuffer, int)"/> takes its masks
+    /// <see cref="Application.Publish(ushort, int, Adaptive.Agrona.IDirectBuffer, int, int)"/> takes its masks
     /// from.</summary>
     void OnGroupsResolved(GroupDirectory directory)
     {

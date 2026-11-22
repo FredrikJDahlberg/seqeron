@@ -27,18 +27,28 @@ class GatewayBuilderTest {
     }
 
     private static Gateway.Builder complete() {
-        return Gateway.builder().gatewayName("GW-A").clientId(1).listener(listener());
+        return Gateway.builder().gatewayName("GW-A").clientId(1).memberId(0).listener(listener());
     }
 
     @Test
-    @DisplayName("a name, a client id and a listener are required; the egress channel is not")
-    void requiresNameClientIdAndListener() {
-        assertEquals("gatewayName", assertThrows(NullPointerException.class,
-            () -> Gateway.builder().clientId(1).listener(listener()).build()).getMessage());
-        assertEquals("clientId", assertThrows(NullPointerException.class,
-            () -> Gateway.builder().gatewayName("GW-A").listener(listener()).build()).getMessage());
-        assertEquals("listener", assertThrows(NullPointerException.class,
-            () -> Gateway.builder().gatewayName("GW-A").clientId(1).build()).getMessage());
+    @DisplayName("a name, a client id, a member id and a listener are required; the egress channel is not")
+    void requiresNameClientIdMemberIdAndListener() {
+        assertEquals("gatewayName",
+                     assertThrows(NullPointerException.class,
+                                  () -> Gateway.builder().clientId(1).memberId(0).listener(listener()).build())
+                         .getMessage());
+        assertEquals("clientId",
+                     assertThrows(NullPointerException.class,
+                                  () -> Gateway.builder().gatewayName("GW-A").memberId(0).listener(listener()).build())
+                         .getMessage());
+        assertEquals("memberId",
+                     assertThrows(NullPointerException.class,
+                                  () -> Gateway.builder().gatewayName("GW-A").clientId(1).listener(listener()).build())
+                         .getMessage());
+        assertEquals("listener",
+                     assertThrows(NullPointerException.class,
+                                  () -> Gateway.builder().gatewayName("GW-A").clientId(1).memberId(0).build())
+                         .getMessage());
         assertEquals("egressChannel", assertThrows(NullPointerException.class,
             () -> complete().egressChannel(null).build()).getMessage());
         assertEquals("ingressEndpoints", assertThrows(NullPointerException.class,
@@ -77,7 +87,7 @@ class GatewayBuilderTest {
         assertFalse(gateway.isActivated());
         assertFalse(gateway.isCaughtUp());
         assertEquals(Gateway.NO_CONNECTION, gateway.openConnection());
-        assertEquals(Gateway.NO_CONNECTION, gateway.openConnection(data, 8));
+        assertEquals(Gateway.NO_CONNECTION, gateway.openConnection(data, 0, 8));
         gateway.closeConnection(0);
         gateway.gateClosed();
         assertFalse(gateway.isServing());

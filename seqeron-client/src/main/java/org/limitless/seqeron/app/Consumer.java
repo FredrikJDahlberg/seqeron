@@ -152,7 +152,7 @@ public final class Consumer implements AutoCloseable {
     /** Everything one consumer needs to follow its queue. */
     public static final class Builder {
         private Integer clientId;
-        private int memberId;
+        private Integer memberId;
         private Integer groupId;
         private Listener listener;
         private Tuning tuning = Tuning.DEFAULT;
@@ -166,7 +166,7 @@ public final class Consumer implements AutoCloseable {
             return this;
         }
 
-        /** The node whose queue this consumer follows, or a gateway host's node id. */
+        /** The node whose queue this consumer follows, or a gateway host's node id — required. */
         public Builder memberId(final int memberId) {
             this.memberId = memberId;
             return this;
@@ -191,6 +191,7 @@ public final class Consumer implements AutoCloseable {
 
         public Consumer build() {
             Objects.requireNonNull(clientId, "clientId");
+            Objects.requireNonNull(memberId, "memberId");
             Objects.requireNonNull(groupId, "groupId");
             Objects.requireNonNull(listener, "listener");
             return new Consumer(this);

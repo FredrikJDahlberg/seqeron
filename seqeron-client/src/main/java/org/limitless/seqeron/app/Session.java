@@ -285,14 +285,15 @@ final class Session implements AutoCloseable {
      * @return {@code Refused} for a mask naming a group the table lacks
      */
     Publish publishPayload(final int sourceId, final int connectionId, final int groupMask, final int payloadId,
-                           final DirectBuffer body, final int bodyLength) {
+                           final DirectBuffer body, final int bodyOffset, final int bodyLength) {
         final int frameMask = fenced ? GroupResolution.UNRESOLVED : groups.frameMask(groupMask);
         if (frameMask == GroupResolution.UNRESOLVED) {
             return Publish.Declined;
         }
         return frameMask == GroupResolution.NOT_ADDRESSABLE
             ? Publish.Refused
-            : publisher.publishPayload(sender, sourceId, connectionId, payloadId, frameMask, body, bodyLength);
+            : publisher.publishPayload(sender, sourceId, connectionId, payloadId, frameMask, body, bodyOffset,
+                                       bodyLength);
     }
 
     Publish publishSystem(final int sourceId, final int connectionId, final int systemEventType,

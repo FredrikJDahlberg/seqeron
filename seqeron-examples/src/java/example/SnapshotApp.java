@@ -132,7 +132,7 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
         transfer.putInt(0, from, ByteOrder.LITTLE_ENDIAN);
         transfer.putInt(Integer.BYTES, to, ByteOrder.LITTLE_ENDIAN);
         transfer.putLong(2 * Integer.BYTES, 1 + random.nextInt(MAX_AMOUNT), ByteOrder.LITTLE_ENDIAN);
-        app.publish(TRANSFER_PAYLOAD_ID, transfer, TRANSFER_LENGTH);
+        app.publish(TRANSFER_PAYLOAD_ID, transfer, 0, TRANSFER_LENGTH);
     }
 
     /** The state transition: every replica applies the same transfers in the same order. */

@@ -105,6 +105,24 @@ class IngressPublisherTest {
     }
 
     @Test
+    @DisplayName("a payload at an offset is carried from there, and nothing before it")
+    void payloadIsReadFromItsOffset() {
+        final MutableDirectBuffer buffer = payload(24);
+        assertEquals(Publish.Published,
+                     publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, GROUP_MASK, buffer, 8, 16));
+
+        messageHeader.wrap(sender.sent, 0);
+        unsequenced.wrap(sender.sent, MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
+                         messageHeader.version());
+        final byte[] carried = new byte[16];
+        assertEquals(16, unsequenced.payloadLength());
+        unsequenced.getPayload(carried, 0, carried.length);
+        for (int i = 0; i < carried.length; i++) {
+            assertEquals(buffer.getByte(8 + i), carried[i], "payload byte " + i);
+        }
+    }
+
+    @Test
     @DisplayName("an application payload is wrapped with the caller's identity and the sender's session")
     void payloadCarriesTheHeaderTheCallerAsked() {
         final MutableDirectBuffer body = payload(16);

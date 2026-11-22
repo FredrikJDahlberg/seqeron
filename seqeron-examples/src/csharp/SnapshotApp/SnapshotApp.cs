@@ -125,7 +125,7 @@ public sealed class SnapshotApp : IApplicationListener, ISnapshotListener
         _transfer.PutInt(0, from, ByteOrder.LittleEndian);
         _transfer.PutInt(sizeof(int), to, ByteOrder.LittleEndian);
         _transfer.PutLong(2 * sizeof(int), 1 + _random.Next(MaxAmount), ByteOrder.LittleEndian);
-        _app.Publish(TransferPayloadId, _transfer, TransferLength);
+        _app.Publish(TransferPayloadId, _transfer, 0, TransferLength);
     }
 
     // The state transition: every replica applies the same transfers in the same order.

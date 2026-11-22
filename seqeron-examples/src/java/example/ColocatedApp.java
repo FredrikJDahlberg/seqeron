@@ -114,7 +114,7 @@ public final class ColocatedApp implements Application.Listener {
     private void ping() {
         pingSentNs = System.nanoTime();
         pingBody.putLong(0, pingSentNs, ByteOrder.LITTLE_ENDIAN);
-        if (app.publish(PING_PAYLOAD_ID, pingBody, Long.BYTES) != Publish.Published) {
+        if (app.publish(PING_PAYLOAD_ID, pingBody, 0, Long.BYTES) != Publish.Published) {
             // Declined: the gate shut, ingress is held behind a resend, or the transport is back-pressured.
             // Next second's ping is the retry.
             pingSentNs = 0;

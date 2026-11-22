@@ -23,7 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
-import org.limitless.seqeron.app.Gateway;
+import org.limitless.seqeron.app.Tuning;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
@@ -40,7 +40,7 @@ class ClusterClockStepTest {
     private static final int FRAMES_BEFORE_STEP = 2_000;
     /** How long the producer goes on after the step's length: time to show what follows it. */
     private static final long STREAM_PAST_STEP_MS = 10_000;
-    private static final long FENCE_NS = TimeUnit.MILLISECONDS.toNanos(Gateway.DEFAULT_QUEUE_STALL_TIMEOUT_MS);
+    private static final long FENCE_NS = TimeUnit.MILLISECONDS.toNanos(Tuning.DEFAULT.queueStallTimeoutMs());
     /** Above the 3.2–3.4 s an election from a stopped leader took here. */
     private static final long ELECTION_ALLOWANCE_MS = 5_000;
 
@@ -84,7 +84,7 @@ class ClusterClockStepTest {
     @InterruptAfter(240)
     void aLeaderClockSteppedBackPastTheQueueStallFenceLosesNoFrame() {
         final int leader = cluster.awaitLeader();
-        final long stepMs = Gateway.DEFAULT_QUEUE_STALL_TIMEOUT_MS + 10_000;
+        final long stepMs = Tuning.DEFAULT.queueStallTimeoutMs() + 10_000;
         assertQueuesNeverSilentForTheFence(stream(leader, stepMs / 2, false, () -> cluster.stepClock(leader, -stepMs)));
     }
 
@@ -102,7 +102,7 @@ class ClusterClockStepTest {
     @Test
     @InterruptAfter(240)
     void aFailoverOntoAMemberWhoseClockIsBehindPastTheFenceLosesNoFrame() {
-        failOverOntoLaggingMembers(Gateway.DEFAULT_QUEUE_STALL_TIMEOUT_MS + 10_000);
+        failOverOntoLaggingMembers(Tuning.DEFAULT.queueStallTimeoutMs() + 10_000);
     }
 
     private void failOverOntoLaggingMembers(final long lagMs) {

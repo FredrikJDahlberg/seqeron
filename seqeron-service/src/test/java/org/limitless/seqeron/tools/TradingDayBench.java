@@ -136,7 +136,7 @@ final class TradingDayBench {
             }
             final int phase = day.phaseAt(offset);
             final Publish verdict =
-                app.publish(ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(), marker.encodePayload(due, filler));
+                app.publish(ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(), 0, marker.encodePayload(due, filler));
             if (verdict == Publish.Published) {
                 sent[phase]++;
                 behindMaxNs[phase] = Math.max(behindMaxNs[phase], now - due);

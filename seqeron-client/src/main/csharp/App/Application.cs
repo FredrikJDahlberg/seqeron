@@ -37,16 +37,6 @@ namespace Org.Limitless.Seqeron.App;
 /// </summary>
 public sealed class Application : IDisposable
 {
-    /// <summary>How long the queue may be silent before this replica is fenced — 20 heartbeat periods.</summary>
-    public const long DefaultQueueStallTimeoutMs = Session.DefaultQueueStallTimeoutMs;
-
-    /// <summary>How long recovery may dispatch nothing, once caught up before; longer, as a re-walk is
-    /// slower.</summary>
-    public const long DefaultRecoveryStallTimeoutMs = Session.DefaultRecoveryStallTimeoutMs;
-
-    /// <summary>Frames in flight between a publish and the queue; far above what one round trip holds.</summary>
-    public const int DefaultPendingCapacity = Session.DefaultPendingCapacity;
-
     /// <summary>How long ingress is tried on this member's own <c>aeron:ipc</c>: short, as a follower never
     /// answers.</summary>
     public const long DefaultIpcConnectTimeoutMs = 500;
@@ -77,6 +67,10 @@ public sealed class Application : IDisposable
     public Application(ApplicationOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        if (options.SourceId == ReplayProtocol.NoSourceId)
+        {
+            throw new ArgumentException("SourceId -1 is the cluster's", nameof(options));
+        }
         Require(options.EgressChannel, nameof(options.EgressChannel));
         Require(options.IngressEndpoints, nameof(options.IngressEndpoints));
         Require(options.Listener, nameof(options.Listener));
@@ -170,36 +164,40 @@ public sealed class Application : IDisposable
     /// <summary>Submits one payload of this application's own to its own group, stamped with its <c>sourceId</c>
     /// and belonging to no connection.</summary>
     /// <param name="payloadId">which protocol the payload speaks</param>
-    /// <param name="payload">the payload's bytes from offset 0, its own <c>MessageHeader</c> included</param>
-    /// <param name="length">bytes of <paramref name="payload"/></param>
-    /// <returns><c>Declined</c> while the gate is shut, ingress is held or the transport is back-pressured — retry
-    /// it; <c>Refused</c> is permanent</returns>
-    public Publish Publish(int payloadId, IDirectBuffer payload, int length)
+    /// <param name="payload">the buffer holding the payload's bytes, its own <c>MessageHeader</c> included</param>
+    /// <param name="offset">where they start in <paramref name="payload"/></param>
+    /// <param name="length">how many there are</param>
+    /// <returns><c>Published</c>; <c>Declined</c>, nothing placed, to retry from the duty cycle, while the gate is
+    /// shut, ingress is held behind a failover's resend, confirmed ingress is full, or the session is lost or being
+    /// replaced; <c>Refused</c>, permanently. Back-pressure is not a decline: the call spins through it, and through
+    /// an election, for up to 10 s.</returns>
+    public Publish Publish(int payloadId, IDirectBuffer payload, int offset, int length)
     {
-        return Submit(_sourceId, NoConnection, 0, payloadId, payload, length);
+        return Submit(_sourceId, NoConnection, 0, payloadId, payload, offset, length);
     }
 
     /// <summary>The same from a span, copied once into a buffer this replica owns.</summary>
     public Publish Publish(int payloadId, ReadOnlySpan<byte> payload)
     {
-        return Submit(_sourceId, NoConnection, 0, payloadId, Stage(payload), payload.Length);
+        return Submit(_sourceId, NoConnection, 0, payloadId, Stage(payload), 0, payload.Length);
     }
 
     /// <summary>The same to the groups <paramref name="groupMask"/> names as well as its own.</summary>
     /// <param name="groupMask">bits from the <see cref="GroupDirectory"/>; one the table lacks is
     /// <c>Refused</c></param>
     /// <param name="payloadId">which protocol the payload speaks</param>
-    /// <param name="payload">the payload's bytes from offset 0, its own <c>MessageHeader</c> included</param>
-    /// <param name="length">bytes of <paramref name="payload"/></param>
-    public Publish Publish(ushort groupMask, int payloadId, IDirectBuffer payload, int length)
+    /// <param name="payload">the buffer holding the payload's bytes, its own <c>MessageHeader</c> included</param>
+    /// <param name="offset">where they start in <paramref name="payload"/></param>
+    /// <param name="length">how many there are</param>
+    public Publish Publish(ushort groupMask, int payloadId, IDirectBuffer payload, int offset, int length)
     {
-        return Submit(_sourceId, NoConnection, groupMask, payloadId, payload, length);
+        return Submit(_sourceId, NoConnection, groupMask, payloadId, payload, offset, length);
     }
 
     /// <summary>The same from a span, copied once into a buffer this replica owns.</summary>
     public Publish Publish(ushort groupMask, int payloadId, ReadOnlySpan<byte> payload)
     {
-        return Submit(_sourceId, NoConnection, groupMask, payloadId, Stage(payload), payload.Length);
+        return Submit(_sourceId, NoConnection, groupMask, payloadId, Stage(payload), 0, payload.Length);
     }
 
     /// <summary>
@@ -209,15 +207,15 @@ public sealed class Application : IDisposable
     /// (<see cref="Payload.ReplyAddress"/>) rather than the request itself — a <see cref="Payload"/> is valid only
     /// during its callback, and a reply is usually dispatched later.
     /// </summary>
-    public Publish Reply(ReplyAddress request, int payloadId, IDirectBuffer payload, int length)
+    public Publish Reply(ReplyAddress request, int payloadId, IDirectBuffer payload, int offset, int length)
     {
-        return Submit(request.SourceId, request.ConnectionId, request.GroupMask, payloadId, payload, length);
+        return Submit(request.SourceId, request.ConnectionId, request.GroupMask, payloadId, payload, offset, length);
     }
 
     /// <summary>The same from a span, copied once into a buffer this replica owns.</summary>
     public Publish Reply(ReplyAddress request, int payloadId, ReadOnlySpan<byte> payload)
     {
-        return Submit(request.SourceId, request.ConnectionId, request.GroupMask, payloadId, Stage(payload),
+        return Submit(request.SourceId, request.ConnectionId, request.GroupMask, payloadId, Stage(payload), 0,
                       payload.Length);
     }
 
@@ -267,13 +265,13 @@ public sealed class Application : IDisposable
 
     // A shut gate declines rather than submits: only the leading replica's copy of the work is the one sent.
     private Publish Submit(int frameSourceId, int connectionId, ushort groupMask, int payloadId, IDirectBuffer payload,
-                           int length)
+                           int offset, int length)
     {
         if (!_gate.IsOpen)
         {
             return Protocol.Publish.Declined;
         }
-        return _session.PublishPayload(frameSourceId, connectionId, groupMask, payloadId, payload, length);
+        return _session.PublishPayload(frameSourceId, connectionId, groupMask, payloadId, payload, offset, length);
     }
 
     // What comes off the queue, and the one frame the gate is driven by.
