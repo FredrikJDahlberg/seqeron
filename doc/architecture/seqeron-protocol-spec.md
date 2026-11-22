@@ -769,7 +769,7 @@ derive from the queue they read (**A-8**). A producer's masks stay valid for its
 replays the log from `clusterSeqNo` 1 and activates the groups at the same frame as before, and its
 replayer derives their history again.
 
-Adding groups to a running cluster is proposed, not implemented; the rules above hold until it is ([`upgrades.md`](upgrades.md) §7.4).
+Adding groups to a running cluster is proposed, not implemented; the rules above hold until it is ([`upgrade-model.md`](../records/plans/upgrade-model.md) §6).
 
 ---
 
@@ -1060,7 +1060,7 @@ This section covers seqeron's two schemas. Payload versioning belongs to the app
 | schema 210 envelopes | frozen; any change is a new wire format | every producer and consumer |
 | a submitted system event in schema 210 | allowed under **V-3**: a new `systemEventType` inside an unchanged envelope | the cluster tier and consumers of the system family |
 | a synthesized system event in schema 210 | a frame-layer change: only the sequencer emits it, and it needs a template id | every producer and consumer |
-| the `<groups>` section of the topology, and each source's group | fixed at the first topology load for the life of an archive, as is each source's group (**S-8**); adding groups is proposed ([`upgrades.md`](upgrades.md) §7.4) | every producer and consumer |
+| the `<groups>` section of the topology, and each source's group | fixed at the first topology load for the life of an archive, as is each source's group (**S-8**); adding groups is proposed ([`upgrade-model.md`](../records/plans/upgrade-model.md) §6) | every producer and consumer |
 | schema 212 | in place, no version bump (§10) | one node's build |
 | an application schema | the application's | the application |
 

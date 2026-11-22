@@ -234,7 +234,7 @@ code. A plan is cited by path from the code it changed (`doc/records/plans/disk-
 document there when you add one. `architecture/` holds `overview.md` (the design, for architects: what each part
 does and why, the life of a message, the failure model, the limits — keep it in step with the documents it
 summarizes), `fault-tolerance.md`, `snapshot.md` (application snapshots: local files the log confirms),
-`upgrades.md` (seqeron and application versions, and the proposed snapshot-and-upcaster upgrade model),
+`upgrades.md` (seqeron and application versions; the proposed upgrade model is `records/plans/upgrade-model.md`),
 `seqeron-protocol-spec.md` (normative — the frames, the families, the system vocabulary, the topology document, the
 hosted façade protocol in §17) and `versioning-prior-art.md` (background to `upgrades.md`). `clients/` holds
 `getting-started.md` (a release node plus a consumer and a producer; its snippets pin a release, so bump them when

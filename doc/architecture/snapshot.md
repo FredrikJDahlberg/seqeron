@@ -323,7 +323,7 @@ formats stay readable until no instance holds a file of them.
 
 Protocol upgrades that change a source's format while it runs are not designed yet; they will build on
 snapshots, and the field and the stop are already in place, so that design needs no change to schema 210
-(spec V-3). [`upgrades.md`](upgrades.md) proposes one.
+(spec V-3). [`upgrade-model.md`](../records/plans/upgrade-model.md) proposes one.
 
 ## 10. Cluster snapshots
 

@@ -293,5 +293,5 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 3. [Protocol Specification](seqeron-protocol-spec.md) — normative
 4. [Fault Tolerance](fault-tolerance.md) — each failure and its recovery
 5. [Application Snapshots](snapshot.md)
-6. [Upgrades and Versioning](upgrades.md) — seqeron and application versions, and a proposed upgrade model
+6. [Upgrades and Versioning](upgrades.md) — seqeron and application versions
 7. [Running a Cluster](../operations/running-a-cluster.md)

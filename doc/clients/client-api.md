@@ -10,11 +10,13 @@ for cross-package access, with no compatibility guarantee. The wire contract is
 
 The sections before [Façades](#façades-app) define the model and the contract; the rest is reference.
 
-**C++ is the hosted stubs.** The direct C++ client is retired and kept on the `cpp-direct-client` branch (tag
-`cpp-direct-client-final`). C++ here means `hosted::Application`, `hosted::Gateway` and `hosted::Consumer`, which keep the
-façades' operation names and listener concepts and differ as
-[`seqeron-protocol-spec.md`](../architecture/seqeron-protocol-spec.md) §17.5 says. The C++ columns and notes below that name `ClusterStreamClient`, `ClusterStreamSender`, `PortLayout`, `offerFrame`,
-the producer components or `sequencer::client` describe that branch, not this tree.
+**C++ is the hosted stubs.** C++ here means `hosted::Application`, `hosted::Gateway` and `hosted::Consumer`: client
+stubs whose façade runs in a `ClientProxy` host beside them, over `aeron:ipc`
+([`seqeron-protocol-spec.md`](../architecture/seqeron-protocol-spec.md) §17). They keep the façades' operation names,
+listener concepts and `Payload`, and differ as spec §17.5 says. The host holds the cluster session, the queue and the
+façade's configuration ([`running-a-cluster.md`](../operations/running-a-cluster.md#client-proxy)), so C++ has no
+`ReplayerStreamReceiver`, no producer components and no `PortLayout`; a section or column that names no C++ type has
+none. The direct C++ client is retired, on the `cpp-direct-client` branch (tag `cpp-direct-client-final`).
 
 ## Application types
 
@@ -156,13 +158,13 @@ language differences are:
 
 | | Java | C++ | C# |
 |---|---|---|---|
-| construction | `Gateway.builder()…build()` | `Gateway<Listener>{ config, listener }`; `Config` is an aggregate, one field per builder setter | `new Gateway(new GatewayOptions { … })`, one `init` property per setter; `build()`'s mandatory options are `required` |
+| construction | `Gateway.builder()…build()` | `hosted::Gateway<Listener>{ config, listener }`; `Config` holds the stub's own settings only: `sourceId`, `snapshots`, `hostName`, `hostTimeoutMs`, `attachTimeoutMs` | `new Gateway(new GatewayOptions { … })`, one `init` property per setter; `build()`'s mandatory options are `required` |
 | listener | implements `Gateway.Listener` | type satisfying the `GatewayListener` / `ApplicationListener` concept | implements `IGatewayListener` / `IApplicationListener` |
-| ingress endpoints | `ingressEndpoints(…)`, default `PortLayout.ingressEndpoints()` | `Config::ingressEndpoints`, default `protocol::ingressEndpointsCsv()` | `IngressEndpoints`, default `PortLayout.IngressEndpoints()` |
-| `publish` / `reply` | encoded bytes including the payload's `MessageHeader` | bytes, or `publish<Encoder>(…, fill)` where `fill(Encoder&)` populates a header-wrapped encoder | bytes or `ReadOnlySpan<byte>`, copied once into a façade-owned buffer |
+| ingress endpoints | `ingressEndpoints(…)`, default `PortLayout.ingressEndpoints()` | the host's `proxy.ingressEndpoints` | `IngressEndpoints`, default `PortLayout.IngressEndpoints()` |
+| `publish` / `reply` | encoded bytes including the payload's `MessageHeader` | encoded bytes, `const std::uint8_t*` and a length | bytes or `ReadOnlySpan<byte>`, copied once into a façade-owned buffer |
 | payload body | `buffer()` at `bodyOffset()`/`bodyLength()` | `body()`/`bodyLength()`, or `decode<Decoder>()` | `Buffer` at `BodyOffset`/`BodyLength` |
 | headerless payload (spec §13.2) | `buffer()` at `payloadOffset()`/`payloadLength()` | `payload()`/`payloadLength()` | `Buffer` at `PayloadOffset`/`PayloadLength` |
-| release | `close()` / try-with-resources | `close()` | `Dispose()` / `using` |
+| release | `close()` / try-with-resources | `close()`; `start` takes the caller's `std::shared_ptr<aeron::Aeron>` | `Dispose()` / `using` |
 
 Java is bytes-only because its SBE codecs share no common interface. C# options and listener types are
 top-level rather than nested, per .NET design guidelines.
@@ -180,8 +182,8 @@ top-level rather than nested, per .NET design guidelines.
 | `egressChannel` | ✓ | ✓ | `aeron:udp?endpoint=localhost:0` | cluster session egress channel; the default is an ephemeral port |
 | `ingressEndpoints` | ✓ | ✓ | `PortLayout.ingressEndpoints()` | member ingress endpoints |
 | `offCluster` | | ✓ | false | single instance on a gateway host ([Application](#application)); not with `ipcConnectTimeoutMs`, which `build()` rejects |
-| `snapshots` (listener, directory) | ✓ | ✓ | none | participate in snapshot rounds; the listener and this instance's snapshot directory are one setting (Java `snapshots(listener, dir)`, C++ `Config::snapshots`, C# `Snapshots`) |
-| `tuning` | ✓ | ✓ | `Tuning.DEFAULT` | the policy knobs below, in one value (Java `Tuning` record with `withX` methods, C++ `Tuning` aggregate, C# `Tuning` options class) |
+| `snapshots` (listener, directory) | ✓ | ✓ | none | participate in snapshot rounds; the listener and this instance's snapshot directory are one setting (Java `snapshots(listener, dir)`, C# `Snapshots`; C++ `Config::snapshots` is the listener alone, the directory being the host's `proxy.snapshotDir`) |
+| `tuning` | ✓ | ✓ | `Tuning.DEFAULT` | the policy knobs below, in one value (Java `Tuning` record with `withX` methods, C# `Tuning` options class) |
 | `ipcConnectTimeoutMs` | | ✓ | 500 | wait for IPC ingress to the local member while it leads; empty by default so that `offCluster` can tell it was not set |
 | `idleStrategy` (C# `IdleStrategy`) | ✓ | ✓ | a yielding spin; Aeron's own connect wait | what a call that blocks waits on: a `publish` spinning through an election (up to 10 s) and the cluster connect in `start`. One that also does the caller's periodic work keeps it going meanwhile. Java and C# only |
 
@@ -193,6 +195,9 @@ top-level rather than nested, per .NET design guidelines.
 
 The stall defaults are `DEFAULT_QUEUE_STALL_TIMEOUT_MS` (20 heartbeat intervals) and
 `DEFAULT_RECOVERY_STALL_TIMEOUT_MS` (3× that).
+
+A C++ stub takes `sourceId` and `snapshots` of these; its host takes the rest as `proxy.*` properties
+([`running-a-cluster.md`](../operations/running-a-cluster.md#client-proxy)).
 
 **Dependency boundary.** A façade's signatures name only `app` and `protocol.Publish` (C++ `protocol::Publish`).
 With the default port block, a façade client imports nothing else. `FacadeSurfaceTest` enforces this in Java
@@ -253,9 +258,8 @@ try (Gateway gateway = Gateway.builder()
 
 ```cpp
 Edge edge; // satisfies app::GatewayListener
-app::Gateway<Edge> gateway{
-    { .gatewayName = "GW-A", .clientId = 10, .memberId = memberId }, edge
-};
+// The host beside it runs GW-A (proxy.gatewayName); the stub names the pair's sourceId.
+hosted::Gateway<Edge> gateway{ { .sourceId = sourceId }, edge };
 gateway.start(aeron);
 while (running) { idle.idle(gateway.doWork()); }
 gateway.close();
@@ -269,8 +273,11 @@ gateway.close();
 | `canAccept()` | serving, and ingress not held for a post-failover resend |
 | `openConnection()` / `openConnection(data, length)` | allocate a connection id and place `ConnectionOpened`, retried by `doWork()` |
 | `closeConnection(id)` | place `ConnectionClosed`; dropped for a connection the cluster never saw |
-| `publish(connectionId, payloadId, payload, length)`, `publish(connectionId, groupMask, payloadId, payload, length)` | submit a payload under this gateway's `sourceId`, to its own group or to those `groupMask` names ([Groups](#groups)). C++ also `publish<Encoder>(connectionId, [groupMask,] payloadId, fill)` |
+| `publish(connectionId, payloadId, payload, length)`, `publish(connectionId, groupMask, payloadId, payload, length)` | submit a payload under this gateway's `sourceId`, to its own group or to those `groupMask` names ([Groups](#groups)) |
 | `isActivated()`, `isServing()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastClusterSeqNo()` | instance state; `sourceId()` and `gatewayId()` are `UNRESOLVED` until a `GatewayRegistered` row names the instance |
+
+The C++ stub has every operation but `isActivated()` and `gatewayId()`, and its state lags the host by a hop (spec
+**H-16**).
 
 Only `onActivated`, `onStandby`, `onSequenced` and `onFenced` (`Application`: `onLeadershipChanged`,
 `onSequenced`, `onFenced`) are required; the other callbacks default to doing nothing in Java and C#, and C++
@@ -311,9 +318,9 @@ otherwise.
 | `doWork()` | one duty-cycle iteration: session, queue, confirmed ingress, fences, leader gate |
 | `canPublish()` | gate open and ingress not held |
 | `isLeading()` | gate open |
-| `publish(payloadId, payload, length)`, `publish(groupMask, payloadId, payload, length)` | submit under the application's `sourceId`, no connection, to its own group or to those `groupMask` names. C++ also `publish<Encoder>([groupMask,] payloadId, fill)` |
-| `reply(request, payloadId, payload, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `ReplyAddress`, from `Payload.replyAddress()`, which unlike the `Payload` outlives the callback. C++ also `reply<Encoder>(request, payloadId, fill)` |
-| `sourceId()`, `isCaughtUp()`, `lastClusterSeqNo()` | replica state |
+| `publish(payloadId, payload, length)`, `publish(groupMask, payloadId, payload, length)` | submit under the application's `sourceId`, no connection, to its own group or to those `groupMask` names |
+| `reply(request, payloadId, payload, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `ReplyAddress`, from `Payload.replyAddress()`, which unlike the `Payload` outlives the callback |
+| `sourceId()`, `isCaughtUp()`, `lastClusterSeqNo()` | replica state; the C++ stub has no `sourceId()` |
 | `keepAlive()` | session keep-alive for a callback that spins, or waits on a snapshot record; `doWork()` already sends one per cycle |
 
 **Leader gate.** `onLeadershipChanged(boolean leading)` replaces `onActivated`/`onStandby`; `onGroupsResolved`,
@@ -336,7 +343,7 @@ equivalent, and `src/csharp/Directory.Build.targets`).
 ### Snapshots
 
 [`snapshot.md`](../architecture/snapshot.md) specifies the protocol. A façade participates when it has `snapshots`
-(C++: a `Snapshots` holding a `SnapshotListener&` that outlives the façade) and, for an `Application`, its topology row sets
+(C++: `Config::snapshots`, a `SnapshotListener*` that outlives the stub) and, for an `Application`, its topology row sets
 `snapshot="true"`. The snapshot directory holds the instance's confirmed file and the one being written, and must
 outlive the process ([`snapshot.md`](../architecture/snapshot.md) §4.1).
 
@@ -374,7 +381,7 @@ outlive the process ([`snapshot.md`](../architecture/snapshot.md) §4.1).
 The façades are composed of I/O-free state machines with twins in every language. `OutstandingWork` —
 leader-only request/reply tracking, redispatched after failover — is the only one exposed, since it models
 the application's work rather than seqeron's. The election, leader gate and stall fences are
-package-private (Java), `internal` (C#) or in `app::detail` (C++). Confirmed ingress is
+package-private (Java) or `internal` (C#); a C++ stub's run in its host. Confirmed ingress is
 [`PendingSends`](#producer-components), an internal type.
 
 ### `Consumer`
@@ -391,6 +398,9 @@ part in an election and needs no topology row. It is the façade shape for the r
 | `memberId` | 0 | member (or gateway host node id) whose queue is followed |
 | `tuning` | `Tuning.DEFAULT` | the stall timeouts apply; `pendingCapacity` is unused |
 
+The C++ stub, `hosted::Consumer`, takes only the host's name and its timeouts; its host takes these options, the group
+as `proxy.consumerGroup`.
+
 | operation | semantics |
 |---|---|
 | `start(aeron)` | start following the group's queue on this node |
@@ -404,7 +414,7 @@ with a `<snapshots>` policy loaded it cannot restart (see below): use an `Applic
 
 ## `ReplayerStreamReceiver`
 
-The lower-level read path (`replayer.client`, every language): reach for it when `Consumer` is too little, for
+The lower-level read path (`replayer.client`, Java and C#): reach for it when `Consumer` is too little, for
 example to see system messages or to restore from a snapshot store. It replays local history through the co-located
 Replayer (an Aeron Archive replay), switches to the live queue once caught up, recovers gaps internally, and
 delivers every message once in `clusterSeqNo` order. Each façade and `Consumer` owns one.
@@ -415,14 +425,14 @@ The local node is a cluster member or a **gateway host** — a host with no memb
 directory and passes the host's node id (unused by any member) as `memberId`. `Gateway` is unchanged;
 `Application` requires [`offCluster`](#application).
 
-| operation | Java | C++ | C# |
-|---|---|---|---|
-| construct | `(clientId, onSequenced, onLeadershipChanged, onCaughtUp)` | `(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged, onCaughtUp)` | as Java, callbacks as delegates |
-| snapshot restore | `restoreFrom(SnapshotStore, SnapshotRestoreHandler)`, before `start` | `restoreFrom(SnapshotStore&, SnapshotRestoreHandler&)`, before `start` | `RestoreFrom(SnapshotStore, ISnapshotRestoreHandler)`, before `Start` |
-| attach | `start(aeron, memberId, groupId)`; a consumer names its group, a façade passes the one the Replayer resolved | `start(aeron, memberId, groupId)` | `Start(aeron, memberId, groupId)` |
-| duty cycle | `poll()` | `poll()` | `Poll()` |
-| state | `isCaughtUp()`, `lastClusterSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | same; `restoreFailure()` is `std::optional<std::string>` | same, as properties; `RestoreFailure` null if none |
-| release | `close()` | `close()`, or the destructor | `Dispose()` |
+| operation | Java | C# |
+|---|---|---|
+| construct | `(clientId, onSequenced, onLeadershipChanged, onCaughtUp)` | as Java, callbacks as delegates |
+| snapshot restore | `restoreFrom(SnapshotStore, SnapshotRestoreHandler)`, before `start` | `RestoreFrom(SnapshotStore, ISnapshotRestoreHandler)`, before `Start` |
+| attach | `start(aeron, memberId, groupId)`; a consumer names its group, a façade passes the one the Replayer resolved | `Start(aeron, memberId, groupId)` |
+| duty cycle | `poll()` | `Poll()` |
+| state | `isCaughtUp()`, `lastClusterSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | same, as properties; `RestoreFailure` null if none |
+| release | `close()` | `Dispose()` |
 
 Single-threaded, like the façades.
 
@@ -447,20 +457,17 @@ makes it unique.
 
 ### Message delivery
 
-| message | Java, C# | C++ |
-|---|---|---|
-| `LeadershipChanged` | `onLeadershipChanged` only | `onLeadershipChanged` only |
-| `ConnectionOpened` / `ConnectionClosed` | `onSequenced`, `isSystem()` | `onConnected` / `onDisconnected` (`LifecycleEvent`) only |
-| other system messages | `onSequenced`, `isSystem()` | `onSequenced`, `system` |
-| application messages | `onSequenced` | `onSequenced` |
+| message | delivered to |
+|---|---|
+| `LeadershipChanged` | `onLeadershipChanged` only |
+| other system messages | `onSequenced`, `isSystem()` |
+| application messages | `onSequenced` |
 
-C++'s two extra callbacks were kept interchangeable with the retired `ClusterStreamClient`; a
-`LifecycleEvent` carries the message identity and payload, from which `decodeSystem<ConnectionOpened>(event)`
-reads `connectionData`. A message whose dedicated callback is null (Java, C#) or empty (C++) is delivered to
-`onSequenced` as a system message, so `groupSeqNo` has no holes. `onSequenced` is mandatory.
+A `LeadershipChanged` whose callback is null is delivered to `onSequenced` as a system message, so `groupSeqNo` has
+no holes. `onSequenced` is mandatory.
 
-**`SequencedEvent`** (`replayer.client` in Java and C#, `protocol/SequencedFrame.hpp` in C++) is the
-flyweight `onSequenced` receives. Its fields carry the decoder's names, plus the delivery attributes
+**`SequencedEvent`** (`replayer.client` in Java and C#) is the
+flyweight `onSequenced` receives; C++ has one in `protocol/SequencedFrame.hpp` for its offline reader. Its fields carry the decoder's names, plus the delivery attributes
 `receiveTimeNs()` and `position()`. `sourceSessionId`, `clusterTimestampNs` and `groupSeqNo` read the wire
 fields `header.sessionId`, `header.timestamp` and `header.groupSeqNo` (spec F-6).
 
@@ -478,9 +485,7 @@ fields `header.sessionId`, `header.timestamp` and `header.groupSeqNo` (spec F-6)
 languages.
 
 **Without a receiver.** `SequencedFrameDecoder` (Java, C#) and `unwrapFrame`/`FrameView` (C++) strip the
-envelope from a raw queue message read out of a recording. A caller
-that keeps the archive session `connectLocalArchive` or `connectToArchiveWithClusterStream` returned calls
-`pollArchiveSession` every duty cycle, because the archive closes a session whose pings go unread.
+envelope from a raw queue message read out of a recording.
 
 ## Packages
 
@@ -492,16 +497,17 @@ Aeron's layout: a component's server at the package root, its client in `.client
 | `protocol` | client | `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters`, `Publish` (C++: `SequencedFrame.hpp`, `SeqeronCounters.hpp`, `ProxyProtocol.hpp`, `Publish.hpp`) |
 | `sequencer.client` | client | internal: the [producer components](#producer-components) |
 | `replayer.client` | client | `ReplayerStreamReceiver`, its callback types (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), `SnapshotRestoreHandler`, `SnapshotStore`; `SequencedEvent` in Java and C# (C++: `protocol`, beside `unwrapFrame` and `decodeSystem`/`decodeSequenced`) |
-| `app` | client | the façades (`Gateway`, `Application`, `Consumer`) and their components |
+| `app` | client | the façades (`Gateway`, `Application`, `Consumer`) and their components; in C++ the listener concepts, `Payload`, `GroupDirectory`, `OutstandingWork`, `SnapshotListener` and `ClusterError` the stubs share |
+| `hosted` | client | C++ only: the stubs `Application`, `Gateway` and `Consumer` |
 | `util` | client | support code |
 | `sbe.frame`, `sbe.replay` | client | generated codecs |
 | `sequencer`, `replayer.server`, `tools`, `metrics`, `sbe.probe` | service | not client API |
 
-- **C++:** same directories and namespaces (`org::limitless::seqeron::sequencer::client`, …); a `detail`
-  namespace beneath a package stands in for Java package-private.
+- **C++:** the same directories and namespaces for the packages it has, `app`, `hosted`, `protocol` and `util`
+  (`org::limitless::seqeron::hosted`, …); a `detail` namespace beneath a package stands in for Java package-private.
 - **C#:** PascalCase namespaces (`Org.Limitless.Seqeron.Sequencer.Client`, …), `internal` for
   package-private, properties for getters, `I`-prefixed interfaces (`IIngressTracker`,
-  `ISnapshotRestoreHandler`, `ISnapshotListener`), receiver callbacks as delegates. No `ClusterStreamClient`.
+  `ISnapshotRestoreHandler`, `ISnapshotListener`), receiver callbacks as delegates.
 
 ## Constants
 
@@ -509,8 +515,9 @@ Aeron's layout: a component's server at the package root, its client in `.client
 |---|---|
 | `FrameLayer` (Java, C#), `SequencedFrame.hpp` (C++) | queue identity (`QUEUE_STREAM_ID_BASE` 2000, `queueStreamId(groupId)`, `MAX_GROUPS` 16), spec §12 size limits; Java/C# also the heartbeat interval |
 | `SystemFrame` (Java, C#), `SequencedFrame.hpp` (C++) | `systemEventType` values |
-| `PortLayout` | cluster port block, per-member ingress endpoints, the producer endpoint list (`ingressEndpoints()`, `ingressEndpoints(parseHosts("h0,h1,h2"))`; C++ `ingressEndpointsCsv`), archive control channel, a node's default Aeron directory (`aeronDir(nodeId)`; C++ `util::resolveAeronDir`); honours `SEQERON_PORT_BASE` and `SEQERON_HOSTS` |
-| `ReplayProtocol` | replay protocol channel and stream ids, `NO_REPLAY_NEEDED` |
+| `PortLayout` (Java, C#) | cluster port block, per-member ingress endpoints, the producer endpoint list (`ingressEndpoints()`, `ingressEndpoints(parseHosts("h0,h1,h2"))`), archive control channel, a node's default Aeron directory (`aeronDir(nodeId)`; C++ has `util::resolveAeronDir`); honours `SEQERON_PORT_BASE` and `SEQERON_HOSTS` |
+| `ReplayProtocol` (Java, C#) | replay protocol channel and stream ids, `NO_REPLAY_NEEDED` |
+| `ProxyProtocol` (Java, C++) | the hosted façade protocol's stream ids, schema id and version (spec §17.7) |
 | `Publish` | offer outcome: `Published`, `Refused` (final), `Declined` (retryable) |
 
 ## Wire codecs
@@ -525,7 +532,7 @@ codecs ship but are used only by `ReplayerStreamReceiver`.
 `util` (`Logger`, `AsyncLoggerSink`, `IdleStrategies`/`IdleStrategy.hpp`, `Clocks`, C++ `Env.hpp`, C# `SbeBuffers`) and
 `protocol.SeqeronCounters` ship because the API uses them. They are usable but carry no stability
 guarantee, except `SbeBuffers`, which C# SBE decoding requires. `Clocks.monotonicMs()` is the time base for
-every duty-cycle deadline; C++ uses the free function `nowMs()`.
+every duty-cycle deadline.
 
 ## Internal types
 
@@ -533,11 +540,9 @@ Visible for cross-package or test access only; no compatibility guarantee.
 
 - **C++ `detail` namespaces** (each in a `detail/` directory beside its package) — the equivalent of Java
   package-private. A public signature naming a `detail` type is a test seam.
-  - `replayer/client/detail`: `ReplayerRecovery`, `ReplayerRecoveryActions`.
-  - `sequencer/client/detail/Transport.hpp`: `IngressTransport`/`EgressTransport` and their Aeron
-    implementations, injected into `ClusterStreamSender::connect` in tests.
-  - `app/detail`: `Session`, `GatewayLifecycle`, `LeaderGate`, `RecoveryStallFence`, `QueueStallFence`.
+  - `app/detail`: `GroupResolution`, and `LeaderGate`, the model `OutstandingWork`'s property test runs against.
     `makePayload` builds a `Payload` for unit-testing a listener.
+  - `hosted/detail`: `ClientLink`, the stubs' shared link to their host, and `RetainedCommands`.
 - **Java package-private and C# `internal` types** — the same components. `FacadeSurfaceTest` fails the
   build if a public signature names one (C#: any public type outside `App` beyond `Publish`, `Aeron` and the
   two buffer interfaces). The C# test assembly reaches them via `InternalsVisibleTo`.
@@ -547,14 +552,14 @@ Visible for cross-package or test access only; no compatibility guarantee.
 
 ### Producer components
 
-The façades are assembled from these, and seqeron's own tools use them directly. They are public because
-those callers sit in other packages, not as a supported way to produce: a producer takes a façade.
+The Java and C# façades are assembled from these, and seqeron's own tools use them directly; a C++ stub's host
+uses Java's. They are public because those callers sit in other packages, not as a supported way to produce: a
+producer takes a façade.
 
 | type | role |
 |---|---|
-| `ClusterStreamSender` | The cluster session (Java and C# wrap `AeronCluster`). `connectColocated(aeron, memberId, …)` uses IPC ingress to the local member, falling back to UDP when it is not leader; `connect(…)` is UDP only. Both take the UDP ingress endpoint list `"0=host:port,1=host:port,…"`, needed for fallback and reconnect. The default (`PortLayout.ingressEndpoints()` in Java/C#, `protocol::ingressEndpointsCsv()` in C++, offset by `SEQERON_PORT_BASE`) covers the hosts in `SEQERON_HOSTS`, else every member on `localhost`; `PortLayout.parseHosts` and `ingressEndpoints(List)` (C++ `parseHosts`, `ingressEndpointsCsv(hosts)`) build any other. C++ connects to all members concurrently and follows a follower's redirect to the leader. `send` spins through back pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
-| `IngressPublisher` | Encode and offer; returns `protocol.Publish`: `Published`, `Refused` (above `MAX_PAYLOAD_LENGTH`; nothing offered; final), or `Declined` (transport result; retryable). `publishPayload` takes the frame's `groupMask`, own group's bit included. Java/C#: `publishPayload`/`publishSystem` on pre-encoded bytes. C++: free functions templated on the encoder, populated via a `Fill`. |
-| `offerFrame` (C++) | Offers a caller-encoded message; both `publish*` functions end here. It carries schemaless payloads (spec §13.2), which C++'s encoder-templated `publishPayload` cannot express. Takes the same `IngressTracker`, so confirmation still applies. |
+| `ClusterStreamSender` | The cluster session (Java and C# wrap `AeronCluster`). `connectColocated(aeron, memberId, …)` uses IPC ingress to the local member, falling back to UDP when it is not leader; `connect(…)` is UDP only. Both take the UDP ingress endpoint list `"0=host:port,1=host:port,…"`, needed for fallback and reconnect. The default (`PortLayout.ingressEndpoints()`, offset by `SEQERON_PORT_BASE`) covers the hosts in `SEQERON_HOSTS`, else every member on `localhost`; `PortLayout.parseHosts` and `ingressEndpoints(List)` build any other. `send` spins through back pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
+| `IngressPublisher` | Encode and offer; returns `protocol.Publish`: `Published`, `Refused` (above `MAX_PAYLOAD_LENGTH`; nothing offered; final), or `Declined` (transport result; retryable). `publishPayload` takes the frame's `groupMask`, own group's bit included. `publishPayload`/`publishSystem` take pre-encoded bytes. |
 | `SystemFrame` (Java, C#) | Wraps an encoded payload in its envelope and returns the length; the offer is the caller's. |
 | `PendingSends` | Confirmed ingress. A successful offer is not a sequenced message, and a failover or a closed session silently drops what the leader had not committed. Install it as `IngressPublisher`'s tracker and on the sender via `setIngressHold`, feed it every frame off your own queue and each leadership term, and call `resendMissing` every duty cycle (spec §16 A-4, A-5). `isClosed(clusterSessionId)` says the queue has shown that session closed: replace it. |
 
@@ -587,8 +592,8 @@ dependencies {
 
 **Examples.** `seqeron-examples` builds against the published artifacts, outside this build: `src/java`,
 `src/cpp`, `src/csharp`. `FollowStream` is the minimal client. `ColocatedApp` uses [`app`](#façades-app)
-alone, and its build fails on any reference outside `app` beyond `protocol.Publish` (plus `util` in C++,
-which Java and C# get from their standard libraries and Agrona).
+alone, and its build fails on any reference outside `app` beyond `protocol.Publish` (in C++ also `hosted`, and
+`util`, which Java and C# get from their standard libraries and Agrona).
 
 **API reference.** Java: `./gradlew :seqeron-client:javadoc` (`seqeron-client/build/docs/javadoc/`, also
 the javadoc jar). C++: the CMake `docs` target (`<build>/docs/html`, Doxygen, `detail/` excluded). C#:

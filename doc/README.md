@@ -26,7 +26,7 @@ the same ground in about 30 minutes.
 | [`overview.md`](architecture/overview.md) | the design: each part, what it does and why, the life of a message, failures, limits |
 | [`fault-tolerance.md`](architecture/fault-tolerance.md) | each failure and how each part recovers from it |
 | [`snapshot.md`](architecture/snapshot.md) | application snapshots, and cluster snapshots under a `<snapshots>` policy |
-| [`upgrades.md`](architecture/upgrades.md) | versioning policy (§1, §2, §4); the rest is a proposed upgrade model, and §8 says what is implemented |
+| [`upgrades.md`](architecture/upgrades.md) | the versioning policy that holds today; §6 says which parts of the proposed upgrade model are built |
 | [`seqeron-protocol-spec.md`](architecture/seqeron-protocol-spec.md) | normative: frames, system messages, replay protocol, topology document, hosted façade protocol. Look things up here rather than read it through |
 | [`versioning-prior-art.md`](architecture/versioning-prior-art.md) | background to `upgrades.md`: how exchanges and log-based systems version their protocols |
 
@@ -74,6 +74,7 @@ presents the measurements of 11 and 13 November.
 | [`plans/disk-load-plan.md`](records/plans/disk-load-plan.md) | step 2a done (queues derived from the log), 3 and 4 in, 2b retired, 5 not implemented |
 | [`plans/queue-off-duty-cycle-plan.md`](records/plans/queue-off-duty-cycle-plan.md) | steps 1–5 implemented |
 | [`plans/snapshot-offload.md`](records/plans/snapshot-offload.md) | proposed; nothing implemented |
+| [`plans/upgrade-model.md`](records/plans/upgrade-model.md) | proposed: specified snapshot records, upcasters, an enforced rollout order, moving consumers to a new source, adding groups; `architecture/upgrades.md` §6 tracks what is built |
 | [`reviews/enterprise-review.md`](records/reviews/enterprise-review.md) | 2026-11-15, v0.18.0; issues 4 and 6 answered by the queue-off-duty-cycle plan |
 | [`reviews/service-review.md`](records/reviews/service-review.md) | 2026-11-13, v0.18.0; every finding fixed or settled |
 | [`reviews/snapshot-review.md`](records/reviews/snapshot-review.md) | 2026-10-24 |

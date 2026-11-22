@@ -175,6 +175,24 @@ children's classpath. A test with knobs reads them from the environment, named b
 | `ClusterToolsTest` | `clusterctl`, `ClusterProbe` and `SbeLogPrinter` as an operator runs them, against one live cluster: usage and argument errors with their exit codes, `start`, `counters`, `list-members`, `trim-log` with no snapshots, the refusals of `request-snapshot` and `activate`, the probe's `ping`, `submit`, `confirm` and `follow`, `shutdown` on a follower and on the leader, and the printer's schemas, filters and argument errors on the stopped members' archives |
 | `ChaosTest` | Randomized fault injection against a live three-member cluster, with a consumer replica on every member and the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate. Each round draws one of kill-leader, kill-follower, `SIGKILL` of a follower, pause and queue-drop, heals it, and checks the invariants; at the end a replica cold-started on each member must replay its queue from `groupSeqNo` 1 in order, and all three the same number of frames. It prints its `SEED`, and `SEED=<n>` replays the draws; `ROUNDS`, `ONLY_FAULT` and `STEADY_STATE_SECS` tune the run. Tagged `chaos`, so `systemTest` leaves it out; `./gradlew :seqeron-service:systemTest -Pchaos` runs it alone, as `chaos.yml` does |
 
+The hosted façade tests run a `ClientProxy` host beside a member and a client attached to it over `aeron:ipc`
+(spec §17). Three use the Java test client, `HostedTestApplicationClient`, and run everywhere `systemTest` runs; CI
+runs `HostedSnapshotTest` as a shard of its own, since it is nearly half the suite. The others drive the C++ stubs,
+the probes the C++ build produces (`hosted_probe`, with `hosted_gateway_probe` and `hosted_consumer_probe` beside
+it), and are skipped unless `HOSTED_PROBE` names `hosted_probe`; CI does not set it. `HOSTED_CLIENT=cpp` runs
+`HostedSnapshotTest`'s clients as that probe instead of the Java client.
+
+| test | client | what it asserts |
+| --- | --- | --- |
+| `HostedAllocationTest` | Java | The host's loop thread, running the real `Application` on the leader, allocates nothing per frame across a window of delivered payloads, published markers and heartbeats once the JIT has warmed |
+| `HostedCommandQueueTest` | Java | The command queue and window: with the host's tracker and the client's window both full, no command is lost; a client that ignores the window is closed; a `Publish` that skips or repeats a `commandSeq` fences the client (**H-17**); a gate edge drops what the queue holds |
+| `HostedSnapshotTest` | Java, or C++ with `HOSTED_CLIENT=cpp` | A hosted replica beside two direct ones through restore, the snapshot cut and `SIGKILL`, its rounds agreeing with theirs (spec **A-7**); a cut longer than the session timeout or of many slow records keeps the session; a host stopped mid-cut abandons the round; gate epochs across leadership changes; a corrupted record, an abandoned cut and an unreadable restore format are fenced, and an older readable format restores. The record-format cases need the C++ client |
+| `HostedCppStubTest` | C++ | The `hosted::Application` stub on the leader: its markers sequenced once and in order, the command window, a gate edge and the resend of what the host dropped there, the lag counter, group resolution and `Reply` under its request's ref, attach, detach and exit paths, a host that cannot reach the cluster exiting 70, two hosts in one process, and a host on a gateway host |
+| `HostedGatewayStubTest` | C++ | The `hosted::Gateway` stub opens connections under its own ids, resumes them past the highest issued after its edge closes (**H-3**, **H-4**), and takes part in snapshot rounds and is restored |
+| `HostedGatewayFailoverTest` | C++ | A pair of hosted gateways on different members: the standby takes over when the active client dies or its host is paused, and a resumed active instance does not serve again |
+| `HostedConsumerStubTest` | C++ | The `hosted::Consumer` stub on a follower sees every marker once and in order, attached live or after the markers are in the log (history then live); the host loses a killed consumer by its heartbeat counter (**H-9**) |
+| `HostedTwoHostsTest` | C++ | Two proxies on one media driver, an `Application`'s and a `Consumer`'s, each answering only the `Attach` that names it |
+
 The tests tagged `docker` run the `docker/compose.yml` cluster, and `systemTest` leaves them out. They need Docker, and
 the faulteron ones a checkout of [faulteron](https://github.com/FredrikJDahlberg/faulteron), an eBPF injector in its
 own repository, which `failover.yml` pins (`FAULTERON_DIR`, default `../faulteron`):
