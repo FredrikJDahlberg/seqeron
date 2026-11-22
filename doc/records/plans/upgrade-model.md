@@ -1,0 +1,284 @@
+# Application upgrades: a proposed model
+
+A proposal; none of it is implemented. [`upgrades.md`](../../architecture/upgrades.md) is the policy that holds
+today, and its §6 tracks which pieces of this are built. Section references without a file name are to this
+document; `upgrades.md §n` is to that one, and "spec" is
+[`seqeron-protocol-spec.md`](../../architecture/seqeron-protocol-spec.md).
+
+The aim is to upgrade an application without stopping it: bound how much of its protocol's past a new build must
+read, translate what an encoding's own rules cannot, and let the cluster enforce the order builds roll out in.
+
+## 1. Snapshots as a migration boundary
+
+A snapshot is the application's state encoded at a known point in the log. A build that restores it reads
+only what was recorded after the cut, so the snapshot bounds how much of the protocol's past that build must
+understand: **the snapshot's schema versions, plus the payload versions published since the cut**, rather
+than every version in the log.
+
+That holds only if the snapshot is itself versioned like a payload (§1.1), and under two constraints (§1.2).
+
+### 1.1 Snapshot records are specified messages
+
+Today a record is opaque bytes after seqeron's header record ([`snapshot.md`](../../architecture/snapshot.md) §6), and one
+`formatVersion` covers the whole file: only the listener can read it, and a restore stops on any version
+its listener does not read.
+
+Proposed: every application record is a message of a declared schema, encoded with a `MessageHeader`
+exactly as a payload is, under a `payloadId` the topology's `<protocols>` section registers (spec §6.3).
+seqeron's spec defines the framing — the length prefix, the header record, and that every later record
+begins with a `MessageHeader` — and the application's schema defines the messages.
+
+- **Versioned per record, not per file.** A restore accepts any record whose version its build decodes,
+  directly or through an upcaster (§3), and stops only on one it cannot. `formatVersion` becomes the
+  schema's version, or goes.
+- **One mechanism for state and messages.** The upcasters that translate old payloads translate old
+  records, keyed the same way, before `onRestore` sees them.
+- **Readable without the application.** A tool with the schema decodes a snapshot file, as `SbeLogPrinter`
+  decodes a recording.
+- **Canonical encoding is still required.** Spec **A-6** compares bytes, so equal state must encode to
+  equal bytes on every instance (`upgrades.md` §3.3).
+- **A record stays within 65,535 bytes**, its `MessageHeader` included.
+
+### 1.2 Constraints
+
+**Snapshots are required cluster-wide.** If any stateful client may recover from `clusterSeqNo` 1, the
+bound is gone for that client. Without a `<snapshots>` policy no round starts, and a restore replays the log
+from the start ([`snapshot.md`](../../architecture/snapshot.md) §7). With one, the loader requires `snapshot="true"` on every row,
+and cluster snapshots bound history ([`snapshot.md`](../../architecture/snapshot.md) §10.6): each node purges its queues below the
+floor `F`, its newest restart-safe cut; a client with no confirmed file at or after `F` restores from a peer's
+file, which is portable ([`snapshot.md`](../../architecture/snapshot.md) §4.1), or is fenced; and a consumer with no snapshot of its
+own, which can only walk from `groupSeqNo` 1, cannot follow the queue at all.
+
+**A snapshot schema version does not change mid-rollout**: a source's rollout falls between two rounds
+(`upgrades.md` §4).
+
+With both, the compatibility window is exact: **the snapshot schema versions of the rounds since `F`, and
+the payload versions published since `F`** — about four rounds.
+
+**The cost.** Truncating at `F` gives up a property seqeron has without a policy: every member holds the complete
+history from `clusterSeqNo` 1, and any consumer can rebuild from it. A deployment that must retain history
+beyond `F`, for audit or regulation, takes it from an export of the archive.
+
+## 2. A schema checker
+
+The SBE rules of `upgrades.md` §3.1 are checkable from the XML. A checker compares a schema with every earlier
+version a consumer may still read (§1.2) and verifies that `version` rose, that everything added carries
+`sinceVersion` equal to it, that new fields come after the existing ones, and that nothing was removed,
+reordered or retyped. A change that passes rolls out in any order (§3.3); one that fails needs an
+upcaster (§3) or a new `payloadId` (`upgrades.md` §5), and the checker names the rule it broke. Run in an application's
+build against the versions it has published, it enforces the rules as a schema registry does at
+registration. It cannot check meaning: a field whose meaning changed passes.
+
+## 3. Upcasters
+
+An **upcaster** handles what the encoding cannot (`upgrades.md` §3): splitting or merging fields, a change of unit or
+scale, a new key, a restructured message. It is a pure function from version N−1 to N, registered by the
+consumer, that translates old payloads and old snapshot records (§1.1) before the application sees them,
+so the application's logic is written against the newest version only.
+
+Neither encoding removes old fields, so the consumer's current codec reads every older version. An upcaster
+decodes with it at the message's acting version and encodes with the current encoder; it is a
+transformation over one codec, not a stack of old ones.
+
+### 3.1 Where it runs
+
+In the client tier, in the dispatch path before `onSequenced` and the restore path before `onRestore`: the
+façades and `ReplayerStreamReceiver`. Live messages, replayed messages and snapshot records all pass through
+there, so all are translated alike.
+
+The Replayer server is the wrong place, for four reasons:
+
+- **It never sees live messages.** Clients read the live queue directly; the Replayer serves history only.
+- **It never touches the bytes.** A replay is an Aeron Archive replay to the client. Translating would mean
+  reading and republishing every message, on the one thread that serves every client on the node.
+- **Translation changes lengths, and positions with them.** Gap resume, snapshot restore at a file's `cutPosition`
+  and `Payload.position()` all depend on recording positions.
+- **It couples applications to the cluster.** The Replayer would need every application's schemas, so
+  every application release would redeploy the members.
+
+### 3.2 Shape
+
+```java
+interface Upcaster {
+    /** Writes the message at {@code offset}, MessageHeader first, as the next version into {@code out};
+     *  returns its length. */
+    int upcast(DirectBuffer in, int offset, int length, MutableDirectBuffer out);
+}
+
+Application.builder()   // Gateway.builder() alike
+    .upcaster(payloadId, templateId, fromVersion, upcaster)
+    …
+```
+
+- **Keyed by `(payloadId, templateId, version)`**, from the message's `MessageHeader`. It sees the message
+  alone, so one upcaster serves a payload and a snapshot record of the same schema.
+- **Chained one step at a time** (N−2 → N−1 → N): each release adds one small step and leaves the older ones
+  as they are. A message is translated until no upcaster matches its version.
+- **Preserves the delivery.** For a payload, `clusterSeqNo`, `sourceId`, `connectionId`, `clusterTimestampNs`,
+  `receiveTimeNs` and `position()` are the original message's; the body and `version` are the translation's.
+- **Deterministic.** An upcaster is part of the consumer's state machine, so it is a pure function of the
+  message, like a reply under spec **A-3**.
+- **Allocation-free.** The translation goes into a buffer the façade owns, one copy per translated message.
+  The result never goes back on the wire, so it is not bound by the 8,874-byte payload limit.
+- **The same in every language**: an interface in Java and C#, a concept in C++, as the listeners are.
+
+### 3.3 Rollout order and rollback
+
+| change | rollout order | rollback past a snapshot round |
+| --- | --- | --- |
+| within the encoding's rules (`upgrades.md` §3) | any: older builds read the new version | possible: the older build reads the newer records |
+| needs an upcaster | consumers before producers | not possible: nothing turns new into old |
+
+An upcaster turns old into new only, so for such a change **consumers upgrade before producers**, along
+every path the payload takes: in request/reply, the gateway must read the application's new reply version
+before the application publishes it.
+
+### 3.4 Enforcing the order
+
+Proposed: the cluster enforces consumers-first the way it bootstraps gateways, by declaring in the log
+what may happen and gating every instance on a completeness edge there.
+
+1. **Declare.** The topology document states which versions of each `payloadId` each source reads (the
+   `consumes` attribute, `upgrades.md` §6). `clusterctl load-topology` validates it before publishing anything, as it
+   validates the gateway list. `PayloadIdRegistered.protocolVersion`, printed and never checked today,
+   becomes the version in force.
+2. **Announce.** Every consumer instance announces on start, as a sequenced system event, the highest
+   version of each `payloadId` it reads.
+3. **Activate.** Once every instance of every consuming source has announced version N, the sequencer
+   synthesizes `ProtocolVersionActive(payloadId, N)`, as it synthesizes the bootstrap `GatewayActive`
+   behind the gateway list's last row. The frame is in the log, so a replay reproduces it.
+4. **Gate, failing closed.**
+   - A producer's façade refuses to publish a version above the active one, reading it from the payload's
+     own `MessageHeader` as `Payload.version()` does. The cluster still opens no payload.
+   - A consumer acts on the new version from that frame on, not from its deployment, so every instance of
+     a source switches at the same `clusterSeqNo`; one that acted on a new field while another instance of
+     its source ignored it would diverge and be fenced at the next round (spec **A-7**). The frame is the
+     cutover marker of §5.1 step 3.
+   - An instance announcing a version below the active one cannot read what the log already holds, and is
+     fenced rather than started.
+
+An instance that never announces holds the version back: the rollout stalls rather than a consumer reading
+what it cannot. An operator override is needed for an instance that is gone, as `clusterctl activate`
+overrides the gateway election.
+
+With §2's checker, the two divide the work: the checker decides whether a change needs consumers first,
+and the activation enforces it.
+
+**Costs.**
+
+- **A schema 210 change**: an announce event, a synthesized frame, and a `protocolVersion` the sequencer
+  acts on. Under spec **V-3** that is a purge, so it belongs with the next one.
+- **The instances to wait for must be known.** Gateway instances are list rows; an application has one
+  replica per member plus any `offCluster` instances on gateway hosts, none of them listed. The topology
+  must name or count them.
+- **Only producers using the façades are gated.** Gating others would need the sequencer to read payload
+  headers, which it never does, and headerless payloads (§7) have none.
+
+## 4. An application upgrade, end to end
+
+**A change within the encoding's rules** (`upgrades.md` §3): deploy producers and consumers in any order, each source's
+rollout between two rounds. The next round writes the new version; the release can be rolled back until
+the old build is retired.
+
+**A change that needs an upcaster:**
+
+1. **Release the reader.** Deploy every consumer of the payload with upcasters from the current versions
+   of its payloads and snapshot records to the new ones. Each source's rollout falls between two rounds.
+2. **Release the writer.** Deploy the producers publishing the new version. Consumers translate old
+   messages still in flight.
+3. **Take a round.** `clusterctl request-snapshot` cuts a round in which every instance runs the new build
+   and writes the new version.
+4. **Retire.** Once `F` reaches that round, no build reads anything older; the old upcasters can go in a
+   later release.
+
+## 5. Moving consumers to a new source
+
+`upgrades.md` §5 runs a new source `N` beside the old one `O`, `O` publishing replies in v1 and `N` in v2.
+These are the proposed steps for moving every consumer from `O` to `N`.
+
+### 5.1 Steps
+
+1. **Add `N`.** It reads the requests `O` reads and publishes v2 replies, so every request has two
+   replies. `N` builds its state by replaying from `clusterSeqNo` 1, which means decoding every request
+   version in the log. Proposed: `N` restores `O`'s newest confirmed snapshot instead, upcasting its records
+   (§1.1, §3), and takes part in rounds under its own `sourceId` from then on. A fetch between hosts
+   ([`snapshot-offload.md`](snapshot-offload.md) §5) brings `O`'s snapshot to any host.
+2. **Compare.** Before any consumer depends on `N`, a comparator checks `N`'s reply to each request against
+   `O`'s, matched by whatever the replies carry to name their request: offline over a member's archive with
+   both schemas' IR, as `SbeLogPrinter` reads one, or as a live consumer that publishes nothing.
+3. **Switch consumers at a marker.** Every consumer of the replies, gateway or application, moves to v2 at
+   a cutover marker in the log, not when its new build is deployed. Recovery replays the log, so a switch
+   is reproduced only if the log holds it; one made at deploy time would differ between a run and its replay,
+   and between the two instances of a gateway pair.
+   - **The new build** acts on v1 replies before the marker and on v2 replies after it. The old build acts
+     on v1 throughout.
+   - **Until the marker, both builds hold the same state**, so a source's instances upgrade one at a time.
+     A gateway pair upgrades its standby, activates it (`clusterctl activate`), then upgrades the other. If
+     the new build also changes its snapshot records, §1.2 applies.
+   - **Every instance of every consumer runs the new build before the marker is submitted.** An old-build
+     instance after it may diverge from its new-build peers and be fenced at the next round (spec **A-7**).
+   - **The marker is a message of v2**, submitted by an operator tool. A seqeron system event would change
+     schema 210, which spec **V-3** makes a purge.
+4. **Retire `O`.** Once the marker is sequenced and every consumer runs the new build, nothing acts on v1
+   replies: stop `O`'s replicas and drop its row from the topology document. The row already in the log
+   stays, as a label. Requests move to v2 only after this, by the same steps with `N` reading both versions
+   meanwhile: `O` would skip a v2 request (**P-1**), and its replies would stop matching `N`'s with no error
+   to show it.
+5. **Drop v1.** Consumers keep reading v1 replies, and `N` v1 requests, while any recovery can reach the
+   history before the marker. A restore with no usable snapshot replays from `clusterSeqNo` 1
+   ([`snapshot.md`](../../architecture/snapshot.md) §7), so that lasts until cluster snapshots' floor `F` passes the marker
+   (§1.2), and without cluster snapshots it lasts indefinitely.
+
+### 5.2 Costs
+
+- **Two sets of replicas** per member while `O` and `N` both run.
+- **Both replies in the log.** The log is never truncated, so the second copy stays in its history, and a
+  consumer replaying that stretch skips one of them.
+- **`N`'s full replay** at its start, until it can restore from `O`'s snapshot.
+
+## 6. Adding groups to a running cluster
+
+None of it is implemented, and the rules in spec §7.4 hold until it is. The sequencer already compares every later
+`GroupsRegistered` with the active table (spec **S-8** case 2); this design relaxes that comparison and
+deals with queues that start at different frames.
+
+- **S-8 case 2** refuses only a table that changes or removes an active group: a slot that names a group
+  names another or none. One that only adds groups activates them; one that equals the active table
+  changes nothing. Loader step 1 (spec §6.4) stops on the same condition rather than on any difference.
+- **Activation** runs on each `GroupsRegistered` that adds groups, for the added groups only: open, wait
+  at most 5 s for all of them, prologue. Every load that adds groups then holds up every node's
+  processing of the log, not only the first.
+- **The first queue.** A queue added later starts at its own activation and holds none of the rows
+  before it. The archive's first queue, that of the lowest `groupId` in its first `GroupsRegistered`,
+  carries every system frame from the first activation on and is never removed. It replaces the default
+  queue in spec §3.1, in loader steps 1 to 5 (spec §6.4) and, on a member, in spec **R-6**.
+- **Frames before a later activation** include every frame of the groups before it. They concern none of
+  the added group's sources, whose rows follow its activation, since a row naming an inactive group is
+  refused (spec **S-8** case 3).
+- **Gateway hosts.** A source's rows are on its own group's queue, which a host serving that source
+  relays. A host whose relayed queues were all added after a source's row never sees it, and spec **R-6**
+  logs that case too.
+- **Producers.** A running producer keeps the directory it resolved (spec **A-9**), so a group added later is
+  addressed only by producers started after it, or restarted with the name in `addressedGroups`.
+- **Conformance.** spec §14 row 11 gains: a table that adds a group is accepted; its queue opens with the most
+  recent `LeadershipChanged` and that table, while the existing queues carry the table as any system
+  frame; and a row naming the added group is accepted after it.
+
+## 7. Open questions
+
+1. **Headerless payloads** (spec §13.2) carry no version to key on. Either they are excluded, or the
+   upcaster inspects the bytes itself.
+2. **An upcaster that fails** cannot throw: as with every callback, the façade records the fault and fences
+   from its duty cycle. Whether that is a new `ClusterError` or an existing one is undecided.
+3. **Mandating SBE for snapshot records.** Requiring a canonical cross-language encoding in the spec would
+   make **A-6** hold for every source (`upgrades.md` §3.3); leaving it open restricts a source on another format to one
+   language and library version.
+4. **Read-only consumers** with no state of their own cannot follow a queue under cluster snapshots, since they
+   walk from `groupSeqNo` 1; whether one should start at `F` instead is undecided. One that needs history older
+   than `F` reads an export, not the cluster.
+5. **Enforcement of the rollout rules.** §3.4 proposes enforcing reader-before-writer. Rounds between
+   rollouts (`upgrades.md` §4) remain an operational rule: a build could at least refuse a round while it sees
+   instances of its source announcing different versions, which §3.4's announcements would make possible.
+6. **One cutover marker per protocol, or one per consumer** (§5.1 step 3). One per protocol makes every
+   consumer switch at once; one per consumer lets each move on its own release, at the cost of a marker
+   each.

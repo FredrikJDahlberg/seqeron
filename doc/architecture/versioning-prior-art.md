@@ -165,7 +165,7 @@ it. The systems below hold the same few rules.
   current workflow code and fails if the replay diverges; its versioning documentation names it the way to tell
   whether a change needs a version branch, and whether the branch is right.
 - **Bound the replay with snapshots.** New code that starts from a snapshot the old code took replays only what
-  follows it ([`upgrades.md`](upgrades.md) §3). LMAX kept about a day of input (§6).
+  follows it ([`upgrade-model.md`](../records/plans/upgrade-model.md) §1). LMAX kept about a day of input (§6).
 - **A retroactive change is an explicit migration.** What must change the past is done by rewriting: Young's
   copy-and-replace writes a corrected copy of the stream and moves consumers to it (§6). Nothing above changes
   history as a side effect of deploying code.
@@ -174,17 +174,17 @@ it. The systems below hold the same few rules.
 
 - **The queue is a one-to-many stream.** One encoding serves every consumer, live and replayed, so §5's
   conclusion applies: one version on the wire, readers that tolerate extension, a breaking change as a new
-  identity. [`upgrades.md`](upgrades.md) §7.1 already makes v2 a new `payloadId`. Per-consumer encoding and
-  Binance's masking have no place to run (`upgrades.md` §5.1).
-- **Reader obligations, in part.** `upgrades.md` §4.1 lists the changes SBE allows but not how a reader
+  identity. [`upgrades.md`](upgrades.md) §5 already makes v2 a new `payloadId`. Per-consumer encoding and
+  Binance's masking have no place to run (`upgrade-model.md` §3.1).
+- **Reader obligations, in part.** `upgrades.md` §3.1 lists the changes SBE allows but not how a reader
   moves through a newer message (§3), and the conformance suite (spec §14) has no case decoding a payload
   one version newer than the reader's codec. An older reader ignores appended fields, unknown
   templates and unknown values, as Euronext's do; a value it could not safely ignore would change the
-  field's meaning, which `upgrades.md` §4.1 already rules out. SBE's generated C++ throws on an unknown enum
+  field's meaning, which `upgrades.md` §3.1 already rules out. SBE's generated C++ throws on an unknown enum
   value, so such a reader takes the raw value. What seqeron adds is that every instance of one source treats
   a message alike: one that acts on a new field while another of its source ignores it diverges, and A-7
   fences one of them.
-- **The compatibility class is `BACKWARD_TRANSITIVE`**, consumers first (`upgrades.md` §5.3), back to
+- **The compatibility class is `BACKWARD_TRANSITIVE`**, consumers first (`upgrade-model.md` §3.3), back to
   `clusterSeqNo` 1 today and back to the floor `F` under cluster snapshots ([`snapshot.md`](snapshot.md)
   §10.6). A check of a schema's IR against every version since `F` would enforce it as a registry does.
 - **Retirement follows `F`, not a calendar.** A payload version can be retired once `F` passes its last
