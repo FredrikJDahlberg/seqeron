@@ -48,7 +48,8 @@ import org.limitless.seqeron.util.Logger;
  *   <li><b>follow</b> — replay history through the co-located Replayer, then follow the queue live.</li>
  *   <li><b>confirm</b> — send {@code probe.count} through {@link ClusterStreamSender} and a
  *       {@link PendingSends} while following its own queue; exit 0 only if the queue shows seqNo 1..count
- *       exactly once, in order. {@code -Dprobe.pendingSends=false} is the control.</li>
+ *       exactly once, in order, and {@link #EXIT_SESSION_LOST} if the cluster closed its session first and what
+ *       the queue showed until then was once and in order. {@code -Dprobe.pendingSends=false} is the control.</li>
  *   <li><b>hold</b> — subscribe the queue tethered and read it, so a {@code SIGSTOP} holds the queue's window
  *       until the member's queue agent skips it.</li>
  * </ul>
@@ -151,6 +152,9 @@ public final class ClusterProbe {
 
     /** Exit status of a follower whose duty cycle died — its media driver went away. Mirrors ReplayerServer's. */
     private static final int EXIT_DUTY_CYCLE_FATAL = 70;
+
+    /** confirm: the cluster closed the session before every frame was seen, and those seen were once and in order. */
+    static final int EXIT_SESSION_LOST = 3;
 
     private static final EgressListener NULL_EGRESS = (sessionId, timestamp, buffer, offset, length, header) -> { };
 
@@ -370,16 +374,23 @@ public final class ClusterProbe {
             long nextSendNs = 0;
             long lastProgressNs = System.nanoTime();
             int resent = 0;
+            boolean sessionLost = false;
             while (true) {
                 final long now = System.nanoTime();
                 final int seen = own.seqNos.size();
                 final int work = receiver.poll() + sender.pollEgress();
                 sender.keepAlive();
-                if (sender.isSessionLost() || pending.isFaulted()) {
+                if (pending.isFaulted()) {
                     Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError,
-                                 MEMBER_ID, "confirm: %s", pending.isFaulted() ? "PendingSends faulted"
-                                                                              : "cluster session lost");
+                                 MEMBER_ID, "confirm: PendingSends faulted");
                     return 1;
+                }
+                // AeronCluster also closes itself, with no event, when no new leader arrives within its timeout.
+                if (sender.isSessionLost() || !sender.isConnected()) {
+                    Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError,
+                                 MEMBER_ID, "confirm: cluster session lost");
+                    sessionLost = true;
+                    break;
                 }
                 final int resentNow = tracked ? pending.resendMissing(sender) : 0;
                 if (resentNow > 0) {
@@ -410,7 +421,7 @@ public final class ClusterProbe {
                 idle.idle(work + resentNow);
             }
             receiver.close();
-            return own.judge(count, resent);
+            return own.judge(count, resent, sessionLost);
         } catch (final RuntimeException ex) {
             Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
                          "confirm failed: %s", ex);
@@ -438,8 +449,11 @@ public final class ClusterProbe {
             return seqNos.isEmpty() ? 0 : seqNos.getLong(seqNos.size() - 1);
         }
 
-        /** 0 if the queue showed 1..count exactly once, in order; logs the tally either way. */
-        private int judge(final int count, final int resent) {
+        /**
+         * 0 if the queue showed 1..count exactly once, in order; EXIT_SESSION_LOST if the session was lost first and
+         * what it showed was once and in order; logs the tally either way.
+         */
+        private int judge(final int count, final int resent, final boolean sessionLost) {
             final LongHashSet distinct = new LongHashSet();
             int outOfOrder = 0;
             for (int i = 0; i < seqNos.size(); i++) {
@@ -450,11 +464,14 @@ public final class ClusterProbe {
             }
             final int missing = count - distinct.size();
             final int duplicated = seqNos.size() - distinct.size();
-            final boolean exact = missing == 0 && duplicated == 0 && outOfOrder == 0;
+            final boolean ordered = duplicated == 0 && outOfOrder == 0;
+            final boolean exact = missing == 0 && ordered;
+            final boolean lost = !exact && sessionLost && ordered;
             Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                         "confirm: %s — queue showed %d of %d: missing %d, duplicated %d, out of order %d; resent %d",
-                        exact ? "EXACT" : "NOT EXACT", seqNos.size(), count, missing, duplicated, outOfOrder, resent);
-            return exact ? 0 : 1;
+                        exact ? "EXACT" : lost ? "SESSION LOST" : "NOT EXACT", seqNos.size(), count, missing,
+                        duplicated, outOfOrder, resent);
+            return exact ? 0 : lost ? EXIT_SESSION_LOST : 1;
         }
     }
 

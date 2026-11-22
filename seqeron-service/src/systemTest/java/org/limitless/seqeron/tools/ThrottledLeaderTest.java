@@ -19,7 +19,9 @@ import org.junit.jupiter.api.Timeout;
  * The leader's container is capped at CPUS CPUs while the cluster streams
  * ({@code docker update --cpus}), a gray failure no kill or network fault produces. Either the cluster replaces the
  * starved leader or it keeps leading, and either is correct. The producer on a follower must see every frame once, in
- * order; with its CPU back the old leader must rejoin and its queue catch up; and a follow cold-started on it at the
+ * order, or, when the elections outlast its 5 s new-leader timeout and the cluster client closes itself, report its
+ * session lost having seen each frame until then once and in order: a replaced session cannot keep what was pending.
+ * With its CPU back the old leader must rejoin and its queue catch up; and a follow cold-started on it at the
  * fault's start, its Replayer answering slower than the client's 500 ms resend, must end caught up with no control
  * reply dropped.
  */
@@ -108,7 +110,8 @@ class ThrottledLeaderTest {
             () -> assertEquals(Math.round(Double.parseDouble(CPUS) * 100_000) + " 100000", cap,
                                "the cap was not applied"),
             () -> assertTrue(replaced || stillLeading, "no member leads"),
-            () -> assertEquals(0, confirmStatus, "PendingSends producer: " + confirm.lastLine("confirm:")),
+            () -> assertTrue(confirmStatus == 0 || confirmStatus == ClusterProbe.EXIT_SESSION_LOST,
+                             "PendingSends producer: " + confirm.lastLine("confirm:")),
             () -> assertTrue(rejoinedFinal && caughtUpFinal,
                              "node-" + old + " did not rejoin, or its queue did not catch up"),
             () -> assertTrue(followed, "the follow cold-started on node-" + old + " did not catch up; see "
