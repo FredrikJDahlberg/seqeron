@@ -245,6 +245,10 @@ public sealed class ReplayerStreamReceiver : IDisposable
     /// re-established at the seam.</summary>
     public bool IsCaughtUp => _recovery.IsCaughtUp;
 
+    /// <summary>Whether this node's queue does not start at <c>groupSeqNo</c> 1, which the next <see cref="Poll"/>
+    /// raises.</summary>
+    public bool IsQueueStartMissing => _recovery.IsQueueStartMissing;
+
     /// <summary>Highest clusterSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its
     /// own recovery progress by.</summary>
     public long LastClusterSeqNo => _recovery.LastClusterSeqNo;

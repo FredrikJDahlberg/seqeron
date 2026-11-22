@@ -288,6 +288,7 @@ internal sealed class ReplayerRecovery
                          "FATAL: first frame observed has groupSeqNo={0}, expected 1 — this node's recording does " +
                              "not reach the start of the queue",
                          groupSeqNo);
+            IsQueueStartMissing = true;
             LatchFault($"first frame observed has groupSeqNo={groupSeqNo}, expected 1 — this node's recording does " +
                        "not reach the start of the queue");
             return;
@@ -348,6 +349,10 @@ internal sealed class ReplayerRecovery
     /// inside a fragment handler is swallowed.
     /// </summary>
     public string Fault { get; private set; }
+
+    /// <summary>Whether <see cref="Fault"/> is that this node's queue does not start at <c>groupSeqNo</c> 1: a cut, or
+    /// a purge.</summary>
+    public bool IsQueueStartMissing { get; private set; }
 
     /// <summary>
     /// The queue's image went away or came back. Its driver evicts an untethered subscriber that stops polling, and

@@ -182,6 +182,7 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverReplay(7);
 
         Assert.Contains("groupSeqNo=7, expected 1", _receiver.Fault);
+        Assert.True(_receiver.IsQueueStartMissing);
         Assert.Empty(_dispatched);
         Assert.Equal(-1, _receiver.ReplaySessionId);
     }
@@ -224,6 +225,7 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverOnQueue(1, 2, true);
 
         Assert.Contains("groupSeqNo=2, expected 1", _receiver.Fault);
+        Assert.True(_receiver.IsQueueStartMissing);
         Assert.Empty(_dispatched);
     }
 
@@ -974,6 +976,7 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverReplay(4); // not the anchor
 
         Assert.Contains("expected 2", _receiver.Fault);
+        Assert.False(_receiver.IsQueueStartMissing, "a resume that misses its anchor is not a missing start");
         Assert.False(_receiver.IsAwaitingReplay, "nothing more is asked for");
         Assert.Equal(2, _dispatched.Count);
     }

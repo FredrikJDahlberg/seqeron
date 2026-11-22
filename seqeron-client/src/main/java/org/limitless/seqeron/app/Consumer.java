@@ -8,15 +8,16 @@ import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.util.Clocks;
 
 /**
- * A read-only client: it reads one group's queue and publishes nothing, so it opens no cluster session, takes no
- * part in an election and needs no topology row. Audit, risk or a downstream feed. It replays local history through
- * the co-located Replayer, switches to the live queue once caught up, and delivers every application message once,
- * in {@code clusterSeqNo} order, as a {@link Payload} — the same view the producers' façades give.
+ * The simplest way to follow a queue: it reads one group's queue and publishes nothing, so it opens no cluster
+ * session, takes no part in an election and needs no topology row. It replays local history through the co-located
+ * Replayer, switches to the live queue once caught up, and delivers every application message once, in
+ * {@code clusterSeqNo} order, as a {@link Payload} — the same view the producers' façades give. Anything more is an
+ * {@link Application}'s.
  *
  * <p>Fenced, like them, when it can no longer be trusted to see the queue: {@link ClusterError#RECOVERY_STALLED}
- * and {@link ClusterError#QUEUE_STALLED}. It takes no snapshots and so always restarts from the start of its queue,
- * which a cluster with a {@code <snapshots>} policy no longer holds; a consumer there is an {@link Application} or
- * {@link Gateway} with a {@link SnapshotListener} that writes no records.
+ * and {@link ClusterError#QUEUE_STALLED}. It takes no snapshots and so always starts from the start of its queue: a
+ * queue under a {@code <snapshots>} policy fences it with {@link ClusterError#SNAPSHOTTED_QUEUE} at its first sign of
+ * one, the policy's row, a round's {@code SnapshotStarted} or a queue that starts at a cut.
  *
  * <p>Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls {@link #doWork()}
  * each iteration. {@link ReplayerStreamReceiver} is the lower-level path this sits on.
@@ -53,6 +54,8 @@ public final class Consumer implements AutoCloseable {
     private final Payload payload = new Payload();
     private boolean caughtUp;
     private boolean fenced;
+    /** The queue showed a snapshot frame; fenced from {@link #doWork()}, outside the receiver's poll. */
+    private boolean snapshotted;
 
     private Consumer(final Builder builder) {
         this.listener = builder.listener;
@@ -83,6 +86,10 @@ public final class Consumer implements AutoCloseable {
             return 0;
         }
         final int work = receiver.poll();
+        checkSnapshotted();
+        if (fenced) {
+            return work;
+        }
         checkCaughtUp();
         if (!fenced) {
             checkFences();
@@ -104,9 +111,18 @@ public final class Consumer implements AutoCloseable {
         receiver.close();
     }
 
-    private void onSequenced(final SequencedEvent event) {
+    void onSequenced(final SequencedEvent event) {
+        if (snapshotted) {
+            return;
+        }
         if (event.isSystem()) {
-            if (event.systemEventType() == SystemFrame.CLUSTER_HEARTBEAT) {
+            final int systemEventType = event.systemEventType();
+            if (systemEventType == SystemFrame.SNAPSHOT_POLICY_REGISTERED ||
+                systemEventType == SystemFrame.SNAPSHOT_STARTED) {
+                snapshotted = true;
+                return;
+            }
+            if (systemEventType == SystemFrame.CLUSTER_HEARTBEAT) {
                 queueStall.onClusterHeartbeat(Clocks.monotonicMs());
                 listener.onClusterHeartbeat(event.clusterTimestampNs(), event.receiveTimeNs());
             }
@@ -114,6 +130,17 @@ public final class Consumer implements AutoCloseable {
         }
         payload.wrap(event);
         listener.onSequenced(payload);
+    }
+
+    /** A queue under a snapshot policy is an {@link Application}'s to follow. */
+    void checkSnapshotted() {
+        if (receiver.isQueueStartMissing()) {
+            fence(ClusterError.SNAPSHOTTED_QUEUE,
+                  "this node's queue starts at a cluster snapshot's cut; follow it with an Application");
+        } else if (snapshotted) {
+            fence(ClusterError.SNAPSHOTTED_QUEUE,
+                  "the queue is under a <snapshots> policy; follow it with an Application");
+        }
     }
 
     /** Polled rather than taken off the receiver's callback: neither fence may wait on the next frame to land. */

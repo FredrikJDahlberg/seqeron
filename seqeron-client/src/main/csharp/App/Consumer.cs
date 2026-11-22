@@ -7,14 +7,15 @@ using Org.Limitless.Seqeron.Util;
 namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
-/// A read-only client: it reads one group's queue and publishes nothing, so it opens no cluster session, takes no
-/// part in an election and needs no topology row. Audit, risk or a downstream feed. It replays local history through
-/// the co-located Replayer, switches to the live queue once caught up, and delivers every application message once,
-/// in <c>clusterSeqNo</c> order, as a <see cref="Payload"/> — the same view the producers' façades give.
+/// The simplest way to follow a queue: it reads one group's queue and publishes nothing, so it opens no cluster
+/// session, takes no part in an election and needs no topology row. It replays local history through the co-located
+/// Replayer, switches to the live queue once caught up, and delivers every application message once, in
+/// <c>clusterSeqNo</c> order, as a <see cref="Payload"/> — the same view the producers' façades give. Anything more is
+/// an <see cref="Application"/>'s.
 /// <para>Fenced, like them, when it can no longer be trusted to see the queue: <see cref="ClusterError.RecoveryStalled"/>
-/// and <see cref="ClusterError.QueueStalled"/>. It takes no snapshots and so always restarts from the start of its
-/// queue, which a cluster with a <c>&lt;snapshots&gt;</c> policy no longer holds; a consumer there is an
-/// <see cref="Application"/> or <see cref="Gateway"/> with a snapshot listener that writes no records.</para>
+/// and <see cref="ClusterError.QueueStalled"/>. It takes no snapshots and so always starts from the start of its queue:
+/// a queue under a <c>&lt;snapshots&gt;</c> policy fences it with <see cref="ClusterError.SnapshottedQueue"/> at its
+/// first sign of one, the policy's row, a round's <c>SnapshotStarted</c> or a queue that starts at a cut.</para>
 /// <para>Single-threaded: every member belongs to the caller's one duty-cycle thread, which calls
 /// <see cref="DoWork"/> each iteration. <c>Consumer.java</c> and <c>app/Consumer.hpp</c> are its twins; keep the
 /// three in step. <see cref="ReplayerStreamReceiver"/> is the lower-level path this sits on.</para>
@@ -32,6 +33,9 @@ public sealed class Consumer : IDisposable
     private readonly Payload _payload = new Payload();
     private bool _caughtUp;
     private bool _fenced;
+
+    // The queue showed a snapshot frame; fenced from DoWork, outside the receiver's poll.
+    private bool _snapshotted;
 
     /// <summary>A consumer configured by <paramref name="options"/>; nothing is connected until
     /// <see cref="Start"/>.</summary>
@@ -65,6 +69,11 @@ public sealed class Consumer : IDisposable
             return 0;
         }
         int work = _receiver.Poll();
+        CheckSnapshotted();
+        if (_fenced)
+        {
+            return work;
+        }
         CheckCaughtUp();
         if (!_fenced)
         {
@@ -84,11 +93,22 @@ public sealed class Consumer : IDisposable
         _receiver.Dispose();
     }
 
-    private void OnSequenced(SequencedEvent sequencedEvent)
+    internal void OnSequenced(SequencedEvent sequencedEvent)
     {
+        if (_snapshotted)
+        {
+            return;
+        }
         if (sequencedEvent.IsSystem)
         {
-            if (sequencedEvent.SystemEventType == SystemFrame.ClusterHeartbeat)
+            int systemEventType = sequencedEvent.SystemEventType;
+            if (systemEventType == SystemFrame.SnapshotPolicyRegistered ||
+                systemEventType == SystemFrame.SnapshotStarted)
+            {
+                _snapshotted = true;
+                return;
+            }
+            if (systemEventType == SystemFrame.ClusterHeartbeat)
             {
                 _queueStall.OnClusterHeartbeat(Clocks.MonotonicMs());
                 _listener.OnClusterHeartbeat(sequencedEvent.ClusterTimestampNs, sequencedEvent.ReceiveTimeNs);
@@ -97,6 +117,21 @@ public sealed class Consumer : IDisposable
         }
         _payload.Wrap(sequencedEvent);
         _listener.OnSequenced(_payload);
+    }
+
+    // A queue under a snapshot policy is an Application's to follow.
+    internal void CheckSnapshotted()
+    {
+        if (_receiver.IsQueueStartMissing)
+        {
+            Fence(ClusterError.SnapshottedQueue,
+                  "this node's queue starts at a cluster snapshot's cut; follow it with an Application");
+        }
+        else if (_snapshotted)
+        {
+            Fence(ClusterError.SnapshottedQueue,
+                  "the queue is under a <snapshots> policy; follow it with an Application");
+        }
     }
 
     // Polled rather than taken off the receiver's callback: neither fence may wait on the next frame to land.

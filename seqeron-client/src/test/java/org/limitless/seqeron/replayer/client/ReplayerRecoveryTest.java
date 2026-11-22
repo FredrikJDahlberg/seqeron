@@ -178,6 +178,7 @@ class ReplayerRecoveryTest {
         deliverReplay(7);
 
         assertTrue(receiver.fault().contains("groupSeqNo=7, expected 1"), receiver.fault());
+        assertTrue(receiver.isQueueStartMissing());
         assertTrue(dispatched.isEmpty());
         assertEquals(-1, receiver.replaySessionId());
     }
@@ -220,6 +221,7 @@ class ReplayerRecoveryTest {
         deliverReplayOnQueue(1, 2);
 
         assertTrue(receiver.fault().contains("groupSeqNo=2, expected 1"), receiver.fault());
+        assertTrue(receiver.isQueueStartMissing());
         assertTrue(dispatched.isEmpty());
     }
 
@@ -970,6 +972,7 @@ class ReplayerRecoveryTest {
         deliverReplay(4); // not the anchor
 
         assertTrue(receiver.fault().contains("expected 2"), receiver.fault());
+        assertFalse(receiver.isQueueStartMissing(), "a resume that misses its anchor is not a missing start");
         assertFalse(receiver.isAwaitingReplay(), "nothing more is asked for");
         assertEquals(2, dispatched.size());
     }

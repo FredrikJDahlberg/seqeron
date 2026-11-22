@@ -24,14 +24,14 @@ none. The direct C++ client is retired, on the `cpp-direct-client` branch (tag `
 | --- | --- | --- |
 | **Gateway** | Edge producer deployed as an active/hot-standby pair, the active instance designated by the cluster: exchange session, client gateway, feed handler | [`Gateway`](#gateway) |
 | **Replicated service** | One replica per cluster member, deterministic over the stream, publishing from the leader's replica | [`Application`](#application) |
-| **Consumer** | Reads the stream and publishes nothing: audit, risk, downstream feed | [`Consumer`](#consumer) |
+| **Consumer** | The simplest reader: reads the stream and publishes nothing, on a queue with no `<snapshots>` policy. Anything more is an `Application` | [`Consumer`](#consumer) |
 | **Offline reader** | Decodes messages from a recording, outside a live client | `SequencedFrameDecoder` (Java, C#), `unwrapFrame` (C++) |
 
 ## Guarantees
 
 | API | guarantees | out of scope |
 | --- | --- | --- |
-| [`Consumer`](#consumer), on [`ReplayerStreamReceiver`](#replayerstreamreceiver) | Every message on its group's queue exactly once, in `clusterSeqNo` order: archive replay from the local recording, then the live queue, with gap detection and resumption internal. Optional snapshot restore first. | Filtering within a group: every consumer receives every message addressed to its group, and every system message. |
+| [`Consumer`](#consumer), on [`ReplayerStreamReceiver`](#replayerstreamreceiver) | Every message on its group's queue exactly once, in `clusterSeqNo` order: archive replay from the local recording, then the live queue, with gap detection and resumption internal. Optional snapshot restore first, on the receiver alone: a `Consumer` fences on a queue under a `<snapshots>` policy. | Filtering within a group: every consumer receives every message addressed to its group, and every system message. |
 | [`Gateway`](#gateway) | One instance of an active/hot-standby pair; the cluster designates the active instance. A connection id space never reused across handovers, and every connection's open and close on the log, so a successor knows its predecessor's connection state. Nothing an instance sends after a sibling is designated reaches the log (spec **S-6**). Confirmed ingress; fencing. | Edge connection continuity across a handover: the successor reopens the edge and counterparties reconnect. |
 | [`Application`](#application) | One replica per cluster member, all holding identical state; only the leader's replica publishes. Work outstanding at a failover is redispatched by the next leader's replica (`OutstandingWork`). Confirmed ingress; fencing. | Exactly-once replies: across a failover, delivery is at-least-once. |
 | Confirmed ingress (both façades) | Every placed message is sequenced exactly once, in order, across any number of leader failovers and replaced cluster sessions. | Producer process failure: a restarted producer, or a promoted standby, starts with nothing pending. A gateway instance a sibling superseded: what was pending is dropped. |
@@ -143,8 +143,9 @@ The guarantees are conditional on these; spec §16 states them normatively (**A-
 
 ### Read-only consumers
 
-Audit, risk or downstream feeds take a [`Consumer`](#consumer) (or an `Application` if they may later
-publish): replay from the start of the queue or the newest confirmed snapshot, then follow the queue. Consumers are
+The simplest reader is a [`Consumer`](#consumer): it replays from the start of the queue, then follows it. It
+takes no snapshots, so a queue under a `<snapshots>` policy fences it. Audit, risk, a downstream feed, or a reader
+that may later publish takes an `Application`, which restores from its newest confirmed snapshot. Consumers are
 invisible to the cluster and unbounded in number per node. `FollowStream` in `seqeron-examples` is the
 minimal case.
 
@@ -386,8 +387,8 @@ package-private (Java) or `internal` (C#); a C++ stub's run in its host. Confirm
 
 ### `Consumer`
 
-A read-only client: it reads one group's queue and publishes nothing, so it opens no cluster session, takes no
-part in an election and needs no topology row. It is the façade shape for the read path: `doWork()`, a
+The simplest read-only client: it reads one group's queue and publishes nothing, so it opens no cluster session,
+takes no part in an election and needs no topology row. It is the façade shape for the read path: `doWork()`, a
 `Listener`, fences, and `Payload`, over a [`ReplayerStreamReceiver`](#replayerstreamreceiver) it owns.
 
 | option | default | meaning |
@@ -408,9 +409,9 @@ as `proxy.consumerGroup`.
 | `isCaughtUp()`, `lastClusterSeqNo()` | consumer state |
 
 System messages never reach `onSequenced`; `ClusterHeartbeat` is `onClusterHeartbeat`. It fences with
-`RECOVERY_STALLED` and `QUEUE_STALLED`, releasing its subscriptions before `onFenced`. It takes no snapshots, so
-with a `<snapshots>` policy loaded it cannot restart (see below): use an `Application` or `Gateway` with a
-`SnapshotListener` that writes no records. `FollowStream` in `seqeron-examples` uses the receiver directly.
+`RECOVERY_STALLED` and `QUEUE_STALLED`, releasing its subscriptions before `onFenced`. It takes no snapshots, so it
+fences with `SNAPSHOTTED_QUEUE` at the first sign of a `<snapshots>` policy: the policy's row, a round's
+`SnapshotStarted`, or a queue that starts at a cut (see below). Such a queue is an `Application`'s to follow. `FollowStream` in `seqeron-examples` uses the receiver directly.
 
 ## `ReplayerStreamReceiver`
 
@@ -438,8 +439,8 @@ Single-threaded, like the façades.
 
 **With a `<snapshots>` policy loaded, a consumer must be able to restart from a snapshot file.** A member restarted from
 a cluster snapshot records its queue from the cut, so a receiver that can only walk the queue from `groupSeqNo` 1 stops
-with `FirstFrameNotOne` (`ops.md`, "Cluster snapshots"). The receiver restores a file but does not write one: a consumer
-needs an `Application` or `Gateway` with a `SnapshotListener`, which may write no records.
+with `FirstFrameNotOne` (`ops.md`, "Cluster snapshots"). The receiver restores a file but does not write one: a reader
+needs an `Application` with a `SnapshotListener`.
 
 **Snapshot restore.** `restoreFrom` makes the cold start take the newest confirmed file in the store whose
 cut a replay finds in the recording, handing header and records to the handler, a bounded number per

@@ -204,6 +204,7 @@ sequencer promote the standby (§2.2) whatever the application does next; it usu
 | `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot (§3.4) |
 | `GROUP_UNKNOWN` | a group the instance addresses is not in the log's group table (spec §16 A-9) |
 | `CLIENT_PROTOCOL` | a hosted client broke the host protocol (`hosted-facade.md` §4); raised by a `ClientProxy`, never by a direct façade |
+| `SNAPSHOTTED_QUEUE` | a `Consumer`'s queue is under a `<snapshots>` policy: it showed the policy's row or a round's `SnapshotStarted`, or it starts at a cut. Only a client that writes and restores snapshots, an `Application`, can follow it |
 
 - **The queue-stall timer runs on local monotonic time.** Consensus time arrives in the very
   `ClusterHeartbeat` frames being watched for, so it would stop with the queue.

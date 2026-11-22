@@ -31,6 +31,9 @@ enum class ClusterError : std::uint8_t
     // A hosted client broke the host protocol, for instance by opening a connection under an id the façade did not
     // allocate.
     ClientProtocol,
+    // A Consumer's queue is under a <snapshots> policy, which only a client that writes and restores snapshots can
+    // follow: an Application with a snapshot listener.
+    SnapshottedQueue,
 };
 
 /**
@@ -59,6 +62,8 @@ inline const char* clusterErrorName(const ClusterError error)
             return "GROUP_UNKNOWN";
         case ClusterError::ClientProtocol:
             return "CLIENT_PROTOCOL";
+        case ClusterError::SnapshottedQueue:
+            return "SNAPSHOTTED_QUEUE";
     }
     return "UNKNOWN";
 }
