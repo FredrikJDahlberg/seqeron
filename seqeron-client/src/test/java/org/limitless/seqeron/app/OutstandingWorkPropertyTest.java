@@ -56,7 +56,7 @@ class OutstandingWorkPropertyTest {
     private final class Replica {
         final int memberId;
         final LeaderGate gate;
-        final OutstandingWork<Long, Long> work = new OutstandingWork<>();
+        final OutstandingWork<long[]> work = new OutstandingWork<>(() -> new long[1]);
         /** Dispatched, reply not yet offered. */
         final ArrayDeque<Long> pendingReplies = new ArrayDeque<>();
         /** The model of what this gate opening has dispatched. */
@@ -80,7 +80,7 @@ class OutstandingWorkPropertyTest {
             }
             final Entry entry = log.get(applied++);
             switch (entry.kind()) {
-            case REQUEST -> work.onRequest(entry.value(), entry.value());
+            case REQUEST -> work.onRequest(entry.value())[0] = entry.value();
             case REPLY -> {
                 work.onReply(entry.value());
                 tenure.remove(entry.value());
@@ -115,14 +115,14 @@ class OutstandingWorkPropertyTest {
             work.dispatchUndispatched(this::dispatch);
         }
 
-        boolean dispatch(final Long key, final Long request) {
+        boolean dispatch(final long key, final long[] request) {
             if (slots-- <= 0) {
                 return false;
             }
             assertTrue(!recovering && viewLeader == memberId, "member " + memberId + " dispatched while not leader");
             assertTrue(key > lastInSweep, "member " + memberId + " dispatched " + key + " after " + lastInSweep);
             assertTrue(tenure.add(key), "member " + memberId + " dispatched " + key + " twice in one opening");
-            assertEquals(key, request);
+            assertEquals(key, request[0]);
             lastInSweep = key;
             pendingReplies.add(key);
             return true;

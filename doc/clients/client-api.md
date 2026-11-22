@@ -65,8 +65,8 @@ is not a fence; it raises from `doWork()`.
   placeable).
 - **Flyweights.** `Payload` and `SequencedEvent` are views over the receive buffer, valid only for the
   callback. Copy out what outlives it.
-- **Zero allocation on the hot path.** Dispatch and confirmed publish allocate nothing once warm; the C#
-  suite asserts zero bytes per message.
+- **Zero allocation on the hot path.** Dispatch, confirmed publish and request/reply tracking in `OutstandingWork`
+  allocate nothing once warm; the C# suite asserts zero bytes per message, and the Java one per request.
 - **Untethered subscription.** A consumer that falls a window behind the queue publication is dropped by the
   media driver and resumes from its Replayer automatically. Ordering holds; the cluster never sees back
   pressure from a consumer.
@@ -130,7 +130,8 @@ The guarantees are conditional on these; spec §16 states them normatively (**A-
 
 1. The gateway allocates a connection id (`openConnection`) and publishes requests on it.
 2. Every replica applies the request at the same log position and records it in `OutstandingWork`, keyed
-   by its `clusterSeqNo`.
+   by its `clusterSeqNo`, filling the slot that call returns with the request's `ReplyAddress` and whatever else
+   the reply needs.
 3. The leader's replica replies under the requester's `sourceId`, `connectionId` and `groupMask`, so the
    reply reaches every group the request did. Replicas discharge the request when the reply is sequenced,
    not when it is sent.
@@ -320,7 +321,7 @@ otherwise.
 | `canPublish()` | gate open and ingress not held |
 | `isLeading()` | gate open |
 | `publish(payloadId, payload, offset, length)`, `publish(groupMask, payloadId, payload, offset, length)` | submit under the application's `sourceId`, no connection, to its own group or to those `groupMask` names |
-| `reply(request, payloadId, payload, offset, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `ReplyAddress`, from `Payload.replyAddress()`, which unlike the `Payload` outlives the callback |
+| `reply(request, payloadId, payload, offset, length)` | submit under the **requester's** `sourceId`, `connectionId` and `groupMask`, so the originating gateway routes it. `request` is a `ReplyAddress`, which unlike the `Payload` outlives the callback: Java's is mutable, set with `set(payload)` in the request's `OutstandingWork` slot; C# and C++ take a value, `Payload.ReplyAddress` and `payload.replyAddress()` |
 | `sourceId()`, `isCaughtUp()`, `lastClusterSeqNo()` | replica state; the C++ stub has no `sourceId()` |
 | `keepAlive()` | session keep-alive for a callback that spins, or waits on a snapshot record; `doWork()` already sends one per cycle |
 
@@ -381,7 +382,11 @@ outlive the process ([`snapshot.md`](../architecture/snapshot.md) §4.1).
 
 The façades are composed of I/O-free state machines with twins in every language. `OutstandingWork` —
 leader-only request/reply tracking, redispatched after failover — is the only one exposed, since it models
-the application's work rather than seqeron's. The election, leader gate and stall fences are
+the application's work rather than seqeron's. Its key is the request's `clusterSeqNo`, so keys only increase, and
+`onRequest(key)` returns the request's slot, whose work object the caller fills in place: a factory makes each
+slot's once (Java, C#; C++ default-constructs `Work`), and an answered request's slot is reused, so a warm tracker
+allocates nothing per request. The slots double when more requests are outstanding than they hold. The election,
+leader gate and stall fences are
 package-private (Java) or `internal` (C#); a C++ stub's run in its host. Confirmed ingress is
 [`PendingSends`](#producer-components), an internal type.
 

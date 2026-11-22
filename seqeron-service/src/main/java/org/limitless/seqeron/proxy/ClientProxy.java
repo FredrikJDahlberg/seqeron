@@ -37,6 +37,7 @@ import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.GroupDirectory;
 import org.limitless.seqeron.app.GroupMask;
 import org.limitless.seqeron.app.Payload;
+import org.limitless.seqeron.app.ReplyAddress;
 import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.app.Tuning;
 import org.limitless.seqeron.protocol.FrameLayer;
@@ -147,7 +148,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
     private final ResolvedEncoder resolvedOut = new ResolvedEncoder();
     private final FencedEncoder fencedOut = new FencedEncoder();
     private final long commandWindow;
-    private final ReplyAddresses replyAddresses = new ReplyAddresses();
+    private final ReplyAddress replyAddress = new ReplyAddress();
     private final CommandLedger ledger;
     private final int placePerCycle;
     private final int pendingCapacity;
@@ -835,7 +836,7 @@ public final class ClientProxy implements Application.Listener, Gateway.Listener
             final int payloadLength = replyIn.bodyLength();
             replyIn.getBody(scratch, 0, payloadLength);
             result =
-                app.reply(replyAddresses.of(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
+                app.reply(replyAddress.set(replyIn.sourceId(), (int)replyIn.connectionId(), (int)replyIn.groupMask()),
                           replyIn.payloadId(), scratch, 0, payloadLength);
         }
         case OpenConnectionDecoder.TEMPLATE_ID -> {

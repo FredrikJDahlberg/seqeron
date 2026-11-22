@@ -224,9 +224,9 @@ public final class Application implements AutoCloseable {
     /**
      * The same on behalf of the producer that asked for it: a reply carries the <b>requester's</b>
      * {@code sourceId}, {@code connectionId} and {@code groupMask}, which is how the gateway that took the request
-     * routes the answer back out of it, and how every group that saw the request sees the answer. Keep the {@link
-     * ReplyAddress} ({@link Payload#replyAddress()}) rather than the request itself — a {@link Payload} is valid only
-     * during its callback, and a reply is usually dispatched later.
+     * routes the answer back out of it, and how every group that saw the request sees the answer. Keep a {@link
+     * ReplyAddress} ({@link ReplyAddress#set(Payload)}) rather than the request itself — a {@link Payload} is valid
+     * only during its callback, and a reply is usually dispatched later.
      */
     public Publish reply(final ReplyAddress request, final int payloadId, final DirectBuffer payload, final int offset,
                          final int length) {

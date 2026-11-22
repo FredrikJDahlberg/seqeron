@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+using System;
 
 namespace Org.Limitless.Seqeron.App;
 
@@ -11,56 +11,97 @@ namespace Org.Limitless.Seqeron.App;
 /// <item><b>Dispatched is local:</b> "this node is handling it", cleared by <see cref="OnNotLeader"/> and
 /// <see cref="OnReplyNotEmitted"/>. Only the leader dispatches.</item>
 /// </list>
-/// <para>Emission is at-least-once: a reply lost in an election is dispatched again by the next leader. Key on the
-/// request's <c>clusterSeqNo</c> and make the reply a pure function of the request, so a re-emission is identical to
-/// the one it may duplicate and consumers can drop it.</para>
+/// <para>Emission is at-least-once: a reply lost in an election is dispatched again by the next leader. The key is the
+/// request's <c>clusterSeqNo</c>; make the reply a pure function of the request, so a re-emission is identical to the
+/// one it may duplicate and consumers can drop it.</para>
 /// <para>Dispatch runs in request order, which is <c>clusterSeqNo</c> order, so emission order is the same on every
-/// replica. <c>OutstandingWork.java</c> and <c>app/OutstandingWork.hpp</c> are its twins; keep the three in
-/// step.</para>
+/// replica. Each slot's work is made once by the factory and reused, so a warm tracker allocates nothing per request;
+/// the slots double when more requests are outstanding than they hold. <c>OutstandingWork.java</c> and
+/// <c>app/OutstandingWork.hpp</c> are its twins; keep the three in step.</para>
 /// </summary>
-/// <typeparam name="TKey">the request key</typeparam>
-/// <typeparam name="TWork">the work a dispatch needs</typeparam>
-public sealed class OutstandingWork<TKey, TWork>
+/// <typeparam name="TWork">the work a dispatch needs, filled in place</typeparam>
+public sealed class OutstandingWork<TWork>
 {
     /// <summary>Takes one request; must not call back into the tracker.</summary>
-    /// <param name="key">the request's key</param>
+    /// <param name="key">the request's <c>clusterSeqNo</c></param>
     /// <param name="work">what dispatching it needs</param>
     /// <returns>true if taken, false to stop the sweep (no capacity); the rest wait for the next call</returns>
-    public delegate bool Dispatcher(TKey key, TWork work);
+    public delegate bool Dispatcher(long key, TWork work);
 
-    private struct Entry
+    private const int InitialSlots = 16;
+    private const byte Free = 0;
+    private const byte Outstanding = 1;
+    private const byte Dispatched = 2; // local to this node
+
+    private readonly Func<TWork> _factory;
+
+    // Slots [_head, _tail) in increasing key order; an answered one stays Free until compacted away.
+    private long[] _keys = new long[InitialSlots];
+    private byte[] _states = new byte[InitialSlots];
+    private TWork[] _works = new TWork[InitialSlots];
+    private int _head;
+    private int _tail;
+    private long _newestKey = long.MinValue;
+
+    /// <summary>A tracker holding no work.</summary>
+    /// <param name="factory">makes the work of each slot, once</param>
+    public OutstandingWork(Func<TWork> factory)
     {
-        public TKey Key;
-        public TWork Work;
-        public bool Dispatched; // local to this node
+        _factory = factory;
+        for (int slot = 0; slot < InitialSlots; ++slot)
+        {
+            _works[slot] = factory();
+        }
     }
 
-    // Request order, with each key's node, so a re-asserted request keeps its place and a reply removes in O(1).
-    private readonly LinkedList<Entry> _order = new LinkedList<Entry>();
-    private readonly Dictionary<TKey, LinkedListNode<Entry>> _outstanding =
-        new Dictionary<TKey, LinkedListNode<Entry>>();
-
-    /// <summary>A request seen on the sequenced stream, on every replica. Idempotent on the key, keeping its
-    /// position.</summary>
-    /// <param name="key">the request's key</param>
-    /// <param name="work">what dispatching it needs</param>
-    public void OnRequest(TKey key, TWork work)
+    /// <summary>A request seen on the sequenced stream, on every replica. Keys increase; one already outstanding is
+    /// the same request asserted again, and keeps its place.</summary>
+    /// <param name="key">the request's <c>clusterSeqNo</c></param>
+    /// <returns>the request's work, to fill with what dispatching it needs; reused once the request is answered, and
+    /// the reference is valid until the next call on this tracker</returns>
+    /// <exception cref="ArgumentException">for a key no greater than an earlier one that is no longer
+    /// outstanding</exception>
+    public ref TWork OnRequest(long key)
     {
-        if (_outstanding.TryGetValue(key, out LinkedListNode<Entry> node))
+        if (key <= _newestKey)
         {
-            node.ValueRef.Work = work;
-            return;
+            int found = Find(key);
+            if (found < 0)
+            {
+                throw new ArgumentException($"request {key} is not outstanding and not after {_newestKey}");
+            }
+            return ref _works[found];
         }
-        _outstanding.Add(key, _order.AddLast(new Entry { Key = key, Work = work }));
+        if (_tail == _keys.Length)
+        {
+            Compact();
+        }
+        _newestKey = key;
+        _keys[_tail] = key;
+        _states[_tail] = Outstanding;
+        ++Count;
+        return ref _works[_tail++];
     }
 
     /// <summary>Its sequenced reply, on every replica: the request is answered.</summary>
-    /// <param name="key">the request's key</param>
-    public void OnReply(TKey key)
+    /// <param name="key">the request's <c>clusterSeqNo</c></param>
+    public void OnReply(long key)
     {
-        if (_outstanding.Remove(key, out LinkedListNode<Entry> node))
+        int slot = Find(key);
+        if (slot < 0)
         {
-            _order.Remove(node);
+            return;
+        }
+        _states[slot] = Free;
+        --Count;
+        while (_head < _tail && _states[_head] == Free)
+        {
+            ++_head;
+        }
+        if (_head == _tail)
+        {
+            _head = 0;
+            _tail = 0;
         }
     }
 
@@ -68,19 +109,23 @@ public sealed class OutstandingWork<TKey, TWork>
     /// it.</summary>
     public void OnNotLeader()
     {
-        for (LinkedListNode<Entry> node = _order.First; node != null; node = node.Next)
+        for (int slot = _head; slot < _tail; ++slot)
         {
-            node.ValueRef.Dispatched = false;
+            if (_states[slot] == Dispatched)
+            {
+                _states[slot] = Outstanding;
+            }
         }
     }
 
     /// <summary>The reply offer failed, so no sequenced reply will come. The request stays outstanding.</summary>
-    /// <param name="key">the request's key</param>
-    public void OnReplyNotEmitted(TKey key)
+    /// <param name="key">the request's <c>clusterSeqNo</c></param>
+    public void OnReplyNotEmitted(long key)
     {
-        if (_outstanding.TryGetValue(key, out LinkedListNode<Entry> node))
+        int slot = Find(key);
+        if (slot >= 0)
         {
-            node.ValueRef.Dispatched = false;
+            _states[slot] = Outstanding;
         }
     }
 
@@ -91,30 +136,90 @@ public sealed class OutstandingWork<TKey, TWork>
     public int DispatchUndispatched(Dispatcher dispatcher)
     {
         int count = 0;
-        for (LinkedListNode<Entry> node = _order.First; node != null; node = node.Next)
+        for (int slot = _head; slot < _tail; ++slot)
         {
-            ref Entry entry = ref node.ValueRef;
-            if (entry.Dispatched)
+            if (_states[slot] != Outstanding)
             {
                 continue;
             }
-            if (!dispatcher(entry.Key, entry.Work))
+            if (!dispatcher(_keys[slot], _works[slot]))
             {
                 break;
             }
-            entry.Dispatched = true;
+            _states[slot] = Dispatched;
             ++count;
         }
         return count;
     }
 
     /// <summary>Requests held, dispatched or not.</summary>
-    public int Count => _outstanding.Count;
+    public int Count { get; private set; }
 
     /// <summary>Whether this request has been dispatched and not yet completed.</summary>
-    /// <param name="key">the request's key</param>
-    public bool IsDispatched(TKey key)
+    /// <param name="key">the request's <c>clusterSeqNo</c></param>
+    public bool IsDispatched(long key)
     {
-        return _outstanding.TryGetValue(key, out LinkedListNode<Entry> node) && node.Value.Dispatched;
+        int slot = Find(key);
+        return slot >= 0 && _states[slot] == Dispatched;
+    }
+
+    // The slot holding this outstanding key, or -1.
+    private int Find(long key)
+    {
+        int low = _head;
+        int high = _tail - 1;
+        while (low <= high)
+        {
+            int mid = (low + high) / 2;
+            if (_keys[mid] < key)
+            {
+                low = mid + 1;
+            }
+            else if (_keys[mid] > key)
+            {
+                high = mid - 1;
+            }
+            else
+            {
+                return _states[mid] == Free ? -1 : mid;
+            }
+        }
+        return -1;
+    }
+
+    // Moves the outstanding slots to the front, swapping their work, and doubles if over half are left.
+    private void Compact()
+    {
+        int to = 0;
+        for (int from = _head; from < _tail; ++from)
+        {
+            if (_states[from] == Free)
+            {
+                continue;
+            }
+            if (from != to)
+            {
+                _keys[to] = _keys[from];
+                _states[to] = _states[from];
+                _states[from] = Free;
+                TWork free = _works[to];
+                _works[to] = _works[from];
+                _works[from] = free;
+            }
+            ++to;
+        }
+        _head = 0;
+        _tail = to;
+        if (Count > _keys.Length / 2)
+        {
+            int slots = _keys.Length * 2;
+            Array.Resize(ref _keys, slots);
+            Array.Resize(ref _states, slots);
+            Array.Resize(ref _works, slots);
+            for (int slot = slots / 2; slot < slots; ++slot)
+            {
+                _works[slot] = _factory();
+            }
+        }
     }
 }

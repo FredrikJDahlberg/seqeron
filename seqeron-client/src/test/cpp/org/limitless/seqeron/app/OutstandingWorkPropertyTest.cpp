@@ -209,7 +209,7 @@ void Replica::applyNext()
     switch (entry.kind)
     {
         case Kind::Request:
-            work.onRequest(entry.value, entry.value);
+            work.onRequest(entry.value) = entry.value;
             break;
         case Kind::Reply:
             work.onReply(entry.value);

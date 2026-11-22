@@ -22,7 +22,7 @@ namespace Org.Limitless.Seqeron.App;
 /// standby off the cluster is a <see cref="Gateway"/>.</para>
 /// <para><b>What is left to the consumer is its own work</b>: the payloads it reads, the state it keeps, the
 /// payloads it submits. Every replica reads the same ordered stream and so holds the same state, which is what makes
-/// <see cref="OutstandingWork{TKey,TWork}"/> — fed that same stream — the way work survives the gate closing under
+/// <see cref="OutstandingWork{TWork}"/> — fed that same stream — the way work survives the gate closing under
 /// it.</para>
 /// <para><b>Snapshots</b>: given an <see cref="ISnapshotListener"/> and a topology row with
 /// <c>snapshot="true"</c>, every replica serializes its state at each round's cut into its own directory, and the
