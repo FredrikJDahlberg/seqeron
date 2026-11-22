@@ -182,7 +182,6 @@ top-level rather than nested, per .NET design guidelines.
 | `offCluster` | | ✓ | false | single instance on a gateway host ([Application](#application)); not with `ipcConnectTimeoutMs`, which `build()` rejects |
 | `snapshots` (listener, directory) | ✓ | ✓ | none | participate in snapshot rounds; the listener and this instance's snapshot directory are one setting (Java `snapshots(listener, dir)`, C++ `Config::snapshots`, C# `Snapshots`) |
 | `tuning` | ✓ | ✓ | `Tuning.DEFAULT` | the policy knobs below, in one value (Java `Tuning` record with `withX` methods, C++ `Tuning` aggregate, C# `Tuning` options class) |
-| `outstandingWork` (C++ `onNotLeader`, C# `OnNotLeader`) | | ✓ | none | Java: tracker; C++, C#: hook. `onNotLeader()` is called when the gate closes |
 | `ipcConnectTimeoutMs` | | ✓ | 500 | wait for IPC ingress to the local member while it leads; empty by default so that `offCluster` can tell it was not set |
 | `idleStrategy` (C# `IdleStrategy`) | ✓ | ✓ | a yielding spin; Aeron's own connect wait | what a call that blocks waits on: a `publish` spinning through an election (up to 10 s) and the cluster connect in `start`. One that also does the caller's periodic work keeps it going meanwhile. Java and C# only |
 
@@ -320,10 +319,7 @@ otherwise.
 **Leader gate.** `onLeadershipChanged(boolean leading)` replaces `onActivated`/`onStandby`; `onGroupsResolved`,
 `onSequenced`, `onCaughtUp`, `onClusterHeartbeat` and `onFenced` are as for `Gateway`, and there is no connection
 lifecycle. **Every leadership change closes the gate**, so `OutstandingWork.onNotLeader()` must run on `false`:
-a reply submitted during the election may be lost, and the next opening redispatches it. Give the façade the tracker
-(Java: the builder's `outstandingWork`) or a hook that calls it (C++ `Config::onNotLeader`, a
-`std::function<void()>`; C# `ApplicationOptions.OnNotLeader`, an `Action`), and it runs before
-`onLeadershipChanged(false)`, so the listener need not. The gate is also
+a reply submitted during the election may be lost, and the next opening redispatches it. The gate is also
 shut while a lost cluster session is replaced, for the same reason, and it closes at a fence: an open gate
 reports `false` before `onFenced`, and `isLeading()` and `canPublish()` are false from then on. Retain a request's `ReplyAddress`, not its
 `Payload`.

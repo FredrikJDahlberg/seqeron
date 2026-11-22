@@ -1,9 +1,7 @@
 package org.limitless.seqeron.app;
 
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Leader-only request/reply work tracked across a failover. Every replica feeds it the same
@@ -43,28 +41,45 @@ public final class OutstandingWork<K, W> {
         boolean dispatch(K key, W work);
     }
 
-    private final LinkedHashMap<K, W> outstanding = new LinkedHashMap<>();
-    private final Set<K> dispatched = new HashSet<>();
+    private static final class Entry<W> {
+        W work;
+        boolean dispatched; // local to this node
+
+        Entry(final W work) {
+            this.work = work;
+        }
+    }
+
+    private final LinkedHashMap<K, Entry<W>> outstanding = new LinkedHashMap<>();
 
     /** A request seen on the sequenced stream, on every replica. Idempotent on the key, keeping its position. */
     public void onRequest(final K key, final W work) {
-        outstanding.put(key, work);
+        final Entry<W> entry = outstanding.get(key);
+        if (entry != null) {
+            entry.work = work;
+        } else {
+            outstanding.put(key, new Entry<>(work));
+        }
     }
 
     /** Its sequenced reply, on every replica: the request is answered. */
     public void onReply(final K key) {
         outstanding.remove(key);
-        dispatched.remove(key);
     }
 
     /** The leader gate closed: forget what this node dispatched, so the next opening re-dispatches it. */
     public void onNotLeader() {
-        dispatched.clear();
+        for (final Entry<W> entry : outstanding.values()) {
+            entry.dispatched = false;
+        }
     }
 
     /** The reply offer failed, so no sequenced reply will come. The request stays outstanding. */
     public void onReplyNotEmitted(final K key) {
-        dispatched.remove(key);
+        final Entry<W> entry = outstanding.get(key);
+        if (entry != null) {
+            entry.dispatched = false;
+        }
     }
 
     /**
@@ -73,15 +88,15 @@ public final class OutstandingWork<K, W> {
      */
     public int dispatchUndispatched(final Dispatcher<K, W> dispatcher) {
         int count = 0;
-        for (final Map.Entry<K, W> entry : outstanding.entrySet()) {
-            final K key = entry.getKey();
-            if (dispatched.contains(key)) {
+        for (final Map.Entry<K, Entry<W>> mapping : outstanding.entrySet()) {
+            final Entry<W> entry = mapping.getValue();
+            if (entry.dispatched) {
                 continue;
             }
-            if (!dispatcher.dispatch(key, entry.getValue())) {
+            if (!dispatcher.dispatch(mapping.getKey(), entry.work)) {
                 break;
             }
-            dispatched.add(key);
+            entry.dispatched = true;
             ++count;
         }
         return count;
@@ -94,6 +109,7 @@ public final class OutstandingWork<K, W> {
 
     /** Whether this request has been dispatched and not yet completed. */
     public boolean isDispatched(final K key) {
-        return dispatched.contains(key);
+        final Entry<W> entry = outstanding.get(key);
+        return entry != null && entry.dispatched;
     }
 }

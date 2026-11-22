@@ -2,13 +2,10 @@ package org.limitless.seqeron.app;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -61,8 +58,7 @@ class ApplicationBuilderTest {
         final Application application = complete().addressedGroups("A", "B").clientId(3).memberId(1)
             .egressChannel(EGRESS).ingressEndpoints("0=localhost:1")
             .tuning(Tuning.DEFAULT.withPendingCapacity(16).withQueueStallTimeoutMs(2000).withRecoveryStallTimeoutMs(3000))
-            .ipcConnectTimeoutMs(4000).outstandingWork(new OutstandingWork<Long, byte[]>())
-            .build();
+            .ipcConnectTimeoutMs(4000).build();
         assertEquals(SOURCE_ID, application.sourceId());
     }
 
@@ -73,30 +69,6 @@ class ApplicationBuilderTest {
         assertEquals("ipcConnectTimeoutMs has no meaning with offCluster", assertThrows(IllegalStateException.class,
             () -> complete().offCluster(true).ipcConnectTimeoutMs(4000).build()).getMessage());
         assertEquals(SOURCE_ID, complete().ipcConnectTimeoutMs(4000).build().sourceId());
-    }
-
-    @Test
-    @DisplayName("a closing gate clears the tracker's dispatches before the listener hears false; an opening one not")
-    void closingTheGateDischargesTheTrackerFirst() {
-        final OutstandingWork<Long, String> work = new OutstandingWork<>();
-        final List<String> seen = new ArrayList<>();
-        final Application.Listener recording = (Application.Listener) Proxy.newProxyInstance(
-            Application.Listener.class.getClassLoader(), new Class<?>[] {Application.Listener.class},
-            (proxy, method, args) -> {
-                if (method.getName().equals("onLeadershipChanged")) {
-                    seen.add(args[0] + ":" + work.isDispatched(1L));
-                }
-                return null;
-            });
-        final Application application = complete().listener(recording).outstandingWork(work).build();
-        work.onRequest(1L, "request");
-        assertEquals(1, work.dispatchUndispatched((key, request) -> true));
-
-        application.gateEdge(true);
-        assertTrue(work.isDispatched(1L));
-        application.gateEdge(false);
-        assertFalse(work.isDispatched(1L));
-        assertEquals(List.of("true:true", "false:false"), seen);
     }
 
     @Test

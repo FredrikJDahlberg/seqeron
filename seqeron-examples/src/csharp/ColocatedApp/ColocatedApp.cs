@@ -144,8 +144,8 @@ public sealed class ColocatedApp : IApplicationListener
     }
 
     // The whole election, for the producer kind nothing elects. Every leadership change shuts an open gate, and a
-    // payload submitted during the election may have gone with it; a replica keeping outstanding work sets
-    // ApplicationOptions.OnNotLeader to discharge it.
+    // payload submitted during the election may have gone with it; a replica keeping outstanding work calls
+    // OutstandingWork.OnNotLeader here on false.
     public void OnLeadershipChanged(bool leading)
     {
         Console.WriteLine(leading ? "# leading — publishing" : "# not leading — silent");

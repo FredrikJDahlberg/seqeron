@@ -152,4 +152,18 @@ public class OutstandingWorkTest
         // the order requests were sequenced, not key order
         Assert.Equal(new List<long> { 5, 3, 9 }, recorder.Dispatched);
     }
+
+    [Fact(DisplayName = "a request answered and asked again goes to the back")]
+    public void AnsweredRequestAskedAgainGoesToTheBack()
+    {
+        _work.OnRequest(1, 0);
+        _work.OnRequest(2, 0);
+        _work.OnReply(1);
+        _work.OnRequest(1, 0);
+
+        var recorder = new Recorder();
+        _work.DispatchUndispatched(recorder.Dispatch);
+
+        Assert.Equal(new List<long> { 2, 1 }, recorder.Dispatched);
+    }
 }

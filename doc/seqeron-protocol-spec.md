@@ -1336,7 +1336,7 @@ The Java host is the only host and is normative where this section is silent: a 
 agrees with it ([`hosted-facade.md`](hosted-facade.md) §1).
 
 The client keeps what is the application's: its state, a deterministic reply (**A-3**), deterministic
-snapshot records (**A-6**) and `OutstandingWork` (**A-2**). The host's façade is built with no tracker.
+snapshot records (**A-6**) and `OutstandingWork` (**A-2**).
 
 **The protocol reuses Aeron's and the replayer's patterns rather than inventing its own.** The host and client
 stand in the relation of Aeron Cluster's consensus module and its clustered service, which Aeron also runs as

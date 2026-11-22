@@ -154,4 +154,18 @@ class OutstandingWorkTest {
 
         assertEquals(List.of(5L, 3L, 9L), recorder.dispatched, "the order requests were sequenced, not key order");
     }
+
+    @Test
+    @DisplayName("a request answered and asked again goes to the back")
+    void answeredRequestAskedAgainGoesToTheBack() {
+        work.onRequest(1L, 0);
+        work.onRequest(2L, 0);
+        work.onReply(1L);
+        work.onRequest(1L, 0);
+
+        final Recorder recorder = new Recorder();
+        work.dispatchUndispatched(recorder);
+
+        assertEquals(List.of(2L, 1L), recorder.dispatched);
+    }
 }
