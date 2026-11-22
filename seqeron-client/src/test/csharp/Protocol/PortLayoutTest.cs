@@ -9,7 +9,7 @@ namespace Org.Limitless.Seqeron.Protocol;
 /// <summary>
 /// The port base is a deployment knob (<c>SEQERON_PORT_BASE</c>), and this pins the rules that decide it. Driven
 /// through the pure seam rather than the environment: the base is read once into a static field. The cases are
-/// <c>PortLayoutTest.java</c>'s, then the pairs <c>SequencerServerTest</c> pins, then <c>ports.sh</c> itself.
+/// <c>PortLayoutTest.java</c>'s, then <c>ports.sh</c> itself.
 /// </summary>
 public class PortLayoutTest
 {
@@ -108,7 +108,7 @@ public class PortLayoutTest
         Assert.Throws<ArgumentException>(() => PortLayout.ParseHosts("h0,h1,h2,h3,h4,h5,h6,h7"));
     }
 
-    // The documented layout, as SequencerServerTest pins it.
+    // The reservation is wider than what seven members bind, and applications check themselves against it.
     [Fact(DisplayName = "member ports and the reserved block match the documented layout")]
     public void MemberPortsMatchTheDocumentedLayout()
     {
@@ -120,7 +120,9 @@ public class PortLayoutTest
 
         Assert.Equal(9300, PortLayout.ClusterPortBlockFirst);
         Assert.Equal(9369, PortLayout.ClusterPortBlockLast);
+        Assert.True(PortLayout.IsClusterPort(9300));
         Assert.True(PortLayout.IsClusterPort(9360), "member 6's base, reserved though unbound");
+        Assert.True(PortLayout.IsClusterPort(9369));
         Assert.False(PortLayout.IsClusterPort(9299));
         Assert.False(PortLayout.IsClusterPort(9370));
     }

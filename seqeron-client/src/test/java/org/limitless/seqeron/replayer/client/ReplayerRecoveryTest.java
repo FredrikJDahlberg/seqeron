@@ -161,28 +161,6 @@ class ReplayerRecoveryTest {
         assertEquals(FROM_START, receiver.requestFromPosition());
     }
 
-    @Test
-    @DisplayName("a first frame at clusterSeqNo 1 is the baseline and puts the client live")
-    void firstFrameAtOneIsAccepted() {
-        deliverQueue(1);
-
-        assertEquals(List.of(1L), dispatched);
-        assertTrue(receiver.isCaughtUp());
-    }
-
-    @Test
-    @DisplayName("a first frame that is not clusterSeqNo 1 is fatal")
-    void firstFrameMustBeOne() {
-        attachReplay(11, 4096);
-
-        deliverReplay(7);
-
-        assertTrue(receiver.fault().contains("groupSeqNo=7, expected 1"), receiver.fault());
-        assertTrue(receiver.isQueueStartMissing());
-        assertTrue(dispatched.isEmpty());
-        assertEquals(-1, receiver.replaySessionId());
-    }
-
     // Once the queue is dispatched mid-walk, a cold start races a live queue already carrying mid-stream
     // clusterSeqNos against a replay that has not delivered 1 yet. That queue frame is neither a valid
     // baseline nor a fault — only the walk may establish the baseline.
@@ -223,6 +201,7 @@ class ReplayerRecoveryTest {
         assertTrue(receiver.fault().contains("groupSeqNo=2, expected 1"), receiver.fault());
         assertTrue(receiver.isQueueStartMissing());
         assertTrue(dispatched.isEmpty());
+        assertEquals(-1, receiver.replaySessionId());
     }
 
     @Test

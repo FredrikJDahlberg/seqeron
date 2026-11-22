@@ -38,21 +38,6 @@ class MetricsExporterTest {
     private final CountersManager counters = newCountersManager();
 
     @Test
-    @DisplayName("two co-located replicas' app counters render under one HELP/TYPE header")
-    void appCountersOfOneTypeShareOneHeader() {
-        addAppCounter(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID, MEMBER, 9, 0);
-        addAppCounter(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID, MEMBER, 10, 1);
-
-        final String body = new MetricsExporter(counters, MEMBER).renderMetrics();
-
-        assertEquals(1, count(body, "# HELP seqeron_app_recovery_stalled "),
-                     "a repeated HELP line makes Prometheus reject the entire scrape");
-        assertEquals(1, count(body, "# TYPE seqeron_app_recovery_stalled "));
-        assertTrue(body.contains("seqeron_app_recovery_stalled{member=\"1\",client=\"9\"} 0"), body);
-        assertTrue(body.contains("seqeron_app_recovery_stalled{member=\"1\",client=\"10\"} 1"), body);
-    }
-
-    @Test
     @DisplayName("a gateway instance's connections export under core's name, one series per client")
     void gatewayConnectionsExportUnderTheirOwnName() {
         addAppCounter(SeqeronCounters.GATEWAY_CONNECTIONS_TYPE_ID, MEMBER, 9, 3);
@@ -74,7 +59,11 @@ class MetricsExporterTest {
 
         final String body = new MetricsExporter(counters, MEMBER).renderMetrics();
 
-        assertEquals(1, count(body, "# HELP seqeron_app_recovery_stalled "));
+        assertEquals(1, count(body, "# HELP seqeron_app_recovery_stalled "),
+                     "a repeated HELP line makes Prometheus reject the entire scrape");
+        assertEquals(1, count(body, "# TYPE seqeron_app_recovery_stalled "));
+        assertTrue(body.contains("seqeron_app_recovery_stalled{member=\"1\",client=\"9\"} 0"), body);
+        assertTrue(body.contains("seqeron_app_recovery_stalled{member=\"1\",client=\"10\"} 1"), body);
         assertEquals(1, count(body, "# HELP seqeron_sequencer_cluster_seq_no "));
         // Interleaved in the counters region, grouped in the body: a metric's samples must all follow
         // its own header, not another metric's.

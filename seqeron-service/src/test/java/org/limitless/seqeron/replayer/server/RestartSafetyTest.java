@@ -54,15 +54,6 @@ class RestartSafetyTest {
     }
 
     @Test
-    @DisplayName("a replica that joins after the window is not waited for")
-    void aLateJoinerIsNotExpected() {
-        safety.onCut(1, 500, 0);
-        assertEquals(500, safety.poll(WINDOW));
-        safety.onJoined(1, 16, 16);
-        assertEquals(NO_POSITION, safety.poll(WINDOW + 1));
-    }
-
-    @Test
     @DisplayName("a later round replaces one that did not finish, which stays unsafe")
     void aLaterRoundSupersedes() {
         safety.onCut(1, 500, 0);

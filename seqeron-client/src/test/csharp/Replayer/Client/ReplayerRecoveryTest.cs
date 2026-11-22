@@ -165,28 +165,6 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(FromStart, _receiver.RequestFromPosition);
     }
 
-    [Fact(DisplayName = "a first frame at clusterSeqNo 1 is the baseline and puts the client live")]
-    public void FirstFrameAtOneIsAccepted()
-    {
-        DeliverQueue(1);
-
-        Assert.Equal(new List<long> { 1 }, _dispatched);
-        Assert.True(_receiver.IsCaughtUp);
-    }
-
-    [Fact(DisplayName = "a first frame that is not clusterSeqNo 1 is fatal")]
-    public void FirstFrameMustBeOne()
-    {
-        AttachReplay(11, 4096);
-
-        DeliverReplay(7);
-
-        Assert.Contains("groupSeqNo=7, expected 1", _receiver.Fault);
-        Assert.True(_receiver.IsQueueStartMissing);
-        Assert.Empty(_dispatched);
-        Assert.Equal(-1, _receiver.ReplaySessionId);
-    }
-
     // Once the queue is dispatched mid-walk, a cold start races a live queue already carrying mid-stream clusterSeqNos
     // against a replay that has not delivered 1 yet. That queue frame is neither a valid baseline nor a fault: only
     // the walk may establish the baseline.
@@ -227,6 +205,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Contains("groupSeqNo=2, expected 1", _receiver.Fault);
         Assert.True(_receiver.IsQueueStartMissing);
         Assert.Empty(_dispatched);
+        Assert.Equal(-1, _receiver.ReplaySessionId);
     }
 
     [Fact(DisplayName = "continuity follows groupSeqNo, so a jump in clusterSeqNo is no gap")]

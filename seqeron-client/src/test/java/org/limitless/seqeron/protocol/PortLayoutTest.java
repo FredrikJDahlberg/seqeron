@@ -1,6 +1,7 @@
 package org.limitless.seqeron.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -15,7 +16,7 @@ import org.junit.jupiter.api.Test;
  * field, so a test that set the variable would be testing whichever test ran first. The C++ twin is
  * {@code PortLayoutTest.cpp}'s {@code ParseClusterPortBase*} cases — same rules, same boundaries.
  *
- * <p>The (memberId -&gt; port) pairs the formula produces stay in {@code SequencerServerTest}. The endpoint
+ * <p>The cluster members string built from those pairs is {@code SequencerServerTest}'s. The endpoint
  * set below is the Java mirror of {@code ports.sh}'s {@code ingress_endpoints_string}.
  */
 class PortLayoutTest {
@@ -112,6 +113,25 @@ class PortLayoutTest {
         assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,h1,"));
         assertEquals(7, PortLayout.parseHosts("h0,h1,h2,h3,h4,h5,h6").size());
         assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,h1,h2,h3,h4,h5,h6,h7"));
+    }
+
+    // The reservation is wider than what seven members bind, and applications check themselves against it.
+    @Test
+    @DisplayName("member ports and the reserved block match the documented layout")
+    void memberPortsMatchTheDocumentedLayout() {
+        assertEquals("localhost:9302", PortLayout.ingressEndpoint(0));
+        assertEquals("localhost:9312", PortLayout.ingressEndpoint(1));
+        assertEquals(List.of(9321, 9322, 9323, 9324, 9325),
+                     List.of(PortLayout.archivePort(2), PortLayout.ingressPort(2), PortLayout.consensusPort(2),
+                             PortLayout.logPort(2), PortLayout.transferPort(2)));
+
+        assertEquals(9300, PortLayout.CLUSTER_PORT_BLOCK_FIRST);
+        assertEquals(9369, PortLayout.CLUSTER_PORT_BLOCK_LAST);
+        assertTrue(PortLayout.isClusterPort(9300));
+        assertTrue(PortLayout.isClusterPort(9360), "member 6's base, reserved though unbound");
+        assertTrue(PortLayout.isClusterPort(9369));
+        assertFalse(PortLayout.isClusterPort(9299));
+        assertFalse(PortLayout.isClusterPort(9370));
     }
 
     @Test

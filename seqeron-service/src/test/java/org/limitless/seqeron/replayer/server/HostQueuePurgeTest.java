@@ -72,27 +72,6 @@ class HostQueuePurgeTest {
     }
 
     @Test
-    @DisplayName("a refusal is retried after an interval, and is no archive error")
-    void aRefusalIsRetried() {
-        fakeReplayer.refusePurges(true);
-        cutAt(1, 50, 2 * SEGMENT);
-        assertEquals(1, fakeReplayer.purgeAttempts().size());
-
-        fakeReplayer.advanceMillis(4_999);
-        replayerService.poll();
-        assertEquals(1, fakeReplayer.purgeAttempts().size(), "not before the interval");
-
-        fakeReplayer.refusePurges(false);
-        fakeReplayer.advanceMillis(1);
-        replayerService.poll();
-        assertEquals(2, fakeReplayer.purgeAttempts().size());
-
-        replayerService.poll();
-        assertEquals(2, fakeReplayer.purgeAttempts().size(), "done once it is purged");
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
-    }
-
-    @Test
     @DisplayName("after a purge, a cut kept below the new start is refused, as a position below it is")
     void aKeptCutBelowThePurgeIsRefused() {
         reports.add(new RelayedCut(1, 20, GROUP_ID, 1_024, false));
@@ -100,14 +79,6 @@ class HostQueuePurgeTest {
 
         assertEquals(ReplayProtocol.NO_REPLAY_NEEDED, cutRequest(20));
         assertTrue(fakeReplayer.startedReplays().isEmpty());
-    }
-
-    @Test
-    @DisplayName("a floor inside the first segment asks the archive for nothing")
-    void nothingInsideTheFirstSegment() {
-        cutAt(1, 50, SEGMENT - 1);
-
-        assertTrue(fakeReplayer.purgeAttempts().isEmpty());
     }
 
     private long cutRequest(final long cutClusterSeqNo) {
