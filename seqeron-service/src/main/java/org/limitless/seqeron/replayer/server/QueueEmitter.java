@@ -11,7 +11,7 @@ import org.limitless.seqeron.sequencer.Sequencer;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * Puts a derivation's frames on the queues without waiting (doc/plans/queue-off-duty-cycle-plan.md, steps 2 and 3): a
+ * Puts a derivation's frames on the queues without waiting (doc/records/plans/queue-off-duty-cycle-plan.md, steps 2 and 3): a
  * frame a queue does not take is kept, with every frame after it, until {@link #flush} lands it, and a frame that lands
  * must end where {@link QueuePositions} says. A queue back-pressured for the stall timeout is skipped: it is revoked,
  * its frames are dropped up to the commit position, and {@link #onCaughtUp} reopens it there. A kept frame refused for

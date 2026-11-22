@@ -135,7 +135,7 @@ and commit position rather than on time, so it reproduces every run, and the str
 fails on the pinned Aeron, so it runs only under `-PknownAeronFaults`, to check an Aeron upgrade against it. A second
 test runs the same sequence by default and checks that the member that truncates the entry takes itself down, and
 that, restarted, it rejoins with queues that are one log with the others'
-([`fault-tolerance.md`](fault-tolerance.md) §1.4).
+([`fault-tolerance.md`](../architecture/fault-tolerance.md) §1.4).
 
 The UDP faults are `SequencerServer.launch`'s `udpFaults` overload, which drops each frame a member's driver sends
 or receives that it names by stream id and direction: all of them, all but the consensus stream, or only the
@@ -163,7 +163,7 @@ children's classpath. A test with knobs reads them from the environment, named b
 
 | test | what it asserts |
 | --- | --- |
-| `FailoverProcessTest` | A leader is `SIGKILL`ed (every run then takes the crash's path, [`fault-tolerance.md`](fault-tolerance.md) §1.2), and a fresh `ClusterProbe` follower cold-started on the new leader catches up on full history, each node's queue being one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
+| `FailoverProcessTest` | A leader is `SIGKILL`ed (every run then takes the crash's path, [`fault-tolerance.md`](../architecture/fault-tolerance.md) §1.2), and a fresh `ClusterProbe` follower cold-started on the new leader catches up on full history, each node's queue being one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
 | `GapRecoveryTest` | A live queue frame dropped on a caught-up consumer (`SIGUSR1` fault injection; `GAP_SIZE` frames) is recovered by resuming its queue at the hole, not by wedging |
 | `PausedSubscriberTest` | A caught-up consumer `SIGSTOP`ped while more than two queue windows go by leaves its member up, and the resumed consumer heals the hole its eviction left |
 | `StoppedHolderTest` | A tethered queue subscriber (`ClusterProbe hold`) `SIGSTOP`ped on the leader under a flood holds its queue: the leader's `clusterSeqNo` advances while the queue is held, a ping through another member's queue is echoed, the flood completes, the queue is skipped at the stall timeout, every member stays up, and a consumer of the held queue re-converges |
@@ -210,7 +210,7 @@ The harnesses for the C# client, and the operator-facing local cluster, are stil
 root, with `./gradlew uberJar` done first. The two C# harnesses want the .NET SDK beside the jar:
 `csharp-client-test.sh` on Linux, and `csharp-windows-test.sh` on Windows, in Git Bash, with its member in a WSL1
 distribution that has a JDK 21. The drivers in
-`multihost/`, which run a cluster across hosts over ssh, are [`ec2-tests.md`](ec2-tests.md)'s.
+`multihost/`, which run a cluster across hosts over ssh, are [`ec2-tests.md`](../performance/ec2-tests.md)'s.
 
 | Script | Purpose |
 |--------|---------|
@@ -248,4 +248,4 @@ dotnet run --project seqeron-examples/src/csharp/FollowStream
 
 `ClusterProbe follow` does the same thing with three modes, latency stats and fault injection on top;
 the examples are that one flow with nothing else in them. See
-[`seqeron-examples/README.md`](../seqeron-examples/README.md).
+[`seqeron-examples/README.md`](../../seqeron-examples/README.md).

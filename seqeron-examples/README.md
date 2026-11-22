@@ -3,7 +3,7 @@
 **C++.** The C++ examples are `ColocatedApp` and `GatewayApp`, written against the hosted stubs
 (`hosted::Application`, `hosted::Gateway`). A stub does no cluster work: it attaches over `aeron:ipc` to a host
 process, `org.limitless.seqeron.proxy.ClientProxy`, which runs the cluster session and the fences
-(`doc/seqeron-protocol-spec.md` §17). Start one host per example, with `start-client-proxy.sh`, before the example (see
+(`doc/architecture/seqeron-protocol-spec.md` §17). Start one host per example, with `start-client-proxy.sh`, before the example (see
 "Run them"). The earlier direct C++ examples (`FollowStream`, `SnapshotApp`, and the direct `ColocatedApp` and
 `GatewayApp`) live on the `cpp-direct-client` branch; passages below that describe them, or `cpp-client-test.sh`,
 describe that branch.
@@ -88,7 +88,7 @@ before it, so a replica cannot rebuild its balances from part of the log: it nee
 of the state at a known point in it and the frames after that point. Like `ColocatedApp`, it is written
 against `app` alone and its imports and includes are checked the same way.
 
-**How a snapshot is taken** (`doc/snapshot.md` in the seqeron repo is the full mechanism):
+**How a snapshot is taken** (`doc/architecture/snapshot.md` in the seqeron repo is the full mechanism):
 
 1. The sequencer starts a round by sequencing `SnapshotStarted`, every `interval` seconds of cluster time or
    on `clusterctl.sh request-snapshot`. Its `clusterSeqNo`, `R`, is the round's cut.
@@ -161,7 +161,7 @@ Java, the low-level one and then the façade one — either may run alone, and b
     ./gradlew -p seqeron-examples runSnapshot
 
 C++ — each stub needs a host process beside the node's driver, started first with the properties its comment lists
-(`doc/running-a-cluster.md`, "Client proxy"). `./gradlew uberJar` first. The application:
+(`doc/operations/running-a-cluster.md`, "Client proxy"). `./gradlew uberJar` first. The application:
 
     ./seqeron-service/src/main/scripts/start-client-proxy.sh -Dproxy.sourceId=12 -Dproxy.clientId=14 \
         -Dproxy.snapshotDir=/tmp/colocated-example

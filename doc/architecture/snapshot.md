@@ -208,7 +208,7 @@ was cut from: a purged archive starts the log, and its rounds, again at 1. The r
 cut against the recording before it reads a record (§7 step 3).
 
 Each participating instance exports the round it last confirmed as a counter, `seqeron_app_snapshot_round`,
-0 until its process confirms one, so an instance that misses rounds is visible ([`ops.md`](ops.md)).
+0 until its process confirms one, so an instance that misses rounds is visible ([`ops.md`](../operations/ops.md)).
 
 ## 6. The snapshot header
 
@@ -282,7 +282,7 @@ A cold start of an instance with a `SnapshotListener` restores in `ReplayerRecov
    that round's `SnapshotEnd` changes nothing.
 6. **Go live**, switching to the queue as any resume does.
 
-An instance that stops is fenced with `SNAPSHOT_UNRESTORABLE` ([`ops.md`](ops.md)). A damaged file that gave
+An instance that stops is fenced with `SNAPSHOT_UNRESTORABLE` ([`ops.md`](../operations/ops.md)). A damaged file that gave
 way stays until the instance confirms its round again on the way back to the tail, which replaces it. After a
 restore, every fallback that would walk the recording from its start resumes at the restored snapshot's
 `cutPosition` instead, where the first frame is `R`, and drops every frame up to the last one dispatched.
@@ -368,7 +368,7 @@ history, which a snapshot cannot regenerate; what lies below the cut is in the a
 | **format** | A schema of its own, Java only: a begin message with `formatVersion` and the scalars, one message per entry, maps in key order, and an end message with the counts. Members' snapshots at one log position are equivalent, not byte-equal: the queue positions and settings they carry are each node's own. A restored hash map's capacity, and so its iteration order, need not be the original's, so no frame may depend on a map's iteration order. |
 | **test** | `SequencerSnapshotTest` snapshots a `Sequencer` at a random point of a seeded frame sequence, restores a second from it, and feeds both the rest: every frame they encode, and every field, must match. The sequence includes deposed sessions, pending activations and requested rounds, so a field the snapshot misses fails it. |
 | **contract** | `SequencerSnapshot`, a package-private interface in `sequencer` that `Sequencer` implements: `formatVersion`, `onSnapshot(buffer, recordIndex)` and `onRestore(buffer, length, recordIndex, formatVersion)`, the shape of `SnapshotListener`. `SequencerService` drives it from `onTakeSnapshot` and `onStart`. `onTakeSnapshot` emits the round's marker, then writes the state: the snapshot is the state after the marker (§10.8). |
-| **when** | The `Sequencer` reports a round due (§10.6), from state every member holds, so a new leader carries on where the last one stopped, and the leader's service sets the `ClusterControl` toggle to `SNAPSHOT`. It asks no sooner than its own `sequencer.sessionTimeoutMs` plus one heartbeat (1 s) after the last round started, the first round excepted: each snapshot resets every client session's inactivity clock, and the leader's consensus module times sessions out, so closer rounds would keep a dead client's session, and a dead gateway's, open. It asks only while `cluster.role()` is `LEADER`: the consensus module reads the toggle only on the leader and outside an election, so a request set elsewhere would wait and take an extra snapshot once that member leads. The toggle switches only from `NEUTRAL`, by compare-and-set, so a request that meets an operator's, through Aeron's `ClusterTool snapshot`, or a snapshot in progress, fails and is retried at the next check. `clusterctl snapshot` is refused, and `clusterctl shutdown` uses `ABORT` ([`clusterctl.md`](clusterctl.md)). |
+| **when** | The `Sequencer` reports a round due (§10.6), from state every member holds, so a new leader carries on where the last one stopped, and the leader's service sets the `ClusterControl` toggle to `SNAPSHOT`. It asks no sooner than its own `sequencer.sessionTimeoutMs` plus one heartbeat (1 s) after the last round started, the first round excepted: each snapshot resets every client session's inactivity clock, and the leader's consensus module times sessions out, so closer rounds would keep a dead client's session, and a dead gateway's, open. It asks only while `cluster.role()` is `LEADER`: the consensus module reads the toggle only on the leader and outside an election, so a request set elsewhere would wait and take an extra snapshot once that member leads. The toggle switches only from `NEUTRAL`, by compare-and-set, so a request that meets an operator's, through Aeron's `ClusterTool snapshot`, or a snapshot in progress, fails and is retried at the next check. `clusterctl snapshot` is refused, and `clusterctl shutdown` uses `ABORT` ([`clusterctl.md`](../operations/clusterctl.md)). |
 | **restore** | `onStart` reads the records through a fragment assembler, creates the queues at their cut (§10.3), and refuses a foreign schema, a newer version or a count that differs from the end's, as it refuses any snapshot today. |
 | **version** | Aeron's `appVersion`, on the consensus module's context and the service container's, has `LOG_VERSION` as its major: a seqeron constant raised by every change spec V-3 makes a purge, and by a snapshot format the next release cannot read. Schema 210's own `version` stays 0 (spec §8), so it cannot serve. Aeron compares majors when it loads a snapshot and when it replays a leadership term from the log, so a member started on an archive V-3 says to purge stops with "incompatible version" rather than sequence another history. `LOG_VERSION` starts at 1, and seqeron's validator also accepts Aeron's default major 0, which every earlier log carries, until the first raise, so the release that introduces it needs no purge. |
 | **the Raft log** | Holds the two newest restart-safe snapshots (§10.8) and the log from the older one, so the newer always has a fallback. The member trims the log below the older (§10.7). |
@@ -378,7 +378,7 @@ history, which a snapshot cannot regenerate; what lies below the cut is in the a
 
 A queue is not one run from `groupSeqNo` 1 across every restart (§10.8). It starts at a cut, and a restart
 starts it again at the cut of the set it restores. Nothing records a member's queue: its history is the Raft
-log from where the service started, which the member's Replayer derives (`plans/disk-load-plan.md`, step 2a).
+log from where the service started, which the member's Replayer derives (`../records/plans/disk-load-plan.md`, step 2a).
 
 | | |
 | --- | --- |
@@ -723,7 +723,7 @@ state, so any instance's file restores any other. It holds for seqeron's replica
 
 Proposed, not implemented: the instance that may publish serializes nothing and fetches the round's file from
 the source's other instances — the followers' replicas, a gateway's standby, or a snapshot host — and an instance
-with no usable file fetches one from a peer. The design is in [`snapshot-offload.md`](plans/snapshot-offload.md).
+with no usable file fetches one from a peer. The design is in [`snapshot-offload.md`](../records/plans/snapshot-offload.md).
 
 ## 12. Costs and limits
 

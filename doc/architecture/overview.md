@@ -244,15 +244,15 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 
 - **Members.** Three is the usual cluster; the port layout allows up to seven. Each member is one JVM with
   its media driver embedded, configured through system properties and the `SEQERON_HOSTS` list of member
-  hosts ([`running-a-cluster.md`](running-a-cluster.md)).
+  hosts ([`running-a-cluster.md`](../operations/running-a-cluster.md)).
 - **Clients** attach to a member's media driver, or a gateway host's, and submit over IPC or UDP.
 - **Topology.** The groups, the gateway pairs, the co-located applications, the payload protocols and the
   snapshot policy are declared in one XML document, validated against a packaged schema and published once onto
   the log.
 - **Operations.** `clusterctl` starts and stops the cluster, designates gateways, loads the topology and
-  requests snapshot rounds ([`clusterctl.md`](clusterctl.md)). Each member exports its counters to
-  Prometheus ([`ops.md`](ops.md)). `SbeLogPrinter` decodes any recording, the Raft log included
-  ([`log-printer.md`](log-printer.md)).
+  requests snapshot rounds ([`clusterctl.md`](../operations/clusterctl.md)). Each member exports its counters to
+  Prometheus ([`ops.md`](../operations/ops.md)). `SbeLogPrinter` decodes any recording, the Raft log included
+  ([`log-printer.md`](../operations/log-printer.md)).
 - **Versions.** Every process uses the Aeron, Agrona and SBE versions seqeron was built with, since a
   mismatch corrupts messages rather than failing a build. The C# client, on Aeron.NET, is one release behind
   and verified against the cluster on every Aeron upgrade (spec **V-1**).
@@ -288,10 +288,10 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 
 ## Further reading
 
-1. [Getting Started](getting-started.md) — a node and a first consumer and producer
-2. [Client API](client-api.md) — Java, C++ and C#
+1. [Getting Started](../clients/getting-started.md) — a node and a first consumer and producer
+2. [Client API](../clients/client-api.md) — Java, C++ and C#
 3. [Protocol Specification](seqeron-protocol-spec.md) — normative
 4. [Fault Tolerance](fault-tolerance.md) — each failure and its recovery
 5. [Application Snapshots](snapshot.md)
 6. [Upgrades and Versioning](upgrades.md) — seqeron and application versions, and a proposed upgrade model
-7. [Running a Cluster](running-a-cluster.md)
+7. [Running a Cluster](../operations/running-a-cluster.md)

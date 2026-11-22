@@ -2,7 +2,7 @@
 
 The C++ client of seqeron: header-only, linked as `seqeron::seqeron_core`. A C++ client is a thin stub that talks over
 IPC to a host process, the Java `ClientProxy`, which runs the cluster session, the queue and the fences
-(`doc/seqeron-protocol-spec.md` §17). The direct C++ client is retired.
+(`doc/architecture/seqeron-protocol-spec.md` §17). The direct C++ client is retired.
 
 ## Start here
 
@@ -44,9 +44,9 @@ Or `find_package(seqeron)` against an installed prefix, which takes your own ins
 
 ## Read next
 
-- [Client API](https://github.com/FredrikJDahlberg/seqeron/blob/main/doc/client-api.md): what a client
+- [Client API](https://github.com/FredrikJDahlberg/seqeron/blob/main/doc/clients/client-api.md): what a client
   programs against, in both languages, and what is not API
-- [Protocol specification](https://github.com/FredrikJDahlberg/seqeron/blob/main/doc/seqeron-protocol-spec.md):
+- [Protocol specification](https://github.com/FredrikJDahlberg/seqeron/blob/main/doc/architecture/seqeron-protocol-spec.md):
   the frames, the two families and the system vocabulary
 - [Examples](https://github.com/FredrikJDahlberg/seqeron/tree/main/seqeron-examples): `FollowStream`, the
   smallest complete client, and the two façades in use

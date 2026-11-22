@@ -6,7 +6,7 @@ and how to check that nothing is left running. The commands use `us-east-1` and 
 `ec2-tests.md` §5 assumes; change them together.
 
 Nothing here is part of the build. No script in this tree creates an account, a user, a budget or a network; the
-instances themselves are launched by [`ec2-smoke.sh`](../seqeron-service/src/test/scripts/multihost/ec2-smoke.sh)
+instances themselves are launched by [`ec2-smoke.sh`](../../seqeron-service/src/test/scripts/multihost/ec2-smoke.sh)
 for the smoke test and by the commands in §8 for the full plan.
 
 Variables used throughout:

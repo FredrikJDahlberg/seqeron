@@ -92,7 +92,7 @@ not take is kept, and no log entry is read while one is. The agent publishes fro
 its own, so a held queue holds the agent and never the service, which goes on sequencing. seqeron's one tethered
 subscriber on a queue is the agent's own, which reads past each frame as it is offered, so the publication is always
 connected; seqeron's client subscriptions are untethered. A client that stops polling holds the window only until
-its driver drops it, within about 0.2 s ([`ops.md`](ops.md), "Untethered subscribers"), well inside the stall
+its driver drops it, within about 0.2 s ([`ops.md`](../operations/ops.md), "Untethered subscribers"), well inside the stall
 timeout below. A tethered subscriber, which any process on the host can open, holds it for as long as its client is
 alive.
 
@@ -122,7 +122,7 @@ for 1 s without a break, that is fatal too (`HeartbeatTimer`); otherwise the clu
 visible signal.
 
 A fatal condition logs `FATAL: … terminating`, sets `seqeron_sequencer_queue_stalled` when it is the queue's, and
-exits with code 70 (`NodeDriver.EXIT_FATAL`); [`ops.md`](ops.md) has the operator's procedure. It does not throw:
+exits with code 70 (`NodeDriver.EXIT_FATAL`); [`ops.md`](../operations/ops.md) has the operator's procedure. It does not throw:
 a cluster callback that throws has already had its log position advanced, and `AgentRunner` keeps the agent
 running, so the frame would be silently dropped (spec §9.4).
 
@@ -176,7 +176,7 @@ connection to cause it). The restart replays the log, whose snapshot action it a
 on the queue, then calls `ClusterTool.abort`. `SequencerServer` connects
 `ConsensusModule.Context.terminationHook` to a shutdown barrier, so each member closes its archive and
 flushes the log's recording before exiting. `clusterctl start` publishes `ClusterStarted` and waits for it on the
-queue, confirming that a leader is elected and ingress is accepted. [`clusterctl.md`](clusterctl.md) has both
+queue, confirming that a leader is elected and ingress is accepted. [`clusterctl.md`](../operations/clusterctl.md) has both
 procedures.
 
 ## 2. Gateways
@@ -472,10 +472,10 @@ must see every frame on the queue exactly once and in order, and the other repor
 
 ## 6. Operational tooling and verification
 
-- **`clusterctl`** ([`clusterctl.md`](clusterctl.md)): `start` and `shutdown` bracket a run with sequenced
+- **`clusterctl`** ([`clusterctl.md`](../operations/clusterctl.md)): `start` and `shutdown` bracket a run with sequenced
   markers; `activate` is the manual promotion (§2.2); `request-snapshot` starts an application snapshot round
   (§3.4); `snapshot` is refused.
-- **Metrics** ([`ops.md`](ops.md)): `seqeron_sequencer_queue_stalled` (set while a queue is held back, and when
+- **Metrics** ([`ops.md`](../operations/ops.md)): `seqeron_sequencer_queue_stalled` (set while a queue is held back, and when
   a member terminates for one, §1.3),
   `seqeron_sequencer_gateway_promotion_total` (§2.2), the `seqeron_replayer_*` family (§3.1), and
   Prometheus's per-member `up`.
@@ -506,7 +506,7 @@ starved of CPU, and a gateway host whose relay's member link is unrepaired, jitt
 (§3.3). The tests are `PartitionLeaderTest`, `AsymmetricPartitionTest`, `UnrepairedFollowerTest`, `JitteryLeaderTest`,
 `MuteVoterTest`, `ThrottledLeaderTest`, `RelayLinkTest` and `SlowArchiveControlTest`, and drive
 [faulteron](https://github.com/FredrikJDahlberg/faulteron), an eBPF injector, at a pinned commit
-([`building.md`](building.md)).
+([`building.md`](../development/building.md)).
 
 ## 7. Not covered
 

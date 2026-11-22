@@ -1,8 +1,8 @@
 # Running a cluster
 
 What a seqeron deployment runs, how to start one member or three, the ports and properties a member
-takes, how it restarts, and the scripts and tools that operate it. [`getting-started.md`](getting-started.md)
-is the shortest path to a running member; [`overview.md`](overview.md) explains the design this document
+takes, how it restarts, and the scripts and tools that operate it. [`getting-started.md`](../clients/getting-started.md)
+is the shortest path to a running member; [`overview.md`](../architecture/overview.md) explains the design this document
 configures.
 
 ## What runs where
@@ -33,13 +33,13 @@ Raft log's recording (`DerivingReplayer`), running a sequencer of its own over t
 copy on disk. Its decisions are pure classes (`Replayer`, `ReplaySlotAllocator`). On a gateway host the relay
 (`LogRelay`, `AeronLogRelay`) replays a member's log over UDP, derives the queues of the groups in
 `replayer.groups` from it, publishes them on the host's own and records them, and moves to the next member when
-that one is lost ([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)).
+that one is lost ([`fault-tolerance.md`](../architecture/fault-tolerance.md#33-gateway-host)).
 The host's Replayer serves and purges those recordings as rounds are confirmed, and `replayer.snapshotJoinMs` (default
 10000) is how long after a cut an instance on the host has to join its round ([`ops.md`](ops.md), "Cluster
 snapshots"). The two instances of a gateway never run on one host.
 
 The client tier runs in the application's own process: Java, the header-only C++ library, or the C#
-package ([`client-api.md`](client-api.md)). There is no C++ or C# server; the cluster is Java.
+package ([`client-api.md`](../clients/client-api.md)). There is no C++ or C# server; the cluster is Java.
 
 ## Client proxy
 
@@ -82,7 +82,7 @@ directory. A host that would exit 70 is rebuilt in place and the process carries
 `proxy.memberId`, `proxy.aeronDir` and `proxy.egressHost` defaulting to its own and `proxy.offCluster` to `true`; a
 host that throws stops it.
 
-Three more processes serve the system tests ([`building.md`](building.md)):
+Three more processes serve the system tests ([`building.md`](../development/building.md)):
 
 - **`ClusterProbe`** (in the service jar) drives a cluster without an application: `submit` floods
   `ProbeMarker` payloads at ingress, `ping` round-trips one through consensus and back off the queue, and
@@ -208,7 +208,7 @@ mark files already impose.
 
 A leader failover is not a break in a queue. Each queue publication is created once, at activation, and never
 re-created on a leadership change, since `aeron:ipc` has no port to collide on, so a member's queue is one
-continuous run across every leader tenure. [`fault-tolerance.md`](fault-tolerance.md) covers each failure
+continuous run across every leader tenure. [`fault-tolerance.md`](../architecture/fault-tolerance.md) covers each failure
 and its recovery.
 
 ## Scripts
@@ -255,7 +255,7 @@ session. [`clusterctl.md`](clusterctl.md) is its runbook.
   before its groups are active. The first load activates the groups, each with its own queue, and fixes them
   for the life of the archive; a later one may add rows. The sequencer acts on the gateway list, designating a
   first instance of each pair once the last row lands, on each row's group, which the instances of that source
-  read, and on the snapshot policy, which turns application snapshot rounds on ([`snapshot.md`](snapshot.md)).
+  read, and on the snapshot policy, which turns application snapshot rounds on ([`snapshot.md`](../architecture/snapshot.md)).
   The protocol rows only label recordings for the log printer.
 - **Anything else** passes through to Aeron's `ClusterTool` against this member's cluster directory
   (`describe`, `errors`, `list-members`, `recording-log`, …), except `snapshot`, Aeron's cluster snapshot,

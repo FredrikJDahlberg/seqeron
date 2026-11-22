@@ -3,7 +3,7 @@
 Steps 1 to 5 are implemented. Step 3 revokes the queue
 (`ExclusivePublication.revoke`) rather than closing it, since a close leaves every image up while the held
 subscriber blocks the drain. It answers issues 4 and 6 of
-`doc/reviews/enterprise-review.md`. Aeron references are to 1.53.2.
+`doc/records/reviews/enterprise-review.md`. Aeron references are to 1.53.2.
 
 ## 1. The rule
 
@@ -156,7 +156,7 @@ the Replayer's fsync.
   stopped member's queue skips and its consumers heal. `StoppedHolderTest` stops a `ClusterProbe hold` on the leader
   under a flood and holds the leader's `clusterSeqNo` to advancing while its queue is held, a ping through another
   member's queue to its echo, the queue to its skip and a follower of it to re-converging. It asserts no latency;
-  `doc/ec2-results.md` §2.5 measures it.
+  `doc/performance/ec2-results.md` §2.5 measures it.
 - A flood of rejected frames with a sink that blocks: the service's apply rate does not change, and the drops are
   counted. `LogFloodTest` blocks the logging thread's writes to stderr through a flood every member must apply,
   and `AsyncLoggerSink`'s own tests cover the drop count, the `Fault` wait and the drain at close.
@@ -165,12 +165,12 @@ the Replayer's fsync.
 
 - **Latency.** Today a frame reaches the queue in the duty cycle that applies it. From the log it waits for the
   agent's next poll and a file read. On the leader the entry is in the page cache by commit, since commit waits for
-  the leader's own recording (`disk-load-plan.md` §2). Measured on EC2 (`doc/ec2-tests.md`, Test 7;
-  `doc/ec2-results.md` §2.5): at up to 400k msg/s the shadow trails the queue by p50 0.5–1.2 µs, p99 under 11 µs and
+  the leader's own recording (`disk-load-plan.md` §2). Measured on EC2 (`doc/performance/ec2-tests.md`, Test 7;
+  `doc/performance/ec2-results.md` §2.5): at up to 400k msg/s the shadow trails the queue by p50 0.5–1.2 µs, p99 under 11 µs and
   p99.9 under 17 µs, within the test's rule, so step 1 needs no fast path (a single-producer ring the service writes
   and the agent reads before the log).
 - **A second derivation.** The member already runs one `LogDeriver` in `LogFollower`. The agent adds another, on
-  another thread. Closed: not shared. `doc/ec2-results.md` §2.5 ran three derivations per member (the sequencer's
+  another thread. Closed: not shared. `doc/performance/ec2-results.md` §2.5 ran three derivations per member (the sequencer's
   own queues, a shadow agent's and `LogFollower`'s) at up to 400k msg/s within Test 7's rule, so the second costs
   nothing a benchmark shows. Sharing one would couple the agent and the Replayer both ways (a full hand-off holds
   the agent, a held agent holds the follower's tip) to save it.
@@ -180,5 +180,5 @@ the Replayer's fsync.
   for case in Java and C#. `QueueSkipTest` and `StoppedHolderTest` heal a Java receiver across the reopen, and
   `csharp-client-test.sh`'s phase F a C# one. The C++ hosted stubs read no queue: `ClientProxy`'s Java façade does,
   so the Java tests cover them.
-- **Documents to change with the code.** `seqeron-service/CLAUDE.md`, `doc/overview.md`, `doc/fault-tolerance.md`
-  and `doc/ops.md` (the stall timeout's meaning, the counters).
+- **Documents to change with the code.** `seqeron-service/CLAUDE.md`, `doc/architecture/overview.md`, `doc/architecture/fault-tolerance.md`
+  and `doc/operations/ops.md` (the stall timeout's meaning, the counters).

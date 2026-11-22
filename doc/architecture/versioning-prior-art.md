@@ -193,10 +193,10 @@ it. The systems below hold the same few rules.
 - **Seqeron logs inputs.** The Raft log holds ingress and every queue is derived by running the `Sequencer` over it
   (`LogDeriver`), so the sequencer's code is part of recorded history, as a workflow's is in Temporal. A Raft state
   machine cannot log its decisions in the same entry, because consensus precedes the decision. Recording each
-  member's queues was the decision log, and `doc/plans/disk-load-plan.md` step 2a gave it up for disk.
+  member's queues was the decision log, and `doc/records/plans/disk-load-plan.md` step 2a gave it up for disk.
 - **Today every behaviour change is retroactive.** Spec V-3 asks for a `LOG_VERSION` bump and a purged archive for
   any change to what §9.2 refuses or to a derived frame: the copy-and-replace of §7, made for every such change. §7's
-  rules map onto seqeron as follows, as `doc/reviews/enterprise-review.md` issue 3 proposes:
+  rules map onto seqeron as follows, as `doc/records/reviews/enterprise-review.md` issue 3 proposes:
   - a system event naming a rule level, appended by an operator command once every member runs the new build, as
     Kafka finalizes `metadata.version`; the `Sequencer` branches on the active level, so rolling upgrades and a
     rollback before activation both work;

@@ -30,13 +30,13 @@ case for case, with a property test asserting exactly-once, in-order delivery ac
 
 **The C++ half is the hosted client stubs (`hosted/`), a library and not a program.** `seqeron_core` is a
 header-only INTERFACE target and the only binaries the build produces are `core_tests`, the benchmark
-`hosted_hop_bench` (`doc/ec2-tests.md`) and the probes
+`hosted_hop_bench` (`doc/performance/ec2-tests.md`) and the probes
 (`hosted_probe`, `hosted_gateway_probe`, `hosted_consumer_probe`) that the `Hosted*Test` system tests drive when
 `HOSTED_PROBE` names `hosted_probe`. The direct C++ client is retired: branch `cpp-direct-client`, tag
 `cpp-direct-client-final`. There is **no C++ replay server** — the server side of the replay protocol is Java only.
 
 `seqeron-service/src/main/ops/` holds the Prometheus and Grafana provisioning the metrics scripts feed
-(`doc/ops.md`); it is deployment configuration, not code.
+(`doc/operations/ops.md`); it is deployment configuration, not code.
 
 ## C++ build
 

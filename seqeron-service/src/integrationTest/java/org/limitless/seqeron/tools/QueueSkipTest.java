@@ -22,7 +22,7 @@ import org.limitless.seqeron.protocol.FrameLayer;
 
 /**
  * A tethered subscriber that stops reading a member's queue, while its client stays alive, holds the queue a window
- * behind it until the member's queue agent skips it (doc/plans/queue-off-duty-cycle-plan.md, step 3): the queue is
+ * behind it until the member's queue agent skips it (doc/records/plans/queue-off-duty-cycle-plan.md, step 3): the queue is
  * revoked, which takes the subscriber's image down, and reopened at the commit position under a new session. The
  * member keeps running, and a client reading the queue throughout heals the skipped frames by replay.
  */

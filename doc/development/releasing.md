@@ -36,5 +36,5 @@ To cut one:
    tail of JitPack's build log).
 4. Check the GitHub Release lists the zip, the three jars and the package. It is created last, so it
    exists only when the JitPack build, the image push and the NuGet push have succeeded.
-5. Bump the release pinned in [`getting-started.md`](getting-started.md) when the API its snippets use
+5. Bump the release pinned in [`getting-started.md`](../clients/getting-started.md) when the API its snippets use
    has changed.

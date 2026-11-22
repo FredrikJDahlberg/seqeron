@@ -133,7 +133,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_replayer_log_records_dropped_total` | counter | log records the process dropped because its logging thread had fallen 4096 records behind, such as on a stderr pipe that blocks; the logging thread writes a line with the number once it catches up. The process's duty cycles never wait on the write |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a Replayer that never answers and a gap this member's recording cannot cover; the client's own log line names which |
 | `seqeron_hosted_lag_bytes` | gauge | how far a hosted client trails its host: the bytes of the queue the host has dispatched and the client not yet applied (`seqeron-protocol-spec.md` **H-14**). The counter exists only while a client is attached, so no client is no series rather than 0. Labelled `client` with the host's `proxy.clientId`, its façade's, which is unique on the node as every client's is ([Client ids](#client-ids)). A lag that only grows is a client falling behind |
-| `seqeron_app_snapshot_round` | gauge | the last snapshot round this client confirmed against its source's sequenced `SnapshotEnd` and holds a durable file for ([`snapshot.md`](snapshot.md) §5), 0 until its process confirms one; also labelled `client`, and its label names the `source`. Every instance of a participating source should follow the latest round; one that lags is missing rounds |
+| `seqeron_app_snapshot_round` | gauge | the last snapshot round this client confirmed against its source's sequenced `SnapshotEnd` and holds a durable file for ([`snapshot.md`](../architecture/snapshot.md) §5), 0 until its process confirms one; also labelled `client`, and its label names the `source`. Every instance of a participating source should follow the latest round; one that lags is missing rounds |
 | `seqeron_gateway_connections` | gauge | connections this gateway instance holds open: taken with `openConnection` and not yet closed. 0 on a standby, and reset when the edge closes. Labelled `client` as well as `member`; `sum` over every instance gives a deployment's total |
 
 ### Aeron Cluster's metrics
@@ -253,7 +253,7 @@ Set them alike on every member.
 
 The heartbeat timeout is also how long a member copying the log from the leader waits on progress before it gives up,
 and a copy that keeps giving up is part of how Aeron Cluster 1.53.2 loses a committed entry
-([`fault-tolerance.md`](fault-tolerance.md) §1.4). Lowering it buys a faster failover with more elections that only a
+([`fault-tolerance.md`](../architecture/fault-tolerance.md) §1.4). Lowering it buys a faster failover with more elections that only a
 GC pause or a starved thread started, and more abandoned copies. Raising it is bounded by the clients: the new-leader
 wait (5 s), a send's spin through an election (10 s) and the queue-stall fence (20 s) must each outlast a failover,
 and the 5 s startup canvass must be at least twice the heartbeat timeout.
@@ -419,7 +419,7 @@ the Raft log included.
 
 ## Cluster snapshots
 
-A `<snapshots>` policy turns on cluster snapshots ([`snapshot.md`](snapshot.md) §10); without one a member's recovery is
+A `<snapshots>` policy turns on cluster snapshots ([`snapshot.md`](../architecture/snapshot.md) §10); without one a member's recovery is
 a replay of its whole log.
 
 - **Rounds start no closer than `sequencer.sessionTimeoutMs` plus 1 s apart**, the leader's own value. The consensus
@@ -438,7 +438,7 @@ a replay of its whole log.
   joins later is not waited for, and the cut is restart-safe without it: its restart is then fenced until a peer's file
   is copied in. Keep it above the longest time an application takes to serialize.
 - **A gateway host purges its queue recordings too**, below the newest cut that every instance on the host that joined
-  the round has confirmed ([`snapshot.md`](snapshot.md) §10.6). Its join window is `replayer.snapshotJoinMs` on the
+  the round has confirmed ([`snapshot.md`](../architecture/snapshot.md) §10.6). Its join window is `replayer.snapshotJoinMs` on the
   host's own JVM, default 10000, above a member's because a host's purge cannot be undone. An instance that is down or
   late at a round and restarts after the host has purged past its file is fenced until a peer's file is copied in, so
   this window is the operator's fence-risk knob. A host with no `<snapshots>` policy sees no markers and purges nothing.
@@ -469,7 +469,7 @@ a replay of its whole log.
 A queue that makes no progress for `sequencer.queueStallTimeoutMs` (default 5 s) under back-pressure is held by a
 subscriber its driver has not dropped: a tethered one whose client is alive and not reading, since seqeron's own
 consumers subscribe untethered. The member's queue agent then skips the queue
-([`fault-tolerance.md`](fault-tolerance.md) §1.3): it revokes the queue, which takes every image on it down, drops the
+([`fault-tolerance.md`](../architecture/fault-tolerance.md) §1.3): it revokes the queue, which takes every image on it down, drops the
 queue's frames up to the commit position, and opens it again there. The member keeps running, and the queue's
 consumers heal the skipped frames by replay, as after an eviction.
 
@@ -504,7 +504,7 @@ recordings, as `replayer.queueStallTimeoutMs` in the host's JVM.
 - **Restart it** once its driver is healthy. Recovery is the usual replay of the log, and its queue agent derives
   the queues again. Under a supervisor this is automatic: exit 70, against the 0 of an orderly
   `clusterctl shutdown`, is the signal to restart. A member that halted rather than shut down
-  ([`fault-tolerance.md`](fault-tolerance.md) §1.3) leaves its mark files active, and a restart within
+  ([`fault-tolerance.md`](../architecture/fault-tolerance.md) §1.3) leaves its mark files active, and a restart within
   about 10 s fails with "active mark file detected"; delay the restart by 12 s or retry it.
 - **If it exits 70 again immediately**, the driver is still broken: at start-up each queue's own subscriber must
   connect within the stall timeout. Fix the driver first.
@@ -512,18 +512,18 @@ recordings, as `replayer.queueStallTimeoutMs` in the host's JVM.
 A member also exits 70 when its Replayer's duty cycle dies (a `[ReplayerService/N]` error names it), and 71
 when its shutdown gave up waiting for that duty cycle. Both mean restart it.
 
-It exits 70, too, when its log is truncated below what it applied ([`fault-tolerance.md`](fault-tolerance.md) §1.4):
+It exits 70, too, when its log is truncated below what it applied ([`fault-tolerance.md`](../architecture/fault-tolerance.md) §1.4):
 `[SequencerServer/N] FATAL: the log was truncated below what this node applied …`. Restart it as above, and see that section before
 serving its history.
 
-It exits 70 when a cluster snapshot failed before its service applied the round ([`fault-tolerance.md`](fault-tolerance.md) §1.5):
+It exits 70 when a cluster snapshot failed before its service applied the round ([`fault-tolerance.md`](../architecture/fault-tolerance.md) §1.5):
 `[SequencerService/N] FATAL: a cluster snapshot failed outside this node's service …`, behind the archive error
 that failed it. Restart it as above; if it exits 70 again at the same snapshot, its archive is the fault.
 
 ## A gateway that fences itself
 
 A gateway built on the client tier's `Gateway` stops itself when it can no longer trust its view of the log
-([`fault-tolerance.md`](fault-tolerance.md) §2.1). The façade reports the reason once, through
+([`fault-tolerance.md`](../architecture/fault-tolerance.md) §2.1). The façade reports the reason once, through
 `onFenced(ClusterError, detail)`, having released its cluster session, and the application normally exits.
 `TestGateway`, `TestApplication` and the examples exit **70**; a production gateway chooses its own code,
 and 70 is this repository's convention for "fenced, restart me". A gateway is not a cluster member, so this is never a quorum question.
@@ -534,7 +534,7 @@ and 70 is this repository's convention for "fenced, restart me". A gateway is no
 | `QUEUE_STALLED` | no `ClusterHeartbeat` on the co-located queue for 20 s, usually because that member's `SequencerServer` terminated (above); they share the queue. A standby instance or a replica not on the leader's member logs `QueueStalled` instead and keeps running |
 | `RECOVERY_STALLED` | recovery delivered nothing for 60 s after the instance had been caught up; see `seqeron_app_recovery_stalled`. A standby or non-leader replica logs `RecoveryStalled` instead and keeps running |
 | `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced: its state is not the log's (spec §16 A-7). A restart rebuilds the state; an instance that diverges again has broken determinism (A-6) |
-| `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot: a `formatVersion` or header version its build does not read, or records that stopped matching the file's trailer after they were checked ([`snapshot.md`](snapshot.md) §7). A file damaged before the restore gives way to the older one the instance keeps, with a `SnapshotStoreFailed` warning, and fences nothing. The log line `SnapshotRestoreFailed` names the round. A restart repeats it until the build is fixed or the file, `<round>.snapshot` in the instance's snapshot directory, is removed; the instance then restores the older file, or replays from `clusterSeqNo` 1 |
+| `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot: a `formatVersion` or header version its build does not read, or records that stopped matching the file's trailer after they were checked ([`snapshot.md`](../architecture/snapshot.md) §7). A file damaged before the restore gives way to the older one the instance keeps, with a `SnapshotStoreFailed` warning, and fences nothing. The log line `SnapshotRestoreFailed` names the round. A restart repeats it until the build is fixed or the file, `<round>.snapshot` in the instance's snapshot directory, is removed; the instance then restores the older file, or replays from `clusterSeqNo` 1 |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the queue did not match the oldest pending one, most often because the sequencer rejected one (`seqeron_sequencer_rejected_ingress_total`) |
 
 - **The standby takes over by itself**, if one is running. A fenced instance looks to the cluster like a
