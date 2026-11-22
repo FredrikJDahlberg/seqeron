@@ -69,6 +69,8 @@ import org.limitless.seqeron.util.Logger;
  *   probe.fillerBytes       — submit, confirm: bytes of filler per frame; default 0
  *   probe.pacingMicros      — submit, confirm: pause between frames; default 0 (as fast as ingress accepts)
  *   probe.pendingSends      — confirm: hold and resend across a leader change; default true
+ *   probe.drainTimeoutSecs  — confirm: how long the run may go without sending, resending or seeing an own
+ *                             frame before it is judged; default 15
  *   probe.latencyStats      — follow: record and report post-catch-up delivery latency; default false
  *   probe.faultInjection    — follow: install the SIGUSR1 queue-drop handler; default false
  *   probe.faultDropCount    — follow: frames dropped per SIGUSR1; default 1
@@ -145,7 +147,7 @@ public final class ClusterProbe {
     private static final int PENDING_CAPACITY = 4096;
 
     /** confirm: how long the run may go without sending, resending or seeing an own frame before it is judged. */
-    private static final long DRAIN_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(15);
+    private static final long DRAIN_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(Long.getLong("probe.drainTimeoutSecs", 15L));
 
     /** Exit status of a follower whose duty cycle died — its media driver went away. Mirrors ReplayerServer's. */
     private static final int EXIT_DUTY_CYCLE_FATAL = 70;

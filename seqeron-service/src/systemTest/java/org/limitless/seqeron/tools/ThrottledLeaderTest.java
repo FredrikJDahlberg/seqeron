@@ -32,6 +32,11 @@ class ThrottledLeaderTest {
     private static final String LEADER = "seqeron.sequencer.currentLeaderMemberId";
     private static final String CONTROL_REPLIES_DROPPED = "seqeron.replayer.controlRepliesDroppedCount";
     private static final int PINGS_AFTER_HEAL = 5;
+    /**
+     * A starved leader that keeps leading may commit nothing for the whole fault, so the producer waits that long and
+     * a failover more before it judges the run.
+     */
+    private static final long DRAIN_TIMEOUT_SECS = FAULT_SECS + 15;
 
     private DockerCluster cluster;
 
@@ -54,6 +59,7 @@ class ThrottledLeaderTest {
         final ClusterProcesses.Child confirm = cluster.probe("confirm", producerMember, "confirm",
                                                              "probe.count=" + CONFIRM_COUNT,
                                                              "probe.pacingMicros=" + CONFIRM_PACING_MICROS,
+                                                             "probe.drainTimeoutSecs=" + DRAIN_TIMEOUT_SECS,
                                                              "probe.clientId=11");
         confirm.awaitLine("confirm: sending", DockerCluster.deadline(60));
 
