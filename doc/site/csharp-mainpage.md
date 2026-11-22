@@ -43,9 +43,9 @@ The package carries its XML docs, so an IDE shows these pages, and a symbols pac
 
 ## Read next
 
-- [Client API](https://github.com/FredrikJDahlberg/seqeron/blob/main/doc/client-api.md): what a client
+- [Client API](https://github.com/FredrikJDahlberg/seqeron/blob/main/doc/clients/client-api.md): what a client
   programs against, in each language, and what is not API
-- [Protocol specification](https://github.com/FredrikJDahlberg/seqeron/blob/main/doc/seqeron-protocol-spec.md):
+- [Protocol specification](https://github.com/FredrikJDahlberg/seqeron/blob/main/doc/architecture/seqeron-protocol-spec.md):
   the frames, the two families and the system vocabulary
 - [Examples](https://github.com/FredrikJDahlberg/seqeron/tree/main/seqeron-examples): `FollowStream`, the
   smallest complete client, and the two façades in use

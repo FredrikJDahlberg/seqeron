@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# trading-day.sh — a trading day's message rates against three hosts (doc/ec2-tests.md, test 4): TradingDayBench on the
+# trading-day.sh — a trading day's message rates against three hosts (doc/performance/ec2-tests.md, test 4): TradingDayBench on the
 # leader's host replays a profile's phases, every message 50 bytes, and prints a line per phase into
 # <results>/day-<stamp>.txt. Each run takes a fresh cluster loading topology-test-hosted-quiet.xml. Each member's
 # driver counters are sampled every MULTIHOST_COUNTER_MS (default 10, 0 for none) by CounterSampler, into its

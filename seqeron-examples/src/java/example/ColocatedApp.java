@@ -147,7 +147,7 @@ public final class ColocatedApp implements Application.Listener {
     /**
      * The whole election, for the producer kind nothing elects. Every leadership change shuts an open
      * gate, and a payload submitted during the election may have gone with it; a replica keeping outstanding work
-     * gives its {@code OutstandingWork} to the builder, which discharges it on false.
+     * calls its {@code OutstandingWork.onNotLeader()} here on false.
      */
     @Override
     public void onLeadershipChanged(final boolean leading) {

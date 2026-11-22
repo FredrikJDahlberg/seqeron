@@ -58,34 +58,6 @@ public class FacadeConstructionTest
         public void OnFenced(ClusterError fence, string detail) { }
     }
 
-    private sealed class GateRecorder : IApplicationListener
-    {
-        public readonly System.Collections.Generic.List<string> Seen = new System.Collections.Generic.List<string>();
-        public Func<bool> Discharged = () => false;
-        public void OnLeadershipChanged(bool leading) => Seen.Add(leading + ":" + Discharged());
-        public void OnSequenced(Payload payload) { }
-        public void OnFenced(ClusterError fence, string detail) { }
-    }
-
-    [Fact(DisplayName = "a closing gate runs OnNotLeader before the listener hears false; an opening one does not")]
-    public void ClosingTheGateRunsTheHookFirst()
-    {
-        var recorder = new GateRecorder();
-        bool discharged = false;
-        recorder.Discharged = () => discharged;
-        var options = new ApplicationOptions
-        {
-            SourceId = 7, ClientId = 1, EgressChannel = Egress, IngressEndpoints = "0=localhost:1", Listener = recorder,
-            MemberId = 1, OnNotLeader = () => discharged = true,
-        };
-        var application = new Application(options);
-
-        application.GateEdge(true);
-        Assert.False(discharged);
-        application.GateEdge(false);
-        Assert.Equal(new[] { "True:False", "False:True" }, recorder.Seen);
-    }
-
     [Fact(DisplayName = "off the cluster there is no IPC ingress to time, so the two options are rejected together")]
     public void OffClusterRejectsAnIpcTimeout()
     {
@@ -137,7 +109,7 @@ public class FacadeConstructionTest
         var options = new ApplicationOptions
         {
             SourceId = 7, ClientId = 1, EgressChannel = Egress, IngressEndpoints = "0=localhost:1", Listener = application,
-            MemberId = 1, OnNotLeader = () => { },
+            MemberId = 1,
         };
         Assert.NotNull(new Application(options));
     }

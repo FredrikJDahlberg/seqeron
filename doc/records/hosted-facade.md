@@ -1,6 +1,6 @@
 # Hosted façades: design record
 
-The hosted façade protocol is [`seqeron-protocol-spec.md`](seqeron-protocol-spec.md) §17 ("spec §17" below). This
+The hosted façade protocol is [`seqeron-protocol-spec.md`](../architecture/seqeron-protocol-spec.md) §17 ("spec §17" below). This
 is its design record: what it adds to and retires from the tree, the questions still open, the measurements behind
 it, what the prototype host and the C++ stubs were shown to do, and the plan for moving the C# client.
 

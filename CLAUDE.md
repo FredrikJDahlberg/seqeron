@@ -65,7 +65,7 @@ external producers, plus the replayer that serves history derived from each node
 plumbing that follows the ordered stream.
 
 This repository is that tier **alone**: it contains no application edges and no application schemas.
-Every `doc/<name>.md` reference in this tree resolves inside it. Do not cite a document that is not
+Every `doc/…` reference in this tree resolves inside it. Do not cite a document that is not
 here — state the reason inline instead.
 
 **Every artifact says `seqeron`** — package `org.limitless.seqeron`, Gradle project `seqeron`, the fat
@@ -173,7 +173,7 @@ replay server and gateway host, the topology document), `seqeron-client/CLAUDE.m
 confirmed sends, the C++ and C# builds, `ReplayerRecovery` parity),
 `seqeron-service/src/integrationTest/CLAUDE.md`, `seqeron-service/src/test/scripts/CLAUDE.md` (the
 harnesses, `TestGateway`, `TestApplication`), `.claude/rules/sbe-codegen.md` and
-`.claude/rules/operator-scripts.md`. `doc/overview.md` is the design in full.
+`.claude/rules/operator-scripts.md`. `doc/architecture/overview.md` is the design in full.
 
 Note that **no cluster callback may signal failure by throwing**: `Image.boundedControlledPoll` has
 already advanced the log position past the message and `AgentRunner` keeps the agent alive, so a throw
@@ -189,7 +189,7 @@ length-prefixed payload named by `header.payloadId`. The **system** family is se
 `SequencedSystem` (103) for the thirteen events a producer submits, plus five templates of their own for
 the five the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105), `GatewayActive`
 (106), `SnapshotStarted` (107), `SessionClosed` (108). Sequencing is copy-20/append-24 for both, the payload is never re-encoded, and `sequenceMessage`
-validates every frame against `doc/seqeron-protocol-spec.md` §9.2.
+validates every frame against `doc/architecture/seqeron-protocol-spec.md` §9.2.
 
 **The cluster tier decodes no `payloadId` at all** — every application payload is copied through
 unopened. `payloadId` 1 is retired and refused on ingress: core was a `payloadId` until the system family
@@ -222,28 +222,31 @@ snapshots** (a node's recovery time and archive size grow with the history its a
 deployment that resets the archive between runs; with a policy they are bounded by the policy's
 `bytes`, and every consumer of a member's queue must then be able to restart from a snapshot file, which only an
 `Application` or `Gateway` writes).
-The cluster is bounded at seven members by the 70-port cluster block (`doc/ops.md`, "Ports"); three or five is usual.
+The cluster is bounded at seven members by the 70-port cluster block (`doc/operations/ops.md`, "Ports"); three or five is usual.
 `SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by both mirrors
 — but does not widen it. `SEQERON_HOSTS` names the members' hosts, deployment-wide too, and is read by
 both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
 
-`doc/plans/` and `doc/reviews/` hold the plans, proposals and reviews: dated records, not descriptions of the
-code. A plan is cited by path from the code it changed (`doc/plans/disk-load-plan.md`, step 2a).
+`doc/records/plans/` and `doc/records/reviews/` hold the plans, proposals and reviews: dated records, not descriptions of the
+code. A plan is cited by path from the code it changed (`doc/records/plans/disk-load-plan.md`, step 2a).
 
-`doc/` holds `overview.md` (the design, for architects: what each part does and why, the life of a
-message, the failure model, the limits — keep it in step with the documents it summarizes),
-`getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
-release, so bump them when one changes the API they use), `running-a-cluster.md` (the processes, a node's
-ports, properties and restart, the operator scripts), `building.md` (each language's build, the unit
-suites, the harnesses, the examples), `ec2-tests.md` (the measurements that need separate hosts: their cost,
-runtime and the multi-host scripts), `account.md` (the AWS account those tests run in: users, cost limits, quotas, network, launch), `releasing.md`, `log-printer.md`, `seqeron-protocol-spec.md` (normative — the frames, the families,
-the system vocabulary, the topology document, the hosted façade protocol in §17), `hosted-facade.md` (the hosted
-façades' design record: what they add to and retire from the tree, open questions, measurements, the prototype's
-results), `client-api.md` (what a client programs against, and what in
-the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), `snapshot.md`
-(application snapshots: local files the log confirms), `upgrades.md` (seqeron and application versions,
-and the proposed snapshot-and-upcaster upgrade model), and `versioning-prior-art.md` (how exchanges and
-log-based systems version their protocols, as background to `upgrades.md`). The topology documents here are
+`doc/` is grouped by reader, and `doc/README.md` is its index and the architect's reading order — add a
+document there when you add one. `architecture/` holds `overview.md` (the design, for architects: what each part
+does and why, the life of a message, the failure model, the limits — keep it in step with the documents it
+summarizes), `fault-tolerance.md`, `snapshot.md` (application snapshots: local files the log confirms),
+`upgrades.md` (seqeron and application versions, and the proposed snapshot-and-upcaster upgrade model),
+`seqeron-protocol-spec.md` (normative — the frames, the families, the system vocabulary, the topology document, the
+hosted façade protocol in §17) and `versioning-prior-art.md` (background to `upgrades.md`). `clients/` holds
+`getting-started.md` (a release node plus a consumer and a producer; its snippets pin a release, so bump them when
+one changes the API they use) and `client-api.md` (what a client programs against, and what in the client tier is
+not API — update it when that surface changes). `operations/` holds `running-a-cluster.md`, `clusterctl.md`,
+`ops.md` (runbooks, ports, counters) and `log-printer.md`. `performance/` holds `ec2-results.md`, `ec2-tests.md`
+(the measurements that need separate hosts: their cost, runtime and the multi-host scripts) and `account.md` (the
+AWS account those tests run in). `development/` holds `building.md` and `releasing.md`. `records/` holds what is
+dated rather than current: `plans/`, `reviews/`, `hosted-facade.md` (the hosted façades' design record), and
+superseded measurements, named by date, and diagrams. `presentation/` holds the architecture deck, built by
+`build-deck.py` and ending at its Discussion slide; a further topic is a deck of its own, as the dated benchmarks
+deck is. The topology documents here are
 `seqeron-service/src/test/resources/topology-test-gateway.xml`, `topology-test-snapshot.xml` and
 `topology-test-groups.xml` beside it, and
 `seqeron-examples/topology.xml` and `topology-csharp.xml`. `client-api.md`'s tables have a column per language,

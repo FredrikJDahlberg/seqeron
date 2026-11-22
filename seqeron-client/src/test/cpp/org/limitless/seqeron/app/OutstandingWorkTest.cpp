@@ -161,5 +161,19 @@ TEST(OutstandingWork, DispatchFollowsRequestOrder)
     EXPECT_EQ((Keys{ 5, 3, 9 }), recorder.dispatched) << "the order requests were sequenced, not key order";
 }
 
+TEST(OutstandingWork, AnsweredRequestAskedAgainGoesToTheBack)
+{
+    OutstandingWork<int> work;
+    work.onRequest(1, 0);
+    work.onRequest(2, 0);
+    work.onReply(1);
+    work.onRequest(1, 0);
+
+    Recorder recorder;
+    work.dispatchUndispatched(std::ref(recorder));
+
+    EXPECT_EQ((Keys{ 2, 1 }), recorder.dispatched);
+}
+
 } // namespace
 } // namespace org::limitless::seqeron::app

@@ -2,9 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
+#include <list>
 #include <unordered_map>
-#include <unordered_set>
-#include <vector>
+#include <utility>
 
 namespace org::limitless::seqeron::app {
 
@@ -24,10 +25,13 @@ class OutstandingWork
      */
     void onRequest(const Key& key, Work work)
     {
-        if (m_outstanding.insert_or_assign(key, std::move(work)).second)
+        if (const auto found = m_outstanding.find(key); found != m_outstanding.end())
         {
-            m_order.push_back(key);
+            found->second->work = std::move(work);
+            return;
         }
+        m_order.push_back(Entry{ key, std::move(work), false });
+        m_outstanding.emplace(key, std::prev(m_order.end()));
     }
 
     /**
@@ -37,14 +41,20 @@ class OutstandingWork
      */
     void onReply(const Key& key)
     {
-        m_outstanding.erase(key);
-        m_dispatched.erase(key);
+        if (const auto found = m_outstanding.find(key); found != m_outstanding.end())
+        {
+            m_order.erase(found->second);
+            m_outstanding.erase(found);
+        }
     }
 
     // The leader gate closed: forget what this node dispatched, so the next opening re-dispatches it.
     void onNotLeader()
     {
-        m_dispatched.clear();
+        for (Entry& entry : m_order)
+        {
+            entry.dispatched = false;
+        }
     }
 
     /**
@@ -54,7 +64,10 @@ class OutstandingWork
      */
     void onReplyNotEmitted(const Key& key)
     {
-        m_dispatched.erase(key);
+        if (const auto found = m_outstanding.find(key); found != m_outstanding.end())
+        {
+            found->second->dispatched = false;
+        }
     }
 
     /**
@@ -68,30 +81,19 @@ class OutstandingWork
     int dispatchUndispatched(DispatchFn&& dispatch)
     {
         int dispatchedCount = 0;
-        std::size_t live = 0;
-        bool stopped = false;
-        for (std::size_t i = 0; i < m_order.size(); ++i)
+        for (Entry& entry : m_order)
         {
-            const Key& key = m_order[i];
-            const auto entry = m_outstanding.find(key);
-            if (entry != m_outstanding.end())
+            if (entry.dispatched)
             {
-                m_order[live++] = key;
-                if (!stopped && !m_dispatched.contains(key))
-                {
-                    if (dispatch(key, entry->second))
-                    {
-                        m_dispatched.insert(key);
-                        ++dispatchedCount;
-                    }
-                    else
-                    {
-                        stopped = true;
-                    }
-                }
+                continue;
             }
+            if (!dispatch(entry.key, entry.work))
+            {
+                break;
+            }
+            entry.dispatched = true;
+            ++dispatchedCount;
         }
-        m_order.resize(live);
         return dispatchedCount;
     }
 
@@ -102,13 +104,20 @@ class OutstandingWork
 
     [[nodiscard]] bool isDispatched(const Key& key) const
     {
-        return m_dispatched.contains(key);
+        const auto found = m_outstanding.find(key);
+        return found != m_outstanding.end() && found->second->dispatched;
     }
 
   private:
-    std::unordered_map<Key, Work> m_outstanding;
-    std::unordered_set<Key> m_dispatched;
-    std::vector<Key> m_order; // request order; compacted by each sweep
+    struct Entry
+    {
+        const Key key;
+        Work work;
+        bool dispatched; // local to this node
+    };
+
+    std::list<Entry> m_order; // request order
+    std::unordered_map<Key, typename std::list<Entry>::iterator> m_outstanding;
 };
 
 } // namespace org::limitless::seqeron::app

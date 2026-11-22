@@ -28,11 +28,17 @@ public sealed class OutstandingWork<TKey, TWork>
     /// <returns>true if taken, false to stop the sweep (no capacity); the rest wait for the next call</returns>
     public delegate bool Dispatcher(TKey key, TWork work);
 
+    private struct Entry
+    {
+        public TKey Key;
+        public TWork Work;
+        public bool Dispatched; // local to this node
+    }
+
     // Request order, with each key's node, so a re-asserted request keeps its place and a reply removes in O(1).
-    private readonly LinkedList<KeyValuePair<TKey, TWork>> _order = new LinkedList<KeyValuePair<TKey, TWork>>();
-    private readonly Dictionary<TKey, LinkedListNode<KeyValuePair<TKey, TWork>>> _outstanding =
-        new Dictionary<TKey, LinkedListNode<KeyValuePair<TKey, TWork>>>();
-    private readonly HashSet<TKey> _dispatched = new HashSet<TKey>();
+    private readonly LinkedList<Entry> _order = new LinkedList<Entry>();
+    private readonly Dictionary<TKey, LinkedListNode<Entry>> _outstanding =
+        new Dictionary<TKey, LinkedListNode<Entry>>();
 
     /// <summary>A request seen on the sequenced stream, on every replica. Idempotent on the key, keeping its
     /// position.</summary>
@@ -40,38 +46,42 @@ public sealed class OutstandingWork<TKey, TWork>
     /// <param name="work">what dispatching it needs</param>
     public void OnRequest(TKey key, TWork work)
     {
-        var entry = new KeyValuePair<TKey, TWork>(key, work);
-        if (_outstanding.TryGetValue(key, out LinkedListNode<KeyValuePair<TKey, TWork>> node))
+        if (_outstanding.TryGetValue(key, out LinkedListNode<Entry> node))
         {
-            node.Value = entry;
+            node.ValueRef.Work = work;
             return;
         }
-        _outstanding.Add(key, _order.AddLast(entry));
+        _outstanding.Add(key, _order.AddLast(new Entry { Key = key, Work = work }));
     }
 
     /// <summary>Its sequenced reply, on every replica: the request is answered.</summary>
     /// <param name="key">the request's key</param>
     public void OnReply(TKey key)
     {
-        if (_outstanding.Remove(key, out LinkedListNode<KeyValuePair<TKey, TWork>> node))
+        if (_outstanding.Remove(key, out LinkedListNode<Entry> node))
         {
             _order.Remove(node);
         }
-        _dispatched.Remove(key);
     }
 
     /// <summary>The leader gate closed: forget what this node dispatched, so the next opening re-dispatches
     /// it.</summary>
     public void OnNotLeader()
     {
-        _dispatched.Clear();
+        for (LinkedListNode<Entry> node = _order.First; node != null; node = node.Next)
+        {
+            node.ValueRef.Dispatched = false;
+        }
     }
 
     /// <summary>The reply offer failed, so no sequenced reply will come. The request stays outstanding.</summary>
     /// <param name="key">the request's key</param>
     public void OnReplyNotEmitted(TKey key)
     {
-        _dispatched.Remove(key);
+        if (_outstanding.TryGetValue(key, out LinkedListNode<Entry> node))
+        {
+            node.ValueRef.Dispatched = false;
+        }
     }
 
     /// <summary>Leader only, while the gate is open. Offers each undispatched outstanding request in request
@@ -81,17 +91,18 @@ public sealed class OutstandingWork<TKey, TWork>
     public int DispatchUndispatched(Dispatcher dispatcher)
     {
         int count = 0;
-        foreach (KeyValuePair<TKey, TWork> entry in _order)
+        for (LinkedListNode<Entry> node = _order.First; node != null; node = node.Next)
         {
-            if (_dispatched.Contains(entry.Key))
+            ref Entry entry = ref node.ValueRef;
+            if (entry.Dispatched)
             {
                 continue;
             }
-            if (!dispatcher(entry.Key, entry.Value))
+            if (!dispatcher(entry.Key, entry.Work))
             {
                 break;
             }
-            _dispatched.Add(entry.Key);
+            entry.Dispatched = true;
             ++count;
         }
         return count;
@@ -104,6 +115,6 @@ public sealed class OutstandingWork<TKey, TWork>
     /// <param name="key">the request's key</param>
     public bool IsDispatched(TKey key)
     {
-        return _dispatched.Contains(key);
+        return _outstanding.TryGetValue(key, out LinkedListNode<Entry> node) && node.Value.Dispatched;
     }
 }

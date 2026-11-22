@@ -79,7 +79,7 @@ Where each kind of message travels, and which of those streams is the durable re
 
 - **F-1. The queues are the record.** Without a `<snapshots>` policy the cluster takes no snapshots and recovers
   by replaying the full log from `clusterSeqNo` 1, so the queues' bytes are the only durable copy of a frame; with
-  one, a member's queue starts again at the cut of the snapshot it restarts from (`doc/snapshot.md` §10.3). Every frame
+  one, a member's queue starts again at the cut of the snapshot it restarts from (`doc/architecture/snapshot.md` §10.3). Every frame
   sequenced after activation (§7.4) is on at least one queue, and a frame on several queues is recorded once
   on each. An application snapshot (§7.3) is frames on a queue like any other.
 - **F-2. Every node's queues carry the same frames in the same order.** Each frame is byte-identical on every
@@ -600,7 +600,7 @@ Field semantics:
   `gatewayName`, and a slot whose byte 0 is `0x00` declares no group. At least one slot declares a group
   (**S-8**). Producers name groups by these names (**A-9**).
 
-The snapshot protocol these events carry is `doc/snapshot.md`.
+The snapshot protocol these events carry is `doc/architecture/snapshot.md`.
 
 **Connections.** The sequencer keeps no connection state. A consumer that tracks connections derives
 its view from these frames, keyed on `(header.sourceId, header.connectionId)`. A crashed instance never
@@ -674,8 +674,8 @@ frame at the same `clusterSeqNo`.
 
 A round is a cut in the log: a synthesized `SnapshotStarted` whose `clusterSeqNo` is the point every
 participating source serializes its state at. It is published by the cluster's snapshot action, which the leader
-asks for when a round is due, so that a round is also a cluster snapshot (`doc/snapshot.md` §10). The sequencer tracks
-nothing about a round once it has started; what the sources submit for it is `doc/snapshot.md`. Its state is the latest
+asks for when a round is due, so that a round is also a cluster snapshot (`doc/architecture/snapshot.md` §10). The sequencer tracks
+nothing about a round once it has started; what the sources submit for it is `doc/architecture/snapshot.md`. Its state is the latest
 `SnapshotPolicyRegistered`'s interval and byte threshold, the last round number, the timestamp the
 interval counts from, and the bytes sequenced since the last `SnapshotStarted`: the length of every
 frame published to the queues, each counted once however many queues it reaches.
@@ -717,7 +717,7 @@ holds the whole history, so no instance would read it.
 **What it costs.** A frame is published on every queue that carries it: a system frame once per group, an
 application frame once per bit in its mask. A member's archive records only the Raft log, and a replay of
 one group derives it from every group's log entries; a gateway host's archive records each queue it relays,
-the sum of its queues. A queue held back past the stall timeout is skipped (`doc/fault-tolerance.md` §1.3). Groups pay
+the sum of its queues. A queue held back past the stall timeout is skipped (`doc/architecture/fault-tolerance.md` §1.3). Groups pay
 off when most application frames address one group; a deployment whose frames mostly address every group
 pays the publications, saves no reads, and should declare one group. Groups are not access control: the producer chooses the mask, and every queue
 carries every system frame.
@@ -729,7 +729,7 @@ keeps that frame until then.
 
 A node's queue agent, which publishes its queues from the committed log, opens each queue at its first frame,
 with a subscriber of its own. A node whose subscriber does not connect within the stall timeout terminates
-itself (`doc/fault-tolerance.md` §1.3): its peers keep quorum, and its restart derives the same frame and
+itself (`doc/architecture/fault-tolerance.md` §1.3): its peers keep quorum, and its restart derives the same frame and
 waits again. A queue is reopened only when it is skipped, at the position its log gives and under a new session
 id, so a node's queue holds the log's positions across every leader tenure. (`QueueAgent`)
 
@@ -944,7 +944,7 @@ no header composite and are never sequenced or recorded.
 | `ReplayPending` (8) | replayer → client | not now: no slot is free, the replayer is not ready, the recording has not reached `fromPosition` yet, or the queue a `QueueRequest` asks for is not known yet; wait and resend |
 | `QueueRequest` (9) | client → replayer | which queue to read: the group of the gateway instance `gatewayName` names, or of the application `sourceId` names, or, naming neither, the default queue (**R-6**) |
 | `QueueResolved` (10) | replayer → client | read the queue `queueId` names |
-| `SnapshotRound` (11) | replayer → every client | a snapshot round was cut on this node (`doc/snapshot.md` §10.8) |
+| `SnapshotRound` (11) | replayer → every client | a snapshot round was cut on this node (`doc/architecture/snapshot.md` §10.8) |
 | `SnapshotJoined` (12) | application → replayer | this application replica takes part in the round |
 | `SnapshotConfirmed` (13) | application → replayer | this replica's file for the round is confirmed and durable under its name |
 
@@ -958,7 +958,7 @@ no header composite and are never sequenced or recorded.
   refuses it: it is before the recording's start or not a frame boundary in it. A client MUST treat that
   as fatal: positions follow from the frames, and neither a restart at a cut nor a purge moves a frame, so
   either the recording does not match the positions the client holds or its start has passed them
-  (`doc/snapshot.md` §10.6). A position the recording has not reached yet is answered `ReplayPending`.
+  (`doc/architecture/snapshot.md` §10.6). A position the recording has not reached yet is answered `ReplayPending`.
 - **R-3.** A replay holds its slot until the replay's publication is gone: the archive has ended the
   replay and its subscriber has let it go, or the subscriber's client has died. A replay that moves has no
   time limit, but one whose subscriber reads nothing of it for `STALLED_REPLAY_TIMEOUT_MS` = 10 000 ms,
@@ -981,7 +981,7 @@ no header composite and are never sequenced or recorded.
   logs, once per source, a `QueueRequest` it cannot answer with a queue it serves: the row is not on the
   log yet, or, on a gateway host, it names a group the host does not relay (`replayer.groups`). The
   instance waits unfenced, since the recovery-stall fence arms only after its first catch-up
-  (`doc/fault-tolerance.md` §2.1), so alert on that log line.
+  (`doc/architecture/fault-tolerance.md` §2.1), so alert on that log line.
 - **R-7.** A request that names a cut (`cutClusterSeqNo`) asks for the active recording from the frame with that
   `clusterSeqNo`, wherever it is; `fromPosition` is only a hint at where, and need not be a frame boundary. The
   replayer answers it with a replay that starts at the frame, `ReplayPending` while the recording has not reached
@@ -993,14 +993,14 @@ The replayer serves only the active recording of each of its node's queues, what
 member, the one its derivation of the Raft log holds; on a gateway host, its archive's. With no `<snapshots>`
 policy, a node's every start derives each queue from `clusterSeqNo` 1, which holds the whole queue. With one, a
 member restarted at a cut starts its queues at the cut, and a purge moves a queue's start forward while the node
-runs (`doc/snapshot.md` §10.3, §10.6). A client replaying from
+runs (`doc/architecture/snapshot.md` §10.3, §10.6). A client replaying from
 `FROM_START` checks that the first frame it dispatches is `groupSeqNo` 1, and stops if it is not; one restoring a
-snapshot takes its first `groupSeqNo` from the frame at the cut (`doc/snapshot.md` §7).
+snapshot takes its first `groupSeqNo` from the frame at the cut (`doc/architecture/snapshot.md` §7).
 
 The client detects completion by reaching `catchUpPosition`, not by the replay image closing: a
 bounded replay of an active recording does not close its image at the bound. The first frame of a
 resumed replay MUST be the frame the client resumed from; any other is fatal, as for R-2. One resume is
-the exception: a replay from a snapshot file's cut on the queue the file was cut from (`doc/snapshot.md`
+the exception: a replay from a snapshot file's cut on the queue the file was cut from (`doc/architecture/snapshot.md`
 §7), whose first frame or refusal only tells the client whether the file was cut from this log.
 
 Schema 212 changes in place without a version bump. Nothing records it, and a node's replayer and its
@@ -1094,7 +1094,7 @@ so there is nothing to stay compatible with.
   and never leaves the node. A change to what §9.2 rejects is the same kind of change: a log replayed
   under another rule sequences another history. A node enforces this at start-up: `LogVersion`, the major of
   Aeron's `appVersion`, is raised by every such change, and a node started on a log or snapshot of another
-  major stops with "incompatible version" rather than sequence a different history (`doc/ops.md`).
+  major stops with "incompatible version" rather than sequence a different history (`doc/operations/ops.md`).
 
 ## 12. Limits
 
@@ -1239,7 +1239,7 @@ The suite checks framing and copy fidelity only; it never decodes an application
 What an application must do so that the order of §9.1 reaches its own consumers intact. seqeron cannot
 enforce these rules, since they concern behaviour after the queue. The client tier implements them in
 `app`, in every language; the sender half of A-5 is in `sequencer.client`. A-6 and A-7
-concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
+concern sources that take part in snapshot rounds (§7.3, `doc/architecture/snapshot.md`).
 
 - **A-1. Leader-only work is gated.** A co-located replica MUST perform a leader-only side effect only
   while it is caught up and its own member is leader. Every applied `LeadershipChanged` closes the gate,
@@ -1284,13 +1284,13 @@ concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
 - **A-8. An instance reads its group's queue.** Every instance of a gateway or an application MUST read
   the queue its `GatewayRegistered.groupId` or `ApplicationRegistered.groupId` names, as its node's
   replayer resolves it (**R-6**), since instances of one source on different queues would apply different
-  frames. Its snapshot files are cut from that queue (`doc/snapshot.md`). A consumer or a
+  frames. Its snapshot files are cut from that queue (`doc/architecture/snapshot.md`). A consumer or a
   tool has no row and reads the queue it is configured with; a tool's default is its replayer's default
   queue (**R-6**), whose group is then its own (§3.1). (`Application`, `Gateway`)
 - **A-9. A producer names the groups it addresses, and resolves them from the log before its first
   frame.** A producer is configured with group names, never bits. It resolves them once, when it has caught
   up: from the latest `GroupsRegistered` on the queue it reads, or from its snapshot header when none
-  follows the cut (`doc/snapshot.md`). It MUST stop on a name the table does not carry (the façades
+  follows the cut (`doc/architecture/snapshot.md`). It MUST stop on a name the table does not carry (the façades
   fence with `GROUP_UNKNOWN`), and publishes nothing before it has resolved them. An active group never
   changes (**S-8**), so one resolution holds for the producer's life and the hot path carries a mask
   resolved once. The publish path MUST
@@ -1312,7 +1312,7 @@ against.
 ## 17. Hosted façade protocol
 
 Its rules carry the prefix **H**. Its ids are schema 218 (§8), streams 301–304 (§3) and counter type ids
-5300–5303 and 5297 (`ops.md`, "Counter type ids"). [`hosted-facade.md`](hosted-facade.md) is its design record: what
+5300–5303 and 5297 (`ops.md`, "Counter type ids"). [`hosted-facade.md`](../records/hosted-facade.md) is its design record: what
 it adds to and retires from the tree, its open questions, its measurements and the prototype's results.
 
 A **hosted façade** splits an `Application`, `Gateway` or `Consumer` across two processes on one host. The
@@ -1328,15 +1328,15 @@ client hand-writes the Aeron Cluster client protocol (`ClusterStreamSender`; Aer
 cluster API), and both the C++ and C# clients port `PendingSends`, `ReplayerRecovery`, `SnapshotStore` and
 the façades from Java, case for case. Hosted, they carry none of it, at the cost of one IPC hop per message.
 The motivation is a smaller code base, and with it less maintenance and complexity;
-[`hosted-facade.md`](hosted-facade.md) §1 sets what is added against what is retired.
+[`hosted-facade.md`](../records/hosted-facade.md) §1 sets what is added against what is retired.
 **The first stage is C++ alone**: the direct C++ façades are retired and the hosted stub is the only C++ client.
 The C# client stays direct. Java's direct façades stay, since the host is built on them.
 
 The Java host is the only host and is normative where this section is silent: a stub is conformant when it
-agrees with it ([`hosted-facade.md`](hosted-facade.md) §1).
+agrees with it ([`hosted-facade.md`](../records/hosted-facade.md) §1).
 
 The client keeps what is the application's: its state, a deterministic reply (**A-3**), deterministic
-snapshot records (**A-6**) and `OutstandingWork` (**A-2**). The host's façade is built with no tracker.
+snapshot records (**A-6**) and `OutstandingWork` (**A-2**).
 
 **The protocol reuses Aeron's and the replayer's patterns rather than inventing its own.** The host and client
 stand in the relation of Aeron Cluster's consensus module and its clustered service, which Aeron also runs as

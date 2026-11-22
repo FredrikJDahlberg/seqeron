@@ -20,8 +20,8 @@ concept ApplicationListener = requires(L& listener, const GroupDirectory& direct
                                        bool leading, std::int64_t clusterSeqNo, std::int64_t clusterTimeNs,
                                        std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
     // The gate crossed an edge. Every leadership change shuts an open gate, and the work may have gone with the
-    // election: Config::onNotLeader is where OutstandingWork::onNotLeader() belongs. False also comes before
-    // onFenced when this replica fences with its gate open.
+    // election: false is where OutstandingWork::onNotLeader() belongs. False also comes before onFenced when this
+    // replica fences with its gate open.
     listener.onLeadershipChanged(leading);
     listener.onSequenced(payload);
     listener.onFenced(fence, detail);

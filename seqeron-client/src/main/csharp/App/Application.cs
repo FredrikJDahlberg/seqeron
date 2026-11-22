@@ -57,7 +57,6 @@ public sealed class Application : IDisposable
     private readonly Session _session;
     private readonly LeaderGate _gate;
     private readonly IApplicationListener _listener;
-    private readonly Action _onNotLeader;
     private readonly SnapshotTaker _snapshots;
     private readonly SnapshotFrames _snapshotFrames;
     private readonly SnapshotSignals _snapshotSignals;
@@ -90,7 +89,6 @@ public sealed class Application : IDisposable
             throw new ArgumentException("Snapshots.Directory is required", nameof(options));
         }
         _listener = options.Listener;
-        _onNotLeader = options.OnNotLeader;
         _sourceId = options.SourceId;
         _memberId = options.MemberId;
         _clientId = options.ClientId;
@@ -150,7 +148,7 @@ public sealed class Application : IDisposable
             _gate.Update(_session.IsCaughtUp && _session.HasSession, _session.CurrentLeaderMemberId);
         if (transition != LeaderGate.Transition.None)
         {
-            GateEdge(transition == LeaderGate.Transition.Opened);
+            _listener.OnLeadershipChanged(transition == LeaderGate.Transition.Opened);
             work++;
         }
         work += _snapshots.Signal(_snapshotSignals);
@@ -254,16 +252,6 @@ public sealed class Application : IDisposable
             payload.CopyTo(_staging);
         }
         return _stagingBuffer;
-    }
-
-    // A closing gate discharges the tracked work's dispatches before the listener hears of it.
-    internal void GateEdge(bool leading)
-    {
-        if (!leading)
-        {
-            _onNotLeader?.Invoke();
-        }
-        _listener.OnLeadershipChanged(leading);
     }
 
     /// <summary>
@@ -411,7 +399,7 @@ public sealed class Application : IDisposable
         {
             if (_app._gate.OnFenced())
             {
-                _app.GateEdge(false);
+                _app._listener.OnLeadershipChanged(false);
             }
             _app._listener.OnFenced(fence, detail);
         }

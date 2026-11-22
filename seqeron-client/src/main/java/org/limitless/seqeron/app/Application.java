@@ -76,9 +76,8 @@ public final class Application implements AutoCloseable {
          * The leader gate crossed an edge: true when this replica may do leader-only work — caught up, and
          * its own node leads, or off the cluster caught up alone — false when it may not. <b>Every
          * leadership change closes an open gate</b>, so false is where {@link OutstandingWork#onNotLeader()}
-         * belongs, which the façade calls itself for a tracker given to {@link Builder#outstandingWork}: a reply
-         * this node submitted during the election may have gone with it, and the next opening dispatches it
-         * again. False also comes before {@link #onFenced} when this replica fences with
+         * belongs: a reply this node submitted during the election may have gone with it, and the next opening
+         * dispatches it again. False also comes before {@link #onFenced} when this replica fences with
          * its gate open.
          */
         void onLeadershipChanged(boolean leading);
@@ -125,7 +124,6 @@ public final class Application implements AutoCloseable {
     private final long ipcConnectTimeoutMs;
     private final String egressChannel;
     private final String ingressEndpoints;
-    private final OutstandingWork<?, ?> outstandingWork;
     private Counter snapshotRoundCounter;
 
     private Application(final Builder builder) {
@@ -138,7 +136,6 @@ public final class Application implements AutoCloseable {
                                                                        : builder.ipcConnectTimeoutMs;
         this.egressChannel = builder.egressChannel;
         this.ingressEndpoints = builder.ingressEndpoints;
-        this.outstandingWork = builder.outstandingWork;
         this.gate = new LeaderGate(builder.memberId, builder.offCluster);
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
@@ -185,7 +182,7 @@ public final class Application implements AutoCloseable {
         final LeaderGate.Transition transition =
             gate.update(session.isCaughtUp() && session.hasSession(), session.currentLeaderMemberId());
         if (transition != LeaderGate.Transition.NONE) {
-            gateEdge(transition == LeaderGate.Transition.OPENED);
+            listener.onLeadershipChanged(transition == LeaderGate.Transition.OPENED);
             work++;
         }
         work += snapshots.signal(snapshotSignals);
@@ -257,14 +254,6 @@ public final class Application implements AutoCloseable {
         if (snapshotRoundCounter != null) {
             snapshotRoundCounter.close();
         }
-    }
-
-    /** A closing gate discharges the tracked work's dispatches before the listener hears of it. */
-    void gateEdge(final boolean leading) {
-        if (!leading && outstandingWork != null) {
-            outstandingWork.onNotLeader();
-        }
-        listener.onLeadershipChanged(leading);
     }
 
     /**
@@ -372,7 +361,7 @@ public final class Application implements AutoCloseable {
         @Override
         public void onFenced(final ClusterError fence, final String detail) {
             if (gate.onFenced()) {
-                gateEdge(false);
+                listener.onLeadershipChanged(false);
             }
             listener.onFenced(fence, detail);
         }
@@ -405,7 +394,6 @@ public final class Application implements AutoCloseable {
         private String egressChannel = Session.DEFAULT_EGRESS_CHANNEL;
         private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
-        private OutstandingWork<?, ?> outstandingWork;
         private SnapshotListener snapshotListener;
         private Path snapshotDirectory;
         private Tuning tuning = Tuning.DEFAULT;
@@ -461,16 +449,6 @@ public final class Application implements AutoCloseable {
 
     public Builder listener(final Listener listener) {
         this.listener = listener;
-        return this;
-    }
-
-    /**
-     * The tracker of this application's leader-only work. The façade calls its {@link
-     * OutstandingWork#onNotLeader()} whenever the gate closes, before {@link Listener#onLeadershipChanged},
-     * so the listener need not. Optional: without one the listener does it.
-     */
-    public Builder outstandingWork(final OutstandingWork<?, ?> outstandingWork) {
-        this.outstandingWork = outstandingWork;
         return this;
     }
 

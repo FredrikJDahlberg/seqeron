@@ -20,7 +20,7 @@ exactly where the last one left off), which gives every node the same frames in 
 (queue positions match only at equal IPC MTU and term length), from `groupSeqNo` 1 or from the cut a restarted
 member restored at (below), with no cross-node replication.
 
-**The service publishes no queue** (`doc/plans/queue-off-duty-cycle-plan.md`, steps 1 and 2): its duty cycle keeps
+**The service publishes no queue** (`doc/records/plans/queue-off-duty-cycle-plan.md`, steps 1 and 2): its duty cycle keeps
 each queue's position by `QueuePositions`, which is where a snapshot's marker starts, and never waits on a queue's
 subscribers. A `QueueAgent`, on a thread of the member's `ReplayerServer`, reads the log's recording from the
 archive's segment files up to the commit position, runs a `LogDeriver` over it from the service's `DerivationStart`,
@@ -35,7 +35,7 @@ co-located `ReplayerService` serves cold-start/gap replay derived from the log. 
 queue does not take is kept, and no log entry is read while one is, so a back-pressured queue holds the agent and
 never the service, and only a subscriber its driver has not dropped can hold it. `QueueEmitter` — those decisions,
 split off the way `Sequencer` is and unit-tested the same way — **skips** a queue back-pressured for the stall timeout
-(doc/plans/queue-off-duty-cycle-plan.md, step 3): the agent logs the subscribers at the queue's limit, revokes the
+(doc/records/plans/queue-off-duty-cycle-plan.md, step 3): the agent logs the subscribers at the queue's limit, revokes the
 publication (`ExclusivePublication.revoke`, since a close waits for the held subscriber to drain), derives that queue's
 frames up to the commit position without offering them, and reopens it there under a new session; consumers heal by
 replay, and `QueueSkipTest` holds a tethered subscriber that stops reading to that. A member whose queue's own
@@ -45,7 +45,7 @@ itself** (`NodeDriver.EXIT_FATAL` = 70). Peers keep quorum, and the restart deri
 again. The service's own wait on the runtime is the cluster-clock timer, which `HeartbeatTimer` bounds the same way.
 A node whose consensus module truncates its log below what it applied terminates itself
 too, which Aeron Cluster 1.53.2 does to a committed entry (`SequencerServer.truncatesAppliedLog`,
-`doc/fault-tolerance.md` §1.4), and so does one whose cluster snapshot failed before Aeron called `onTakeSnapshot`, which
+`doc/architecture/fault-tolerance.md` §1.4), and so does one whose cluster snapshot failed before Aeron called `onTakeSnapshot`, which
 left it without the round its peers applied (`SequencerService.onServiceError`, §1.5).
 
 Besides forwarded ingress, the sequencer synthesizes its own frames on the same `clusterSeqNo` counter:
@@ -54,7 +54,7 @@ Besides forwarded ingress, the sequencer synthesizes its own frames on the same 
 clock, so consumers have a consensus-driven time source that keeps advancing while a producer is silent,
 which is exactly when a gateway's keepalive watchdog must probe.
 
-**A cluster snapshot is also an application round** (`doc/snapshot.md` §10), and exists only while a
+**A cluster snapshot is also an application round** (`doc/architecture/snapshot.md` §10), and exists only while a
 `<snapshots>` policy is loaded: without one `onTakeSnapshot` throws, `clusterctl shutdown` uses `ABORT`, and a node's
 recovery is full-log replay from `clusterSeqNo` 1. With a policy the `Sequencer` reports a round due (its interval,
 its `bytes`, or an operator's `SnapshotRequested`) as replicated state, and the leader's service sets the
@@ -82,7 +82,7 @@ client's session from ever timing out, and a dead gateway from ever being replac
 asks for a due round only past that gap (`Sequencer.snapshotDue(timestamp, minGapNs)`), with its own session timeout,
 which is the one its consensus module enforces; the first round waits for nothing.
 
-**Application snapshots are local files the log confirms instead** (`doc/snapshot.md`). The sequencer
+**Application snapshots are local files the log confirms instead** (`doc/architecture/snapshot.md`). The sequencer
 synthesizes `SnapshotStarted` as a round's cut; every instance of a participating source serializes its state
 there through its façade's `SnapshotListener` into a file in its own directory (`replayer.client.SnapshotStore`),
 and the one that may publish submits the round's `SnapshotEnd` — record count, length, CRC — the only snapshot
@@ -92,7 +92,7 @@ replaces every older one but the confirmed round before it. A starting client re
 newest confirmed file whose records match its trailer once a replay from the file's cut position opens on that cut —
 a file from a purged log fails it — then resumes after the cut; an instance with no such file replays its queue from `groupSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
 
-**A member records no queue** (`doc/plans/disk-load-plan.md`, step 2a). Its Replayer is a `DerivingReplayer`, which
+**A member records no queue** (`doc/records/plans/disk-load-plan.md`, step 2a). Its Replayer is a `DerivingReplayer`, which
 derives each queue from the Raft log's recording, read from the archive's segment files (`RecordingReader`) up to
 the commit position: a `LogFollower` runs a `LogDeriver` over the log once from the service's `DerivationStart`
 and keeps a checkpoint every 8 MiB (its rules unit-tested over segment files `LogFollowerTest` writes), and a
@@ -124,7 +124,7 @@ Aeron directory with the host's node id (one no member uses) where they take a m
 ingress — an `Application` with `offCluster` set, since no leadership there is its own, which makes it the
 one instance whose gate opens once caught up. The member pays one archive replay per gateway host and its sequencer nothing.
 The relay reports the snapshot markers it publishes, and the host's Replayer tracks rounds and purges its queue
-recordings below the newest restart-safe cut (`doc/snapshot.md` §10.6). A restarted host purges the earlier recordings of each
+recordings below the newest restart-safe cut (`doc/architecture/snapshot.md` §10.6). A restarted host purges the earlier recordings of each
 relayed queue before its Replayer starts.
 
 ## Two kinds of producer, and only one of them is elected
@@ -150,4 +150,4 @@ that row is the sequencer's completeness edge — it synthesizes the bootstrap `
 gateway behind it. The application and protocol rows follow it, carry no countdown, and are labelling for
 `SbeLogPrinter`: decoded by nothing, gating nothing. An optional `<snapshots>` element comes last, as one
 `SnapshotPolicyRegistered` the sequencer does act on: it turns application snapshot rounds on (spec §7.3,
-`doc/snapshot.md`).
+`doc/architecture/snapshot.md`).

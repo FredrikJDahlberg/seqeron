@@ -46,10 +46,6 @@ public sealed class ApplicationOptions
     /// says, and recovers from <c>clusterSeqNo</c> 1.</summary>
     public SnapshotOptions Snapshots { get; init; }
 
-    /// <summary>Called whenever the gate closes, before <see cref="IApplicationListener.OnLeadershipChanged"/>(false):
-    /// the place for <c>OutstandingWork.OnNotLeader</c>. Optional; without it the listener does so.</summary>
-    public Action OnNotLeader { get; init; }
-
     /// <summary>The stall and capacity policy.</summary>
     public Tuning Tuning { get; init; } = new Tuning();
 

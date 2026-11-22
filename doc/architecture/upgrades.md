@@ -296,7 +296,7 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
   every request.
 - **The cluster does not change.** The sequencer admits any `sourceId` but −1 and any `payloadId` from 2
   (spec §9.2, **C-2**), and loading the topology again with the added rows is safe
-  ([`clusterctl.md`](clusterctl.md)). An application row labels its source and turns its snapshots on; it
+  ([`clusterctl.md`](../operations/clusterctl.md)). An application row labels its source and turns its snapshots on; it
   admits nothing.
 
 ### 7.2 Steps
@@ -305,7 +305,7 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
    replies. `N` builds its state by replaying from `clusterSeqNo` 1, which means decoding every request
    version in the log. Proposed: `N` restores `O`'s newest confirmed snapshot instead, upcasting its records
    (§3.1, §5), and takes part in rounds under its own `sourceId` from then on. A fetch between hosts
-   ([`snapshot-offload.md`](plans/snapshot-offload.md) §5) brings `O`'s snapshot to any host.
+   ([`snapshot-offload.md`](../records/plans/snapshot-offload.md) §5) brings `O`'s snapshot to any host.
 2. **Compare.** Before any consumer depends on `N`, a comparator checks `N`'s reply to each request against
    `O`'s, matched by whatever the replies carry to name their request: offline over a member's archive with
    both schemas' IR, as `SbeLogPrinter` reads one, or as a live consumer that publishes nothing.

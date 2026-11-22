@@ -3,7 +3,7 @@
 The shortest path from nothing to a working seqeron deployment: a one-member cluster from a release, a
 consumer that replays its history and follows it live, and a producer that submits to it and reads its own
 messages back in order. Java first; section 5 does the same in C#. It needs JDK 21, the .NET 10 SDK for
-the C#, and nothing from this repository's source. [`overview.md`](overview.md) explains what is running.
+the C#, and nothing from this repository's source. [`overview.md`](../architecture/overview.md) explains what is running.
 
 ## 1. Start a node
 
@@ -33,7 +33,7 @@ clean start.
 The cluster sequences nothing until a topology document is loaded, so `start-cluster.sh` loads `hello.xml`
 once the member runs. It declares one group, `hello`, whose queue every client below reads, and the
 section 4 producer as an application in it. The first load fixes the groups for the life of the archive;
-[`clusterctl.md`](clusterctl.md#load-topology) covers the document.
+[`clusterctl.md`](../operations/clusterctl.md#load-topology) covers the document.
 
 A consumer runs on the member's host, because the queues and the replay protocol are `aeron:ipc` on the
 member's media driver, whose directory is `$TMPDIR/seqeron-seq-aeron-<memberId>` (`java.io.tmpdir` in
@@ -230,9 +230,9 @@ Four things in it are worth knowing before going further:
 - **`Published` means placed, not sequenced.** The message reached the leader's ingress. It is sequenced
   when it arrives back in `onSequenced`, and if a leader failover loses it first, the façade resends it.
 - **`onFenced` means stop.** The replica can no longer trust its view of the log. Exit, with 70 so a
-  supervisor knows to restart it ([`ops.md`](ops.md)); a restart re-reads the log.
+  supervisor knows to restart it ([`ops.md`](../operations/ops.md)); a restart re-reads the log.
 
-Take `sourceId` and `payloadId` values no other producer uses; [the spec](seqeron-protocol-spec.md) holds
+Take `sourceId` and `payloadId` values no other producer uses; [the spec](../architecture/seqeron-protocol-spec.md) holds
 both registries, §5 and §6.1.
 
 ## 5. The same in C#
@@ -244,7 +244,7 @@ dotnet add package Org.Limitless.Seqeron --version $V
 
 Take the package from the member's release too; it is on nuget.org. It names its Aeron.NET and SBE
 runtime versions exactly. Aeron.NET is one release behind Aeron, the one exception to running the same
-Aeron everywhere, which [spec **V-1**](seqeron-protocol-spec.md) records.
+Aeron everywhere, which [spec **V-1**](../architecture/seqeron-protocol-spec.md) records.
 `Program.cs`:
 
 ```csharp
@@ -335,11 +335,11 @@ Java programs' 23 and 24, so both languages' counters are told apart on one memb
 
 ## Next
 
-- **Three members.** [`running-a-cluster.md`](running-a-cluster.md#three-nodes), and
-  [`fault-tolerance.md`](fault-tolerance.md) for what survives the loss of a member or the leader.
+- **Three members.** [`running-a-cluster.md`](../operations/running-a-cluster.md#three-nodes), and
+  [`fault-tolerance.md`](../architecture/fault-tolerance.md) for what survives the loss of a member or the leader.
 - **An elected gateway.** A producer at the edge of the system, deployed as an active/standby pair, takes
   the `Gateway` façade instead of `Application`, and a `<gateways>` section in the topology document. See
-  [`client-api.md`](client-api.md#gateway) and [`clusterctl.md`](clusterctl.md).
+  [`client-api.md`](client-api.md#gateway) and [`clusterctl.md`](../operations/clusterctl.md).
 - **C++.** The client library is header-only:
 
   ```cmake
@@ -351,5 +351,5 @@ Java programs' 23 and 24, so both languages' counters are told apart on one memb
   target_link_libraries(my_app PRIVATE seqeron::seqeron_core)
   ```
 
-  [`seqeron-examples`](../seqeron-examples) has the same two programs in C++ and in C#: `FollowStream` and
+  [`seqeron-examples`](../../seqeron-examples) has the same two programs in C++ and in C#: `FollowStream` and
   `ColocatedApp`.

@@ -33,7 +33,7 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * Publishes a member's queues from its committed log, on a thread of its own, so the service's duty cycle never waits
- * on a queue's subscribers (doc/plans/queue-off-duty-cycle-plan.md, steps 1 to 3).
+ * on a queue's subscribers (doc/records/plans/queue-off-duty-cycle-plan.md, steps 1 to 3).
  *
  * <p>It starts where the service did ({@link DerivationStart}), reads the log's recording from the archive's segment
  * files up to the commit position, and runs a {@link LogDeriver} over it into a {@link QueueEmitter}. A frame a queue
