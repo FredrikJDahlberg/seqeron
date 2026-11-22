@@ -56,14 +56,14 @@ reaches no error handler), skips the snapshot and returns to `ACTIVE` (`Consensu
   entry, takes no snapshot, and raises the fatal (exit 70) before the member publishes another frame.
   `SequencerServiceSnapshotTest` covers the classification and the latch. `ClusterSnapshotTest` breaks one member's
   snapshot archive connection, through a new `serviceArchive` overload of `SequencerServer.launch`, and fails without
-  the fix. `doc/fault-tolerance.md` §1.5 describes the failure.
+  the fix. `doc/architecture/fault-tolerance.md` §1.5 describes the failure.
 
 **2. A busy cluster with a low snapshot `bytes` setting never fails over a dead gateway.** Each snapshot resets every
 client session's inactivity clock (`ConsensusModuleAgent.java:3123`). `Sequencer.clusterHeartbeat` sets a round due
 whenever `bytesSinceSnapshot >= snapshotBytes`, checked at 1 Hz (`Sequencer.java:742-745`). With the default 5 s
 session timeout, any `bytes` value the cluster sequences within 5 s means rounds arrive faster than sessions can
 expire. A crashed active gateway then keeps its session indefinitely, and its standby is never promoted. An
-`interval` below the session timeout has the same effect. `doc/ops.md` ("Cluster snapshots") documents both, but
+`interval` below the session timeout has the same effect. `doc/operations/ops.md` ("Cluster snapshots") documents both, but
 nothing enforces either: `topology.xsd` bounds neither attribute, and the session timeout is a node-local property
 the sequencer never sees.
 
@@ -77,7 +77,7 @@ the sequencer never sees.
   exempt. No log entry changes, so neither `LOG_VERSION` nor schema 210 changes. Any gap above the timeout lets a
   dead session expire eventually, and the extra heartbeat makes it expire at the next round. `clusterctl
   request-snapshot` now waits 30 s for its round. A round toggled through Aeron's own `ClusterTool` still bypasses
-  the gap. `SequencerTest` covers the gate. `doc/ops.md`, `snapshot.md` §10.2 and spec §7.3 describe it.
+  the gap. `SequencerTest` covers the gate. `doc/operations/ops.md`, `snapshot.md` §10.2 and spec §7.3 describe it.
 
 **3. The sequencer's code is part of the recorded history, and nothing detects a change to it.** A member recovers,
 and its Replayer derives every queue, by running the current `Sequencer` over the whole log (`LogDeriver`). Spec V-3
@@ -123,7 +123,7 @@ history":
 The structural fix is to version the rules inside the log. A system event names the rule set, the `Sequencer` branches
 on it, and a fix that changes published output takes effect from the position where it was announced, so the archive
 survives. A retroactive fix stays possible, by purging. This is how replicated state machines usually ship fixes:
-`doc/versioning-prior-art.md` §7 surveys Temporal's version markers and replay tests, Kafka's `metadata.version`,
+`doc/architecture/versioning-prior-art.md` §7 surveys Temporal's version markers and replay tests, Kafka's `metadata.version`,
 CockroachDB's finalization and Bitcoin's activation heights, and §8 maps them onto seqeron.
 
 **4. The live queue is published on the consensus service thread, so any tethered subscriber can halt a member.**
@@ -141,7 +141,7 @@ publication side can require it.
 - **Fix.** Take the queue off the consensus thread. The service keeps the replicated state, and a separate agent
   publishes each queue from the committed log. The log-following machinery already exists (`LogFollower`,
   `LogDeriver`). A slow subscriber then delays that one agent, never the member's consensus participation.
-  `doc/plans/queue-off-duty-cycle-plan.md` is the plan. It also shows that an untethered subscriber stalls the
+  `doc/records/plans/queue-off-duty-cycle-plan.md` is the plan. It also shows that an untethered subscriber stalls the
   service for up to about 200 ms before the driver evicts it.
 
 **5. Exactly-once ingress ends at the producer process boundary.** `PendingSends` confirms ingress and resends across
@@ -150,7 +150,7 @@ envelope carries no producer sequence number, and the sequencer keeps no per-sou
 
 - When a producer restarts, or a standby is promoted, nothing pending is known. Frames that were not committed are
   lost. A producer that resends to be safe creates duplicates.
-- `Application` documents at-least-once delivery across a failover (`doc/overview.md`, "Co-located applications"),
+- `Application` documents at-least-once delivery across a failover (`doc/architecture/overview.md`, "Co-located applications"),
   and asks for idempotent replies.
 
 For an order-entry or payments path, that leaves the hardest part of exactly-once to each application. The fix is a
@@ -177,7 +177,7 @@ The event codes are already a good basis for structured logs. What is missing:
 - per-code rate limiting (`Episode` already does this in the Replayer);
 - a silent sink for the derivation's `Sequencer`.
 
-`doc/plans/queue-off-duty-cycle-plan.md`, step 4, is the plan.
+`doc/records/plans/queue-off-duty-cycle-plan.md`, step 4, is the plan.
 
 **7. An unexpected exception in a cluster callback is logged and the node carries on.** `CLAUDE.md` notes that a throw
 in a callback drops the frame. The service's error handler (`SequencerServer.java:426`) makes that the policy for bugs
@@ -235,7 +235,7 @@ start on inconsistent combinations. `ClientProxy` already refuses invalid values
   `SnapshotRequested` are accepted from any session. An Aeron `Authenticator` proves who opened a session; the
   `Sequencer` must also record which principal may send which events. Both are replicated decisions.
 - **Durability can be turned on.** Aeron's archive and cluster support file sync levels. Expose that setting and
-  measure it on the volumes `doc/ec2-tests.md` already describes.
+  measure it on the volumes `doc/performance/ec2-tests.md` already describes.
 - **Multi-site.** Fixed port blocks (`PortLayout`) and a seven-member limit are fine for one site. A second site
   will want Aeron's cluster backup or standby rather than stretched Raft. Keep that in mind when designing 4: queues
   derived from the log fit a backup node naturally.

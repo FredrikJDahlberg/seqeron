@@ -6,14 +6,14 @@ server, tools, metrics exporter) is the service tier and is not client API.
 
 The types this page names are the API, except those under [Internal types](#internal-types): public only
 for cross-package access, with no compatibility guarantee. The wire contract is
-[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md); the design rationale is in [`overview.md`](overview.md).
+[`seqeron-protocol-spec.md`](../architecture/seqeron-protocol-spec.md); the design rationale is in [`overview.md`](../architecture/overview.md).
 
 The sections before [Façades](#façades-app) define the model and the contract; the rest is reference.
 
 **C++ is the hosted stubs.** The direct C++ client is retired and kept on the `cpp-direct-client` branch (tag
 `cpp-direct-client-final`). C++ here means `hosted::Application`, `hosted::Gateway` and `hosted::Consumer`, which keep the
 façades' operation names and listener concepts and differ as
-[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md) §17.5 says. The C++ columns and notes below that name `ClusterStreamClient`, `ClusterStreamSender`, `PortLayout`, `offerFrame`,
+[`seqeron-protocol-spec.md`](../architecture/seqeron-protocol-spec.md) §17.5 says. The C++ columns and notes below that name `ClusterStreamClient`, `ClusterStreamSender`, `PortLayout`, `offerFrame`,
 the producer components or `sequencer::client` describe that branch, not this tree.
 
 ## Application types
@@ -39,7 +39,7 @@ A **fence** is `onFenced(ClusterError, detail)`, raised once, after which the in
 action; the façade releases its cluster session before raising it, and its queue and replay subscriptions at the
 end of that `doWork()`, so a fenced instance holds no Replayer slot. Causes: cluster session lost (on a `Gateway` instance that announced its activation on it, or not replaced within 20 s),
 ingress confirmation fault, recovery stall, queue stall, snapshot divergence, unrestorable snapshot, an addressed group the
-log lacks, a hosted client's protocol breach ([`fault-tolerance.md`](fault-tolerance.md) §2.1). Loss of the media driver
+log lacks, a hosted client's protocol breach ([`fault-tolerance.md`](../architecture/fault-tolerance.md) §2.1). Loss of the media driver
 is not a fence; it raises from `doWork()`.
 
 ## Execution model
@@ -83,7 +83,7 @@ The guarantees are conditional on these; spec §16 states them normatively (**A-
 - **Handle `Declined`** by retrying from the duty cycle, not by spinning in a callback. `Refused` is final.
 - **Exit when fenced.** The façade has already released the cluster session, so a standby takes over; a
   restart is what brings the instance back. Exit with 70, this repository's convention for "fenced, restart
-  me" ([`ops.md`](ops.md)), so a supervisor can tell a fence from a crash.
+  me" ([`ops.md`](../operations/ops.md)), so a supervisor can tell a fence from a crash.
 - **Unique `clientId` per node** ([Client ids](#client-ids)).
 - **Authenticate at the edge.** The cluster accepts any well-formed message.
 
@@ -211,7 +211,7 @@ advances while all producers are idle and is identical on every node, so deadlin
 deterministic. Between ticks, use each payload's `clusterTimestampNs()`.
 
 **Node apply lag is not a fence.** It is a node property, raises nothing and changes no behaviour;
-[`ops.md`](ops.md) graphs it per member.
+[`ops.md`](../operations/ops.md) graphs it per member.
 
 ### Groups
 
@@ -335,10 +335,10 @@ equivalent, and `src/csharp/Directory.Build.targets`).
 
 ### Snapshots
 
-[`snapshot.md`](snapshot.md) specifies the protocol. A façade participates when it has `snapshots`
+[`snapshot.md`](../architecture/snapshot.md) specifies the protocol. A façade participates when it has `snapshots`
 (C++: a `Snapshots` holding a `SnapshotListener&` that outlives the façade) and, for an `Application`, its topology row sets
 `snapshot="true"`. The snapshot directory holds the instance's confirmed file and the one being written, and must
-outlive the process ([`snapshot.md`](snapshot.md) §4.1).
+outlive the process ([`snapshot.md`](../architecture/snapshot.md) §4.1).
 
 | listener operation | Java | C++ | C# |
 |---|---|---|---|
@@ -356,7 +356,7 @@ outlive the process ([`snapshot.md`](snapshot.md) §4.1).
 3. **On start**, the newest confirmed file whose cut the recording holds is restored before any dispatch:
    `onRestore` once per record in write order, `recordIndex` 0 meaning clear state, each with the file's
    `formatVersion`. A build that changes its format overrides `supportsFormatVersion` (C++
-   `supportedFormatVersions`) to keep reading the formats it replaces ([`snapshot.md`](snapshot.md) §9). Dispatch resumes after the cut; with no such file,
+   `supportedFormatVersions`) to keep reading the formats it replaces ([`snapshot.md`](../architecture/snapshot.md) §9). Dispatch resumes after the cut; with no such file,
    from the start of the queue.
 4. **An unreadable file** (a `formatVersion` that `supportsFormatVersion` refuses, or C++'s list omits) fences with
    `SNAPSHOT_UNRESTORABLE` (C++/C# `ClusterError::SnapshotUnrestorable`; divergence is
@@ -366,7 +366,7 @@ outlive the process ([`snapshot.md`](snapshot.md) §4.1).
 5. **Rounds and the Replayer** (`Application` and `Gateway`). The node's Replayer tells every
    instance when it has cut a round, and an instance that takes part answers `SnapshotJoined` at once, and
    `SnapshotConfirmed` once its file for the round is confirmed and durable under its final name, each sent
-   again until the offer lands ([`snapshot.md`](snapshot.md) §10.8). The receiver's `onSnapshotRound` and its
+   again until the offer lands ([`snapshot.md`](../architecture/snapshot.md) §10.8). The receiver's `onSnapshotRound` and its
    two sends are the façade's, and no consumer calls them.
 
 ### `OutstandingWork`
@@ -411,7 +411,7 @@ delivers every message once in `clusterSeqNo` order. Each façade and `Consumer`
 
 The local node is a cluster member or a **gateway host** — a host with no member, running
 `start-gateway-host.sh`, whose Replayer relays a member's queues, those of the groups it is configured with, into local recordings
-([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)). A client there attaches to the host's Aeron
+([`fault-tolerance.md`](../architecture/fault-tolerance.md#33-gateway-host)). A client there attaches to the host's Aeron
 directory and passes the host's node id (unused by any member) as `memberId`. `Gateway` is unchanged;
 `Application` requires [`offCluster`](#application).
 
@@ -433,7 +433,7 @@ needs an `Application` or `Gateway` with a `SnapshotListener`, which may write n
 
 **Snapshot restore.** `restoreFrom` makes the cold start take the newest confirmed file in the store whose
 cut a replay finds in the recording, handing header and records to the handler, a bounded number per
-`poll()`, before dispatching from the message after the cut ([`snapshot.md`](snapshot.md) §7). A file whose
+`poll()`, before dispatching from the message after the cut ([`snapshot.md`](../architecture/snapshot.md) §7). A file whose
 cut the recording does not hold falls back to the next older, the last to the start of the queue. An unrestorable
 snapshot (unsupported format or header version, records failing the trailer) halts recovery permanently;
 `restoreFailure()` gives the reason.
@@ -441,7 +441,7 @@ snapshot (unsupported format or header version, records failing the trailer) hal
 ### Client ids
 
 `clientId` is the `client` label of the client's counters, and should be unique among clients on a node: two
-sharing one share their counters' series ([`ops.md`](ops.md#client-ids), which also lists the ids this
+sharing one share their counters' series ([`ops.md`](../operations/ops.md#client-ids), which also lists the ids this
 repository uses). The Replayer addresses a client by an id the client draws from its media driver, which
 makes it unique.
 
@@ -592,6 +592,6 @@ which Java and C# get from their standard libraries and Agrona).
 
 **API reference.** Java: `./gradlew :seqeron-client:javadoc` (`seqeron-client/build/docs/javadoc/`, also
 the javadoc jar). C++: the CMake `docs` target (`<build>/docs/html`, Doxygen, `detail/` excluded). C#:
-`doc/site/csharp.Doxyfile` ([`building.md`](building.md)); the package ships XML docs and a symbols
+`doc/site/csharp.Doxyfile` ([`building.md`](../development/building.md)); the package ships XML docs and a symbols
 package. All exclude the generated codecs. Each Java package's `package-info.java` mirrors
 [Packages](#packages); keep them in step.

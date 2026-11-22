@@ -22,7 +22,8 @@ The cluster is protocol-agnostic: it carries no FIX, no order flow and no refere
 application payload through unopened. Application protocols are defined by the producers and consumers that
 speak them.
 
-To run a node and a first consumer and producer, start with [Getting Started](doc/getting-started.md).
+To run a node and a first consumer and producer, start with [Getting Started](doc/clients/getting-started.md). To
+evaluate the design, [the documentation index](doc/README.md) gives a reading order.
 
 Features
 --------
@@ -65,7 +66,7 @@ Features
   or Protocol Buffers, lets old and new builds run side by side. A new build can also start from a snapshot
   and publish a new payload version from there, reading only what was recorded after the cut, provided it
   can read the snapshot. These rules are the application's; seqeron does not yet specify them
-  ([Upgrades and Versioning](doc/upgrades.md)).
+  ([Upgrades and Versioning](doc/architecture/upgrades.md)).
 - **APIs.** Two façades cover the two kinds of producer: `Gateway`, one instance of an elected pair, and
   `Application`, one replica per member that publishes from the leader's. Each assembles the session,
   the stream, confirmed ingress and the failure fences into one duty cycle. Beneath them, the receiver,
@@ -80,7 +81,7 @@ Limitations
 - **Without a `<snapshots>` policy, a node replays the whole Raft log on restart.** Recovery time and archive size
   grow with the history the archive holds, so it suits a deployment whose archive is reset between runs. With a
   policy, each node purges its queues' history below its newest restart-safe cut
-  ([design](doc/snapshot.md#10-cluster-snapshots)).
+  ([design](doc/architecture/snapshot.md#10-cluster-snapshots)).
 - **The Raft log is trimmed only with a `<snapshots>` policy.** Aeron's open-source release trims nothing; each
   member trims its own log below its two newest restart-safe snapshots, and `clusterctl trim-log` asks it to.
 - **A gateway host left behind by every member's trim stops.** A host whose relay is cut off from every member
@@ -96,36 +97,38 @@ Limitations
   gateway host and client moves together, and the recorded history is purged. seqeron is pre-1.0, and minor releases break the API.
 - **No production performance figures.** Latency, throughput and capacity have not been measured on production
   hardware, so a deployment is sized by measuring on its own. The measurements on EC2 are in
-  [Benchmark Results](doc/ec2-results.md); the method is in [Tests on EC2](doc/ec2-tests.md).
+  [Benchmark Results](doc/performance/ec2-results.md); the method is in [Tests on EC2](doc/performance/ec2-tests.md).
 - **C# trails by one Aeron version.** Aeron.NET is a release behind Aeron. Spec **V-1** records the
   exception and the evidence that the two interoperate; it is re-verified on every Aeron upgrade.
 
 How do I use seqeron?
 ---------------------
 
-1. [Getting Started](doc/getting-started.md)
-2. [Client API: Java, C++ and C#](doc/client-api.md)
+1. [Getting Started](doc/clients/getting-started.md)
+2. [Client API: Java, C++ and C#](doc/clients/client-api.md)
 3. [Examples](seqeron-examples/README.md)
 4. [API Reference](https://fredrikjdahlberg.github.io/seqeron/)
-5. [Running a Cluster](doc/running-a-cluster.md)
-6. [Operator Tooling](doc/clusterctl.md)
-7. [Monitoring](doc/ops.md)
-8. [Log Printer](doc/log-printer.md)
+5. [Running a Cluster](doc/operations/running-a-cluster.md)
+6. [Operator Tooling](doc/operations/clusterctl.md)
+7. [Monitoring](doc/operations/ops.md)
+8. [Log Printer](doc/operations/log-printer.md)
 
 How does seqeron work?
 ----------------------
 
-1. [Design Overview](doc/overview.md)
-2. [Protocol Specification](doc/seqeron-protocol-spec.md)
-3. [Fault Tolerance](doc/fault-tolerance.md)
-4. [Application Snapshots](doc/snapshot.md)
-5. [Upgrades and Versioning](doc/upgrades.md)
+1. [Design Overview](doc/architecture/overview.md)
+2. [Protocol Specification](doc/architecture/seqeron-protocol-spec.md)
+3. [Fault Tolerance](doc/architecture/fault-tolerance.md)
+4. [Application Snapshots](doc/architecture/snapshot.md)
+5. [Upgrades and Versioning](doc/architecture/upgrades.md)
+6. [Benchmark Results](doc/performance/ec2-results.md)
+7. [Architecture deck](doc/presentation/seqeron-architecture.pptx)
 
 How do I hack on seqeron?
 -------------------------
 
-1. [Building and Testing](doc/building.md)
-2. [Releasing](doc/releasing.md)
+1. [Building and Testing](doc/development/building.md)
+2. [Releasing](doc/development/releasing.md)
 
 License (See LICENSE file for full license)
 -------------------------------------------

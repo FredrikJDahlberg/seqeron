@@ -31,7 +31,7 @@ import org.limitless.seqeron.util.Logger;
  * The Aeron adapter over {@link Sequencer}: it decides when to call the state machine. It holds no replicated state.
  *
  * <p>It publishes no queue: the member's {@code QueueAgent} publishes each from the committed log, so this duty cycle
- * never waits on a queue's subscribers (doc/plans/queue-off-duty-cycle-plan.md, step 1). It keeps each queue's
+ * never waits on a queue's subscribers (doc/records/plans/queue-off-duty-cycle-plan.md, step 1). It keeps each queue's
  * position as {@link QueuePositions} gives it, which is where each snapshot's marker starts.
  *
  * <p>A cluster snapshot is also an application round: {@link #onTakeSnapshot} publishes the

@@ -2,9 +2,9 @@
 
 Measurements of 8 November 2026 on a three-member cluster of c6in.8xlarge hosts, whose members recorded their queues.
 The release removed that path: members now derive their queues from the Raft log and record none. These results are kept
-as the record of the earlier design; [`ec2-results.md`](ec2-results.md) is the current design's. The latency of the
+as the record of the earlier design; [`ec2-results.md`](../performance/ec2-results.md) is the current design's. The latency of the
 sequencing loop at 20k, 50k and 100k msg/s, the rate at which it saturates, the cost of forcing the archive to disk, and
-replay over a network (§3). [`ec2-tests.md`](ec2-tests.md) is the plan and the method; this document is what the session
+replay over a network (§3). [`ec2-tests.md`](../performance/ec2-tests.md) is the plan and the method; this document is what the session
 measured, and what it does not establish.
 
 ## 1. Summary

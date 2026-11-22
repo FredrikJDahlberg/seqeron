@@ -12,7 +12,7 @@ them before a session.
 
 ### Test 1: the hosted-façade hop on a tuned cluster
 
-[`hosted-facade.md`](hosted-facade.md) §2 question 2 and the unmeasured items of §3.4 wait on it, and its result decides
+[`hosted-facade.md`](../records/hosted-facade.md) §2 question 2 and the unmeasured items of §3.4 wait on it, and its result decides
 whether the hosted C++ client stays. The hop has been measured on a laptop (§3.1, §3.2) and in an aarch64 VM (§3.6,
 §3.7) with a bench client on the prototype wire, where a whole loop of 233–389 µs at p50 hides it. No figure comes from the
 real stub, schema 218 at protocol version 2, bare metal or a cloud instance. A pinned, busy-spinning cluster on three
@@ -410,7 +410,7 @@ The C# client is deployed on Windows: the members run on Linux, and the C# appli
 gateway host, whose relay copies a member's Raft log over UDP and derives the queues onto the host's own driver. Its only
 measurements are `HotPathAllocationTest`, which holds queue dispatch and confirmed publish to zero bytes a frame without a
 cluster, and the functional runs of `csharp-client-test.sh` and `csharp-windows-test.sh`. Nothing times it, and
-[`hosted-facade.md`](hosted-facade.md) §3.4 lists it as not measured.
+[`hosted-facade.md`](../records/hosted-facade.md) §3.4 lists it as not measured.
 
 **The question.** What loop latency does a C# application on a Windows gateway host see, up to what rate, and how much of
 it is the C# client, how much Windows and how much the off-cluster path that any client on a gateway host pays?
@@ -439,7 +439,7 @@ allocated bytes and gen-0, 1 and 2 collections over the measured window (`dotnet
 counters.
 
 No rule: the test is reported, not judged. If the C# client moves to a hosted stub
-([`hosted-facade.md`](hosted-facade.md) §5), the same set with the stub as a fourth arm is that plan's step 4.
+([`hosted-facade.md`](../records/hosted-facade.md) §5), the same set with the stub as a fourth arm is that plan's step 4.
 
 **Tooling, not built.**
 
@@ -467,7 +467,7 @@ handover `csharp-windows-test.sh` checks for function; and Windows on bare metal
 **Retired.** Step 1 merged on its result: the service publishes no queue, so there is no second stream to compare, and
 the shadow, `ClusterProbe shadow` and `shadow-lag.sh` are gone. The section is the test's record.
 
-[`plans/queue-off-duty-cycle-plan.md`](plans/queue-off-duty-cycle-plan.md) step 1 moves every queue off the service's
+[`../records/plans/queue-off-duty-cycle-plan.md`](../records/plans/queue-off-duty-cycle-plan.md) step 1 moves every queue off the service's
 duty cycle onto an agent that derives it from the committed log, and §4 of that plan puts the latency cost to this test
 before step 1 merges. With `sequencer.shadowQueues=true`, `ShadowQueueAgent` already publishes that agent's queues on
 stream 3000 + `groupId` beside the service's, and `ClusterProbe shadow` reads both on one member, on one thread and one
@@ -587,7 +587,7 @@ c6in.8xlarge ($6.35/hr) and about $145 on c6id.metal ($20.26/hr), from the insta
 about $13 on c6in.8xlarge. Neither includes the
 rehearsals, so allow the first attempt twice the figure; the soak and the knee ramps run unattended.
 
-The disk session (`disk-session.sh`) measures `plans/disk-load-plan.md`, step 2a, in one launch: two knee ramps (`direct`, 100-byte
+The disk session (`disk-session.sh`) measures `../records/plans/disk-load-plan.md`, step 2a, in one launch: two knee ramps (`direct`, 100-byte
 markers, from 50k msg/s in 10 s steps), two under the kernel's default writeback and two with the archive on a default gp3
 volume, then test 3's cold replay of 4,000,000 frames, quiet and under load. The figures here are of the session as it ran
 before the release, when it also ran each knee and replay on members that recorded their queues: the ramps took about 26
@@ -686,7 +686,7 @@ MULTIHOST_WINDOWS=10.0.0.15 HOP_MODES="csharp-windows csharp-linux java-linux" H
     ./hop-matrix.sh                                            # test 6, once built
 ```
 
-Members record no queue (`plans/disk-load-plan.md`, step 2a), and a gateway host relays a member's Raft log. The order check
+Members record no queue (`../records/plans/disk-load-plan.md`, step 2a), and a gateway host relays a member's Raft log. The order check
 reads each member's queue through its Replayer. `REPLAY_COLD=1` drops every member's page cache before each replay phase, so the replay reads
 its log or recording from EBS; it needs passwordless `sudo` on the members.
 

@@ -10,7 +10,7 @@ the cluster cleanly and reads a member's counters. It does not launch or restart
 It runs on a cluster member. It reaches that member's default queue (spec §3.1), which the member's replayer
 names when asked (spec **R-6**), through the member's Aeron directory, over `aeron:ipc`, and reads its
 cluster directory for Aeron's `io.aeron.cluster.ClusterTool`, which works only on local files. It is one class, `org.limitless.seqeron.tools.ClusterCtl`, launched by
-`seqeron-service/src/main/scripts/clusterctl.sh`. "spec §n" refers to `doc/seqeron-protocol-spec.md`.
+`seqeron-service/src/main/scripts/clusterctl.sh`. "spec §n" refers to `doc/architecture/seqeron-protocol-spec.md`.
 
 ## Configuration
 
@@ -83,9 +83,9 @@ to a `SequencerServer` is itself clean, since it runs the same shutdown, but it 
 marker, so a supervisor should not send it to a follower during a `clusterctl shutdown`.
 
 **Why `ABORT` and not `SHUTDOWN`.** Aeron's `SHUTDOWN` takes a cluster snapshot before stopping. Without a
-`<snapshots>` policy the service refuses it ([`fault-tolerance.md`](fault-tolerance.md) §0); with one it is a
+`<snapshots>` policy the service refuses it ([`fault-tolerance.md`](../architecture/fault-tolerance.md) §0); with one it is a
 round no application confirms before its member stops, so the next start invalidates it as not restart-safe
-([`snapshot.md`](snapshot.md) §10.8). `ABORT` takes none. Aeron's default termination hook does nothing,
+([`snapshot.md`](../architecture/snapshot.md) §10.8). `ABORT` takes none. Aeron's default termination hook does nothing,
 which would leave `SequencerServer` waiting after the consensus module stopped, so `SequencerServer` sets it
 to release its shutdown barrier. On `ABORT` every member then closes its archive through the normal shutdown
 path, which gives the Raft log's recording a valid stop position, and `SequencerService.onTerminate` closes
@@ -112,7 +112,7 @@ well as an application round (`snapshot.md` §10).
 A round starts no sooner than the session timeout plus 1 s after the last ([`ops.md`](ops.md), "Cluster snapshots"),
 so the command waits up to 30 s for it.
 If the loaded topology has no `<snapshots>` element, nothing answers the request and the command exits 1
-after that timeout. What the participating sources then do is [`snapshot.md`](snapshot.md) §4.
+after that timeout. What the participating sources then do is [`snapshot.md`](../architecture/snapshot.md) §4.
 
 ### load-topology
 
@@ -123,7 +123,7 @@ Publishes the deployment's topology document (spec §6.4): an XML file validated
 | --- | --- | --- |
 | `<groups>` | one `GroupsRegistered` | on the first load, activates the groups, each with its own queue (spec §7.4); on a later one, must equal them. Either way it makes the command's session the topology session (spec **S-9**) |
 | `<gateways>` (optional) | one `GatewayRegistered` per row, `remaining` counting down to 0 on the last | builds the gateway list, and after the last row designates the rank-0 instance of each gateway not designated before |
-| `<applications>` (optional) | one `ApplicationRegistered` per row | records the source's group; the `snapshot` attribute is the façades' ([`snapshot.md`](snapshot.md) §1) |
+| `<applications>` (optional) | one `ApplicationRegistered` per row | records the source's group; the `snapshot` attribute is the façades' ([`snapshot.md`](../architecture/snapshot.md) §1) |
 | `<protocols>` (optional) | one `PayloadIdRegistered` per row | reads nothing; the rows label payloads for the log printer |
 | `<snapshots>` (optional) | one `SnapshotPolicyRegistered` | turns snapshot rounds on, by `interval` seconds and `bytes` sequenced (spec §7.3) |
 
@@ -167,7 +167,7 @@ command until its groups are active, a `GatewayStarted` that arrives before the 
 **S-6**), and a gateway publishes nothing until it finds its own row. Running it again is safe, and is how
 a deployment grows. A later file may add gateways, applications and protocols; its `<groups>` must equal
 the active ones, and it may not move a source to another group (spec **S-8**). Adding groups to a running
-cluster is proposed ([`upgrades.md`](upgrades.md) §7.4). The sequencer de-duplicates rows on
+cluster is proposed ([`upgrades.md`](../architecture/upgrades.md) §7.4). The sequencer de-duplicates rows on
 `gatewayId` and designates a gateway's bootstrap instance only once, so a file loaded again changes
 nothing. The first load holds up every member's queues for as long as its archive takes to start
 recording them, at most 5 s (spec §7.4).
@@ -187,7 +187,7 @@ document in this repository lists only what its user starts:
 ### trim-log
 
 Asks this member's Replayer to purge what its two newest restart-safe snapshots make unneeded
-([`snapshot.md`](snapshot.md) §10.7), and prints what it did. The member runs the same trim by itself each time a
+([`snapshot.md`](../architecture/snapshot.md) §10.7), and prints what it did. The member runs the same trim by itself each time a
 snapshot becomes restart-safe, so the command is for a trim the archive refused, and for `--dry-run`. It acts on
 this member alone and needs no leader. The request and its answer are on `aeron:ipc`, streams 208 and 209; the
 Replayer reads the member's `recording.log` and `restart-safe.log` and purges through the member's archive:

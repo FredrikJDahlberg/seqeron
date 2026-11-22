@@ -16,7 +16,7 @@ import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
  * A tethered queue subscriber in a child JVM, {@code SIGSTOP}ped on the leader under a flood, holds the leader's queue
- * a window behind it (doc/plans/queue-off-duty-cycle-plan.md, step 6). The leader must sequence on while its queue is
+ * a window behind it (doc/records/plans/queue-off-duty-cycle-plan.md, step 6). The leader must sequence on while its queue is
  * held: its {@code clusterSeqNo} advances, a ping through another member's queue is echoed and the flood completes.
  * Its queue agent then skips the queue, every member stays up, and a consumer of the leader's queue heals by replay.
  */

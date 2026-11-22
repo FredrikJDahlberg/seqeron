@@ -20,7 +20,7 @@ import java.util.Set;
  * </pre>
  * Each line is forced to disk before the call that wrote it returns. Written from the service thread ({@code cut})
  * and the Replayer's ({@code safe}). The monitor guards the in-memory sets alone and the force is outside every lock,
- * so neither thread waits on the other's fsync (doc/plans/queue-off-duty-cycle-plan.md, step 5).
+ * so neither thread waits on the other's fsync (doc/records/plans/queue-off-duty-cycle-plan.md, step 5).
  */
 public final class RestartSafeLog implements AutoCloseable {
     /** The file's name in the cluster directory. */

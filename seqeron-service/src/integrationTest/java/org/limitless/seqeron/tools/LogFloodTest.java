@@ -26,7 +26,7 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * A flood of rejected frames while the logging thread's writes to stderr block, as on a stalled pipe
- * (doc/plans/queue-off-duty-cycle-plan.md, step 4): every member's service applies the whole flood and keeps
+ * (doc/records/plans/queue-off-duty-cycle-plan.md, step 4): every member's service applies the whole flood and keeps
  * sequencing, the log records it cannot write are dropped and counted, and none of it reaches a duty cycle.
  */
 @ExtendWith(InterruptingTestCallback.class)

@@ -91,7 +91,7 @@ the objects. With `--oneline`, each message line parses on its own.
 
 The cluster decodes no application payload, so the printer cannot either. `-o <payloadId>` hands them to
 something that can: it writes that protocol's payloads to standard output, raw and back to back, for a
-decoder that holds their schema ([`seqeron-protocol-spec.md`](seqeron-protocol-spec.md) §13.1).
+decoder that holds their schema ([`seqeron-protocol-spec.md`](../architecture/seqeron-protocol-spec.md) §13.1).
 
 ```bash
 ./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --queue 1 \
@@ -111,7 +111,7 @@ decoder that holds their schema ([`seqeron-protocol-spec.md`](seqeron-protocol-s
 ## Payloads it cannot decode
 
 A payload whose schema is not loaded prints as its identifiers rather than its fields. Where the topology
-document registered the `payloadId` ([`seqeron-protocol-spec.md`](seqeron-protocol-spec.md) §6.3), the
+document registered the `payloadId` ([`seqeron-protocol-spec.md`](../architecture/seqeron-protocol-spec.md) §6.3), the
 printer labels it with the registered name, read from the `PayloadIdRegistered` rows in the same
 recording; an unregistered one prints under its number:
 
