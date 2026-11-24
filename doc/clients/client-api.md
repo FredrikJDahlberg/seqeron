@@ -16,7 +16,8 @@ stubs whose façade runs in a `ClientProxy` host beside them, over `aeron:ipc`
 listener concepts and `Payload`, and differ as spec §17.5 says. The host holds the cluster session, the queue and the
 façade's configuration ([`running-a-cluster.md`](../operations/running-a-cluster.md#client-proxy)), so C++ has no
 `ReplayerStreamReceiver`, no producer components and no `PortLayout`; a section or column that names no C++ type has
-none. The direct C++ client is retired, on the `cpp-direct-client` branch (tag `cpp-direct-client-final`).
+none. Its one read of history of its own is [`ReplayScan`](#replayscan). The direct C++ client is retired, on the
+`cpp-direct-client` branch (tag `cpp-direct-client-final`).
 
 ## Application types
 
@@ -494,6 +495,23 @@ languages.
 **Without a receiver.** `SequencedFrameDecoder` (Java, C#) and `unwrapFrame`/`FrameView` (C++) strip the
 envelope from a raw queue message read out of a recording.
 
+## `ReplayScan`
+
+C++ only (`replayer::client`): one bounded read of the node's recorded queue through its Replayer, for a client that
+needs history at a position of its own and has a host to follow the live queue for it, such as serving resends. It
+resolves a queue by the name of a gateway instance, or the default queue with an empty name; asks for a replay from
+`FROM_START` or from a frame's `position`; hands each frame to its callback with that position, which a later scan
+resumes from; and finishes `Done` at the position the Replayer named, which is where the queue was when it answered.
+It finishes `Failed` when the Replayer refuses the position, which is no frame boundary or lies below a purged
+start (spec **R-2**), or when the replay does not begin on the frame asked for. It restores no snapshot and follows no
+live queue. Destroying it releases the Replayer's slot (**R-3**). The protocol changes in place without a version bump
+(schema 212), so a scan is built from the seqeron it runs beside.
+
+```cpp
+ReplayScan scan{ aeron, "", position, [&](const protocol::FrameView& frame, std::int64_t at) { /* … */ } };
+while (!scan.finished()) { scan.poll(); }
+```
+
 ## Packages
 
 Aeron's layout: a component's server at the package root, its client in `.client`, shared wire contract in
@@ -501,16 +519,16 @@ Aeron's layout: a component's server at the package root, its client in `.client
 
 | package | tier | contents |
 |---|---|---|
-| `protocol` | client | `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters`, `Publish` (C++: `SequencedFrame.hpp`, `SeqeronCounters.hpp`, `ProxyProtocol.hpp`, `Publish.hpp`) |
+| `protocol` | client | `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters`, `Publish` (C++: `SequencedFrame.hpp`, `SeqeronCounters.hpp`, `ProxyProtocol.hpp`, `ReplayProtocol.hpp`, `Publish.hpp`) |
 | `sequencer.client` | client | internal: the [producer components](#producer-components) |
-| `replayer.client` | client | `ReplayerStreamReceiver`, its callback types (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), `SnapshotRestoreHandler`, `SnapshotStore`; `SequencedEvent` in Java and C# (C++: `protocol`, beside `unwrapFrame` and `decodeSystem`/`decodeSequenced`) |
+| `replayer.client` | client | `ReplayerStreamReceiver`, its callback types (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), `SnapshotRestoreHandler`, `SnapshotStore`; `SequencedEvent` in Java and C# (C++: `protocol`, beside `unwrapFrame` and `decodeSystem`/`decodeSequenced`); `ReplayScan` in C++ only |
 | `app` | client | the façades (`Gateway`, `Application`, `Consumer`) and their components; in C++ the listener concepts, `Payload`, `GroupDirectory`, `OutstandingWork`, `SnapshotListener` and `ClusterError` the stubs share |
 | `hosted` | client | C++ only: the stubs `Application`, `Gateway` and `Consumer` |
 | `util` | client | support code |
 | `sbe.frame`, `sbe.replay` | client | generated codecs |
 | `sequencer`, `replayer.server`, `tools`, `metrics`, `sbe.probe` | service | not client API |
 
-- **C++:** the same directories and namespaces for the packages it has, `app`, `hosted`, `protocol` and `util`
+- **C++:** the same directories and namespaces for the packages it has, `app`, `hosted`, `protocol`, `replayer.client` and `util`
   (`org::limitless::seqeron::hosted`, …); a `detail` namespace beneath a package stands in for Java package-private.
 - **C#:** PascalCase namespaces (`Org.Limitless.Seqeron.Sequencer.Client`, …), `internal` for
   package-private, properties for getters, `I`-prefixed interfaces (`IIngressTracker`,

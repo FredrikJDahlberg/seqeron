@@ -98,8 +98,8 @@ replay and hosted codecs and the cluster mirror's IR) and `seqeron-service` (the
 fails its build if it names anything outside `app` beyond `protocol.Publish`, the way
 `FacadeSurfaceTest` checks the same from inside the client tier. Anything the service tier
 shares with a client — the queue's identity, the cluster clock, the port block, the replay protocol's
-addresses — goes in `protocol`, never in a service-tier class. C++ is the hosted client stubs (`hosted`) and the
-types they share with the Java client tier (`app`, `protocol`, `util`), under the same names, plus a `detail/`
+addresses — goes in `protocol`, never in a service-tier class. C++ is the hosted client stubs (`hosted`), `replayer/client`'s `ReplayScan` (a bounded read of history through the Replayer)
+and the types they share with the Java client tier (`app`, `protocol`, `util`), under the same names, plus a `detail/`
 directory and namespace beneath a package for what Java makes package-private, since header-only C++ has no such
 thing. The direct C++ client is retired and kept on the `cpp-direct-client` branch (tag `cpp-direct-client-final`). C# is the Java classes under the Java names in PascalCase namespaces
 (`Org.Limitless.Seqeron.Sequencer.Client`), `internal` where Java is package-private, and the façades take an
