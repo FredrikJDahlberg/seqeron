@@ -33,7 +33,9 @@ case for case, with a property test asserting exactly-once, in-order delivery ac
 header-only INTERFACE target and the only binaries the build produces are `core_tests`, the benchmark
 `hosted_hop_bench` (`doc/performance/ec2-tests.md`) and the probes
 (`hosted_probe`, `hosted_gateway_probe`, `hosted_consumer_probe`) that the `Hosted*Test` system tests drive when
-`HOSTED_PROBE` names `hosted_probe`. The direct C++ client is retired: branch `cpp-direct-client`, tag
+`HOSTED_PROBE` names `hosted_probe`, and `replay_scan_probe`, which `ReplayScanCppTest` drives against a member's
+Replayer when `REPLAY_SCAN_PROBE` names it. `replayer/client/ReplayScan.hpp` is the one C++ client of the Replayer,
+a bounded read for what needs history at a position of its own; the replay codecs are committed with the other two schemas. The direct C++ client is retired: branch `cpp-direct-client`, tag
 `cpp-direct-client-final`. There is **no C++ replay server** — the server side of the replay protocol is Java only.
 
 `seqeron-service/src/main/ops/` holds the Prometheus and Grafana provisioning the metrics scripts feed

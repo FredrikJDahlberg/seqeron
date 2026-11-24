@@ -106,7 +106,7 @@ endif()
 # not approximately — and this repo's own run_tests depends on it.
 #
 # generated/sbe/core, not generated/sbe: the root is named for what it holds — the schemas the cluster
-# tier owns (frame, hosted) and nothing else. A deployment that builds an application's codecs
+# tier owns (frame, hosted, replay) and nothing else. A deployment that builds an application's codecs
 # alongside these gives them their own root, so a cluster-tier file that reached for an application
 # codec fails to compile rather than merely being asked not to.
 set(SBE_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/generated/sbe/core")
@@ -114,6 +114,7 @@ set(SBE_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/generated/
 set(SBE_SCHEMAS
     "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-frame.xml"
     "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-hosted.xml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-replay.xml"
 )
 
 # QUIET, not REQUIRED: a consumer compiles the committed codecs and never runs the tool. Java is
@@ -181,7 +182,7 @@ endif()
 # seqeron_core — header-only interface library for the cluster tier. Its include root is
 # seqeron-client/src/main/cpp, so nothing linking only this can reach a product header,
 # and it carries no application codecs: its SBE root is SBE_CORE_DIR, which holds only
-# frame/replay/cluster, so the cluster tier decodes no application payload by construction.
+# frame/hosted/replay, so the cluster tier decodes no application payload by construction.
 #
 # Consumable two ways and the target name is the same in both: add_subdirectory/FetchContent over the
 # checkout (seqeron-examples), or find_package(seqeron) against an installed tree (the SEQERON_INSTALL
@@ -332,6 +333,10 @@ if(SEQERON_BUILD_TESTS)
     # hosted_consumer_probe — the same for a hosted::Consumer stub, which HostedConsumerStubTest drives.
     add_executable(hosted_consumer_probe seqeron-client/src/test/cpp-probe/HostedConsumerProbe.cpp)
     target_link_libraries(hosted_consumer_probe PRIVATE seqeron_core seqeron_flags)
+
+    # replay_scan_probe — a ReplayScan, which ReplayScanCppTest drives against a member's Replayer when REPLAY_SCAN_PROBE names it.
+    add_executable(replay_scan_probe seqeron-client/src/test/cpp-probe/ReplayScanProbe.cpp)
+    target_link_libraries(replay_scan_probe PRIVATE seqeron_core seqeron_flags)
 
     # hosted_hop_bench — the hosted-façade hop through the real stub. Bench only.
     add_executable(hosted_hop_bench seqeron-client/src/test/cpp-bench/HostedHopBench.cpp)

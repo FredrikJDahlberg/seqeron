@@ -80,6 +80,11 @@ testing {
                             inputs.property('hostedClient', System.getenv('HOSTED_CLIENT'))
                         }
                     }
+                    // The C++ replay client's probe (replay_scan_probe), built by CMake; ReplayScanCppTest is skipped without it.
+                    if (System.getenv('REPLAY_SCAN_PROBE')) {
+                        systemProperty 'seqeron.replayScanProbe', System.getenv('REPLAY_SCAN_PROBE')
+                        inputs.property('replayScanProbe', System.getenv('REPLAY_SCAN_PROBE'))
+                    }
                     systemProperty 'seqeron.gatewayTopology',
                                    file('src/test/resources/topology-test-gateway.xml').absolutePath
                     // -PexcludeTests leaves out the classes it matches; ci.yml shards HostedSnapshotTest this way.
