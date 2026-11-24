@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -75,10 +76,16 @@ class ReplayScan
                         protocol::frameStartPosition(header));
       } }
     {
-        std::strncpy(m_gatewayName.data(), gatewayName.c_str(), m_gatewayName.size());
+        std::memcpy(m_gatewayName.data(), gatewayName.c_str(), std::min(gatewayName.size(), m_gatewayName.size() - 1));
         m_requestPubId = m_aeron->addPublication(IPC_CHANNEL, protocol::REPLAYER_REQUEST_STREAM_ID);
         m_controlSubId =
             m_aeron->addSubscription(std::string(IPC_CHANNEL) + "|tether=false", protocol::REPLAYER_CONTROL_STREAM_ID);
+    }
+
+    // A registration that never resolved has no owner to release it, so each is found and dropped here.
+    ~ReplayScan()
+    {
+        resolveResources();
     }
 
     ReplayScan(const ReplayScan&) = delete;
@@ -129,6 +136,7 @@ class ReplayScan
     static constexpr int FRAGMENT_LIMIT = 16;
     static constexpr std::size_t REQUEST_BUFFER_LENGTH = 96;
     static constexpr std::chrono::milliseconds RESEND_INTERVAL{ 100 };
+    static constexpr std::chrono::seconds ATTACH_TIMEOUT{ 10 };
 
     static constexpr const char* IPC_CHANNEL = protocol::REPLAYER_IPC_CHANNEL;
 
@@ -255,22 +263,24 @@ class ReplayScan
         m_replaySubId =
             m_aeron->addSubscription(std::string(IPC_CHANNEL) + "|session-id=" + std::to_string(m_sessionId),
                                      protocol::REPLAYER_REPLAY_STREAM_ID);
+        m_replayStarted = std::chrono::steady_clock::now();
         m_state = State::Reading;
     }
 
     int readReplay()
     {
-        if (!m_replaySub)
+        if (!m_replayImage && m_replaySub)
         {
-            return 0;
+            m_replayImage = m_replaySub->imageBySessionId(m_sessionId);
         }
         if (!m_replayImage)
         {
-            m_replayImage = m_replaySub->imageBySessionId(m_sessionId);
-            if (!m_replayImage)
+            // The Replayer drops a replay nobody attaches to (R-3), so an image that never comes is a failure.
+            if (std::chrono::steady_clock::now() - m_replayStarted > ATTACH_TIMEOUT)
             {
-                return 0;
+                finish(State::Failed);
             }
+            return 0;
         }
         const std::shared_ptr<aeron::Image> image = m_replayImage;
         if (image->isClosed())
@@ -336,6 +346,7 @@ class ReplayScan
     std::int64_t m_requestId{ 1 };
     bool m_requestSent{ false };
     std::chrono::steady_clock::time_point m_lastRequest{};
+    std::chrono::steady_clock::time_point m_replayStarted{};
     std::int32_t m_queueId{ 0 };
     std::int32_t m_sessionId{ 0 };
     std::int64_t m_catchUpPosition{ 0 };
